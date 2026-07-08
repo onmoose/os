@@ -709,6 +709,31 @@ type ServiceDep struct {
 // every app must still install and run unbound (validateMail rejects false).
 type Mail struct {
 	Optional bool `yaml:"optional"`
+
+	// Env auto-wires app-owned mail env vars whose valid values are an enum the
+	// app boot-validates, where a compose `${MOOSE_MAIL_*:+…}` gate can't remap
+	// one token set onto another (#302). Each key is the app's own env-var name;
+	// the brain resolves the mapped token for the box's current mail state and
+	// stamps it into the .env directly: no MOOSE_ indirection, the same as a
+	// config field. Emitted in both bound and unbound states (unbound uses the
+	// none/unbound tokens), so an enum-driver app is present-and-valid on a box
+	// with no provider registered. Absent ⇒ only the MOOSE_MAIL_* family is
+	// injected. See APP_MANIFEST.md # D3, SERVICE_PROVISIONING.md # BYO outgoing mail.
+	Env map[string]MailEnvMap `yaml:"env,omitempty"`
+}
+
+// MailEnvMap projects one moose mail-state domain onto an app's own token set
+// (APP_MANIFEST.md # D3). From names the source domain and Map gives the app's
+// token for each value in it:
+//
+//	encryption: the bound provider's mode: none | starttls | tls (unbound ⇒ none)
+//	bound:      whether any provider is bound: bound | unbound
+//
+// Map must cover its domain exactly (every value, none extra) so resolution
+// never hits an undeclared token in any mail state (validateMail enforces it).
+type MailEnvMap struct {
+	From string            `yaml:"from"`
+	Map  map[string]string `yaml:"map"`
 }
 
 // ConfigField is one user-supplied configuration field (APP_MANIFEST.md # D4).
@@ -788,6 +813,14 @@ var secretName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // bypassed by a lowercase variant: `OPENAI_API_KEY` ok; `openai_key`, `2fa`,
 // `API-KEY` rejected.
 var configEnvName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// mailEnvToken matches the value of one mail.env map token: a single word, so
+// it survives the .env line and the compose substitution that pass it through.
+// A line break would become a second assignment, and characters such as `$` or
+// a space have meaning to the env-file and compose parsers. Enum tokens in the
+// wild are words (off, smtp, force_tls), so the set is letters, digits, and
+// _ . : + -.
+var mailEnvToken = regexp.MustCompile(`^[A-Za-z0-9_.:+-]+$`)
 
 // MaxPublicPaths caps how many path-scoped exceptions one app may declare
 // (APP_MANIFEST.md # E2). The cap is not a security boundary — an author with
@@ -1148,16 +1181,81 @@ func (m *Manifest) validateServices() error {
 	return nil
 }
 
+// Mail-state domain names a MailEnvMap.From may take (APP_MANIFEST.md # D3).
+const (
+	MailFromEncryption = "encryption"
+	MailFromBound      = "bound"
+)
+
+// Values of the synthetic `bound` domain (whether a provider is bound).
+const (
+	MailBound   = "bound"
+	MailUnbound = "unbound"
+)
+
+// mailEnvDomains maps each MailEnvMap.From to the exact token set its Map must
+// cover (APP_MANIFEST.md # D3). The encryption domain values mirror
+// store.MailEncryption* (none|starttls|tls); kept as literals here so the
+// manifest layer stays free of a store dependency, and lifecycle resolution
+// bridges the two (a lifecycle test guards the alignment).
+var mailEnvDomains = map[string][]string{
+	MailFromEncryption: {"none", "starttls", "tls"},
+	MailFromBound:      {MailBound, MailUnbound},
+}
+
 // validateMail checks the optional outgoing-mail block (APP_MANIFEST.md # D).
 // Absent ⇒ no-op. v1 supports only `optional: true`: an app that cannot run
 // unbound would have to fail install on every box with no provider registered,
-// so required mail is rejected until a real consumer needs it.
+// so required mail is rejected until a real consumer needs it. Each mail.env
+// entry (#302) is validated like a config app_env: the token lands in the .env
+// under the app's own name, so it must be a bare uppercase identifier that
+// cannot clobber the MOOSE_ family or a loader var. It also must not be a
+// config app_env, because a config value lands in the override and would win
+// over the .env line. The map must cover the From domain exactly and each token
+// must be a single word, so resolution never writes an empty or broken env line.
 func (m *Manifest) validateMail() error {
 	if m.Mail == nil {
 		return nil
 	}
 	if !m.Mail.Optional {
 		return fmt.Errorf("mail: v1 supports only optional mail (set `optional: true`; apps must run unbound)")
+	}
+	configNames := make(map[string]bool, len(m.Config))
+	for _, c := range m.Config {
+		configNames[c.AppEnv] = true
+	}
+	for name, em := range m.Mail.Env {
+		if !configEnvName.MatchString(name) {
+			return fmt.Errorf("mail.env: name %q must be an uppercase env-var name (e.g. EMAIL_DRIVER)", name)
+		}
+		if strings.HasPrefix(name, "MOOSE_") {
+			return fmt.Errorf("mail.env: name %q may not use the reserved MOOSE_ prefix", name)
+		}
+		if reservedConfigEnv[name] {
+			return fmt.Errorf("mail.env: name %q is a reserved runtime variable and may not be set", name)
+		}
+		if configNames[name] {
+			return fmt.Errorf("mail.env: name %q is also a config app_env, whose value would override it", name)
+		}
+		domain, ok := mailEnvDomains[em.From]
+		if !ok {
+			return fmt.Errorf("mail.env[%s]: unknown from %q (allowed: encryption, bound)", name, em.From)
+		}
+		if len(em.Map) != len(domain) {
+			return fmt.Errorf("mail.env[%s]: map must cover exactly the %s domain %v", name, em.From, domain)
+		}
+		for _, v := range domain {
+			token, ok := em.Map[v]
+			if !ok {
+				return fmt.Errorf("mail.env[%s]: map is missing key %q for domain %s", name, v, em.From)
+			}
+			if token == "" {
+				return fmt.Errorf("mail.env[%s]: map[%s] token must not be empty", name, v)
+			}
+			if !mailEnvToken.MatchString(token) {
+				return fmt.Errorf("mail.env[%s]: map[%s] token %q must be one word of letters, digits, or _ . : + -", name, v, token)
+			}
+		}
 	}
 	return nil
 }

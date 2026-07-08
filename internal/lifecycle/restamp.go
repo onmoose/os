@@ -202,15 +202,15 @@ func (m *Manager) RestampConfig(ctx context.Context, ids []string) error {
 	})
 }
 
-// RestampMail rewrites each app's MOOSE_MAIL_* lines from its current binding
+// RestampMail rewrites each app's mail-owned lines from its current binding
 // and restarts the running ones. It runs after an email account was edited
 // (the lines change) or deleted (the binding went with the account, so the
-// lines are dropped). It needs only the binding and the .env, not the
-// manifest, so a deleted account's credentials leave an app even when its
-// manifest copy cannot be read.
+// lines are dropped). The manifest is read when it can be, so a manifest's
+// mail.env vars re-resolve too; when it cannot, a deleted account's
+// credentials still leave the app and the declared vars keep their values.
 func (m *Manager) RestampMail(ctx context.Context, ids []string) error {
 	return m.restampEach(ctx, ids, "update app after email account change failed", func(inst store.Instance) (bool, error) {
-		if err := m.rewriteEnvMail(inst.ID); err != nil {
+		if err := m.rewriteEnvMail(inst.ID, m.instanceMail(inst.ID)); err != nil {
 			return false, fmt.Errorf("rewrite env: %w", err)
 		}
 		return true, nil
@@ -238,13 +238,13 @@ func (m *Manager) RestampAccounts(ctx context.Context, configIDs, mailIDs []stri
 		}
 		mail[id] = true
 	}
-	// Mail goes first because it needs no manifest. If the override then
-	// fails, the app is still restarted without the mail lines, and the
-	// error names it.
+	// Mail goes first because a missing manifest still lets it strip the
+	// credentials. If the override then fails, the app is still restarted
+	// without the mail lines, and the error names it.
 	return m.restampEach(ctx, ids, "update app after user delete failed", func(inst store.Instance) (bool, error) {
 		changed := false
 		if mail[inst.ID] {
-			if err := m.rewriteEnvMail(inst.ID); err != nil {
+			if err := m.rewriteEnvMail(inst.ID, m.instanceMail(inst.ID)); err != nil {
 				return false, fmt.Errorf("rewrite env: %w", err)
 			}
 			changed = true

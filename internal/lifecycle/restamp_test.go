@@ -287,13 +287,15 @@ func TestRestampMail(t *testing.T) {
 }
 
 // Dropping a deleted email account's lines needs only the binding and the
-// .env, so it works even when the app's manifest copy cannot be read.
+// .env, so it works even when the app's manifest copy cannot be read. The
+// app's own declared vars are the exception: with no manifest the restamp
+// cannot name them, so they keep their values.
 func TestRestampMailWithoutManifest(t *testing.T) {
 	e := newTestEnv(t)
 	if err := e.createMailProvider(testProvider()); err != nil {
 		t.Fatal(err)
 	}
-	inst, _ := installMailApp(t, e, "mp_test")
+	inst, _ := installEnumMailApp(t, e, "mp_test")
 	dir := filepath.Join(e.stateDir, "instances", inst.ID)
 	if err := os.Remove(filepath.Join(dir, "manifest.yml")); err != nil {
 		t.Fatal(err)
@@ -307,6 +309,9 @@ func TestRestampMailWithoutManifest(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(dir, ".env"))
 	if strings.Contains(string(raw), "MOOSE_MAIL_") {
 		t.Fatalf(".env still has mail lines:\n%s", raw)
+	}
+	if got := envValue(string(raw), "EMAIL_DRIVER"); got != "smtp" {
+		t.Fatalf("declared var lost without the manifest: EMAIL_DRIVER = %q, want smtp", got)
 	}
 }
 

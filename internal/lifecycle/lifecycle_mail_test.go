@@ -2,17 +2,20 @@ package lifecycle
 
 // BYO outgoing mail injection (SERVICE_PROVISIONING.md # BYO outgoing mail):
 // an install electing a registered provider binds it and writeEnv re-emits the
-// credentials as MOOSE_MAIL_*; an unbound install injects nothing.
+// credentials as MOOSE_MAIL_*; an unbound install injects nothing. A manifest
+// that declares mail.env vars gets those stamped in both states (#302).
 
 import (
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
 )
 
@@ -30,6 +33,32 @@ permissions:
   lan: false
 mail:
   optional: true
+`
+
+// mailEnumManifest declares mail.env maps for both domains (#302): a `bound`
+// enum (twenty's EMAIL_DRIVER) and an `encryption` enum (vaultwarden's
+// SMTP_SECURITY). `off` is quoted so YAML keeps it a string, not a boolean.
+const mailEnumManifest = `
+id: mailenumapp
+manifest_version: 1
+name: Mail Enum App
+version: "1.0"
+compose_file: compose.yml
+main_service: app
+main_port: 8080
+preferred_slugs: [mailenumapp]
+permissions:
+  internet: true
+  lan: false
+mail:
+  optional: true
+  env:
+    EMAIL_DRIVER:
+      from: bound
+      map: { bound: smtp, unbound: logger }
+    SMTP_SECURITY:
+      from: encryption
+      map: { none: "off", starttls: starttls, tls: force_tls }
 `
 
 const mailCompose = `
@@ -209,6 +238,174 @@ func countCalls(calls []call, method string) int {
 		}
 	}
 	return n
+}
+
+func installEnumMailApp(t *testing.T, e *testEnv, providerID string) (store.Instance, string) {
+	t.Helper()
+	e.writeCatalogApp(t, "mailenumapp", mailCompose, mailEnumManifest)
+	e.docker.digests[testImage] = testDigest
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "mailenumapp"),
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, providerID, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	env, err := os.ReadFile(filepath.Join(e.stateDir, "instances", inst.ID, ".env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	return inst, string(env)
+}
+
+// A mail.env-declaring app installed unbound gets the declared enum vars stamped
+// with their none/unbound tokens (so it boots valid), and no MOOSE_MAIL_* (#302).
+func TestInstallUnboundStampsEnumMailVars(t *testing.T) {
+	e := newTestEnv(t)
+	_, env := installEnumMailApp(t, e, "")
+	if strings.Contains(env, "MOOSE_MAIL_") {
+		t.Fatalf("unbound install must inject no MOOSE_MAIL_ vars, got:\n%s", env)
+	}
+	for k, v := range map[string]string{"EMAIL_DRIVER": "logger", "SMTP_SECURITY": "off"} {
+		if got := envValue(env, k); got != v {
+			t.Errorf("unbound %s = %q, want %q", k, got, v)
+		}
+	}
+}
+
+// Bound, the declared enum vars resolve their mapped tokens and coexist with the
+// MOOSE_MAIL_* family.
+func TestInstallBoundStampsEnumMailVars(t *testing.T) {
+	e := newTestEnv(t)
+	if err := e.createMailProvider(testProvider()); err != nil { // tls
+		t.Fatalf("create provider: %v", err)
+	}
+	_, env := installEnumMailApp(t, e, "mp_test")
+	for k, v := range map[string]string{"EMAIL_DRIVER": "smtp", "SMTP_SECURITY": "force_tls"} {
+		if got := envValue(env, k); got != v {
+			t.Errorf("bound %s = %q, want %q", k, got, v)
+		}
+	}
+	if got := envValue(env, "MOOSE_MAIL_HOST"); got != "smtp.fastmail.com" {
+		t.Errorf("MOOSE_MAIL_HOST = %q, want smtp.fastmail.com", got)
+	}
+}
+
+// A rebind re-stamps the declared enum vars for the new state, including the
+// unbind, where MOOSE_MAIL_* is stripped but the enum vars flip to their unbound
+// tokens and stay present (a bare strip would boot-reject twenty's driver). No
+// duplicate lines are left behind.
+func TestRebindReStampsEnumMailVars(t *testing.T) {
+	e := newTestEnv(t)
+	if err := e.createMailProvider(testProvider()); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	inst, _ := installEnumMailApp(t, e, "mp_test")
+	envPath := filepath.Join(e.stateDir, "instances", inst.ID, ".env")
+
+	if err := e.m.RebindMail(context.Background(), inst.ID, ""); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	raw, _ := os.ReadFile(envPath)
+	if strings.Contains(string(raw), "MOOSE_MAIL_") {
+		t.Fatalf("unbind must strip MOOSE_MAIL_ vars, got:\n%s", raw)
+	}
+	for k, v := range map[string]string{"EMAIL_DRIVER": "logger", "SMTP_SECURITY": "off"} {
+		if got := envValue(string(raw), k); got != v {
+			t.Errorf("unbound %s = %q, want %q", k, got, v)
+		}
+		if n := strings.Count(string(raw), k+"="); n != 1 {
+			t.Fatalf("%s stamped %d times after unbind, want 1:\n%s", k, n, raw)
+		}
+	}
+
+	if err := e.m.RebindMail(context.Background(), inst.ID, "mp_test"); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+	raw, _ = os.ReadFile(envPath)
+	for k, v := range map[string]string{"EMAIL_DRIVER": "smtp", "SMTP_SECURITY": "force_tls"} {
+		if got := envValue(string(raw), k); got != v {
+			t.Errorf("rebound %s = %q, want %q", k, got, v)
+		}
+		if n := strings.Count(string(raw), k+"="); n != 1 {
+			t.Fatalf("%s stamped %d times after rebind, want 1:\n%s", k, n, raw)
+		}
+	}
+}
+
+// A declared name the resolver cannot map (a future state, or a manifest
+// edited on disk) keeps its previous line, so a pass-through `VAR: ${VAR}`
+// never expands to an empty value.
+func TestRewriteEnvMailKeepsUnresolvedDeclaredVar(t *testing.T) {
+	e := newTestEnv(t)
+	if err := e.createMailProvider(testProvider()); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	inst, _ := installEnumMailApp(t, e, "mp_test")
+	if err := e.store.DeleteInstanceMailBinding(inst.ID); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	// Unbound, and the map has no unbound token, so resolution skips it.
+	mail := &manifest.Mail{Optional: true, Env: map[string]manifest.MailEnvMap{
+		"EMAIL_DRIVER": {From: manifest.MailFromBound, Map: map[string]string{"bound": "smtp"}},
+	}}
+	if err := e.m.rewriteEnvMail(inst.ID, mail); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(e.stateDir, "instances", inst.ID, ".env"))
+	if got := envValue(string(raw), "EMAIL_DRIVER"); got != "smtp" {
+		t.Fatalf("EMAIL_DRIVER = %q, want the previous value smtp", got)
+	}
+	if n := strings.Count(string(raw), "EMAIL_DRIVER="); n != 1 {
+		t.Fatalf("EMAIL_DRIVER stamped %d times, want 1", n)
+	}
+}
+
+// mailAppEnvLines resolves each domain and each encryption mode. The encryption
+// cases also guard manifest's literal domain values against store.MailEncryption*
+// drift, since the two vocabularies are only bridged at resolution time.
+func TestMailAppEnvLinesResolvesDomains(t *testing.T) {
+	mail := &manifest.Mail{
+		Optional: true,
+		Env: map[string]manifest.MailEnvMap{
+			"EMAIL_DRIVER":  {From: manifest.MailFromBound, Map: map[string]string{"bound": "smtp", "unbound": "logger"}},
+			"SMTP_SECURITY": {From: manifest.MailFromEncryption, Map: map[string]string{"none": "off", "starttls": "starttls", "tls": "force_tls"}},
+		},
+	}
+	if got, want := mailAppEnvLines(mail, nil), []string{"EMAIL_DRIVER=logger", "SMTP_SECURITY=off"}; !slices.Equal(got, want) {
+		t.Fatalf("unbound = %v, want %v (sorted by name)", got, want)
+	}
+	for enc, sec := range map[string]string{
+		store.MailEncryptionNone:     "off",
+		store.MailEncryptionSTARTTLS: "starttls",
+		store.MailEncryptionTLS:      "force_tls",
+	} {
+		p := testProvider()
+		p.Encryption = enc
+		if got, want := mailAppEnvLines(mail, &p), []string{"EMAIL_DRIVER=smtp", "SMTP_SECURITY=" + sec}; !slices.Equal(got, want) {
+			t.Errorf("encryption %s: got %v, want %v", enc, got, want)
+		}
+	}
+	if lines := mailAppEnvLines(&manifest.Mail{Optional: true}, nil); lines != nil {
+		t.Errorf("empty mail.env must yield no lines, got %v", lines)
+	}
+	// A hand-built struct or a hand-edited manifest can hold an unknown from,
+	// a missing map, or an empty token. None may produce a `VAR=` line: that is
+	// the empty value this mechanism exists to prevent.
+	unboundBad := &manifest.Mail{Optional: true, Env: map[string]manifest.MailEnvMap{
+		"UNKNOWN_FROM":  {From: "mystery", Map: map[string]string{"x": "y"}},
+		"NO_MAP":        {From: manifest.MailFromEncryption},
+		"MISSING_TOKEN": {From: manifest.MailFromBound, Map: map[string]string{"bound": "smtp"}},
+	}}
+	if got := mailAppEnvLines(unboundBad, nil); len(got) != 0 {
+		t.Errorf("invalid unbound entries must yield no lines, got %v", got)
+	}
+	bound := testProvider()
+	boundBad := &manifest.Mail{Optional: true, Env: map[string]manifest.MailEnvMap{
+		"UNKNOWN_FROM": {From: "mystery", Map: map[string]string{"x": "y"}},
+		"EMPTY_TOKEN":  {From: manifest.MailFromBound, Map: map[string]string{"bound": "", "unbound": "logger"}},
+	}}
+	if got := mailAppEnvLines(boundBad, &bound); len(got) != 0 {
+		t.Errorf("invalid bound entries must yield no lines, got %v", got)
+	}
 }
 
 func TestMailDSN(t *testing.T) {
