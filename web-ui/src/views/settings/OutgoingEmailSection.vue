@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Settings → Outgoing email — admin-only SMTP provider management
+// Settings → Outgoing email: admin-only SMTP provider management
 // (SERVICE_PROVISIONING.md # BYO outgoing mail, issues #122 and #426). Apps
 // that can send email bind to one of these providers at install time (or later
 // from their detail page); the brain injects the credentials as MALMO_MAIL_*
@@ -33,7 +33,7 @@ const router = useRouter();
 const qc = useQueryClient();
 const { currentUser } = useAuth();
 
-// Admin-only — redirect members immediately (mirrors UsersSection).
+// Admin-only: redirect members immediately (mirrors UsersSection).
 watch(
   currentUser,
   (u) => {
@@ -73,7 +73,7 @@ const editPreset = computed(() => presetList.value.find((p) => p.id === editForm
 
 // The preset list can be missing: it is a second request, so it may still be in
 // flight when a row is opened, and it can fail on its own. A hand-typed row is
-// safe to edit without it — nothing pairs its fields. A preset row is not: with
+// safe to edit without it, because nothing pairs its fields. A preset row is not: with
 // no preset we cannot tell whether its username is tied to the credential
 // (Postmark), and a blank password on save means "keep the stored one". So the
 // username stays read-only until the list arrives, rather than falling back to
@@ -94,13 +94,13 @@ function startEdit(p: MailProvider) {
   testFor.value = null;
   confirmDeleteFor.value = null;
   editFor.value = editFor.value === p.id ? null : p.id;
-  // Password stays blank — an empty password on save keeps the stored one.
+  // Password stays blank. An empty password on save keeps the stored one.
   editForm.value = {
     label: p.label, host: p.host, port: p.port, username: p.username,
     password: "", from_address: p.from_address,
     encryption: p.encryption as ProviderForm["encryption"],
     provider_type: p.provider_type,
-    // The region is not stored — only the host it resolved to — so edit shows
+    // Only the host the region resolved to is stored, not the region, so edit shows
     // the host in the advanced fields rather than guessing the region back.
     region: "",
   };

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Settings shell — a left nav panel plus a routed content pane (DASHBOARD.md #
+// Settings shell: a left nav panel plus a routed content pane (DASHBOARD.md #
 // global navigation: Settings is "box + account settings, and the home for gated
 // routes"). The internal IA is a two-pane layout: a bordered nav panel on the
 // left, the active section's <RouterView> filling the rest. Each section is its
@@ -13,7 +13,7 @@
 //
 // Responsive: the nav is a bordered panel with grouped sections on md+ and
 // collapses to a flat, horizontally scrollable tab strip above the content on
-// narrow screens — mobile keeps its own off-canvas nav via the Dock
+// narrow screens. Mobile keeps its own off-canvas nav via the Dock
 // (components/Dock.vue), so this doesn't duplicate that with a second slide-over.
 import { computed } from "vue";
 import { RouterLink, RouterView } from "vue-router";
@@ -59,13 +59,13 @@ const visibleGroups = computed(() =>
     .filter((g) => g.items.length > 0),
 );
 
-// Flat list for the mobile tab strip — same filter, no grouping.
+// Flat list for the mobile tab strip: same filter, no grouping.
 const flatItems = computed(() => visibleGroups.value.flatMap((g) => g.items));
 </script>
 
 <template>
   <!-- flex-1 (not h-full) so the shell fills the AppShell content wrapper on
-       short pages, and — because there is no min-h-0 — grows past the viewport on
+       short pages. Because there is no min-h-0, it grows past the viewport on
        tall ones so the page scrolls (the AppShell spacer then clears the dock).
        min-h-0 is deliberately absent: it would let a tall section collapse the
        column and overflow its content behind the fixed dock instead of scrolling. -->
@@ -103,7 +103,7 @@ const flatItems = computed(() => visibleGroups.value.flatMap((g) => g.items));
       </div>
     </nav>
 
-    <!-- Content pane — the active section. min-w-0 so long content (e.g. log
+    <!-- Content pane: the active section. min-w-0 so long content (e.g. log
          lines) can shrink rather than force horizontal overflow; no min-h-0, so a
          tall section grows the page (scrolls) instead of overflowing the dock. -->
     <div class="flex min-w-0 flex-1 flex-col">

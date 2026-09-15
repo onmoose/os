@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// Settings → Activity — the audit-log browser (LOGGING.md # Activity (audit log),
+// Settings → Activity: the audit-log browser (LOGGING.md # Activity (audit log),
 // issue #11). Lives as a section of the Settings left-nav shell
 // (SettingsLayout.vue). Consumes the already-built GET /api/v1/audit: admins see
 // the full box-wide feed, members see only events where they are the actor or the
 // target. The brain enforces that split server-side (LOGGING.md # Visibility
-// rules) — this view renders whatever the API returns and does no client-side row
+// rules). This view renders whatever the API returns and does no client-side row
 // filtering. Open to all authenticated users (not admin-gated), unlike the
 // sibling Users section.
 import { computed } from "vue";
@@ -35,7 +35,7 @@ const events = computed<AuditEvent[]>(() => audit.data.value?.pages.flatMap((p) 
 // Admin name resolution: actor_user_id → username via the admin-only user list.
 // Members can't call /users, so for them this stays empty. A member can still
 // receive events where an admin acted on them (LOGGING.md # Visibility rules:
-// actor-or-target) — currentUser names the self rows, and any id we can't
+// actor-or-target). currentUser names the self rows, and any id we can't
 // resolve degrades to a role label rather than leaking a raw UUID.
 const usersQuery = useQuery({
   queryKey: ["users"],
@@ -48,7 +48,7 @@ const nameById = computed(() => {
   return m;
 });
 
-// Resolve a user id to a display name, or null when we can't — never the raw
+// Resolve a user id to a display name, or null when we can't. Never the raw
 // UUID. currentUser always names the signed-in user; the /users map names the
 // rest for an admin; a member viewing another user's id falls through to null.
 function userName(id: string): string | null {
@@ -64,7 +64,7 @@ function actorName(e: AuditEvent): string {
 // Target: app slug / username / health-issue key, by target_kind. A user target
 // resolves to a username when we can name it, else a generic label.
 function targetText(e: AuditEvent): string {
-  if (!e.target_kind || !e.target_id) return "—";
+  if (!e.target_kind || !e.target_id) return "None";
   if (e.target_kind === "user") return userName(e.target_id) ?? "A user";
   return e.target_id;
 }
@@ -113,7 +113,7 @@ function relativeTime(ms: number): string {
 
 // Export the currently-loaded rows (LOGGING.md # Activity: export-to-file is part
 // of the v1 spec). CSV for spreadsheets, JSON for "keep my own copy". Scope is the
-// rows on screen — including any pages the user expanded via Load more.
+// rows on screen, including any pages the user expanded via Load more.
 function triggerDownload(filename: string, body: string, mime: string) {
   const blob = new Blob([body], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -183,7 +183,7 @@ function exportJson() {
             <td class="whitespace-nowrap px-4 py-2">{{ actorName(e) }}</td>
             <td class="px-4 py-2">{{ actionLabel(e.action) }}</td>
             <td class="px-4 py-2 text-muted-foreground">{{ targetText(e) }}</td>
-            <td class="whitespace-nowrap px-4 py-2 text-muted-foreground">{{ e.source_ip || "—" }}</td>
+            <td class="whitespace-nowrap px-4 py-2 text-muted-foreground">{{ e.source_ip || "Unknown" }}</td>
             <td class="whitespace-nowrap px-4 py-2">
               <span
                 class="rounded-full px-2 py-0.5 text-xs"

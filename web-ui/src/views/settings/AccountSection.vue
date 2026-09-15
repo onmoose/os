@@ -1,13 +1,13 @@
 <script setup lang="ts">
-// Settings → Account — the signed-in user's own identity and password. Extracted
+// Settings → Account: the signed-in user's own identity and password. Extracted
 // from the old single-page SettingsView when Settings became a left-nav shell
 // (SettingsLayout.vue).
 //
 // Self-service password change (AUTH.md # Password lifecycle). No elevation
 // window: supplying the current password IS the verification step, enforced
 // server-side via PAM. On success the brain revokes our session, so
-// changeMyPassword forces a local logout and App.vue drops to the login screen —
-// this component unmounts, so we only ever reset submitting on the error path.
+// changeMyPassword forces a local logout and App.vue drops to the login screen.
+// This component unmounts, so we only ever reset submitting on the error path.
 import { ref } from "vue";
 import { api, type ApiError } from "@/api";
 import Button from "@/components/ui/Button.vue";

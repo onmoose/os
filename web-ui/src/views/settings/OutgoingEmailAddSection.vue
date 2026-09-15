@@ -9,8 +9,8 @@
 // The picked preset is read from the route, not held in local state. That is the
 // whole point: Back from the form returns to the picker, Back from the picker
 // returns to the account list, and a half-filled form can be linked or reloaded.
-// The form fields themselves are not in the URL — a credential must never land
-// in history — so a reload re-seeds them from the preset.
+// The form fields themselves are not in the URL. A credential must never land
+// in history, so a reload re-seeds them from the preset.
 //
 // Admin-only, mirroring the list view: the redirect here is defence in depth
 // (the nav already hides the section) and the brain refuses a non-admin anyway.
@@ -51,7 +51,7 @@ const preset = computed<MailPreset | undefined>(() =>
   presetList.value.find((p) => p.id === presetID.value),
 );
 
-// A preset id that names nothing — a stale link, or a preset we withdrew —
+// A preset id that names nothing (a stale link, or a preset we withdrew)
 // falls back to the picker rather than rendering an empty form. Waits for the
 // query, since presets are empty on the first tick.
 watch([presetID, presetList], ([id, list]) => {

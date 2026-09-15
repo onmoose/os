@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Settings → Notifications — per-category notification mutes (NOTIFICATIONS.md #
+// Settings → Notifications: per-category notification mutes (NOTIFICATIONS.md #
 // Configuration). Extracted from the old single-page SettingsView when Settings
 // became a left-nav shell (SettingsLayout.vue). The toggle shows "receiving" (on)
 // = not muted, so an empty mute set reads as everything-on.

@@ -66,7 +66,7 @@ function jumpToLatest() {
       </p>
       <template v-for="(l, i) in lines" :key="i">
         <div v-if="l.lost" class="py-1 text-center text-[0.7rem] uppercase tracking-wide text-amber-600">
-          — some earlier lines were dropped —
+          Some earlier lines were dropped
         </div>
         <div v-else class="whitespace-pre-wrap break-all" :class="l.stream === 'stderr' ? 'text-red-600' : 'text-foreground'">
           {{ l.line }}
