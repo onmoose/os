@@ -64,7 +64,7 @@ func TestEnsureDashboardInstallsSplitRoute(t *testing.T) {
 	defer srv.Close()
 	c := New(srv.URL)
 
-	if err := c.EnsureDashboard(context.Background(), "malmo.local", "malmo-brain:8080", "malmo-ui:80"); err != nil {
+	if err := c.EnsureDashboard(context.Background(), "moose.local", "moose-brain:8080", "moose-ui:80"); err != nil {
 		t.Fatalf("EnsureDashboard: %v", err)
 	}
 
@@ -91,8 +91,8 @@ func TestEnsureDashboardInstallsSplitRoute(t *testing.T) {
 	apiLeg := routes[0].(map[string]any)
 	apiMatch := apiLeg["match"].([]any)[0].(map[string]any)
 	apiPaths := apiMatch["path"].([]any)
-	if len(apiPaths) != 2 || apiPaths[0] != "/api/*" || apiPaths[1] != "/_malmo/*" {
-		t.Errorf("api leg paths = %v, want [/api/* /_malmo/*]", apiPaths)
+	if len(apiPaths) != 2 || apiPaths[0] != "/api/*" || apiPaths[1] != "/_moose/*" {
+		t.Errorf("api leg paths = %v, want [/api/* /_moose/*]", apiPaths)
 	}
 	apiProxy := apiLeg["handle"].([]any)[0].(map[string]any)
 	if apiProxy["handler"] != "reverse_proxy" {
@@ -101,16 +101,16 @@ func TestEnsureDashboardInstallsSplitRoute(t *testing.T) {
 	if apiProxy["flush_interval"].(float64) != -1 {
 		t.Errorf("api leg flush_interval = %v, want -1 (SSE buffering off)", apiProxy["flush_interval"])
 	}
-	if dial := apiProxy["upstreams"].([]any)[0].(map[string]any)["dial"]; dial != "malmo-brain:8080" {
-		t.Errorf("api leg dial = %v, want malmo-brain:8080", dial)
+	if dial := apiProxy["upstreams"].([]any)[0].(map[string]any)["dial"]; dial != "moose-brain:8080" {
+		t.Errorf("api leg dial = %v, want moose-brain:8080", dial)
 	}
 	uiLeg := routes[1].(map[string]any)
 	if _, hasMatch := uiLeg["match"]; hasMatch {
 		t.Error("ui fallback leg should have no match (catch-all within the host)")
 	}
 	uiProxy := uiLeg["handle"].([]any)[0].(map[string]any)
-	if dial := uiProxy["upstreams"].([]any)[0].(map[string]any)["dial"]; dial != "malmo-ui:80" {
-		t.Errorf("ui leg dial = %v, want malmo-ui:80", dial)
+	if dial := uiProxy["upstreams"].([]any)[0].(map[string]any)["dial"]; dial != "moose-ui:80" {
+		t.Errorf("ui leg dial = %v, want moose-ui:80", dial)
 	}
 }
 
@@ -120,9 +120,9 @@ func TestEnsureWildcardTLS(t *testing.T) {
 	defer srv.Close()
 	c := New(srv.URL)
 
-	subjects := []string{"cindy-fox.malmo.network", "*.cindy-fox.malmo.network"}
+	subjects := []string{"cindy-fox.onmoose.network", "*.cindy-fox.onmoose.network"}
 	enr := EnrollmentCredentials{Subdomain: "abc-123", Username: "u", Password: "p"}
-	if err := c.EnsureWildcardTLS(context.Background(), subjects, "https://auth.malmo.network", enr); err != nil {
+	if err := c.EnsureWildcardTLS(context.Background(), subjects, "https://auth.onmoose.network", enr); err != nil {
 		t.Fatalf("EnsureWildcardTLS: %v", err)
 	}
 
@@ -140,8 +140,8 @@ func TestEnsureWildcardTLS(t *testing.T) {
 	// policy alone only says *how* to manage a matching name; without an automate
 	// entry Caddy never places the wildcard order (the live #278 symptom).
 	automate := put.body["certificates"].(map[string]any)["automate"].([]any)
-	if len(automate) != 1 || automate[0] != "*.cindy-fox.malmo.network" {
-		t.Errorf("certificates.automate = %v, want [*.cindy-fox.malmo.network]", automate)
+	if len(automate) != 1 || automate[0] != "*.cindy-fox.onmoose.network" {
+		t.Errorf("certificates.automate = %v, want [*.cindy-fox.onmoose.network]", automate)
 	}
 
 	// Exactly one automation policy — the wildcard, pinned to the acme-dns issuer.
@@ -151,13 +151,13 @@ func TestEnsureWildcardTLS(t *testing.T) {
 	}
 	policy := policies[0].(map[string]any)
 	gotSubjects := policy["subjects"].([]any)
-	if len(gotSubjects) != 1 || gotSubjects[0] != "*.cindy-fox.malmo.network" {
-		t.Errorf("policy subjects = %v, want [*.cindy-fox.malmo.network]", gotSubjects)
+	if len(gotSubjects) != 1 || gotSubjects[0] != "*.cindy-fox.onmoose.network" {
+		t.Errorf("policy subjects = %v, want [*.cindy-fox.onmoose.network]", gotSubjects)
 	}
-	assertACMEIssuer(t, policy, "https://auth.malmo.network", "u", "p", "abc-123")
+	assertACMEIssuer(t, policy, "https://auth.onmoose.network", "u", "p", "abc-123")
 
 	// The :443 listener is added alongside :80.
-	if admin.find("PATCH", "/servers/malmo/listen") == nil {
+	if admin.find("PATCH", "/servers/moose/listen") == nil {
 		t.Fatal("expected a PATCH of the server listen array")
 	}
 
@@ -207,7 +207,7 @@ func TestAddRoute_Plain(t *testing.T) {
 // Public hosted app: plain reverse_proxy but with the forward-auth cookie
 // stripped, so the box's Domain-scoped cookie never reaches the app upstream.
 func TestAddRoute_StripCookieOnly(t *testing.T) {
-	handle := routeHandle(t, RouteConfig{InstanceID: "i1", Host: "h", Upstream: "app:80", StripCookieName: "malmo_forward_auth"})
+	handle := routeHandle(t, RouteConfig{InstanceID: "i1", Host: "h", Upstream: "app:80", StripCookieName: "moose_forward_auth"})
 	if len(handle) != 1 {
 		t.Fatalf("public route must be a single reverse_proxy, got %d", len(handle))
 	}
@@ -221,15 +221,15 @@ func TestAddRoute_StripCookieOnly(t *testing.T) {
 // asserted for each: the token never survives, and nothing else is touched.
 func TestAddRoute_CookieStripBehaviour(t *testing.T) {
 	const secret = "REAL_TOKEN"
-	handle := routeHandle(t, RouteConfig{InstanceID: "i1", Host: "h", Upstream: "app:80", StripCookieName: "malmo_forward_auth"})
+	handle := routeHandle(t, RouteConfig{InstanceID: "i1", Host: "h", Upstream: "app:80", StripCookieName: "moose_forward_auth"})
 	proxy := handle[0].(map[string]any)
 
 	cases := []struct{ name, in, want string }{
-		{"typical", "app_sess=abc; malmo_forward_auth=" + secret + "; other=1", "app_sess=abc; other=1"},
-		{"token first", "malmo_forward_auth=" + secret + "; app_sess=abc", "app_sess=abc"},
-		{"token last", "app_sess=abc; malmo_forward_auth=" + secret, "app_sess=abc"},
-		{"token only", "malmo_forward_auth=" + secret, ""},
-		{"empty value", "malmo_forward_auth=; app_sess=abc", "app_sess=abc"},
+		{"typical", "app_sess=abc; moose_forward_auth=" + secret + "; other=1", "app_sess=abc; other=1"},
+		{"token first", "moose_forward_auth=" + secret + "; app_sess=abc", "app_sess=abc"},
+		{"token last", "app_sess=abc; moose_forward_auth=" + secret, "app_sess=abc"},
+		{"token only", "moose_forward_auth=" + secret, ""},
+		{"empty value", "moose_forward_auth=; app_sess=abc", "app_sess=abc"},
 		// An empty-but-present header. A request with no Cookie header at all
 		// never reaches the replacement (verified against real Caddy: the header
 		// stays absent rather than being created empty).
@@ -238,12 +238,12 @@ func TestAddRoute_CookieStripBehaviour(t *testing.T) {
 		// An app can set its own host-only cookie of the same name on its
 		// subdomain, so the browser sends the name twice and the app controls the
 		// ordering. A first-match-only strip would hand it the real token.
-		{"duplicate names, real one second", "malmo_forward_auth=junk; malmo_forward_auth=" + secret + "; a=1", "a=1"},
-		{"duplicate names, real one first", "malmo_forward_auth=" + secret + "; malmo_forward_auth=junk; a=1", "a=1"},
+		{"duplicate names, real one second", "moose_forward_auth=junk; moose_forward_auth=" + secret + "; a=1", "a=1"},
+		{"duplicate names, real one first", "moose_forward_auth=" + secret + "; moose_forward_auth=junk; a=1", "a=1"},
 		// Cookies whose names merely contain the forward-auth name must survive
 		// untouched. An unanchored regex silently mangles these.
-		{"prefixed name", "evil_malmo_forward_auth=junk; app_sess=abc", "evil_malmo_forward_auth=junk; app_sess=abc"},
-		{"suffixed name", "malmo_forward_auth_x=junk; app_sess=abc", "malmo_forward_auth_x=junk; app_sess=abc"},
+		{"prefixed name", "evil_moose_forward_auth=junk; app_sess=abc", "evil_moose_forward_auth=junk; app_sess=abc"},
+		{"suffixed name", "moose_forward_auth_x=junk; app_sess=abc", "moose_forward_auth_x=junk; app_sess=abc"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,12 +274,12 @@ func TestAddRoute_CookieStripQuotesMetacharacters(t *testing.T) {
 // forward_auth directive plus the added 401→login redirect block.
 func TestAddRoute_ForwardAuthGate(t *testing.T) {
 	handle := routeHandle(t, RouteConfig{
-		InstanceID: "i1", Host: "h", Upstream: "app:80", StripCookieName: "malmo_forward_auth",
+		InstanceID: "i1", Host: "h", Upstream: "app:80", StripCookieName: "moose_forward_auth",
 		ForwardAuth: &ForwardAuthConfig{
-			Upstream:    "malmo-brain:8080",
-			VerifyPath:  "/_malmo/forward-auth/verify",
-			CopyHeaders: []string{"X-Malmo-User", "X-Malmo-User-Id"},
-			LoginURL:    "https://cindy-fox.malmo.network/",
+			Upstream:    "moose-brain:8080",
+			VerifyPath:  "/_moose/forward-auth/verify",
+			CopyHeaders: []string{"X-Moose-User", "X-Moose-User-Id"},
+			LoginURL:    "https://cindy-fox.onmoose.network/",
 		},
 	})
 	if len(handle) != 2 {
@@ -291,12 +291,12 @@ func TestAddRoute_ForwardAuthGate(t *testing.T) {
 	if auth["handler"] != "reverse_proxy" {
 		t.Fatalf("auth handler = %v, want reverse_proxy", auth["handler"])
 	}
-	if dial := auth["upstreams"].([]any)[0].(map[string]any)["dial"]; dial != "malmo-brain:8080" {
-		t.Errorf("verify dial = %v, want malmo-brain:8080", dial)
+	if dial := auth["upstreams"].([]any)[0].(map[string]any)["dial"]; dial != "moose-brain:8080" {
+		t.Errorf("verify dial = %v, want moose-brain:8080", dial)
 	}
 	rw := auth["rewrite"].(map[string]any)
-	if rw["method"] != "GET" || rw["uri"] != "/_malmo/forward-auth/verify" {
-		t.Errorf("rewrite = %v, want GET /_malmo/forward-auth/verify", rw)
+	if rw["method"] != "GET" || rw["uri"] != "/_moose/forward-auth/verify" {
+		t.Errorf("rewrite = %v, want GET /_moose/forward-auth/verify", rw)
 	}
 	hr := auth["handle_response"].([]any)
 	if len(hr) != 2 {
@@ -304,7 +304,7 @@ func TestAddRoute_ForwardAuthGate(t *testing.T) {
 	}
 	// Block 0: a 2xx match scrubs any caller-supplied identity headers, THEN sets
 	// them from the verify response — the delete must precede the set so a client
-	// can't forge X-Malmo-User.
+	// can't forge X-Moose-User.
 	b0 := hr[0].(map[string]any)
 	if sc := b0["match"].(map[string]any)["status_code"].([]any); len(sc) != 1 || sc[0].(float64) != 2 {
 		t.Errorf("first block match = %v, want status_code [2] (2xx)", b0["match"])
@@ -315,7 +315,7 @@ func TestAddRoute_ForwardAuthGate(t *testing.T) {
 	}
 	del := twoxxHandle[0].(map[string]any)["request"].(map[string]any)["delete"].([]any)
 	set := twoxxHandle[1].(map[string]any)["request"].(map[string]any)["set"].(map[string]any)
-	for _, h := range []string{"X-Malmo-User", "X-Malmo-User-Id"} {
+	for _, h := range []string{"X-Moose-User", "X-Moose-User-Id"} {
 		if _, ok := set[h]; !ok {
 			t.Errorf("identity header %s not set from the verify response", h)
 		}
@@ -339,7 +339,7 @@ func TestAddRoute_ForwardAuthGate(t *testing.T) {
 	if redir["handler"] != "static_response" || redir["status_code"].(float64) != 302 {
 		t.Errorf("redirect = %v, want static_response 302", redir)
 	}
-	if loc := redir["headers"].(map[string]any)["Location"].([]any); len(loc) != 1 || loc[0] != "https://cindy-fox.malmo.network/" {
+	if loc := redir["headers"].(map[string]any)["Location"].([]any); len(loc) != 1 || loc[0] != "https://cindy-fox.onmoose.network/" {
 		t.Errorf("redirect Location = %v", loc)
 	}
 
@@ -358,13 +358,13 @@ func TestAddRoute_ForwardAuthGate(t *testing.T) {
 func TestAddRoute_PublicPathsCarveOutOfTheGate(t *testing.T) {
 	handle := routeHandle(t, RouteConfig{
 		InstanceID: "i1", Host: "h", Upstream: "app:80",
-		StripCookieName: "malmo_forward_auth",
+		StripCookieName: "moose_forward_auth",
 		PublicPaths:     []string{"/v1", "/v1/*"},
-		ScrubHeaders:    []string{"X-Malmo-User", "X-Malmo-User-Id"},
+		ScrubHeaders:    []string{"X-Moose-User", "X-Moose-User-Id"},
 		ForwardAuth: &ForwardAuthConfig{
-			Upstream: "malmo-brain:8080", VerifyPath: "/_malmo/forward-auth/verify",
-			CopyHeaders: []string{"X-Malmo-User", "X-Malmo-User-Id"},
-			LoginURL:    "https://cindy-fox.malmo.network/",
+			Upstream: "moose-brain:8080", VerifyPath: "/_moose/forward-auth/verify",
+			CopyHeaders: []string{"X-Moose-User", "X-Moose-User-Id"},
+			LoginURL:    "https://cindy-fox.onmoose.network/",
 		},
 	})
 	if len(handle) != 2 {
@@ -405,7 +405,7 @@ func TestAddRoute_PublicPathsCarveOutOfTheGate(t *testing.T) {
 	if len(restHandle) != 2 {
 		t.Fatalf("gated branch = %d handlers, want [forward_auth, proxy]", len(restHandle))
 	}
-	if rw := restHandle[0].(map[string]any)["rewrite"].(map[string]any); rw["uri"] != "/_malmo/forward-auth/verify" {
+	if rw := restHandle[0].(map[string]any)["rewrite"].(map[string]any); rw["uri"] != "/_moose/forward-auth/verify" {
 		t.Errorf("gated branch is not the forward_auth gate: %v", restHandle[0])
 	}
 	assertCookieStripped(t, restHandle[1].(map[string]any))
@@ -413,7 +413,7 @@ func TestAddRoute_PublicPathsCarveOutOfTheGate(t *testing.T) {
 
 // The identity scrub is the outer guarantee forward_auth cannot give: it must be
 // the FIRST handler, so it covers the public branch (where no gate runs), the
-// gated branch, and the verify subrequest itself. A caller-forged X-Malmo-User
+// gated branch, and the verify subrequest itself. A caller-forged X-Moose-User
 // must never reach an app on any path (#415).
 func TestAddRoute_ScrubsIdentityHeadersFirst(t *testing.T) {
 	for _, tc := range []struct {
@@ -422,19 +422,19 @@ func TestAddRoute_ScrubsIdentityHeadersFirst(t *testing.T) {
 	}{
 		{"public app, no gate", RouteConfig{
 			InstanceID: "i1", Host: "h", Upstream: "app:80",
-			StripCookieName: "malmo_forward_auth",
-			ScrubHeaders:    []string{"X-Malmo-User", "X-Malmo-User-Id"},
+			StripCookieName: "moose_forward_auth",
+			ScrubHeaders:    []string{"X-Moose-User", "X-Moose-User-Id"},
 		}},
 		{"restricted app", RouteConfig{
 			InstanceID: "i1", Host: "h", Upstream: "app:80",
-			StripCookieName: "malmo_forward_auth",
-			ScrubHeaders:    []string{"X-Malmo-User", "X-Malmo-User-Id"},
+			StripCookieName: "moose_forward_auth",
+			ScrubHeaders:    []string{"X-Moose-User", "X-Moose-User-Id"},
 			ForwardAuth:     &ForwardAuthConfig{Upstream: "b:8080", VerifyPath: "/v", LoginURL: "https://l/"},
 		}},
 		{"restricted app with public paths", RouteConfig{
 			InstanceID: "i1", Host: "h", Upstream: "app:80",
-			StripCookieName: "malmo_forward_auth",
-			ScrubHeaders:    []string{"X-Malmo-User", "X-Malmo-User-Id"},
+			StripCookieName: "moose_forward_auth",
+			ScrubHeaders:    []string{"X-Moose-User", "X-Moose-User-Id"},
 			PublicPaths:     []string{"/v1/*"},
 			ForwardAuth:     &ForwardAuthConfig{Upstream: "b:8080", VerifyPath: "/v", LoginURL: "https://l/"},
 		}},
@@ -446,7 +446,7 @@ func TestAddRoute_ScrubsIdentityHeadersFirst(t *testing.T) {
 				t.Fatalf("first handler = %v, want the identity scrub", first["handler"])
 			}
 			del := first["request"].(map[string]any)["delete"].([]any)
-			for _, want := range []string{"X-Malmo-User", "X-Malmo-User-Id"} {
+			for _, want := range []string{"X-Moose-User", "X-Moose-User-Id"} {
 				found := false
 				for _, d := range del {
 					if d == want {
@@ -466,7 +466,7 @@ func TestAddRoute_ScrubsIdentityHeadersFirst(t *testing.T) {
 func TestAddRoute_PublicPathsIgnoredWithoutGate(t *testing.T) {
 	handle := routeHandle(t, RouteConfig{
 		InstanceID: "i1", Host: "h", Upstream: "app:80",
-		StripCookieName: "malmo_forward_auth",
+		StripCookieName: "moose_forward_auth",
 		PublicPaths:     []string{"/v1/*"},
 	})
 	if len(handle) != 1 || handle[0].(map[string]any)["handler"] != "reverse_proxy" {
@@ -514,14 +514,14 @@ func applyEmittedCookieStrip(t *testing.T, proxy map[string]any, cookie string) 
 }
 
 // assertCookieStripped checks the invariant that actually matters: the app
-// upstream never receives malmo_forward_auth, and every other cookie survives
+// upstream never receives moose_forward_auth, and every other cookie survives
 // byte-for-byte. The strip is a regex now (#335), so asserting the emitted JSON
 // shape cannot prove it correct: a config-shape assertion cannot see a pattern
 // that strips the wrong thing, or mangles a cookie the app needed to log its
 // user in. Assert on the header the app would actually receive.
 func assertCookieStripped(t *testing.T, proxy map[string]any) {
 	t.Helper()
-	got := applyEmittedCookieStrip(t, proxy, "app_sess=abc; malmo_forward_auth=SECRET; other=1")
+	got := applyEmittedCookieStrip(t, proxy, "app_sess=abc; moose_forward_auth=SECRET; other=1")
 	if want := "app_sess=abc; other=1"; got != want {
 		t.Errorf("Cookie at app upstream = %q, want %q", got, want)
 	}
@@ -587,24 +587,24 @@ func TestSplitCertSubjects(t *testing.T) {
 	}{
 		{
 			name:         "base then wildcard",
-			subjects:     []string{"cindy-fox.malmo.network", "*.cindy-fox.malmo.network"},
-			wantWildcard: "*.cindy-fox.malmo.network",
-			wantBase:     "cindy-fox.malmo.network",
+			subjects:     []string{"cindy-fox.onmoose.network", "*.cindy-fox.onmoose.network"},
+			wantWildcard: "*.cindy-fox.onmoose.network",
+			wantBase:     "cindy-fox.onmoose.network",
 		},
 		{
 			name:         "wildcard then base",
-			subjects:     []string{"*.cindy-fox.malmo.network", "cindy-fox.malmo.network"},
-			wantWildcard: "*.cindy-fox.malmo.network",
-			wantBase:     "cindy-fox.malmo.network",
+			subjects:     []string{"*.cindy-fox.onmoose.network", "cindy-fox.onmoose.network"},
+			wantWildcard: "*.cindy-fox.onmoose.network",
+			wantBase:     "cindy-fox.onmoose.network",
 		},
 		{
 			name:     "no wildcard",
-			subjects: []string{"cindy-fox.malmo.network"},
+			subjects: []string{"cindy-fox.onmoose.network"},
 			wantErr:  true,
 		},
 		{
 			name:     "no base",
-			subjects: []string{"*.cindy-fox.malmo.network"},
+			subjects: []string{"*.cindy-fox.onmoose.network"},
 			wantErr:  true,
 		},
 		{
@@ -668,7 +668,7 @@ func TestEnsureServerDeclaresEmptyTrustedProxies(t *testing.T) {
 // serving routes under an unknown trust model.
 func TestEnsureServerFailsClosedOnTrustedProxyError(t *testing.T) {
 	admin := &recordingAdmin{status: map[string]int{
-		"/config/apps/http/servers/malmo/trusted_proxies": http.StatusBadRequest,
+		"/config/apps/http/servers/moose/trusted_proxies": http.StatusBadRequest,
 	}}
 	srv := httptest.NewServer(admin.handler())
 	defer srv.Close()

@@ -3,20 +3,20 @@
 package main
 
 import (
-	"github.com/malmoos/malmo/internal/hostagent"
-	"github.com/malmoos/malmo/internal/hostagent/clockhealth"
-	"github.com/malmoos/malmo/internal/hostagent/diskusage"
-	"github.com/malmoos/malmo/internal/hostagent/healthsource"
-	"github.com/malmoos/malmo/internal/hostagent/journalsource"
-	"github.com/malmoos/malmo/internal/hostagent/pamverifier"
-	"github.com/malmoos/malmo/internal/hostagent/procsource"
-	"github.com/malmoos/malmo/internal/hostagent/rampressure"
-	"github.com/malmoos/malmo/internal/hostagent/rebootrequired"
-	"github.com/malmoos/malmo/internal/hostagent/servicehealth"
-	"github.com/malmoos/malmo/internal/hostagent/sshaccess"
-	"github.com/malmoos/malmo/internal/hostagent/timezone"
-	"github.com/malmoos/malmo/internal/hostagent/usermgr"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/hostagent"
+	"github.com/onmoose/moose/internal/hostagent/clockhealth"
+	"github.com/onmoose/moose/internal/hostagent/diskusage"
+	"github.com/onmoose/moose/internal/hostagent/healthsource"
+	"github.com/onmoose/moose/internal/hostagent/journalsource"
+	"github.com/onmoose/moose/internal/hostagent/pamverifier"
+	"github.com/onmoose/moose/internal/hostagent/procsource"
+	"github.com/onmoose/moose/internal/hostagent/rampressure"
+	"github.com/onmoose/moose/internal/hostagent/rebootrequired"
+	"github.com/onmoose/moose/internal/hostagent/servicehealth"
+	"github.com/onmoose/moose/internal/hostagent/sshaccess"
+	"github.com/onmoose/moose/internal/hostagent/timezone"
+	"github.com/onmoose/moose/internal/hostagent/usermgr"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // buildAgent wires the slim hosted-cloud host integration (ENVIRONMENT.md
@@ -36,7 +36,7 @@ import (
 // docker-ce hard dep (#241, DECISIONS.md 2026-06-23); the appliance's
 // SSH/SMB LAN-scoping ruleset is absent, but a standing forward-hook DROP of
 // app-container egress to 169.254.169.254 ships as a static image-baked oneshot
-// (malmo-metadata-firewall.service, #251) outside host-agent. A future general
+// (moose-metadata-firewall.service, #251) outside host-agent. A future general
 // default-deny backstop would be wired here (NEXT.md # In-guest nftables).
 //
 // Net is left nil: with no NetworkManager there is no LAN set to report.
@@ -49,14 +49,14 @@ import (
 // The returned cleanup is a no-op — there is no watcher or DBus handle to close.
 func buildAgent() (*hostagent.Agent, func()) {
 	a := hostagent.New(
-		&pamverifier.PAMVerifier{Service: "malmo"},
+		&pamverifier.PAMVerifier{Service: "moose"},
 		noopPublisher{},
 	)
 	a.UserMgr = &usermgr.LinuxUserManager{}
 	a.Timezone = timezone.New()
 	// Same manager as the appliance: which factor is mandatory is the brain's
 	// decision, not host-agent's. Here it also carries more weight than on the
-	// appliance — with no LAN to scope :22 to and no malmo firewall, the daemon's
+	// appliance — with no LAN to scope :22 to and no moose firewall, the daemon's
 	// run state is the only control over the port (ENVIRONMENT.md # Access & files).
 	a.SSH = &sshaccess.Manager{}
 	a.Health = healthsource.New(healthsource.DefaultPath)

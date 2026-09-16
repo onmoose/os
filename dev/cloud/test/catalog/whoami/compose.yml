@@ -1,7 +1,7 @@
-# Author's compose, held verbatim by malmo. traefik/whoami echoes the HTTP request
+# Author's compose, held verbatim by moose. traefik/whoami echoes the HTTP request
 # it received (request line + every request header), which is what lets the
 # access-mode lane assert the Cookie header was stripped before the app upstream
-# and the X-Malmo-User identity header was forwarded.
+# and the X-Moose-User identity header was forwarded.
 services:
   whoami:
     image: traefik/whoami:v1.10.3

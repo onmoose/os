@@ -1,6 +1,6 @@
-# malmo platform capabilities — machine-readable manifest.
+# moose platform capabilities — machine-readable manifest.
 #
-# The versioned list of platform capabilities malmo has SHIPPED. Each id is a
+# The versioned list of platform capabilities moose has SHIPPED. Each id is a
 # gap-class from catalog-import-gaps.md: a capability appears here iff that gap is
 # closed in the tree (the ledger entry is `implemented`/`resolved`). This is the
 # mechanical counterpart to the ledger's prose — see CAPABILITIES.md for the full
@@ -37,7 +37,7 @@ capabilities:
     ref: "DECISIONS.md 2026-06-05; APP_MANIFEST.md # D2"
     summary: >
       Per-app CSPRNG secret generation. A manifest `secrets: [{name}]` entry makes
-      the brain mint a random value and inject it as MALMO_SECRET_<NAME>.
+      the brain mint a random value and inject it as MOOSE_SECRET_<NAME>.
 
   - id: oneshot-job-restart
     since: "0.x"
@@ -52,7 +52,7 @@ capabilities:
     ref: "#108; SERVICE_PROVISIONING.md # Catalog (v1)"
     summary: >
       Managed MySQL (8.0, 8.4) and MariaDB (10.11, 11.4) as Tier-1 services,
-      provisioned like Postgres, injected as MALMO_SERVICE_<NAME>_*.
+      provisioned like Postgres, injected as MOOSE_SERVICE_<NAME>_*.
 
   - id: managed-redis
     since: "0.x"
@@ -68,7 +68,7 @@ capabilities:
       Sub-capability of the nonroot-data-ownership gap-class (ledger:
       `nonroot-data-ownership — poznote`, planned-partial for that app specifically,
       but the mechanism itself shipped). A folderless app can opt into a dedicated,
-      malmo-allocated non-root runtime identity (#116), and every declared relative
+      moose-allocated non-root runtime identity (#116), and every declared relative
       bind dir is created + chowned to it before compose up (#147, generalized
       beyond the single ./data dir). Unblocks images that adopt the runtime user:.
       (Does NOT cover images that hardcode an internal UID — that is the separate,
@@ -79,7 +79,7 @@ capabilities:
     ref: "#122; SERVICE_PROVISIONING.md # BYO outgoing mail"
     summary: >
       BYO outgoing mail. A manifest `mail: {optional: true}` app maps the discrete
-      MALMO_MAIL_* fields (or MALMO_MAIL_DSN) so a bound instance delivers and an
+      MOOSE_MAIL_* fields (or MOOSE_MAIL_DSN) so a bound instance delivers and an
       unbound one keeps a null transport.
 
   - id: operator-env-config

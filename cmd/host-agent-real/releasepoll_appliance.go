@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/relmanifest"
+	"github.com/onmoose/moose/internal/hostagent/relmanifest"
 )
 
 // startReleasePoll starts the appliance release-manifest poll and returns a
@@ -40,7 +40,7 @@ func startReleasePoll(stateDir string) (func(), *relmanifest.Poller) {
 		// The base URL is not a trust boundary — the signature is — so an
 		// override is safe and lets a test box point at a local file server.
 		// Empty means the real releases host.
-		BaseURL:  os.Getenv("MALMO_RELEASE_BASE_URL"),
+		BaseURL:  os.Getenv("MOOSE_RELEASE_BASE_URL"),
 		StateDir: stateDir,
 	}
 	// Read what this box already knows before the first fetch, so an appliance

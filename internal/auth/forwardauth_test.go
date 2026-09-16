@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // Hosted forward-auth token + cookie (issue #305). These exercise the second,
@@ -15,7 +15,7 @@ import (
 // resolves to the same session, but through a distinct column so it can never be
 // replayed as a dashboard session, and validating it never bumps last_seen_at.
 
-const testFADomain = "cindy-fox.malmo.network"
+const testFADomain = "cindy-fox.onmoose.network"
 
 func TestIssueForwardAuthPersistsAndValidates(t *testing.T) {
 	m, _, u, _ := fixture(t)

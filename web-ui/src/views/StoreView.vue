@@ -234,7 +234,7 @@ function clearFilters() {
       <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <Heading :level="2">Store</Heading>
-          <p class="mt-1 text-sm text-muted-foreground">Browse apps to run on your malmo.</p>
+          <p class="mt-1 text-sm text-muted-foreground">Browse apps to run on your moose.</p>
         </div>
 
         <!-- Right cluster: the admin-only "Custom app" link (Door 2) sits to the

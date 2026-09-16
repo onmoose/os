@@ -14,7 +14,7 @@ var slugRE = regexp.MustCompile(`^[a-z0-9-]+$`)
 // sanitizeBoxLabel reduces a host's name to a single DNS label for use in the
 // collision-fallback name ("<slug>-<box>.local"): it takes the first
 // dot-separated component, lowercases it, and drops any character outside
-// [a-z0-9-]. Returns "malmo" if the result is empty (e.g. an empty or
+// [a-z0-9-]. Returns "moose" if the result is empty (e.g. an empty or
 // all-punctuation hostname).
 func sanitizeBoxLabel(h string) string {
 	if i := strings.IndexByte(h, '.'); i >= 0 {
@@ -31,7 +31,7 @@ func sanitizeBoxLabel(h string) string {
 		}
 	}, h)
 	if h == "" {
-		return "malmo"
+		return "moose"
 	}
 	return h
 }

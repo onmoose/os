@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // fakeFollower hands out one channel per Follow call so a test can drive lines

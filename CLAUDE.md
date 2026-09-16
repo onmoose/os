@@ -1,4 +1,4 @@
-# malmo
+# moose
 
 Home server OS in the Umbrel / ZimaOS / CasaOS category. You install it on an old laptop or PC, leave it running, and run the apps you use daily — photos, notes, files, a shared grocery list — on hardware you own, with data you own. **North star: simplicity for non-technical users.** Every privileged operation has a UI path; SSH is rescue-only. Tinkerers are the early adopters, not the destination.
 
@@ -9,9 +9,9 @@ Two phrases that constrain a lot of design:
 
 ## Architecture
 
-A running malmo is five processes/artifacts. Three are Go, one is JavaScript, one is a container we don't write.
+A running moose is five processes/artifacts. Three are Go, one is JavaScript, one is a container we don't write.
 
-- **`malmo-brain`** (`cmd/brain/`, `internal/`) — the control-plane daemon. One Go binary: owns SQLite state, the REST+SSE API, the app lifecycle, and the Caddy config. Drives Docker via the `docker compose` CLI.
+- **`moose-brain`** (`cmd/brain/`, `internal/`) — the control-plane daemon. One Go binary: owns SQLite state, the REST+SSE API, the app lifecycle, and the Caddy config. Drives Docker via the `docker compose` CLI.
 - **`host-agent`** — the privileged side. Two binaries. `cmd/host-agent/` is the **fake** used by the inner dev loop: it speaks the real `BRAIN_HOST_PROTOCOL.md` wire format over a real UNIX socket, but the host ops are stubbed in memory. `cmd/host-agent-real/` is the real one, and most of it works now: PAM verify, user management, `/proc` sampling, disk and RAM, journal streaming, service health, reboot-required, time zone, Avahi discovery, the first-boot brain launch, and the control-plane update path. Not wired yet: LUKS/TPM, apt, and NetworkManager config. It also builds a slim `hosted` variant (`go build -tags hosted`) for the cloud image. See `docs/architecture.md` # Components for the current split.
 - **`web-ui`** (`web-ui/`) — Vue 3 + Vite + TanStack Query dashboard. Talks only to the brain.
 - **Caddy** (`dev/`) — reverse proxy. Terminates `*.local` and routes to app containers + the brain, configured live by the brain via Caddy's admin API. Subdomain routing per app, never path-based (browser same-origin policy is the reason).
@@ -25,9 +25,9 @@ Wire: `browser → web-ui → brain`, and the brain fans out to `docker compose`
 
 - **`cmd/brain/main.go`** — ~100 lines; names every package and how they wire. Best single starting point for the code.
 - **`internal/`** — the brain's packages (`api`, `lifecycle`, `store`, `catalog`, `manifest`, `admission`, `caddy`, `profile`, `hostclient`, `protocol`, `auth`, `assertion`, `audit`, `events`, `mailpreset`, `version`, plus the health/observability set — `health`, `notify`, `applog`, `systemlive`, `storageverify` — and `internal/hostagent/…`, the host-side implementation packages). What each owns and the import rules are in `docs/architecture.md` # Inside the brain.
-- **`cmd/`** — entry points: `brain`, `host-agent` (fake), `host-agent-real`, plus small tools (`malmo`, `malmo-storage-verify`, `malmo-network-verify`, `openapi-gen`).
+- **`cmd/`** — entry points: `brain`, `host-agent` (fake), `host-agent-real`, plus small tools (`moose`, `moose-storage-verify`, `moose-network-verify`, `openapi-gen`).
 - **`web-ui/`** — the dashboard. Internal code architecture in `docs/dev/web-ui.md`.
-- **Catalog apps** — not in this repo, and they don't get added here. The artifacts (`manifest.yml`, `compose.yml`, icons, screenshots) live in `malmoos/store` under `apps/<id>/`, the control plane publishes them as one snapshot, and a box pulls that snapshot from a malmo endpoint at runtime — it keeps no copy on disk (cloud #62, `DECISIONS.md` 2026-07-02 and 2026-08-17). **Adding an app starts with a Catalog app issue in `malmoos/store`**, not here; authoring works from that issue per `docs/dev/authoring-apps-with-an-agent.md`, which keeps the schema (`internal/manifest`), the admission policy, the `malmo manifest` CLI, and the gap ledger on this side. Catalog test fixtures in this repo are **synthetic** — fake apps in the published wire shape, never a copy of a snapshot the endpoint serves (`internal/catalog/testdata/snapshot.json`).
+- **Catalog apps** — not in this repo, and they don't get added here. The artifacts (`manifest.yml`, `compose.yml`, icons, screenshots) live in `onmoose/store` under `apps/<id>/`, the control plane publishes them as one snapshot, and a box pulls that snapshot from a moose endpoint at runtime — it keeps no copy on disk (cloud #62, `DECISIONS.md` 2026-07-02 and 2026-08-17). **Adding an app starts with a Catalog app issue in `onmoose/store`**, not here; authoring works from that issue per `docs/dev/authoring-apps-with-an-agent.md`, which keeps the schema (`internal/manifest`), the admission policy, the `moose manifest` CLI, and the gap ledger on this side. Catalog test fixtures in this repo are **synthetic** — fake apps in the published wire shape, never a copy of a snapshot the endpoint serves (`internal/catalog/testdata/snapshot.json`).
 - **`Makefile` + `dev/`** — dev orchestration (`make help`).
 - **`docs/`** — `architecture.md` (as-built), `README.md` (spec map), `specs/` (design source of truth), `progress/` (per-change ADR log), `dev/` (how-to).
 
@@ -35,7 +35,7 @@ Wire: `browser → web-ui → brain`, and the brain fans out to `docker compose`
 
 A hosted box talks to a control plane that lives in a **private** repo. Keep it out of this repo's code and issues, but know the seams, because a change on either side of one is a two-repo change and **cannot be checked by reading a diff here**:
 
-1. **The seed** (cloud → box, once): raw JSON at `/var/lib/malmo/seed.json`, the box's identity and its enrollment. Its shape is defined *here*, in `internal/profile.Seed` and `ENVIRONMENT.md` # Provisioning & first-boot; the other side mirrors the wire format field-for-field.
+1. **The seed** (cloud → box, once): raw JSON at `/var/lib/moose/seed.json`, the box's identity and its enrollment. Its shape is defined *here*, in `internal/profile.Seed` and `ENVIRONMENT.md` # Provisioning & first-boot; the other side mirrors the wire format field-for-field.
 2. **The update target** (box → cloud, ongoing): the box asks which brain + UI to run and gets back pinned image digests (`UPDATES.md` # 8).
 3. **The catalog** (cloud → box, ongoing): the app catalog boxes fetch, per the Catalog apps bullet above.
 
@@ -59,7 +59,7 @@ The inner/outer boundary is also the **cross-platform / Linux-only** boundary. T
 - `make check` — **the pre-PR gate.** gofmt + vet + OpenAPI freshness + the full Go test suite. Mirrors CI. Run before every PR.
 - `make check-web` — pre-PR gate for `web-ui/` changes: typecheck + production build (also mirrors CI).
 - `make test-nopam` — full suite minus the PAM package, for when you don't have `libpam0g-dev` (i.e. off Linux).
-- `make clean` — stop dev Caddy, remove malmo containers/networks, wipe `.dev/state`.
+- `make clean` — stop dev Caddy, remove moose containers/networks, wipe `.dev/state`.
 
 **Building the hosted cloud image is a CI job — don't build it locally.** `make build-cloud-image` / `make test-cloud-qemu` need root + `/dev/kvm` + mkosi and take ~10+ min; a local mkosi build is fragile and easy to get wrong (a broken build is what once produced a phantom "`:443` doesn't bind" hunt). Instead trigger the **`CI / Cloud image`** GitHub Action: `gh workflow run "CI / Cloud image" --ref <branch> -f publish=false` builds the image and runs the QEMU boot-proof (`unseeded seeded bios access update` boots) **without** publishing anything. Only `publish=true` (the default) publishes anything. Since #352 that means two things: it **attaches the compressed image and its checksum to the tagged GitHub Release**, and it **pushes the brain and UI images to ghcr**. It uploads to no hosting provider and holds no provider login. Publishing is a deliberate act, not a test. See [`docs/dev/hosted-boot-proof.md`](docs/dev/hosted-boot-proof.md) for reading the result and debugging a red boot.
 
@@ -67,7 +67,7 @@ The inner/outer boundary is also the **cross-platform / Linux-only** boundary. T
 
 **Start every piece of work from a fresh branch off latest `dev`:** `git checkout dev && git pull && git checkout -b <branch>`. Never commit straight to `dev` or `main`. `dev` is the default branch and where feature PRs land; a PR from `dev` into `main` is how the maintainer cuts a release, so a contributor never targets `main` directly.
 
-Actionable parallel work lives in [GitHub Issues](https://github.com/malmoos/malmo/issues) (`gh issue list --label P1`).
+Actionable parallel work lives in [GitHub Issues](https://github.com/onmoose/moose/issues) (`gh issue list --label P1`).
 
 **After opening a PR, run a self-review** using a fresh sonnet agent with no conversation history — it has no attachment to the implementation choices you made. In Claude Code: `/code-review low Read docs/progress/<your-slug>.md first for context, then review the diff per docs/dev/code-review.md.` Address every Block finding before the PR merges; note any disagreements in the progress entry's Known gaps. **The self-review is not done until Greptile's review has also been read** — it posts as a PR comment a few minutes after the PR opens, so a clean agent review on a fresh PR proves nothing on its own. Read it (`gh pr view <N> --comments`), then confirm, dismiss, or extend each finding per `docs/dev/code-review.md` # Prior review comments.
 
@@ -76,7 +76,7 @@ Actionable parallel work lives in [GitHub Issues](https://github.com/malmoos/mal
 Every change ships with documentation — a code change is not complete until its docs are written in the same change.
 
 - **Three doc homes.** Design source of truth → `docs/specs/`. Implementation progress → `docs/progress/`. Developer how-to (running locally, code-level architecture) → `docs/dev/`. The as-built snapshot is `docs/architecture.md`, updated in the same PR as the code.
-- **Project knowledge lives in checked-in docs, never in a coding agent's local/private memory.** Anything worth remembering about malmo — decisions, conventions, workflows, gotchas — must land in the repo (the doc homes above, `DECISIONS.md`, or `CLAUDE.md`) so the whole team and every future session sees it. Per-tool "memory" features are local to one machine and one person; they are not a substitute for writing it down here.
+- **Project knowledge lives in checked-in docs, never in a coding agent's local/private memory.** Anything worth remembering about moose — decisions, conventions, workflows, gotchas — must land in the repo (the doc homes above, `DECISIONS.md`, or `CLAUDE.md`) so the whole team and every future session sees it. Per-tool "memory" features are local to one machine and one person; they are not a substitute for writing it down here.
 - **Every unit of work gets a progress entry.** Add a `docs/progress/<slug>.md` (ADR-style, kebab-slug, not numbered) recording **what was done** and **what's next**, following the template in `docs/progress/walking-skeleton.md`. **Progress entries are frozen snapshots** — once written, never retroactively edit a prior entry's "what's next" or "known gaps" when a follow-up lands (no strikethroughs, no "done in X" annotations). A new entry references the one it closes in its opening paragraph; chronological reading plus the index is the "where we are now" view. **Append new entries to the bottom of `docs/progress/README.md`** (oldest-first); filenames carry no order.
 - **Keep specs and reality in sync.** When the implementation realizes or diverges from a spec, update the matching `docs/specs/` doc in the same change (and add a `DECISIONS.md` entry if a locked decision flips).
 - **The doc maps are load-bearing.** Keep `docs/README.md` (spec map) and `docs/progress/README.md` (progress index) current in the same change. A doc in `docs/specs/` not listed in `docs/README.md` is a bug — fix it.
@@ -104,17 +104,17 @@ Small set of rules. Codified now so we don't have to back them out later.
 
 - **Debian base, single-node, BYO x86, Docker apps, custom YAML manifest, ISO install.**
 - **Subdomain routing** (`photos.local`), explicitly *not* path-based — browser same-origin policy is the reason. See `SPEC.md`.
-- **Headscale + DERP (BSD-3)** for the malmo mesh — **deferred, not v1.** Locked for when remote access ships; Tailscale's coordinator is proprietary and NetBird's server is AGPLv3, both rejected as the substrate. In v1, remote access is user-opt-in Tailscale (Tier-2 service, `SERVICE_PROVISIONING.md`), which is entirely separate — the user's own Tailscale account, not malmo-brokered.
+- **Headscale + DERP (BSD-3)** for the moose mesh — **deferred, not v1.** Locked for when remote access ships; Tailscale's coordinator is proprietary and NetBird's server is AGPLv3, both rejected as the substrate. In v1, remote access is user-opt-in Tailscale (Tier-2 service, `SERVICE_PROVISIONING.md`), which is entirely separate — the user's own Tailscale account, not moose-brokered.
 - **ext4 + LUKS, not ZFS.** ZFS forecloses mergerfs/SnapRAID upgrades and adds CDDL/kernel licensing pain.
 - **Mergerfs from day 1** when a data drive is present (pool of one with one drive; `epmfs` placement). Enables zero-downtime drive addition. SnapRAID parity stays deferred.
-- **User content at `/home/<user>/`** with macOS-style capitalized use-case folders (`Photos/`, `Music/`, `Movies/`, `Documents/`, `Notes/`, `Downloads/`). Data drive mounts at `/srv/malmo/` with bind mounts to `/home/` and `/var/lib/malmo/`.
-- **Files are first-class, apps are windows.** User content lives in use-case folders; app state in `/var/lib/malmo/state/instances/<id>/`. Uninstalling an app never deletes user content. Manifests bind-mount use-case folders by declaration.
+- **User content at `/home/<user>/`** with macOS-style capitalized use-case folders (`Photos/`, `Music/`, `Movies/`, `Documents/`, `Notes/`, `Downloads/`). Data drive mounts at `/srv/moose/` with bind mounts to `/home/` and `/var/lib/moose/`.
+- **Files are first-class, apps are windows.** User content lives in use-case folders; app state in `/var/lib/moose/state/instances/<id>/`. Uninstalling an app never deletes user content. Manifests bind-mount use-case folders by declaration.
 - **SMB shares via Samba** for cross-device access (Windows, macOS, iOS, Android, Linux). mDNS-advertised. TimeMachine-compatible.
 - **Avahi as the LAN publisher; per-app `.local` records owned by the reconciler.** No mDNS wildcards exist; each app slug is a real announced name, published by host-agent via Avahi DBus `EntryGroup.AddAddress` alongside the Caddy site block. LAN interfaces only (not mesh, not Docker bridges). `.local` is HTTP-only by definition (no public DNS → no Let's Encrypt) and Android browsers don't resolve it — secure URLs are the compatibility path. See `DISCOVERY.md`.
-- **One malmo password per user, PAM is the source of truth.** Dashboard, SSH, and SMB all authenticate against the same `/etc/shadow` entry. Brain has no password hash; it calls host-agent's `verify_password` on every login. Per-protocol opt-in (SSH and SMB off-by-account-by-default) is done via service allowlists, not separate credentials.
+- **One moose password per user, PAM is the source of truth.** Dashboard, SSH, and SMB all authenticate against the same `/etc/shadow` entry. Brain has no password hash; it calls host-agent's `verify_password` on every login. Per-protocol opt-in (SSH and SMB off-by-account-by-default) is done via service allowlists, not separate credentials.
 - **SSH and SMB scoped to LAN + mesh via nftables** — RFC1918 + the mesh interface. Public internet blocked structurally, not per-account.
 - **NetworkManager owns every network interface** (ethernet, WiFi, future bridges/VPN); not systemd-networkd. WiFi is first-class in first-run because the "old laptop in the pantry" install includes WiFi-only machines. host-agent drives NM over DBus; the primary connection is the one with `connection.required-for-network-online=true`. See `BOOT.md`, `BRAIN_HOST_PROTOCOL.md`, `FIRST_RUN.md`.
-- **Brain is one Go binary in a container**, not microservices. SQLite for malmo's own state; managed Postgres is for *apps*.
+- **Brain is one Go binary in a container**, not microservices. SQLite for moose's own state; managed Postgres is for *apps*.
 - **Closed by default for remote access** — no public exposure toggle in v1; identity-based mesh only.
 - **Manifest schema versioned from day one**, public, two-major back-compat. Required fields are minimal (~7-line manifests valid).
 - **Permissions are declared and enforced**, not metadata.

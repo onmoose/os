@@ -15,18 +15,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/controlplane"
-	"github.com/malmoos/malmo/internal/hostagent/relmanifest"
+	"github.com/onmoose/moose/internal/hostagent/controlplane"
+	"github.com/onmoose/moose/internal/hostagent/relmanifest"
 )
 
 // The four references these tests move between. Written out through digest()
 // so the shape — repository, then a full 64-hex digest — is the same one a real
 // answer carries.
 var (
-	brainRef = "ghcr.io/malmoos/brain@" + digest("a")
-	uiRef    = "ghcr.io/malmoos/ui@" + digest("b")
-	oldBrain = "ghcr.io/malmoos/brain@" + digest("c")
-	oldUI    = "ghcr.io/malmoos/ui@" + digest("d")
+	brainRef = "ghcr.io/onmoose/brain@" + digest("a")
+	uiRef    = "ghcr.io/onmoose/ui@" + digest("b")
+	oldBrain = "ghcr.io/onmoose/brain@" + digest("c")
+	oldUI    = "ghcr.io/onmoose/ui@" + digest("d")
 )
 
 func digest(hexDigit string) string { return "sha256:" + strings.Repeat(hexDigit, 64) }
@@ -159,10 +159,10 @@ func TestTick_RefusesABadAnswer(t *testing.T) {
 		mutet func(*Target)
 	}{
 		{"a tag instead of a digest", func(x *Target) {
-			x.BrainImage, x.BrainDigest = "ghcr.io/malmoos/brain:v0.7.0", ""
+			x.BrainImage, x.BrainDigest = "ghcr.io/onmoose/brain:v0.7.0", ""
 		}},
 		{"a truncated digest", func(x *Target) {
-			x.BrainImage, x.BrainDigest = "ghcr.io/malmoos/brain@sha256:670b07b1", ""
+			x.BrainImage, x.BrainDigest = "ghcr.io/onmoose/brain@sha256:670b07b1", ""
 		}},
 		{"only the brain, no ui", func(x *Target) { x.UIImage, x.UIDigest = "", "" }},
 		{"only the ui, no brain", func(x *Target) { x.BrainImage, x.BrainDigest = "", "" }},
@@ -173,7 +173,7 @@ func TestTick_RefusesABadAnswer(t *testing.T) {
 			x.BrainDigest = digest("e")
 		}},
 		{"an uppercase digest", func(x *Target) {
-			x.BrainImage, x.BrainDigest = "ghcr.io/malmoos/brain@"+digest("A"), ""
+			x.BrainImage, x.BrainDigest = "ghcr.io/onmoose/brain@"+digest("A"), ""
 		}},
 	}
 	for _, tc := range tests {
@@ -208,7 +208,7 @@ func TestTick_HoldsUntilTheWindow(t *testing.T) {
 
 // --- where the window comes from -------------------------------------------
 
-// configured stands in for the box's own MALMO_UPDATE_WINDOW.
+// configured stands in for the box's own MOOSE_UPDATE_WINDOW.
 func configured(l *Loop, s string) {
 	w, err := ParseWindow(s)
 	if err != nil {
@@ -367,7 +367,7 @@ func TestTick_ANewVersionIsTriedInTheSameWindow(t *testing.T) {
 	// sit out the rest of the window because of the version that failed.
 	next := goodTarget()
 	next.Version = "v0.7.1"
-	next.BrainImage = "ghcr.io/malmoos/brain@" + digest("f")
+	next.BrainImage = "ghcr.io/onmoose/brain@" + digest("f")
 	next.BrainDigest = digest("f")
 	src.target = next
 	now = at(12, 3, 35)
@@ -754,7 +754,7 @@ func TestTick_ARefusalIsLoggedPerAnswer(t *testing.T) {
 	defer slog.SetDefault(prev)
 
 	bad := goodTarget()
-	bad.BrainImage, bad.BrainDigest = "ghcr.io/malmoos/brain:v0.7.0", ""
+	bad.BrainImage, bad.BrainDigest = "ghcr.io/onmoose/brain:v0.7.0", ""
 	src := &fakeSource{target: bad}
 	l := newLoop(src, fakeRunning{brain: oldBrain, ui: oldUI}, &fakeApplier{}, ptr(at(12, 3, 30)))
 	for range 3 {

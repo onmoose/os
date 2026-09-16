@@ -17,7 +17,7 @@ import "net/http"
 // cannot get one — it drives the box, it is not a dashboard client. Nothing is
 // disclosed by the answer: it says "this process is serving HTTP", which anyone
 // who can open the connection already learned from the TCP accept. Reach is
-// narrow anyway — Caddy proxies only /api/* and /_malmo/* to the brain
+// narrow anyway — Caddy proxies only /api/* and /_moose/* to the brain
 // (internal/caddy), so this path is not routable from the LAN; the callers who
 // can reach it are on the Docker network or on the host.
 const healthzPath = "/healthz"

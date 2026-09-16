@@ -34,12 +34,12 @@ func stageRealCompose(t *testing.T) (dir string, original string) {
 func TestRewriteUIImageChangesExactlyOneLine(t *testing.T) {
 	dir, original := stageRealCompose(t)
 
-	old, err := RewriteUIImage(dir, "ghcr.io/malmoos/malmo-ui@sha256:abc123")
+	old, err := RewriteUIImage(dir, "ghcr.io/onmoose/moose-ui@sha256:abc123")
 	if err != nil {
 		t.Fatalf("RewriteUIImage: %v", err)
 	}
-	if old != "malmo-ui:dev" {
-		t.Errorf("old ref = %q, want malmo-ui:dev (the committed file's pin)", old)
+	if old != "moose-ui:dev" {
+		t.Errorf("old ref = %q, want moose-ui:dev (the committed file's pin)", old)
 	}
 
 	b, err := os.ReadFile(filepath.Join(dir, ComposeFile))
@@ -60,12 +60,12 @@ func TestRewriteUIImageChangesExactlyOneLine(t *testing.T) {
 		t.Fatalf("changed %d lines (%v), want exactly 1", len(changed), changed)
 	}
 	got := after[changed[0]]
-	if got != "    image: ghcr.io/malmoos/malmo-ui@sha256:abc123" {
+	if got != "    image: ghcr.io/onmoose/moose-ui@sha256:abc123" {
 		t.Errorf("rewritten line = %q, want the same indent and key with the new ref", got)
 	}
 	// The caddy service's interpolated image is the neighbour most at risk from
 	// a scan that keys on "image:" rather than on the service block.
-	if !strings.Contains(string(b), "image: ${MALMO_CADDY_IMAGE:-caddy:2-alpine}") {
+	if !strings.Contains(string(b), "image: ${MOOSE_CADDY_IMAGE:-caddy:2-alpine}") {
 		t.Error("caddy's interpolated image line did not survive the rewrite")
 	}
 }
@@ -75,7 +75,7 @@ func TestRewriteUIImageChangesExactlyOneLine(t *testing.T) {
 // — the same read the brain performs on its next boot.
 func TestRewriteUIImageIsReadableAsYAML(t *testing.T) {
 	dir, _ := stageRealCompose(t)
-	const ref = "ghcr.io/malmoos/malmo-ui@sha256:deadbeef"
+	const ref = "ghcr.io/onmoose/moose-ui@sha256:deadbeef"
 	if _, err := RewriteUIImage(dir, ref); err != nil {
 		t.Fatalf("RewriteUIImage: %v", err)
 	}
@@ -105,25 +105,25 @@ func TestRewriteUIImageRefusalsLeaveTheFileUntouched(t *testing.T) {
 		},
 		{
 			name:    "ref with a newline would inject YAML",
-			ref:     "malmo-ui:v1\n    command: [\"sh\"]",
+			ref:     "moose-ui:v1\n    command: [\"sh\"]",
 			wantErr: "whitespace",
 		},
 		{
 			name:    "interpolated existing ref is not resolved",
-			compose: "services:\n  malmo-ui:\n    image: ${MALMO_UI_IMAGE:-malmo-ui:dev}\n",
-			ref:     "malmo-ui:v2",
+			compose: "services:\n  moose-ui:\n    image: ${MOOSE_UI_IMAGE:-moose-ui:dev}\n",
+			ref:     "moose-ui:v2",
 			wantErr: "does not resolve",
 		},
 		{
-			name:    "no malmo-ui service",
+			name:    "no moose-ui service",
 			compose: "services:\n  caddy:\n    image: caddy:2-alpine\n",
-			ref:     "malmo-ui:v2",
-			wantErr: "no \"malmo-ui\" service",
+			ref:     "moose-ui:v2",
+			wantErr: "no \"moose-ui\" service",
 		},
 		{
-			name:    "malmo-ui service pins no image",
-			compose: "services:\n  malmo-ui:\n    restart: unless-stopped\n  caddy:\n    image: caddy:2-alpine\n",
-			ref:     "malmo-ui:v2",
+			name:    "moose-ui service pins no image",
+			compose: "services:\n  moose-ui:\n    restart: unless-stopped\n  caddy:\n    image: caddy:2-alpine\n",
+			ref:     "moose-ui:v2",
 			wantErr: "pins no image",
 		},
 	}
@@ -160,28 +160,28 @@ func TestRewriteUIImageRefusalsLeaveTheFileUntouched(t *testing.T) {
 
 // The ref this returns is recorded as the *previous* generation, which is what
 // a revert pins — so a trailing comment must not ride along with it. A revert
-// that tries to run `malmo-ui:dev # baked at build` as an image fails at the
+// that tries to run `moose-ui:dev # baked at build` as an image fails at the
 // one moment the box most needs it to work. The rewrite also drops the comment
 // from the line, which is correct: a comment about the old ref is wrong the
 // moment the ref changes.
 func TestRewriteUIImageIgnoresAnInlineComment(t *testing.T) {
 	dir := t.TempDir()
 	const compose = `services:
-  malmo-ui:
-    image: malmo-ui:dev # baked into the disk image at build time
+  moose-ui:
+    image: moose-ui:dev # baked into the disk image at build time
 `
 	if err := os.WriteFile(filepath.Join(dir, ComposeFile), []byte(compose), 0o644); err != nil {
 		t.Fatalf("stage compose: %v", err)
 	}
-	old, err := RewriteUIImage(dir, "malmo-ui:v2")
+	old, err := RewriteUIImage(dir, "moose-ui:v2")
 	if err != nil {
 		t.Fatalf("RewriteUIImage: %v", err)
 	}
-	if old != "malmo-ui:dev" {
-		t.Errorf("old ref = %q, want malmo-ui:dev with the comment stripped — this string is what a revert pins", old)
+	if old != "moose-ui:dev" {
+		t.Errorf("old ref = %q, want moose-ui:dev with the comment stripped — this string is what a revert pins", old)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, ComposeFile))
-	if got := strings.TrimSpace(string(b)); !strings.HasSuffix(got, "image: malmo-ui:v2") {
+	if got := strings.TrimSpace(string(b)); !strings.HasSuffix(got, "image: moose-ui:v2") {
 		t.Errorf("rewritten file ends %q, want the image line with no stale comment", got)
 	}
 }
@@ -190,11 +190,11 @@ func TestRewriteUIImageIgnoresAnInlineComment(t *testing.T) {
 // interpolation must still be refused rather than half-read.
 func TestRewriteUIImageRefusesCommentedInterpolation(t *testing.T) {
 	dir := t.TempDir()
-	const compose = "services:\n  malmo-ui:\n    image: ${MALMO_UI_IMAGE:-malmo-ui:dev} # overridable\n"
+	const compose = "services:\n  moose-ui:\n    image: ${MOOSE_UI_IMAGE:-moose-ui:dev} # overridable\n"
 	if err := os.WriteFile(filepath.Join(dir, ComposeFile), []byte(compose), 0o644); err != nil {
 		t.Fatalf("stage compose: %v", err)
 	}
-	if _, err := RewriteUIImage(dir, "malmo-ui:v2"); err == nil || !strings.Contains(err.Error(), "does not resolve") {
+	if _, err := RewriteUIImage(dir, "moose-ui:v2"); err == nil || !strings.Contains(err.Error(), "does not resolve") {
 		t.Errorf("err = %v, want a refusal to resolve the interpolated ref", err)
 	}
 }
@@ -208,26 +208,26 @@ func TestRewriteUIImageIgnoresOtherServices(t *testing.T) {
 	const compose = `services:
   caddy:
     image: caddy:2-alpine
-    container_name: malmo-caddy
-  malmo-ui:
-    image: malmo-ui:dev
+    container_name: moose-caddy
+  moose-ui:
+    image: moose-ui:dev
     read_only: true
 `
 	if err := os.WriteFile(filepath.Join(dir, ComposeFile), []byte(compose), 0o644); err != nil {
 		t.Fatalf("stage compose: %v", err)
 	}
-	old, err := RewriteUIImage(dir, "malmo-ui:v2")
+	old, err := RewriteUIImage(dir, "moose-ui:v2")
 	if err != nil {
 		t.Fatalf("RewriteUIImage: %v", err)
 	}
-	if old != "malmo-ui:dev" {
-		t.Errorf("old ref = %q, want malmo-ui:dev", old)
+	if old != "moose-ui:dev" {
+		t.Errorf("old ref = %q, want moose-ui:dev", old)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, ComposeFile))
 	if !strings.Contains(string(b), "image: caddy:2-alpine") {
 		t.Error("caddy's image was rewritten; the scan is not service-scoped")
 	}
-	if !strings.Contains(string(b), "image: malmo-ui:v2") {
+	if !strings.Contains(string(b), "image: moose-ui:v2") {
 		t.Error("the UI image was not rewritten")
 	}
 }

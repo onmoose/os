@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/brainlaunch"
+	"github.com/onmoose/moose/internal/hostagent/brainlaunch"
 )
 
 // CLIDocker is the production Docker, a thin wrapper over the `docker` CLI —

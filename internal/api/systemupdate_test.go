@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/hostclient"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/hostclient"
+	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // updateHarness is a brain Server wired to a canned host-agent job surface. It
@@ -292,8 +292,8 @@ func TestUpdateTarget_Available(t *testing.T) {
 	h := newUpdateHarness(t)
 	h.target = protocol.UpdateTarget{
 		State:      protocol.UpdateTargetAvailable,
-		Running:    protocol.ControlPlanePair{Brain: "ghcr.io/malmoos/brain@sha256:aa", UI: "ghcr.io/malmoos/ui@sha256:bb"},
-		Target:     &protocol.ControlPlaneOffer{Version: "v0.8.0", BrainImage: "ghcr.io/malmoos/brain@sha256:cc", UIImage: "ghcr.io/malmoos/ui@sha256:dd"},
+		Running:    protocol.ControlPlanePair{Brain: "ghcr.io/onmoose/brain@sha256:aa", UI: "ghcr.io/onmoose/ui@sha256:bb"},
+		Target:     &protocol.ControlPlaneOffer{Version: "v0.8.0", BrainImage: "ghcr.io/onmoose/brain@sha256:cc", UIImage: "ghcr.io/onmoose/ui@sha256:dd"},
 		CheckedAt:  "2026-09-07T02:45:00Z",
 		From:       "seed",
 		Window:     "03:00-04:00",
@@ -309,10 +309,10 @@ func TestUpdateTarget_Available(t *testing.T) {
 	if b.State != protocol.UpdateTargetAvailable {
 		t.Fatalf("state = %q, want %q", b.State, protocol.UpdateTargetAvailable)
 	}
-	if b.Target == nil || b.Target.BrainImage != "ghcr.io/malmoos/brain@sha256:cc" {
+	if b.Target == nil || b.Target.BrainImage != "ghcr.io/onmoose/brain@sha256:cc" {
 		t.Errorf("target = %+v, want the pinned brain ref", b.Target)
 	}
-	if b.Running.Brain != "ghcr.io/malmoos/brain@sha256:aa" {
+	if b.Running.Brain != "ghcr.io/onmoose/brain@sha256:aa" {
 		t.Errorf("running = %+v, want the box's declared pair", b.Running)
 	}
 	// The two sources are separate fields with lookalike values. Merging them is
@@ -345,7 +345,7 @@ func TestUpdateTarget_UnreachableKeepsItsReason(t *testing.T) {
 	h := newUpdateHarness(t)
 	h.target = protocol.UpdateTarget{
 		State:  protocol.UpdateTargetUnreachable,
-		Detail: "updatetarget: fetch https://malmo.network/api/updates/target: dial tcp: connection refused",
+		Detail: "updatetarget: fetch https://onmoose.network/api/updates/target: dial tcp: connection refused",
 	}
 	out, err := h.readTarget(adminCtx("u_admin"))
 	if err != nil {

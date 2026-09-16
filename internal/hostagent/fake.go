@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/netstate"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/hostagent/netstate"
+	"github.com/onmoose/moose/internal/protocol"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -384,7 +384,7 @@ func (f *FakeLogSource) Follow(ctx context.Context, container string) (<-chan pr
 // Set is what makes the other states reachable in dev. A stub that always
 // claimed an available target would lie in every session; a stub stuck on
 // "none" would leave the dashboard prompt with nothing to be built against.
-// MALMO_FAKE_UPDATE_TARGET picks the state at startup (cmd/host-agent).
+// MOOSE_FAKE_UPDATE_TARGET picks the state at startup (cmd/host-agent).
 type FakeUpdateTargetReporter struct {
 	mu     sync.Mutex
 	report protocol.UpdateTarget

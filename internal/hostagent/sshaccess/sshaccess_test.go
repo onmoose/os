@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // newManager builds a Manager pointed at a temp drop-in, with sshd and systemctl
@@ -21,7 +21,7 @@ func newManager(t *testing.T, keysDir string) (*Manager, *[]string) {
 	t.Helper()
 	var ran []string
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "malmo-allowed.conf"),
+		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
 		KeysDir:    keysDir,
 		Runner: func(name string, args ...string) ([]byte, error) {
 			ran = append(ran, name+" "+strings.Join(args, " "))
@@ -81,7 +81,7 @@ func TestMethodsAreRequiredNotAlternatives(t *testing.T) {
 // means "every account" to sshd, which is the opposite of what an empty set
 // means, so a hand-started sshd would admit the whole machine.
 func TestRenderEmptySetDeniesEveryone(t *testing.T) {
-	out := render(nil, "/etc/ssh/malmo-authorized-keys")
+	out := render(nil, "/etc/ssh/moose-authorized-keys")
 	if !strings.Contains(out, "DenyUsers *") {
 		t.Fatalf("empty set did not deny everyone:\n%s", out)
 	}
@@ -94,7 +94,7 @@ func TestRenderEmptySetDeniesEveryone(t *testing.T) {
 // everything after a Match line to that block, so a global written afterwards
 // would silently become the last account's policy.
 func TestRenderGlobalsPrecedeMatchBlocks(t *testing.T) {
-	out := render([]account{{Username: "alex", KeyCount: 1}}, "/etc/ssh/malmo-authorized-keys")
+	out := render([]account{{Username: "alex", KeyCount: 1}}, "/etc/ssh/moose-authorized-keys")
 	firstMatch := strings.Index(out, "Match User ")
 	if firstMatch < 0 {
 		t.Fatalf("no Match block rendered:\n%s", out)
@@ -165,7 +165,7 @@ func TestRunningDaemonIsReloadedNotRestarted(t *testing.T) {
 func TestBadRenderIsRefusedBeforeReload(t *testing.T) {
 	var ran []string
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "malmo-allowed.conf"),
+		DropInPath: filepath.Join(t.TempDir(), "moose-allowed.conf"),
 		Runner: func(name string, args ...string) ([]byte, error) {
 			ran = append(ran, name+" "+strings.Join(args, " "))
 			if name == "sshd" {
@@ -217,7 +217,7 @@ func TestStateIsReadBackFromTheRenderedFile(t *testing.T) {
 // their work and could lock them out of their own box.
 func TestUnmanagedConfigIsRefused(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "malmo-allowed.conf")
+	path := filepath.Join(dir, "moose-allowed.conf")
 	if err := os.WriteFile(path, []byte("AllowUsers someone\n"), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestUnmanagedConfigIsRefused(t *testing.T) {
 	}
 }
 
-// malmo's keys live in a root-owned file, never in the account's home. The home
+// moose's keys live in a root-owned file, never in the account's home. The home
 // directory is a path the account controls and can replace with a symlink between
 // any check and any use, so writing there as root is a privilege-escalation path
 // rather than a hardening problem. Owning the file removes the user from it.
@@ -248,7 +248,7 @@ func TestKeysAreWrittenOutsideTheUsersHome(t *testing.T) {
 	assertContains(t, filepath.Join(keysDir, "alex"), testKey)
 
 	// And sshd is pointed at both that file and the user's own, so keys they added
-	// from their shell keep working without malmo ever touching that file.
+	// from their shell keep working without moose ever touching that file.
 	conf := readDropInFile(t, m)
 	if !strings.Contains(conf, "AuthorizedKeysFile "+filepath.Join(keysDir, "alex")+" .ssh/authorized_keys") {
 		t.Fatalf("drop-in does not point sshd at both key files:\n%s", conf)
@@ -348,7 +348,7 @@ func containsCmd(ran []string, prefix string) bool {
 func TestRejectedRenderLeavesNoKeyFileBehind(t *testing.T) {
 	keys := t.TempDir()
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "malmo-allowed.conf"),
+		DropInPath: filepath.Join(t.TempDir(), "moose-allowed.conf"),
 		KeysDir:    keys,
 		Runner: func(name string, args ...string) ([]byte, error) {
 			if name == "sshd" {
@@ -409,7 +409,7 @@ func failingSystemctl(t *testing.T) (*Manager, string) {
 	t.Helper()
 	keys := t.TempDir()
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "malmo-allowed.conf"),
+		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
 		KeysDir:    keys,
 		Runner: func(name string, args ...string) ([]byte, error) {
 			if name == "systemctl" {
@@ -481,7 +481,7 @@ func TestUndoReconcilesTheDaemonToThePreviousSet(t *testing.T) {
 	var ran []string
 	keys := t.TempDir()
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "malmo-allowed.conf"),
+		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
 		KeysDir:    keys,
 		Runner: func(name string, args ...string) ([]byte, error) {
 			ran = append(ran, name+" "+strings.Join(args, " "))

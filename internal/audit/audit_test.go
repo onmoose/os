@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // fakeStore captures InsertAuditEvent calls for assertions.

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -93,9 +93,9 @@ func startFakeAuthAgent(t *testing.T) string {
 
 	mux.HandleFunc("GET /v1/identity/well-known", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(protocol.WellKnownIdentityResponse{
-			MalmoAppUID:    2000,
-			MalmoAppGID:    2000,
-			MalmoSharedGID: 2001,
+			MooseAppUID:    2000,
+			MooseAppGID:    2000,
+			MooseSharedGID: 2001,
 		})
 	})
 
@@ -216,14 +216,14 @@ func TestWellKnownIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WellKnownIdentity: %v", err)
 	}
-	if resp.MalmoAppUID != 2000 {
-		t.Errorf("malmo_app_uid: want 2000, got %d", resp.MalmoAppUID)
+	if resp.MooseAppUID != 2000 {
+		t.Errorf("moose_app_uid: want 2000, got %d", resp.MooseAppUID)
 	}
-	if resp.MalmoAppGID != 2000 {
-		t.Errorf("malmo_app_gid: want 2000, got %d", resp.MalmoAppGID)
+	if resp.MooseAppGID != 2000 {
+		t.Errorf("moose_app_gid: want 2000, got %d", resp.MooseAppGID)
 	}
-	if resp.MalmoSharedGID != 2001 {
-		t.Errorf("malmo_shared_gid: want 2001, got %d", resp.MalmoSharedGID)
+	if resp.MooseSharedGID != 2001 {
+		t.Errorf("moose_shared_gid: want 2001, got %d", resp.MooseSharedGID)
 	}
 }
 

@@ -1,10 +1,10 @@
-# malmo Notifications
+# moose Notifications
 
 > Working spec for the dashboard notification center — the in-product bell that tells the user what happened on their box while they weren't looking. Companion to `HEALTH.md` (most notifications are derived from health issues), `UPDATES.md` (update outcomes), `LOGGING.md` (security-relevant audit events), `AUTH.md` (admin vs. member visibility), `WEB_UI.md` (how the bell and inbox render), `BRAIN_UI_PROTOCOL.md` (the wire shape for the live feed).
 
 ## Stance
 
-Every surface malmo has today assumes the user is *looking at the dashboard*. HEALTH issues are banners and inline cards — "the user reads them when they look." UPDATES are tile badges and auto-dismissing toasts. The Activity (audit) view is pull-only. None of this reaches the box sitting unattended in a pantry.
+Every surface moose has today assumes the user is *looking at the dashboard*. HEALTH issues are banners and inline cards — "the user reads them when they look." UPDATES are tile badges and auto-dismissing toasts. The Activity (audit) view is pull-only. None of this reaches the box sitting unattended in a pantry.
 
 Notifications is the layer that aggregates and **persists** what happened, so that when the user next opens the dashboard they see a timeline — "here's everything since you were last here" — instead of only the current-state banners. It is the missing **history + read-state** layer, not a new event source.
 
@@ -54,7 +54,7 @@ A notification is a typed record in the brain's SQLite. Shape:
   "variant":     "actionable",               // actionable | transparency (see Routing)
 
   "summary":     "Your data drive isn't connected.",
-  "body":        "malmo can't find the data drive enrolled on 2026-04-12. Saving and apps are paused until it's reconnected.",
+  "body":        "moose can't find the data drive enrolled on 2026-04-12. Saving and apps are paused until it's reconnected.",
   "action":      { "label": "Open Storage", "route": "/settings/storage" },  // or null
 
   "read_at":      null,                      // per-recipient; see Read state
@@ -201,7 +201,7 @@ The model above is built so off-box transports slot in without reshaping it:
 - The **notification center is the first sink.** A future `email` / `push` / `webhook` sink subscribes to the same routed notification stream and applies its own per-user, per-category delivery preferences.
 - Severity is already the natural dial for "which transports fire" (e.g. critical → all sinks; info → in-product only) when transports exist.
 
-When email-on-file lands (its own `NEXT.md` Tier-2 item) and/or the mobile app ships (deferred with the mesh, `MALMO_NETWORK.md`), they become additional sinks behind this seam. **No off-box transport, no SMTP relay, no `malmo.network` dependency, and no email-on-file requirement in v1** — the notification center is fully local and self-contained.
+When email-on-file lands (its own `NEXT.md` Tier-2 item) and/or the mobile app ships (deferred with the mesh, `MOOSE_NETWORK.md`), they become additional sinks behind this seam. **No off-box transport, no SMTP relay, no `onmoose.network` dependency, and no email-on-file requirement in v1** — the notification center is fully local and self-contained.
 
 ## Knock-ons to other docs
 
@@ -221,7 +221,7 @@ When email-on-file lands (its own `NEXT.md` Tier-2 item) and/or the mobile app s
 - **Member transparency variant** — box-wide criticals that block a member-visible function emit an info-only, non-actionable notice to members; the actionable copy goes to admins.
 - **All network issues stay off the bell in v1** (HEALTH banners only).
 - **Stored in a separate, mutable, prunable `notifications` table** — distinct from the append-only forever `audit_events` table.
-- **Retention is age-primary with a row ceiling**: prune deletes rows older than 90 days, then (if still over) trims the oldest excess with resolved rows dropped before active ones — a cleared issue is history, a live one is not. Runs at boot and hourly (`MALMO_NOTIFY_PRUNE`). The 1000-row cap is a runaway ceiling, not a hard quota.
+- **Retention is age-primary with a row ceiling**: prune deletes rows older than 90 days, then (if still over) trims the oldest excess with resolved rows dropped before active ones — a cleared issue is history, a live one is not. Runs at boot and hourly (`MOOSE_NOTIFY_PRUNE`). The 1000-row cap is a runaway ceiling, not a hard quota.
 - **One notification per issue raise**, coalesced by `dedup_key`; resolved (not deleted) on clear. No per-flap spam.
 - **Per-recipient read state**; unread badge; dismiss ≠ resolve. No modal interrupt (the existing permission-expansion login modal is the sole pre-existing exception, with a persistent notification mirror).
 - **Per-user, per-category mute; everything on by default.** No quiet hours / severity tuning in v1.

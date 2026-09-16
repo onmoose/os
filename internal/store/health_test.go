@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/health"
+	"github.com/onmoose/moose/internal/health"
 )
 
 func newHealthIssue(id string) health.Issue {
@@ -266,7 +266,7 @@ func TestBatchUpsertAndDelete_Rollback(t *testing.T) {
 // mid-batch (simulated by opening a second store on the same file to create a
 // conflict) leaves SQLite consistent. This tests the "no torn state" guarantee.
 func TestBatchUpsertAndDelete_TransactionIsolation(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "malmo.db")
+	dbPath := filepath.Join(t.TempDir(), "moose.db")
 	s1, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("open s1: %v", err)

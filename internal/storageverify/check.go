@@ -1,10 +1,10 @@
 // Package storageverify holds the canary + enrollment-marker check logic for
-// the malmo-storage-verify reporter (BOOT.md # The storage-ready target,
+// the moose-storage-verify reporter (BOOT.md # The storage-ready target,
 // STORAGE.md # Storage canary).
 //
 // Split out from cmd/ so the check is unit-testable against a tempdir-rooted
 // filesystem. The cmd binary is a thin shell that writes the findings to
-// /run/malmo/health/storage.json.
+// /run/moose/health/storage.json.
 package storageverify
 
 import (
@@ -16,19 +16,19 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // Config makes the absolute paths injectable so tests can pass a tempdir as
 // Root and the check resolves all paths under it.
 type Config struct {
 	Root                string // empty in prod; tests pass a tempdir
-	MarkerPath          string // /etc/malmo/data-drive.enrolled
-	DataDriveCanaryPath string // /srv/malmo/.canary
-	BindMountCanaryPath string // /var/lib/malmo/.canary
+	MarkerPath          string // /etc/moose/data-drive.enrolled
+	DataDriveCanaryPath string // /srv/moose/.canary
+	BindMountCanaryPath string // /var/lib/moose/.canary
 }
 
-// marker is the on-disk schema of /etc/malmo/data-drive.enrolled per
+// marker is the on-disk schema of /etc/moose/data-drive.enrolled per
 // STORAGE.md # Data drive enrollment marker.
 type marker struct {
 	UUID       string `json:"uuid"`

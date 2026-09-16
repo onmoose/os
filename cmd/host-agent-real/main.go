@@ -16,7 +16,7 @@
 //
 // Both variants wire real PAM (POST /v1/auth/verify-password) and real user
 // management, so both builds are Linux + CGO and need libpam0g-dev +
-// /etc/pam.d/malmo and must run as root (pam_unix.so requires privilege). The
+// /etc/pam.d/moose and must run as root (pam_unix.so requires privilege). The
 // appliance build additionally needs avahi-daemon running with the system DBus
 // accessible; the hosted build does not (it publishes nothing).
 //
@@ -36,13 +36,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent"
-	"github.com/malmoos/malmo/internal/hostagent/brainlaunch"
-	"github.com/malmoos/malmo/internal/hostagent/controlplane"
-	"github.com/malmoos/malmo/internal/hostagent/cpupdate"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/version"
+	"github.com/onmoose/moose/internal/hostagent"
+	"github.com/onmoose/moose/internal/hostagent/brainlaunch"
+	"github.com/onmoose/moose/internal/hostagent/controlplane"
+	"github.com/onmoose/moose/internal/hostagent/cpupdate"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/moose/internal/version"
 )
 
 func main() {
@@ -53,7 +53,7 @@ func main() {
 		return
 	}
 
-	sockPath := os.Getenv("MALMO_AGENT_SOCK")
+	sockPath := os.Getenv("MOOSE_AGENT_SOCK")
 	if sockPath == "" {
 		sockPath = protocol.SocketPath
 	}
@@ -69,7 +69,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer ln.Close()
-	// 0660 root:malmo — brain's container UID is in the malmo group.
+	// 0660 root:moose — brain's container UID is in the moose group.
 	_ = os.Chmod(sockPath, 0o660)
 
 	// buildAgent wires the host-op seams for this build profile and returns a
@@ -111,7 +111,7 @@ func main() {
 	// Seed the brain's Docker transport (ingress network + socket-proxy) before
 	// launching the brain — the brain reaches Docker only through this proxy
 	// (CONTROL_PLANE.md # Docker socket exposure), and the brain then reconciles
-	// Caddy + malmo-ui through it. Best-effort, like the launch itself: a failure
+	// Caddy + moose-ui through it. Best-effort, like the launch itself: a failure
 	// leaves the brain degraded (no Docker reach) but host-agent keeps serving so
 	// the box stays diagnosable.
 	if err := brainlaunch.EnsureTransport(brainCtx, brainlaunch.NewCLIDocker(), brainCfg); err != nil {
@@ -154,26 +154,26 @@ func main() {
 // brainLaunchConfig builds the brain bootstrap config from the environment.
 // Defaults are the production paths (BUILD.md # First-boot brain bootstrap); the
 // image ref and bundled-tarball path are overridable so the QEMU test lane can
-// point at its dev tag and baked bundle. The data root is fixed at /var/lib/malmo
+// point at its dev tag and baked bundle. The data root is fixed at /var/lib/moose
 // (STORAGE.md), with the brain's SQLite state under it; the brain dials the same
 // agent socket host-agent just bound.
 func brainLaunchConfig(sockPath string) brainlaunch.Config {
-	const dataDir = "/var/lib/malmo"
+	const dataDir = "/var/lib/moose"
 	// The control-plane compose + caddy.json are staged under dataDir so the
 	// brain's `docker compose up` bind-mounts caddy.json at a path the Docker
 	// daemon resolves identically on host and in the brain container (the
 	// same-path constraint — socket-proxy-compose-validation.md). The proxy image
 	// + bundle default to the names baked by dev/test-qemu / the ISO build.
-	controlPlaneDir := env("MALMO_CONTROL_PLANE_DIR", filepath.Join(dataDir, "control-plane"))
+	controlPlaneDir := env("MOOSE_CONTROL_PLANE_DIR", filepath.Join(dataDir, "control-plane"))
 	// The brain reads the environment-profile marker from inside its container,
-	// which mounts neither /etc/malmo nor anything covering it — so host-agent
+	// which mounts neither /etc/moose nor anything covering it — so host-agent
 	// must hand it across. Resolve the host marker path (the brain's own default,
 	// overridable for tests) and mount it only when it exists as a regular file:
 	// an unmarked appliance box has no marker, and a same-path bind of a missing
 	// source would make Docker auto-create a root-owned directory there. The brain
-	// reads its default /etc/malmo/profile inside the container, so the mount is
+	// reads its default /etc/moose/profile inside the container, so the mount is
 	// same-path; see brainlaunch.Config.ProfileMarkerPath.
-	profileMarker := env("MALMO_PROFILE_PATH", profile.DefaultMarkerPath)
+	profileMarker := env("MOOSE_PROFILE_PATH", profile.DefaultMarkerPath)
 	if fi, err := os.Stat(profileMarker); err != nil || !fi.Mode().IsRegular() {
 		profileMarker = ""
 	}
@@ -184,7 +184,7 @@ func brainLaunchConfig(sockPath string) brainlaunch.Config {
 	// container alone, so this only decides the case where there is none to
 	// leave: a first boot, or a box whose brain container was removed. Without
 	// it, that second case silently rolls an updated box back to the baked image.
-	brainImage, fromLedger := controlplane.ResolveBrainImage(controlPlaneDir, env("MALMO_BRAIN_IMAGE", "malmo-brain:latest"))
+	brainImage, fromLedger := controlplane.ResolveBrainImage(controlPlaneDir, env("MOOSE_BRAIN_IMAGE", "moose-brain:latest"))
 	// from_ledger, not src: CLAUDE.md reserves src for a source filesystem path.
 	// Logged either way so the fallback is visible rather than silent — "which
 	// brain did this box decide to run, and did an applied update decide it" is
@@ -193,32 +193,32 @@ func brainLaunchConfig(sockPath string) brainlaunch.Config {
 
 	return brainlaunch.Config{
 		Image:         brainImage,
-		ImageTar:      env("MALMO_BRAIN_IMAGE_TAR", filepath.Join(dataDir, "brain-image.tar")),
-		ContainerName: "malmo-brain",
+		ImageTar:      env("MOOSE_BRAIN_IMAGE_TAR", filepath.Join(dataDir, "brain-image.tar")),
+		ContainerName: "moose-brain",
 		DataDir:       dataDir,
 		StateDir:      filepath.Join(dataDir, "state"),
 		SocketPath:    sockPath,
 
-		Network:            env("MALMO_INGRESS_NETWORK", "malmo-ingress"),
-		ProxyImage:         env("MALMO_PROXY_IMAGE", "tecnativa/docker-socket-proxy:v0.4.2"),
-		ProxyImageTar:      env("MALMO_PROXY_IMAGE_TAR", filepath.Join(controlPlaneDir, "images", "docker-socket-proxy.tar")),
-		ProxyContainerName: "malmo-docker-proxy",
+		Network:            env("MOOSE_INGRESS_NETWORK", "moose-ingress"),
+		ProxyImage:         env("MOOSE_PROXY_IMAGE", "tecnativa/docker-socket-proxy:v0.4.2"),
+		ProxyImageTar:      env("MOOSE_PROXY_IMAGE_TAR", filepath.Join(controlPlaneDir, "images", "docker-socket-proxy.tar")),
+		ProxyContainerName: "moose-docker-proxy",
 		ControlPlaneDir:    controlPlaneDir,
-		UIUpstream:         env("MALMO_DASHBOARD_UI_UPSTREAM", "malmo-ui:80"),
+		UIUpstream:         env("MOOSE_DASHBOARD_UI_UPSTREAM", "moose-ui:80"),
 		// Empty by default: the control-plane compose then runs stock caddy:2-alpine
-		// (the appliance, no ACME). The hosted image sets MALMO_CADDY_IMAGE to the
+		// (the appliance, no ACME). The hosted image sets MOOSE_CADDY_IMAGE to the
 		// caddy-dns/acmedns build for the wildcard cert (os #207/C3b).
-		CaddyImage: env("MALMO_CADDY_IMAGE", ""),
+		CaddyImage: env("MOOSE_CADDY_IMAGE", ""),
 		// The control-plane catalog the brain syncs the Door-1 store from, plus the
 		// asset cache dir (under dataDir, so it rides the brain's DataDir mount).
 		// CatalogURL empty ⇒ the brain uses its own default (the public control
 		// plane); the air-gapped lane overrides it to an inert address and seeds the
 		// store from a staged snapshot file instead (brainlaunch.Config.CatalogFile).
 		// The snapshot is never cached on disk — only icons and screenshots are.
-		CatalogURL:        env("MALMO_CATALOG_URL", ""),
-		CatalogCacheDir:   env("MALMO_CATALOG_CACHE_DIR", filepath.Join(dataDir, "catalog-cache")),
-		CatalogFile:       env("MALMO_CATALOG_FILE", ""),
-		OfflineInstall:    envBool("MALMO_OFFLINE_INSTALL"),
+		CatalogURL:        env("MOOSE_CATALOG_URL", ""),
+		CatalogCacheDir:   env("MOOSE_CATALOG_CACHE_DIR", filepath.Join(dataDir, "catalog-cache")),
+		CatalogFile:       env("MOOSE_CATALOG_FILE", ""),
+		OfflineInstall:    envBool("MOOSE_OFFLINE_INSTALL"),
 		ProfileMarkerPath: profileMarker,
 	}
 }

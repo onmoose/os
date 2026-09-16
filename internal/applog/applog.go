@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // follower is the consumer-side slice of hostclient.Client the registry needs:

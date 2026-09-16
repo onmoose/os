@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/store"
 	"gopkg.in/yaml.v3"
 )
 

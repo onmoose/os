@@ -7,10 +7,10 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // sshFailUser makes the harness's /v1/ssh/set-access mock answer 500, so the
@@ -597,7 +597,7 @@ func TestFailedDeleteOfAnAccountWithoutSSHPushesNothing(t *testing.T) {
 	}
 }
 
-// The appliance's mandatory factor is the malmo password, with the key as the
+// The appliance's mandatory factor is the moose password, with the key as the
 // optional second lock (AUTH.md # Device access, the profile table). Adding a
 // key must not quietly replace the password with it.
 //

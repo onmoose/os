@@ -20,26 +20,26 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malmoos/malmo/internal/admission"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/caddy"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/hostclient"
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/admission"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/caddy"
+	"github.com/onmoose/moose/internal/catalog"
+	"github.com/onmoose/moose/internal/events"
+	"github.com/onmoose/moose/internal/hostclient"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/moose/internal/store"
 
 	"gopkg.in/yaml.v3"
 )
 
-const ingressNetwork = "malmo-ingress"
+const ingressNetwork = "moose-ingress"
 
 // controlPlaneProject is the fixed compose project name for the brain-owned
-// control-plane stack (Caddy + malmo-ui). A constant, not configurable: there
+// control-plane stack (Caddy + moose-ui). A constant, not configurable: there
 // is exactly one control-plane stack per box.
-const controlPlaneProject = "malmo-control-plane"
+const controlPlaneProject = "moose-control-plane"
 
 // Folder-source election values (the installer's per-folder choice). Mirrors
 // the api package's source constants; kept local so lifecycle doesn't import
@@ -50,15 +50,15 @@ const (
 )
 
 // defaultSharedRoot is the production household shared tree (STORAGE.md # user
-// content): /srv/malmo/shared, owned root:malmo-shared, mode 02770 (setgid).
+// content): /srv/moose/shared, owned root:moose-shared, mode 02770 (setgid).
 // Held as a Manager field (overridable in tests) so a shared source's bind path
 // and its on-disk preparation resolve under a temp root in hermetic tests rather
 // than the real /srv.
-const defaultSharedRoot = "/srv/malmo/shared"
+const defaultSharedRoot = "/srv/moose/shared"
 
 // folderDir maps a taxonomy folder name to its capitalized on-disk directory
 // (STORAGE.md # user content). Personal source binds <home>/<dir>, shared binds
-// /srv/malmo/shared/<dir>.
+// /srv/moose/shared/<dir>.
 var folderDir = map[string]string{
 	"photos": "Photos", "documents": "Documents", "movies": "Movies",
 	"music": "Music", "notes": "Notes", "downloads": "Downloads",
@@ -75,9 +75,9 @@ type FolderMount struct {
 	Subfolder string // optional relative subpath under the folder (pick-subfolder)
 
 	// Target is the in-container destination for a Door-2 grant — the path the
-	// admin typed because a pasted compose has no author to map MALMO_FOLDER_<NAME>
+	// admin typed because a pasted compose has no author to map MOOSE_FOLDER_<NAME>
 	// (DASHBOARD.md # Folder grants carry an explicit destination path). Empty for
-	// a store (Door-1) mount, which keeps the fixed `/malmo/<folder>` convention.
+	// a store (Door-1) mount, which keeps the fixed `/moose/<folder>` convention.
 	Target string
 }
 
@@ -87,7 +87,7 @@ type FolderMount struct {
 // brain's own effective identity with mounts empty (folder-bind paths are no-ops).
 type isolation struct {
 	uid, gid   int    // container runtime identity (compose user:)
-	sharedGID  int    // malmo-shared GID for group_add on shared-source mounts
+	sharedGID  int    // moose-shared GID for group_add on shared-source mounts
 	sharedBase string // household shared tree root (Manager.sharedRoot); base for a shared source's host path
 	home       string // owner home dir (personal scope); "" for household
 	mounts     []FolderMount
@@ -99,7 +99,7 @@ type isolation struct {
 
 // hostSource resolves the host path bound for one mount: the owner's
 // <home>/<Folder>/ for a personal source, <sharedBase>/<Folder>/ (the household
-// shared tree, /srv/malmo/shared in production) for a shared source, narrowed by
+// shared tree, /srv/moose/shared in production) for a shared source, narrowed by
 // Subfolder when present.
 func (it *isolation) hostSource(mt FolderMount) string {
 	base := filepath.Join(it.sharedBase, folderDir[mt.Folder])
@@ -113,18 +113,18 @@ func (it *isolation) hostSource(mt FolderMount) string {
 }
 
 // containerDest is where a mount lands inside the container: the admin-typed
-// Door-2 `target` when set, else the fixed `/malmo/<folder>` a store app's
-// author maps via MALMO_FOLDER_<NAME> (DASHBOARD.md # Folder grants carry an
+// Door-2 `target` when set, else the fixed `/moose/<folder>` a store app's
+// author maps via MOOSE_FOLDER_<NAME> (DASHBOARD.md # Folder grants carry an
 // explicit destination path).
 func containerDest(mt FolderMount) string {
 	if mt.Target != "" {
 		return mt.Target
 	}
-	return "/malmo/" + mt.Folder
+	return "/moose/" + mt.Folder
 }
 
 var reservedSlugs = map[string]bool{
-	"api": true, "admin": true, "dashboard": true, "malmo": true,
+	"api": true, "admin": true, "dashboard": true, "moose": true,
 	"host": true, "setup": true,
 }
 
@@ -161,7 +161,7 @@ type Manager struct {
 
 	// profile + boxID select the per-app URL scheme. On hosted with a non-empty
 	// box-id, routes are keyed on (and surfaced URLs use)
-	// "<slug>.<box-id>.malmo.network" and no mDNS is published — there is no LAN
+	// "<slug>.<box-id>.onmoose.network" and no mDNS is published — there is no LAN
 	// to multicast on (ENVIRONMENT.md # Networking & discovery). Appliance leaves
 	// both zero-valued and keeps the ".local"/Avahi path unchanged. profile also
 	// gates resource-limit CPU capping (hosted only — APP_ISOLATION.md # Resource
@@ -172,8 +172,8 @@ type Manager struct {
 
 	// brainUpstream is the brain's own address the box Caddy dials for the per-app
 	// forward_auth verify subrequest of a restricted hosted app (#306) — the same
-	// upstream the dashboard route proxies /api + /_malmo to. cmd/brain wires it
-	// from MALMO_DASHBOARD_BRAIN_UPSTREAM via SetBrainUpstream; the default matches
+	// upstream the dashboard route proxies /api + /_moose to. cmd/brain wires it
+	// from MOOSE_DASHBOARD_BRAIN_UPSTREAM via SetBrainUpstream; the default matches
 	// the compose service name so hosted route building works in tests unwired.
 	brainUpstream string
 
@@ -201,18 +201,18 @@ func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd Caddy
 
 // defaultBrainUpstream is the compose service address the box Caddy dials for the
 // hosted forward_auth verify subrequest, matching config.go's
-// MALMO_DASHBOARD_BRAIN_UPSTREAM default. cmd/brain overrides it via
+// MOOSE_DASHBOARD_BRAIN_UPSTREAM default. cmd/brain overrides it via
 // SetBrainUpstream; the constant only matters for tests that don't wire it.
-const defaultBrainUpstream = "malmo-brain:8080"
+const defaultBrainUpstream = "moose-brain:8080"
 
 // SetOfflineInstall enables (or disables) the air-gapped install fallback —
 // trusting the catalog-promised digest of a locally-present image when its pull
-// fails. cmd/brain wires this from MALMO_OFFLINE_INSTALL; it is a box-level mode
+// fails. cmd/brain wires this from MOOSE_OFFLINE_INSTALL; it is a box-level mode
 // (a baked, registry-less box), not a per-install option. See offlineInstall.
 func (m *Manager) SetOfflineInstall(v bool) { m.offlineInstall = v }
 
 // SetEnvironment records the environment profile and (on hosted) the box-id, so
-// per-app route hosts and surfaced URLs use the hosted "<slug>.<box-id>.malmo.network"
+// per-app route hosts and surfaced URLs use the hosted "<slug>.<box-id>.onmoose.network"
 // scheme. cmd/brain wires this from the resolved profile + the ingested seed.
 // Appliance passes an empty box-id and the lifecycle keeps its ".local"/mDNS path.
 func (m *Manager) SetEnvironment(prof profile.Profile, boxID string) {
@@ -221,7 +221,7 @@ func (m *Manager) SetEnvironment(prof profile.Profile, boxID string) {
 }
 
 // hosted reports whether per-app routing should use the public
-// "<slug>.<box-id>.malmo.network" scheme: the hosted profile with a resolved
+// "<slug>.<box-id>.onmoose.network" scheme: the hosted profile with a resolved
 // box-id. A hosted box that hasn't ingested its seed yet (no box-id) has no apps
 // installed anyway, so falling back to the appliance path is harmless.
 func (m *Manager) hosted() bool {
@@ -273,7 +273,7 @@ func (m *Manager) buildRouteConfig(inst store.Instance, man *manifest.Manifest, 
 	}
 	cfg.StripCookieName = auth.ForwardAuthCookieName
 	// Scrubbed on EVERY hosted route, not only where the gate runs. A restricted
-	// app that learns to trust X-Malmo-User keeps trusting it after the owner
+	// app that learns to trust X-Moose-User keeps trusting it after the owner
 	// flips it to Public, or on one of its own public paths — and there the gate
 	// is not there to overwrite a forged header (#415).
 	cfg.ScrubHeaders = identityHeaders
@@ -294,7 +294,7 @@ func (m *Manager) buildRouteConfig(inst store.Instance, man *manifest.Manifest, 
 // identityHeaders are the request headers the brain vouches for on an allowed
 // forward-auth request, and the same set scrubbed from every inbound request so
 // a caller can never forge them (ENVIRONMENT.md # Per-app owner-only access).
-var identityHeaders = []string{"X-Malmo-User", "X-Malmo-User-Id"}
+var identityHeaders = []string{"X-Moose-User", "X-Moose-User-Id"}
 
 // lockInstance acquires the per-instance lock (creating it on first use) and
 // returns the unlock func. Callers `defer unlock()`. See instLocks.
@@ -332,9 +332,9 @@ func (m *Manager) EnsureIngress(ctx context.Context) {
 	}
 }
 
-// EnsureControlPlane brings up the control-plane stack (Caddy + malmo-ui) from
+// EnsureControlPlane brings up the control-plane stack (Caddy + moose-ui) from
 // the compose project staged at dir, on every brain startup (CONTROL_PLANE.md #
-// Caddy is malmo substrate). It is the production path: the containerized brain
+// Caddy is moose substrate). It is the production path: the containerized brain
 // reconciles Caddy + the dashboard UI the same way it reconciles app containers,
 // reaching Docker only through the host-agent-seeded socket-proxy. dir is empty
 // in dev (the brain runs natively, Caddy is a standalone dev container and the
@@ -345,7 +345,7 @@ func (m *Manager) EnsureIngress(ctx context.Context) {
 // retry loop, or from a watchdog. host-agent's control-plane update runs compose
 // on this SAME project (UPDATES.md # 3 step 3c), and two compose runs on one
 // project interleave the rename dance compose does to recreate a service: they
-// collide on the backup container name and can leave the box with no malmo-ui
+// collide on the backup container name and can leave the box with no moose-ui
 // container at all. That is a real failure, seen on a booted box, not a
 // theoretical one (docs/progress/cloud-update-boot-proof.md). The updater avoids
 // it by starting the brain LAST, so its compose runs while no brain exists — but
@@ -614,7 +614,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// ensure the shared instance is running and create a per-app database+role in
 	// it (SERVICE_PROVISIONING.md # Provisioning protocol). Persisted before the
 	// override+env so writeOverride can attach the app to the service network and
-	// writeEnv can re-emit the credentials as MALMO_SERVICE_<NAME>_*. On a later
+	// writeEnv can re-emit the credentials as MOOSE_SERVICE_<NAME>_*. On a later
 	// rollback the created db/role is dropped (rollback reads grants from store).
 	step("provisioning_services")
 	grants, err := m.provisionServices(ctx, id, man.ID, man.Services)
@@ -629,7 +629,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// 5d. Bind the elected outgoing-mail provider before writeEnv reads it
 	// (SERVICE_PROVISIONING.md # BYO outgoing mail). The FK catches a provider
 	// deleted between the API's validation and here; rollback's instance
-	// Delete cascades the binding away. No election ⇒ no row ⇒ no MALMO_MAIL_*.
+	// Delete cascades the binding away. No election ⇒ no row ⇒ no MOOSE_MAIL_*.
 	if mailProviderID != "" {
 		step("binding_mail_provider")
 		if err := m.store.SetInstanceMailBinding(id, mailProviderID); err != nil {
@@ -642,7 +642,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// because a cap_drop:ALL container has no CAP_DAC_OVERRIDE and can only write
 	// its private ./data bind when it runs as that dir's owner (APP_ISOLATION.md
 	// # User content). Folder apps run as the owner's UID/GID (personal) or the
-	// shared malmo-app identity (household) and additionally bind use-case
+	// shared moose-app identity (household) and additionally bind use-case
 	// folders. Folderless apps (and Door-2 custom apps) run as the brain's own
 	// effective UID/GID — the owner of the ./data dir writeInstanceDir just
 	// created (root under the production brain; the dev user under the native
@@ -656,9 +656,9 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		if err != nil {
 			return rollback(fmt.Errorf("resolve host identity: %w", err))
 		}
-		iso.sharedGID, iso.mounts = wk.MalmoSharedGID, mounts
+		iso.sharedGID, iso.mounts = wk.MooseSharedGID, mounts
 		if scope == store.ScopeHousehold {
-			iso.uid, iso.gid = wk.MalmoAppUID, wk.MalmoAppGID
+			iso.uid, iso.gid = wk.MooseAppUID, wk.MooseAppGID
 		} else {
 			rh, err := m.host.ResolveHome(ctx, owner.Username)
 			if errors.Is(err, hostclient.ErrUnknownUser) {
@@ -732,8 +732,8 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// owner UID, can't write it. The runtime identity for a personal source IS
 	// the owner, so MkdirAll + chown to iso.uid/gid is safe: a pre-existing
 	// ~/Documents is already owner-owned (chown is a no-op) and only the new
-	// leaf is created. SHARED sources (/srv/malmo/shared/…) are deliberately
-	// skipped here — that tree is group-owned via malmo-shared and must NOT be
+	// leaf is created. SHARED sources (/srv/moose/shared/…) are deliberately
+	// skipped here — that tree is group-owned via moose-shared and must NOT be
 	// chowned to a runtime UID; preparing shared subfolders is its own concern
 	// (#156). Same privilege posture as the bind-dir loop above:
 	// hard-fail under the root production brain, warn-and-skip under the
@@ -757,11 +757,11 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 
 	// Prepare each elected SHARED folder source (#156). Unlike a personal source
 	// — owned by the runtime UID, so MkdirAll + chown suffices — the household
-	// shared tree is root:malmo-shared, mode 02770 setgid (STORAGE.md # user
+	// shared tree is root:moose-shared, mode 02770 setgid (STORAGE.md # user
 	// content): the brain creates the elected <Folder>[/<subfolder>] beneath the
-	// shared root, owning each NEW dir to the malmo-shared group with the setgid
+	// shared root, owning each NEW dir to the moose-shared group with the setgid
 	// bit, never chowning to a runtime UID and never re-owning a pre-existing
-	// parent. The malmo-app container reaches it through its malmo-shared
+	// parent. The moose-app container reaches it through its moose-shared
 	// group_add (writeOverride) — no per-UID ownership. Writing under the shared
 	// tree needs root, so this runs only under the production brain (euid 0); the
 	// unprivileged native dev brain can't create the shared tree, so household
@@ -797,7 +797,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 
 	// 8. Create per-app network.
 	step("creating_network")
-	appNet := "malmo-app-" + id
+	appNet := "moose-app-" + id
 	if err := m.docker.NetworkCreate(ctx, appNet, !man.Permissions.Internet); err != nil {
 		return rollback(fmt.Errorf("create network: %w", err))
 	}
@@ -807,7 +807,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// with a splash) instead of returning connection-refused for ~120s.
 	//
 	// On hosted there is no LAN and no Avahi: the route host is the public
-	// "<slug>.<box-id>.malmo.network" and nothing is multicast (ENVIRONMENT.md #
+	// "<slug>.<box-id>.onmoose.network" and nothing is multicast (ENVIRONMENT.md #
 	// Networking & discovery). On appliance the published name is authoritative:
 	// Publish may return a box-qualified collision-fallback ("<slug>-<box>.local")
 	// that differs from the primary "<slug>.local", so the Caddy route and the
@@ -844,7 +844,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// instead of a wedged brain, independent of the layer-1 job detection.
 	step("compose_up")
 	upCtx, cancelUp := context.WithTimeout(ctx, m.healthWait)
-	out, upErr := m.docker.ComposeUp(upCtx, m.instanceDir(id), "malmo-"+id)
+	out, upErr := m.docker.ComposeUp(upCtx, m.instanceDir(id), "moose-"+id)
 	cancelUp()
 	if upErr != nil {
 		return rollback(fmt.Errorf("compose up: %w\n%s", upErr, out))
@@ -866,7 +866,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 
 	// 12. Flip the Caddy upstream from splash to the real container.
 	step("flipping_route")
-	upstream := fmt.Sprintf("malmo-%s-%s:%d", id, man.MainService, man.MainPort)
+	upstream := fmt.Sprintf("moose-%s-%s:%d", id, man.MainService, man.MainPort)
 	if err := m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, man, host, upstream)); err != nil {
 		slog.Warn("caddy upstream flip failed (continuing)",
 			"instance_id", id, "host", host, "upstream", upstream, "err", err)
@@ -1007,7 +1007,7 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 		return fmt.Errorf("set state stopped: %w", err)
 	}
 	inst.State = "stopped"
-	if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "malmo-"+id); err != nil {
+	if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {
 		return fmt.Errorf("compose stop: %w\n%s", err, out)
 	}
 	// Best-effort splash flip — the route already exists; a failure here leaves
@@ -1086,7 +1086,7 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	// on the health poll. Worst-case wall time is therefore ~2×healthWait — the
 	// same as install, deliberately so the two paths behave identically.
 	upCtx, cancelUp := context.WithTimeout(ctx, m.healthWait)
-	out, upErr := m.docker.ComposeUp(upCtx, m.instanceDir(id), "malmo-"+id)
+	out, upErr := m.docker.ComposeUp(upCtx, m.instanceDir(id), "moose-"+id)
 	cancelUp()
 	if upErr != nil {
 		return m.startFailed(ctx, inst, host, man.Name, fmt.Errorf("compose up: %w\n%s", upErr, out))
@@ -1101,7 +1101,7 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	}
 
 	// Healthy — flip the splash to the real container.
-	upstream := fmt.Sprintf("malmo-%s-%s:%d", id, man.MainService, man.MainPort)
+	upstream := fmt.Sprintf("moose-%s-%s:%d", id, man.MainService, man.MainPort)
 	if err := m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, man, host, upstream)); err != nil {
 		slog.Warn("start: caddy upstream flip failed (continuing)",
 			"instance_id", id, "host", host, "upstream", upstream, "err", err)
@@ -1140,7 +1140,7 @@ func (m *Manager) SetExposure(ctx context.Context, instanceID, exposure string) 
 		return err
 	}
 	host, _ := m.publishHost(ctx, inst)
-	upstream := fmt.Sprintf("malmo-%s-%s:%d", inst.ID, man.MainService, man.MainPort)
+	upstream := fmt.Sprintf("moose-%s-%s:%d", inst.ID, man.MainService, man.MainPort)
 	return m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, man, host, upstream))
 }
 
@@ -1168,7 +1168,7 @@ func (m *Manager) startFailed(ctx context.Context, inst store.Instance, host, ap
 }
 
 // routeHost is the hostname an instance's Caddy route is keyed on. On hosted it
-// is the public "<slug>.<box-id>.malmo.network" (no mDNS, no collision fallback).
+// is the public "<slug>.<box-id>.onmoose.network" (no mDNS, no collision fallback).
 // On appliance it is the published mDNS name when we have one (it may be the
 // box-qualified collision fallback), else the reconstructed primary
 // `<slug>.local`. Mirrors the fallback chain in install + reassertRouting so the
@@ -1197,7 +1197,7 @@ func (m *Manager) routeHost(inst store.Instance) string {
 // Start so Caddy, Avahi, and the stored MDNSName never disagree.
 func (m *Manager) publishHost(ctx context.Context, inst store.Instance) (string, bool) {
 	// Hosted has no LAN and no Avahi (host-agent is the slim build): the route
-	// host is the public "<slug>.<box-id>.malmo.network" and nothing is
+	// host is the public "<slug>.<box-id>.onmoose.network" and nothing is
 	// multicast. Report avahiOK=true — there is no mDNS leg that could fail.
 	if m.hosted() {
 		return profile.HostedAppHost(m.boxID, inst.Slug), true
@@ -1225,7 +1225,7 @@ func (m *Manager) publishHost(ctx context.Context, inst store.Instance) (string,
 
 // releaseServiceIdentity returns an allocated app-service identity to the
 // host's band. Best-effort like dropServiceGrants: a failed release leaks one
-// band slot (the host-side malmo-svc account stays for manual cleanup) and is
+// band slot (the host-side moose-svc account stays for manual cleanup) and is
 // logged, but never blocks an uninstall or rollback.
 func (m *Manager) releaseServiceIdentity(ctx context.Context, id string, uid int) {
 	if err := m.host.ReleaseAppServiceIdentity(ctx, uid); err != nil {
@@ -1290,7 +1290,7 @@ func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 // a partial install can always be cleaned up.
 func (m *Manager) teardown(ctx context.Context, inst store.Instance, removeDir bool) error {
 	if _, err := os.Stat(m.composeFile(inst.ID)); err == nil {
-		if out, err := m.docker.ComposeDown(ctx, m.instanceDir(inst.ID), "malmo-"+inst.ID); err != nil {
+		if out, err := m.docker.ComposeDown(ctx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
 			slog.Warn("teardown: compose down",
 				"instance_id", inst.ID, "err", err, "output", out)
 		}
@@ -1301,7 +1301,7 @@ func (m *Manager) teardown(ctx context.Context, inst store.Instance, removeDir b
 	if err := m.host.Unpublish(ctx, inst.Slug); err != nil {
 		slog.Warn("teardown: mDNS unpublish", "slug", inst.Slug, "err", err)
 	}
-	_ = m.docker.NetworkRemove(ctx, "malmo-app-"+inst.ID)
+	_ = m.docker.NetworkRemove(ctx, "moose-app-"+inst.ID)
 	if removeDir {
 		_ = os.RemoveAll(m.instanceDir(inst.ID))
 	}
@@ -1318,7 +1318,7 @@ func (m *Manager) teardown(ctx context.Context, inst store.Instance, removeDir b
 func (m *Manager) recreateRunning(ctx context.Context, inst store.Instance) error {
 	upCtx, cancel := context.WithTimeout(ctx, m.healthWait)
 	defer cancel()
-	if out, err := m.docker.ComposeUp(upCtx, m.instanceDir(inst.ID), "malmo-"+inst.ID); err != nil {
+	if out, err := m.docker.ComposeUp(upCtx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
 		if !inst.PendingRecreate {
 			if serr := m.store.SetInstancePendingRecreate(inst.ID, true); serr != nil {
 				slog.Warn("mark pending recreate", "instance_id", inst.ID, "err", serr)
@@ -1394,7 +1394,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 						"instance_id", inst.ID, "err", manErr)
 					continue
 				}
-				appNet := "malmo-app-" + inst.ID
+				appNet := "moose-app-" + inst.ID
 				if err := m.docker.NetworkCreate(ctx, appNet, !man.Permissions.Internet); err != nil {
 					slog.Warn("reconcile: ensure app network",
 						"instance_id", inst.ID, "err", err)
@@ -1402,7 +1402,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				}
 				slog.Info("reconcile: starting drifted instance",
 					"instance_id", inst.ID, "reason", "no containers")
-				if out, err := m.docker.ComposeUp(ctx, m.instanceDir(inst.ID), "malmo-"+inst.ID); err != nil {
+				if out, err := m.docker.ComposeUp(ctx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
 					slog.Warn("reconcile: compose up",
 						"instance_id", inst.ID, "err", err, "output", out)
 					continue
@@ -1427,7 +1427,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 					slog.Info("reconcile: recreating drifted running instance",
 						"instance_id", inst.ID,
 						"resource_drift", changed, "pending_recreate", inst.PendingRecreate)
-					if out, err := m.docker.ComposeUp(ctx, m.instanceDir(inst.ID), "malmo-"+inst.ID); err != nil {
+					if out, err := m.docker.ComposeUp(ctx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
 						slog.Warn("reconcile: compose up",
 							"instance_id", inst.ID, "err", err, "output", out)
 						// ComposeUp failed. Rewind any resource-stanza patch so the
@@ -1458,7 +1458,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			if actual[inst.ID] {
 				slog.Info("reconcile: stopping drifted instance",
 					"instance_id", inst.ID, "reason", "containers up but state=stopped")
-				if out, err := m.docker.ComposeStop(ctx, m.instanceDir(inst.ID), "malmo-"+inst.ID); err != nil {
+				if out, err := m.docker.ComposeStop(ctx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
 					slog.Warn("reconcile: compose stop",
 						"instance_id", inst.ID, "err", err, "output", out)
 				}
@@ -1490,7 +1490,7 @@ func (m *Manager) reassertRouting(ctx context.Context, inst store.Instance) bool
 		return false
 	}
 	host, avahiOK := m.publishHost(ctx, inst)
-	upstream := fmt.Sprintf("malmo-%s-%s:%d", inst.ID, man.MainService, man.MainPort)
+	upstream := fmt.Sprintf("moose-%s-%s:%d", inst.ID, man.MainService, man.MainPort)
 	if err := m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, man, host, upstream)); err != nil {
 		slog.Warn("reconcile: caddy route",
 			"instance_id", inst.ID, "host", host, "upstream", upstream, "err", err)
@@ -1502,7 +1502,7 @@ func (m *Manager) teardownOrphan(ctx context.Context, id string) {
 	// Prefer compose if the instance dir survived; otherwise remove containers
 	// by label and drop the per-app network directly.
 	if _, err := os.Stat(m.composeFile(id)); err == nil {
-		if out, err := m.docker.ComposeDown(ctx, m.instanceDir(id), "malmo-"+id); err != nil {
+		if out, err := m.docker.ComposeDown(ctx, m.instanceDir(id), "moose-"+id); err != nil {
 			slog.Warn("reconcile: compose down orphan",
 				"instance_id", id, "err", err, "output", out)
 		}
@@ -1513,7 +1513,7 @@ func (m *Manager) teardownOrphan(ctx context.Context, id string) {
 		}
 	}
 	_ = m.caddy.RemoveRoute(ctx, id)
-	_ = m.docker.NetworkRemove(ctx, "malmo-app-"+id)
+	_ = m.docker.NetworkRemove(ctx, "moose-app-"+id)
 }
 
 func (m *Manager) loadInstanceManifest(id string) (*manifest.Manifest, error) {
@@ -1567,7 +1567,7 @@ func (m *Manager) RevealSecrets(id string) ([]store.InstanceSecret, error) {
 }
 
 // MainContainerName returns the container name of an instance's main service —
-// "malmo-<id>-<MainService>", the same project+service stem used for the Caddy
+// "moose-<id>-<MainService>", the same project+service stem used for the Caddy
 // upstream alias. The per-app Logs tail keys on it (the brain hands it to
 // host-agent's journal follow, which matches Docker's journald CONTAINER_NAME).
 // writeOverride pins the running container to exactly this name (no compose
@@ -1577,7 +1577,7 @@ func (m *Manager) MainContainerName(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("malmo-%s-%s", id, man.MainService), nil
+	return fmt.Sprintf("moose-%s-%s", id, man.MainService), nil
 }
 
 // allocateSlug derives a free, routable slug from the manifest's preferred
@@ -1668,7 +1668,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 	for _, f := range man.Permissions.Folders {
 		modeByFolder[f.Folder] = f.Mode
 	}
-	appNet := "malmo-app-" + id
+	appNet := "moose-app-" + id
 	// Managed-service networks the app's declared services must reach
 	// (SERVICE_PROVISIONING.md # Network architecture). Every service in the app's
 	// compose joins them — kan's `migrate` job and `web` both need the DSN — so
@@ -1690,7 +1690,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		}
 		if svc == man.MainService {
 			nets[ingressNetwork] = map[string]any{
-				"aliases": []string{fmt.Sprintf("malmo-%s-%s", id, man.MainService)},
+				"aliases": []string{fmt.Sprintf("moose-%s-%s", id, man.MainService)},
 			}
 		}
 		entry := map[string]any{
@@ -1701,13 +1701,13 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 			// back to instances (APP_LIFECYCLE.md # an app instance is a
 			// compose project).
 			"labels": map[string]string{
-				"malmo.managed":     "true",
-				"malmo.instance_id": id,
-				"malmo.manifest_id": man.ID,
+				"moose.managed":     "true",
+				"moose.instance_id": id,
+				"moose.manifest_id": man.ID,
 			},
 		}
 		// Pin the main service's *running* container name to the same
-		// malmo-<id>-<service> stem as the ingress alias above — without the
+		// moose-<id>-<service> stem as the ingress alias above — without the
 		// pin compose appends a replica suffix ("-1"), and Docker's journald
 		// driver tags log lines with that suffixed name, so the per-app Logs
 		// tail's exact CONTAINER_NAME match (MainContainerName → journalsource)
@@ -1717,7 +1717,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		// an author's scalable workers. Same pattern as the managed services'
 		// fixed exec handle (services.go).
 		if svc == man.MainService {
-			entry["container_name"] = fmt.Sprintf("malmo-%s-%s", id, man.MainService)
+			entry["container_name"] = fmt.Sprintf("moose-%s-%s", id, man.MainService)
 			// Per-instance cgroup limits (ENVIRONMENT.md # Per-instance resource
 			// limits) clamp the app's main container. Omitted when no policy is
 			// set, so the app bursts freely by default (APP_ISOLATION.md #
@@ -1740,7 +1740,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		}
 		// Run as the resolved runtime identity (every instance — folderless apps
 		// as the brain's euid). Folder apps additionally bind each declared folder
-		// at /malmo/<folder> from its elected source and join malmo-shared when any
+		// at /moose/<folder> from its elected source and join moose-shared when any
 		// source is the household tree (APP_ISOLATION.md # User content).
 		entry["user"] = fmt.Sprintf("%d:%d", iso.uid, iso.gid)
 		volumes := make([]string, 0, len(iso.mounts))
@@ -1814,26 +1814,26 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 
 func (m *Manager) writeEnv(id, slug string, iso isolation) error {
 	dataDir, _ := filepath.Abs(filepath.Join(m.instanceDir(id), "data"))
-	// MALMO_APP_URL is the app's own public URL (apps that build absolute links
-	// read it). Hosted is HTTPS at "<slug>.<box-id>.malmo.network"; appliance is
+	// MOOSE_APP_URL is the app's own public URL (apps that build absolute links
+	// read it). Hosted is HTTPS at "<slug>.<box-id>.onmoose.network"; appliance is
 	// plain-HTTP "<slug>.local".
 	appURL := "http://" + slug + protocol.AppHostSuffix
 	if m.hosted() {
 		appURL = profile.HostedAppURL(m.boxID, slug)
 	}
 	lines := []string{
-		"MALMO_INSTANCE_ID=" + id,
-		"MALMO_APP_URL=" + appURL,
-		"MALMO_DATA_DIR=" + dataDir,
+		"MOOSE_INSTANCE_ID=" + id,
+		"MOOSE_APP_URL=" + appURL,
+		"MOOSE_DATA_DIR=" + dataDir,
 	}
 	// Inject the in-container path for each bound folder (APP_MANIFEST.md #
-	// folders) — a store app's compose maps MALMO_FOLDER_<NAME> to its library
+	// folders) — a store app's compose maps MOOSE_FOLDER_<NAME> to its library
 	// path; a Door-2 grant already bound straight to its target, but the var still
 	// reflects the real in-container path. Stable regardless of the elected source.
 	for _, mt := range iso.mounts {
-		lines = append(lines, "MALMO_FOLDER_"+strings.ToUpper(mt.Folder)+"="+containerDest(mt))
+		lines = append(lines, "MOOSE_FOLDER_"+strings.ToUpper(mt.Folder)+"="+containerDest(mt))
 	}
-	// Re-emit the instance's generated secrets as MALMO_SECRET_<NAME>
+	// Re-emit the instance's generated secrets as MOOSE_SECRET_<NAME>
 	// (SERVICE_PROVISIONING.md # Env-var injection). Read from the store rather
 	// than regenerated, so the value is stable across every .env rewrite — a
 	// token-signing secret that changed here would invalidate all live sessions.
@@ -1842,9 +1842,9 @@ func (m *Manager) writeEnv(id, slug string, iso isolation) error {
 		return fmt.Errorf("load secrets: %w", err)
 	}
 	for _, sec := range secrets {
-		lines = append(lines, "MALMO_SECRET_"+strings.ToUpper(sec.Name)+"="+sec.Value)
+		lines = append(lines, "MOOSE_SECRET_"+strings.ToUpper(sec.Name)+"="+sec.Value)
 	}
-	// Re-emit provisioned managed-service credentials as MALMO_SERVICE_<NAME>_*
+	// Re-emit provisioned managed-service credentials as MOOSE_SERVICE_<NAME>_*
 	// (SERVICE_PROVISIONING.md # Env-var injection). HOST is the in-network DNS
 	// alias; the app maps these (or the all-in-one DSN) to whatever it expects.
 	grants, err := m.store.GetServiceGrants(id)
@@ -1852,7 +1852,7 @@ func (m *Manager) writeEnv(id, slug string, iso isolation) error {
 		return fmt.Errorf("load service grants: %w", err)
 	}
 	for _, g := range grants {
-		prefix := "MALMO_SERVICE_" + strings.ToUpper(g.LogicalName) + "_"
+		prefix := "MOOSE_SERVICE_" + strings.ToUpper(g.LogicalName) + "_"
 		host := serviceDNSAlias(g.Kind, g.Version)
 		port := servicePort[g.Kind]
 		// SQL engines carry a database name in the path; Valkey has none, so the DSN
@@ -1870,7 +1870,7 @@ func (m *Manager) writeEnv(id, slug string, iso isolation) error {
 			prefix+"DSN="+dsn,
 		)
 	}
-	// Re-emit the bound outgoing-mail provider as MALMO_MAIL_*
+	// Re-emit the bound outgoing-mail provider as MOOSE_MAIL_*
 	// (SERVICE_PROVISIONING.md # BYO outgoing mail). Unbound (ErrNotFound) is
 	// the common case and injects nothing — a mail-capable app must run
 	// without it (manifest validation enforces optional: true).
@@ -2042,7 +2042,7 @@ func relativeBindDirs(composeBytes []byte) ([]string, error) {
 }
 
 // sharedDirMode is the household shared tree's directory mode, 02770 — setgid
-// (so a new child inherits the malmo-shared group) + group rwx, no other access
+// (so a new child inherits the moose-shared group) + group rwx, no other access
 // (STORAGE.md # user content). Expressed with os.ModeSetgid, not a raw 0o2000,
 // because os.Mkdir/os.Chmod take an os.FileMode where the setgid bit is a named
 // flag, not the octal bit.
@@ -2050,10 +2050,10 @@ const sharedDirMode = os.ModeSetgid | 0o770
 
 // prepareSharedSource creates the elected household shared-source directory —
 // the <Folder>[/<subfolder>] beneath the shared tree root — that does not yet
-// exist, owning each NEWLY created level to the malmo-shared group with mode
+// exist, owning each NEWLY created level to the moose-shared group with mode
 // 02770 (setgid, so descendants inherit the group) per STORAGE.md # user
-// content. The shared tree is root:malmo-shared and is NOT owned by any runtime
-// UID: the malmo-app container reaches it through its malmo-shared group_add, so
+// content. The shared tree is root:moose-shared and is NOT owned by any runtime
+// UID: the moose-app container reaches it through its moose-shared group_add, so
 // this never chowns to a runtime UID. Pre-existing levels are left untouched —
 // a shared parent belongs to the storage setup, not to one install — and the
 // shared root itself must already exist (its absence is a real fault). The
@@ -2084,7 +2084,7 @@ func prepareSharedSource(root, src string, sharedGID int) error {
 			}
 			return err
 		}
-		// Set the group to malmo-shared, then chmod explicitly: Mkdir's mode is
+		// Set the group to moose-shared, then chmod explicitly: Mkdir's mode is
 		// masked by umask, so the setgid + group-rwx bits must be reasserted
 		// regardless of the parent's bits or the process umask. Under euid 0
 		// (the only caller path in production) both calls are infallible; if

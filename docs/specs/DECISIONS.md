@@ -21,6 +21,23 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-16 — The project is renamed from malmo to moose (#489)
+
+**Previously:** the project was called malmo. The hosted apex was `malmo.network`, the product site `malmo.com`, the GitHub org `malmoos`, the Go module `github.com/malmoos/malmo`, and every name on a box carried the word: `/var/lib/malmo`, `/etc/pam.d/malmo`, the `malmo-shared` group, the `malmo-ingress` network, the `malmo.instance_id` label, the `malmo_session` cookie, the `MALMO_*` env vars an app is given, and the `X-Malmo-User` header forward auth sets.
+
+**Now:** the project is **moose**. The hosted apex is `onmoose.network`, the product site `mooseos.com`, the org `onmoose`, the repo `moose`, and the module `github.com/onmoose/moose`. Every name follows: paths, host accounts, systemd units, containers, labels, cookies, headers, env vars, the `/_moose/` API leg, and the dashboard copy. The appliance dashboard is `moose.local`.
+
+Two calls sit inside the rename.
+
+1. **Clean break, no compatibility layer.** Nothing in the tree accepts an old name. An existing box is not upgraded into the new name: a control-plane update replaces only the brain and the UI, while the host-agent that mounts `/var/lib/malmo`, sets `MALMO_*` and checks the `malmo.protocol.major` label is baked into the image. The few boxes that exist are re-provisioned from a new image instead.
+2. **The app-facing contract is renamed in lockstep with the catalog.** `MALMO_APP_URL`, `MALMO_SECRET_*`, `MALMO_SERVICE_*`, `MALMO_MAIL_*`, `MALMO_FOLDER_*`, `MALMO_INSTANCE_ID`, `MALMO_DATA_DIR` and `X-Malmo-User` become `MOOSE_*` and `X-Moose-User`. Every catalog app reads these, so this repo and `onmoose/store` ship together. The brain does not emit both prefixes.
+
+**Why:** a rename is worth doing once and completely. A box carries the name in places that are hard to change later: a group in `/etc/group`, a service account prefix in `/etc/passwd`, a PAM service file, a LUKS-era systemd unit graph, a cookie the browser already holds. Keeping the old names on disk to spare a handful of boxes would leave two vocabularies in the tree forever, which is the cost every later reader pays. The fleet is small enough today that re-provisioning is cheaper than a compatibility layer, and that will never be true again. Emitting both env prefixes for a while has the same shape: it trades one lockstep merge for a cleanup nobody is scheduled to do.
+
+The old name stays in the frozen history. `docs/progress/` entries and the entries above this one in this file are snapshots of what was true when they were written, so they keep saying malmo.
+
+**Affected docs:** every file in `docs/specs/` except the older entries here, `MALMO_NETWORK.md` renamed to `MOOSE_NETWORK.md` (`docs/README.md` updated), `docs/architecture.md`, all of `docs/dev/`, `README.md`, `CLAUDE.md`, the GitHub issue and PR templates, and the workflows.
+
 ## 2026-09-09 — SSH ships on both profiles; the mandatory auth factor is set by the profile (#463)
 
 **Previously:** three separate positions, all written for a box behind a LAN. `AUTH.md` # Device access made SSH per-account opt-in with the **malmo password** as the credential, one password shared with the dashboard and SMB. `BUILD.md` # SSH kept sshd **running from boot** with an empty `AllowUsers`, so the port was always open and always rejecting. `ENVIRONMENT.md` # Access & files turned SSH **off entirely on hosted**, because there is no LAN to scope port 22 to and no mesh. None of it was ever built — there is no SSH code anywhere in the tree.

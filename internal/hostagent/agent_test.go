@@ -9,8 +9,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/hostagent/netstate"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/hostagent/netstate"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // --- stub verifier ---
@@ -251,7 +251,7 @@ func TestSetPassword_DelegatesToUserMgrWhenSet(t *testing.T) {
 }
 
 func TestSetPassword_UserMgrError_Returns500(t *testing.T) {
-	mgr := &stubUserMgr{err: errors.New("useradd: group 'malmo' does not exist")}
+	mgr := &stubUserMgr{err: errors.New("useradd: group 'moose' does not exist")}
 	a := New(&stubVerifier{}, NewFakePublisher(".local"))
 	a.UserMgr = mgr
 	mux := http.NewServeMux()
@@ -264,7 +264,7 @@ func TestSetPassword_UserMgrError_Returns500(t *testing.T) {
 		t.Fatalf("want 500, got %d", w.Code)
 	}
 	// Body must NOT leak the underlying system error.
-	if bytes.Contains(w.Body.Bytes(), []byte("useradd")) || bytes.Contains(w.Body.Bytes(), []byte("malmo")) {
+	if bytes.Contains(w.Body.Bytes(), []byte("useradd")) || bytes.Contains(w.Body.Bytes(), []byte("moose")) {
 		t.Errorf("response leaked system detail: %s", w.Body.String())
 	}
 }
@@ -704,8 +704,8 @@ func TestSystemUpdateTarget_DelegatesToReporter(t *testing.T) {
 	a, mux := newTestAgent(&stubVerifier{})
 	fake := NewFakeUpdateTargetReporter(protocol.UpdateTarget{
 		State:   protocol.UpdateTargetAvailable,
-		Running: protocol.ControlPlanePair{Brain: "ghcr.io/malmoos/brain@sha256:aa", UI: "ghcr.io/malmoos/ui@sha256:bb"},
-		Target:  &protocol.ControlPlaneOffer{Version: "v0.8.0", BrainImage: "ghcr.io/malmoos/brain@sha256:cc", UIImage: "ghcr.io/malmoos/ui@sha256:dd"},
+		Running: protocol.ControlPlanePair{Brain: "ghcr.io/onmoose/brain@sha256:aa", UI: "ghcr.io/onmoose/ui@sha256:bb"},
+		Target:  &protocol.ControlPlaneOffer{Version: "v0.8.0", BrainImage: "ghcr.io/onmoose/brain@sha256:cc", UIImage: "ghcr.io/onmoose/ui@sha256:dd"},
 	})
 	a.UpdateTarget = fake
 
@@ -1046,7 +1046,7 @@ func TestSystemHealth_AlwaysReturns200OnSourceError(t *testing.T) {
 
 // --- well-known-identity tests ---
 
-// The fake branch resolves the malmo-app service identity to the dev operator's
+// The fake branch resolves the moose-app service identity to the dev operator's
 // own uid/gid (not fixed 2000/2001) so a household-scope folder app runs as an
 // identity the unprivileged dev brain owns — Part A's chowns are then no-op
 // successes (#147).
@@ -1058,12 +1058,12 @@ func TestWellKnownIdentity_FakeBranch_ReturnsOperatorIdentity(t *testing.T) {
 		t.Fatalf("want 200, got %d", w.Code)
 	}
 	resp := decodeBody[protocol.WellKnownIdentityResponse](t, w)
-	if resp.MalmoAppUID != os.Getuid() || resp.MalmoAppGID != os.Getgid() {
-		t.Errorf("malmo-app identity: want operator %d:%d, got %d:%d",
-			os.Getuid(), os.Getgid(), resp.MalmoAppUID, resp.MalmoAppGID)
+	if resp.MooseAppUID != os.Getuid() || resp.MooseAppGID != os.Getgid() {
+		t.Errorf("moose-app identity: want operator %d:%d, got %d:%d",
+			os.Getuid(), os.Getgid(), resp.MooseAppUID, resp.MooseAppGID)
 	}
-	if resp.MalmoSharedGID != os.Getgid() {
-		t.Errorf("malmo_shared_gid: want operator egid %d, got %d", os.Getgid(), resp.MalmoSharedGID)
+	if resp.MooseSharedGID != os.Getgid() {
+		t.Errorf("moose_shared_gid: want operator egid %d, got %d", os.Getgid(), resp.MooseSharedGID)
 	}
 }
 
@@ -1079,7 +1079,7 @@ func TestWellKnownIdentity_DelegatesToUserMgrWhenSet(t *testing.T) {
 		t.Fatalf("want 200, got %d", w.Code)
 	}
 	resp := decodeBody[protocol.WellKnownIdentityResponse](t, w)
-	if resp.MalmoAppUID != 1500 || resp.MalmoAppGID != 1500 || resp.MalmoSharedGID != 1501 {
+	if resp.MooseAppUID != 1500 || resp.MooseAppGID != 1500 || resp.MooseSharedGID != 1501 {
 		t.Errorf("unexpected response: %+v", resp)
 	}
 	if mgr.wellKnownIdentityCalls != 1 {
@@ -1088,7 +1088,7 @@ func TestWellKnownIdentity_DelegatesToUserMgrWhenSet(t *testing.T) {
 }
 
 func TestWellKnownIdentity_UserMgrError_Returns500(t *testing.T) {
-	mgr := &stubUserMgr{wellKnownIdentityErr: errors.New("lookup malmo-app user: user: unknown user malmo-app")}
+	mgr := &stubUserMgr{wellKnownIdentityErr: errors.New("lookup moose-app user: user: unknown user moose-app")}
 	a := New(&stubVerifier{}, NewFakePublisher(".local"))
 	a.UserMgr = mgr
 	mux := http.NewServeMux()
@@ -1098,7 +1098,7 @@ func TestWellKnownIdentity_UserMgrError_Returns500(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("want 500, got %d", w.Code)
 	}
-	if bytes.Contains(w.Body.Bytes(), []byte("malmo-app")) {
+	if bytes.Contains(w.Body.Bytes(), []byte("moose-app")) {
 		t.Errorf("response leaked system detail: %s", w.Body.String())
 	}
 }
@@ -1226,7 +1226,7 @@ func TestAllocateAppService_UserMgrError_Returns500(t *testing.T) {
 }
 
 func TestReleaseAppService_UserMgrError_Returns500(t *testing.T) {
-	mgr := &stubUserMgr{releaseErr: errors.New("userdel: user malmo-svc-2100 is currently used by process 4242")}
+	mgr := &stubUserMgr{releaseErr: errors.New("userdel: user moose-svc-2100 is currently used by process 4242")}
 	a := New(&stubVerifier{}, NewFakePublisher(".local"))
 	a.UserMgr = mgr
 	mux := http.NewServeMux()

@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // TestRead_ReportsOnlyNonActiveUnits verifies the reporter emits one

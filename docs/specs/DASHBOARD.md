@@ -1,6 +1,6 @@
 # Dashboard — logged-in product surface
 
-> Working spec for what the malmo dashboard **is** once you're logged in: the home screen, the app model the home screen renders, global navigation, and the top bar. Companion to `WEB_UI.md` (which owns the stack, container, and deploy model — *not* the information architecture), `AUTH.md` (role-gated nav), `APP_LIFECYCLE.md` (instances, slugs, routing), `STORAGE.md` (per-user folders), `DISCOVERY.md` (the `.local` names this scheme publishes), and `NOTIFICATIONS.md` (the bell).
+> Working spec for what the moose dashboard **is** once you're logged in: the home screen, the app model the home screen renders, global navigation, and the top bar. Companion to `WEB_UI.md` (which owns the stack, container, and deploy model — *not* the information architecture), `AUTH.md` (role-gated nav), `APP_LIFECYCLE.md` (instances, slugs, routing), `STORAGE.md` (per-user folders), `DISCOVERY.md` (the `.local` names this scheme publishes), and `NOTIFICATIONS.md` (the bell).
 >
 > `WEB_UI.md` answers "how is the dashboard built and shipped." This doc answers "what does the user see and touch." Every other subsystem *feeds* this surface; nothing else owns it.
 
@@ -12,7 +12,7 @@ A **calm launcher**, not a control panel. The home screen is the apps the househ
 
 ## Locked: the apps model — instances are owner-scoped
 
-This is the load-bearing decision, and it's the one that reshaped `SPEC.md` (see `DECISIONS.md` 2026-05-29 # App instances are owner-scoped). It is also malmo's clearest app-layer differentiator — see # Why this is a differentiator below.
+This is the load-bearing decision, and it's the one that reshaped `SPEC.md` (see `DECISIONS.md` 2026-05-29 # App instances are owner-scoped). It is also moose's clearest app-layer differentiator — see # Why this is a differentiator below.
 
 Every app instance has an **owner**. There are two kinds:
 
@@ -54,7 +54,7 @@ Rationale: two people may want genuinely different things from the same app — 
 
 - **Resource limits / quotas per user.** N personal Immichs = N container stacks on a pantry laptop. This is a real runtime cost, but it's a *product-acceptance* reality, not a structural one — the box owner self-limits. We surface it as a **warning when resources are tight** (ties into `HEALTH.md` `ram-pressure` / `disk-full`), not a hard cap. Quotas remain a `NEXT.md` Tier-4 item.
 - **Granular post-install permission revocation.** Install-time consent is all-or-nothing (accept the declared permissions or cancel); changing a grant after install — turning off a folder, downgrading write→read — is the separate per-app permissions screen deferred to `NEXT.md` Tier-3. (Cross-user *shared-folder access* for personal instances is no longer deferred — it's now the install-time source election below; `DECISIONS.md` 2026-05-30.)
-- **SSO.** The long-term door (mentioned in `SPEC.md` # Accounts & users): if/when malmo gets SSO, *shared* instances become the *encouraged* path for apps that support internal multi-user, with personal instances as the escape hatch for apps that don't (or for users who want hard data isolation). Warn-don't-block keeps both doors open in the meantime.
+- **SSO.** The long-term door (mentioned in `SPEC.md` # Accounts & users): if/when moose gets SSO, *shared* instances become the *encouraged* path for apps that support internal multi-user, with personal instances as the escape hatch for apps that don't (or for users who want hard data isolation). Warn-don't-block keeps both doors open in the meantime.
 
 ---
 
@@ -70,11 +70,11 @@ Admin-only, and tucked away — not a dock item, not in the Store browse grid. A
 
 One screen, top to bottom:
 
-1. **Paste or upload the compose file.** A large textarea (file-picker as the alternative) is the primary input. The compose is held **verbatim** — malmo never rewrites it (`APP_MANIFEST.md`). This is *the user's document*; it stays in its own textarea throughout (see # Form is a projection of the synthetic manifest below).
+1. **Paste or upload the compose file.** A large textarea (file-picker as the alternative) is the primary input. The compose is held **verbatim** — moose never rewrites it (`APP_MANIFEST.md`). This is *the user's document*; it stays in its own textarea throughout (see # Form is a projection of the synthetic manifest below).
 2. **App name.** A friendly display name; the slug derives from it. The form previews the resulting URL (`<slug>.local`) live as the name is typed.
 3. **Main service** — *autodetected* when the compose has exactly one service; a **required dropdown** of the compose's services when it has several (`manifest.Synthesize`).
-4. **Main port** — the *container-internal* port Caddy routes to. **Best-effort inferred** from every signal the compose carries — a single `expose:` value, or the *container side* of a published `ports:` mapping (`8080:80` ⇒ `80`, mined out before the mapping itself is rejected) — and **asked** only when the compose is silent, since malmo can't read the image's `EXPOSE` without pulling it. Always editable, always required, with help text ("the port your app listens on *inside* the container — check the image's docs"). A published `ports:` mapping is still an admission rejection (Caddy fronts every app); we read its container side for the prefill, we don't honor the host binding.
-5. **Permissions.** The admin elects the app's malmo-native permissions — this is where the synthetic manifest's `permissions` block is authored (`APP_MANIFEST.md` # Custom container):
+4. **Main port** — the *container-internal* port Caddy routes to. **Best-effort inferred** from every signal the compose carries — a single `expose:` value, or the *container side* of a published `ports:` mapping (`8080:80` ⇒ `80`, mined out before the mapping itself is rejected) — and **asked** only when the compose is silent, since moose can't read the image's `EXPOSE` without pulling it. Always editable, always required, with help text ("the port your app listens on *inside* the container — check the image's docs"). A published `ports:` mapping is still an admission rejection (Caddy fronts every app); we read its container side for the prefill, we don't honor the host binding.
+5. **Permissions.** The admin elects the app's moose-native permissions — this is where the synthetic manifest's `permissions` block is authored (`APP_MANIFEST.md` # Custom container):
    - **Internet** — default **on** (the custom-app default), with a one-line explanation.
    - **LAN / mDNS** — default **off**.
    - **GPU** — default **off**; a single toggle. On ⇒ the synthetic manifest sets `gpu: true` (platform GPU runtime; `APP_MANIFEST.md` # gpu). No-GPU boxes surface the same capacity-check failure as a store app.
@@ -84,7 +84,7 @@ One screen, top to bottom:
 
 ### Form is a projection of the synthetic manifest (with a YAML escape hatch)
 
-The form fields in steps 2–5 are a **friendly projection of the synthetic manifest** — the overlay malmo wraps around the pasted compose (`APP_MANIFEST.md` # Custom container). An **"Edit as YAML"** toggle flips that overlay between the form and a **raw manifest editor**, so the power user who needs a field the form doesn't surface (`devices`, managed `services`, a `health_probe`) hand-authors it without us building a control for every key. This is the Door-1/Door-2 split recursed one level: the form is the calm path, the YAML view is the escape hatch.
+The form fields in steps 2–5 are a **friendly projection of the synthetic manifest** — the overlay moose wraps around the pasted compose (`APP_MANIFEST.md` # Custom container). An **"Edit as YAML"** toggle flips that overlay between the form and a **raw manifest editor**, so the power user who needs a field the form doesn't surface (`devices`, managed `services`, a `health_probe`) hand-authors it without us building a control for every key. This is the Door-1/Door-2 split recursed one level: the form is the calm path, the YAML view is the escape hatch.
 
 Two boundaries keep it honest:
 
@@ -95,7 +95,7 @@ This is **install-time authoring** of a not-yet-installed app — distinct from 
 
 ### Folder grants carry an explicit destination path
 
-A store app's folder grant declares no in-container path: the brain mounts every folder at a fixed `/malmo/<folder>` and injects `MALMO_FOLDER_<NAME>`, and the *author* maps that variable to the image's library path (`APP_MANIFEST.md` # Locked: folders mount at a fixed path). A Door-2 paste has no author to adapt — the verbatim third-party compose already hardcodes where it wants data (PhotoPrism reads `/photoprism/originals`, not a malmo env var). So a **Door-2 folder grant carries an explicit `target`** — the destination path the admin types — and the brain binds the elected source straight there. Store apps keep the fixed-path + env-var convention; the explicit `target` is an additive, Door-2-only field (`APP_MANIFEST.md` # Custom container, `DECISIONS.md` 2026-06-02). The source side stays a **picker, not free text** — it must resolve to a real use-case folder, keeping folder access inside the files-first-class model and out of "bind any host path" territory (which admission rejects anyway).
+A store app's folder grant declares no in-container path: the brain mounts every folder at a fixed `/moose/<folder>` and injects `MOOSE_FOLDER_<NAME>`, and the *author* maps that variable to the image's library path (`APP_MANIFEST.md` # Locked: folders mount at a fixed path). A Door-2 paste has no author to adapt — the verbatim third-party compose already hardcodes where it wants data (PhotoPrism reads `/photoprism/originals`, not a moose env var). So a **Door-2 folder grant carries an explicit `target`** — the destination path the admin types — and the brain binds the elected source straight there. Store apps keep the fixed-path + env-var convention; the explicit `target` is an additive, Door-2-only field (`APP_MANIFEST.md` # Custom container, `DECISIONS.md` 2026-06-02). The source side stays a **picker, not free text** — it must resolve to a real use-case folder, keeping folder access inside the files-first-class model and out of "bind any host path" territory (which admission rejects anyway).
 
 ### Validation: coach the paste into the sandbox
 
@@ -103,7 +103,7 @@ This is the load-bearing UX call. The common Door-2 input is a copy-pasted forum
 
 - **Two-stage, synchronous.** The client parses the YAML for instant structural feedback; submitting calls `POST /api/v1/apps/custom`, which runs `Synthesize` + `admission.Check` as **synchronous pre-checks** and returns `422` with the exact field-named message *before* any install job starts (implemented). A bad paste never leaves a half-built instance.
 - **Errors are inline and actionable.** Each admission rejection already carries its remedy in the message ("service X declares host ports — remove the ports mapping"; "use a relative bind mount like ./data/… instead"); the form surfaces it against the offending input, not as an opaque toast. This turns the sandbox from a wall into a guided rail.
-- **Image pinning is surfaced honestly.** The form notes that malmo pins the **exact image it pulls now** (TOFU digest; `APP_MANIFEST.md`) and that a custom app **does not auto-update** — there is no catalog tracking its versions. The admin updates it by re-pasting a newer tag.
+- **Image pinning is surfaced honestly.** The form notes that moose pins the **exact image it pulls now** (TOFU digest; `APP_MANIFEST.md`) and that a custom app **does not auto-update** — there is no catalog tracking its versions. The admin updates it by re-pasting a newer tag.
 
 ### Name / slug collisions
 
@@ -117,15 +117,15 @@ There is **no** in-product editor for an *installed* custom app in v1. The **Edi
 
 ## Locked: instance naming / routing — first-come bare slug, `--<user>` on collision
 
-Every instance needs a stable, unique, routable name — it's the LAN `.local` record (`DISCOVERY.md` # Per-app A records), the `.malmo.network` subdomain (`MALMO_NETWORK.md`), and the Caddy site block, all keyed on the instance slug.
+Every instance needs a stable, unique, routable name — it's the LAN `.local` record (`DISCOVERY.md` # Per-app A records), the `.onmoose.network` subdomain (`MOOSE_NETWORK.md`), and the Caddy site block, all keyed on the instance slug.
 
 **The scheme:**
 
 | Scenario | Slug | LAN | Public |
 |---|---|---|---|
-| First install of any scope (no conflict) | `<slug>` | `immich.local` | `immich.<box-id>.malmo.network` |
-| Personal install when bare slug is taken | `<slug>--<user>` | `immich--alex.local` | `immich--alex.<box-id>.malmo.network` |
-| Household install when bare slug is taken | `<slug>-2` | `immich-2.local` | `immich-2.<box-id>.malmo.network` |
+| First install of any scope (no conflict) | `<slug>` | `immich.local` | `immich.<box-id>.onmoose.network` |
+| Personal install when bare slug is taken | `<slug>--<user>` | `immich--alex.local` | `immich--alex.<box-id>.onmoose.network` |
+| Household install when bare slug is taken | `<slug>-2` | `immich-2.local` | `immich-2.<box-id>.onmoose.network` |
 
 - **The bare slug is first-come, any scope.** The first instance of any app installed — whether household or personal — wins the clean name. On a collision, a personal instance appends the owner (`--<user>`); a household instance without an owner to name gets a numeric suffix (`-2`, `-3`). Scope is an attribute shown in the dashboard (Household / Yours grouping, owner label on the tile), not encoded in the hostname.
 - **Double dash (`--`) as the separator.** App slugs are kebab-case and can contain single hyphens (`home-assistant`), so a single `-` is ambiguous — `home-assistant-alex` can't be parsed into slug + user, but `home-assistant--alex` can.
@@ -133,11 +133,11 @@ Every instance needs a stable, unique, routable name — it's the LAN `.local` r
 
 ### Why this shape, and not the prettier dotted one
 
-The obvious alternative — `<user>.<slug>.<box-id>.malmo.network` (`alex.immich.…`) — reads better but **breaks the cert architecture**, which is the decisive constraint:
+The obvious alternative — `<user>.<slug>.<box-id>.onmoose.network` (`alex.immich.…`) — reads better but **breaks the cert architecture**, which is the decisive constraint:
 
-- `MALMO_NETWORK.md` (lines 27, 138–139) locks **one** wildcard DNS record `*.<box-id>.malmo.network` and **one** wildcard Let's Encrypt cert `*.<box-id>.malmo.network`, renewed quietly every ~60 days via ACME DNS-01.
-- **A TLS wildcard spans exactly one label — it does not cross dots.** `immich--alex.<box-id>.malmo.network` is one label → covered. `alex.immich.<box-id>.malmo.network` is *two* labels → **not** covered by `*.<box-id>…`. The dotted form would force a *separate* wildcard cert (`*.immich.<box-id>…`) issued per app, a new ACME round and DNS record on every install — destroying the "one cert, renew quietly" model.
-- The LAN side agrees: Avahi publishes each instance as a flat, single-label A record `<slug>.local` (`DISCOVERY.md`). A single-label name resolves on every mDNS client; a multi-label `.local` name (the dotted `alex.immich.local`, or the old `<slug>.malmo.local` infix shape) is **rejected outright by Linux's `nss-mdns`** and handled inconsistently by Android/Windows mDNS stacks. This — not just the cert architecture — is why both dimensions (app and user) collapse into one `--`-joined label. See `DISCOVERY.md` # Per-app A records.
+- `MOOSE_NETWORK.md` (lines 27, 138–139) locks **one** wildcard DNS record `*.<box-id>.onmoose.network` and **one** wildcard Let's Encrypt cert `*.<box-id>.onmoose.network`, renewed quietly every ~60 days via ACME DNS-01.
+- **A TLS wildcard spans exactly one label — it does not cross dots.** `immich--alex.<box-id>.onmoose.network` is one label → covered. `alex.immich.<box-id>.onmoose.network` is *two* labels → **not** covered by `*.<box-id>…`. The dotted form would force a *separate* wildcard cert (`*.immich.<box-id>…`) issued per app, a new ACME round and DNS record on every install — destroying the "one cert, renew quietly" model.
+- The LAN side agrees: Avahi publishes each instance as a flat, single-label A record `<slug>.local` (`DISCOVERY.md`). A single-label name resolves on every mDNS client; a multi-label `.local` name (the dotted `alex.immich.local`, or the old `<slug>.moose.local` infix shape) is **rejected outright by Linux's `nss-mdns`** and handled inconsistently by Android/Windows mDNS stacks. This — not just the cert architecture — is why both dimensions (app and user) collapse into one `--`-joined label. See `DISCOVERY.md` # Per-app A records.
 
 So both transports independently force **flat, single-label**. The dotted form was rejected not on taste but on the cert and mDNS constraints. The aesthetic cost is small in practice: these hostnames are clicked from dashboard tiles, rarely typed or read raw.
 
@@ -152,7 +152,7 @@ So both transports independently force **flat, single-label**. The dotted form w
 **Cons (accepted)**
 - `immich--alex` is less elegant than `alex.immich`. Mitigated: rarely seen raw.
 - The `--` separator must be reserved: catalog slugs and usernames may not contain `--`, and neither may produce an `xn--` label prefix (reserved for IDN/punycode). We control both the catalog and username validation, so this is a validation rule, not a real limit. Documented as a constraint on `APP_STORE.md` slug validation and `USERS_AND_GROUPS.md` username rules.
-- **A collision-triggered `--<user>` hostname leaks the `username ↔ app` mapping to the LAN.** `immich--alex.local` is a published mDNS record (`DISCOVERY.md`), so any device on the network can observe which user triggered a disambiguation. Bare names (the common case on a lightly loaded box) reveal nothing about scope or ownership; the leak occurs only when two instances of the same app coexist. Net improvement over the old scheme where every personal instance was always suffixed. Accepted for the same reasons: closed-by-default, single-household LAN (`THREAT_MODEL.md` treats the LAN as semi-trusted), and the record must exist for routing regardless. Revisit if malmo ever targets shared/untrusted LANs.
+- **A collision-triggered `--<user>` hostname leaks the `username ↔ app` mapping to the LAN.** `immich--alex.local` is a published mDNS record (`DISCOVERY.md`), so any device on the network can observe which user triggered a disambiguation. Bare names (the common case on a lightly loaded box) reveal nothing about scope or ownership; the leak occurs only when two instances of the same app coexist. Net improvement over the old scheme where every personal instance was always suffixed. Accepted for the same reasons: closed-by-default, single-household LAN (`THREAT_MODEL.md` treats the LAN as semi-trusted), and the record must exist for routing regardless. Revisit if moose ever targets shared/untrusted LANs.
 
 ---
 
@@ -183,7 +183,7 @@ The menu button beside the name opens a small popup — a lighter-weight surface
 
 ### Open-app interaction
 
-Clicking a **running** tile's **logo opens the app in a new browser tab** at its own host (`<slug>.local` or `<slug>--<user>.local` depending on whether disambiguation was needed, or the `.malmo.network` host when the remote toggle is on). The app runs on its own origin — that's the whole point of subdomain routing (`SPEC.md`: browser same-origin isolation). The dashboard is the launcher, not a frame/proxy around apps. A stopped or failed tile's logo does nothing — starting the service is a quick-menu action (see # Tile above).
+Clicking a **running** tile's **logo opens the app in a new browser tab** at its own host (`<slug>.local` or `<slug>--<user>.local` depending on whether disambiguation was needed, or the `.onmoose.network` host when the remote toggle is on). The app runs on its own origin — that's the whole point of subdomain routing (`SPEC.md`: browser same-origin isolation). The dashboard is the launcher, not a frame/proxy around apps. A stopped or failed tile's logo does nothing — starting the service is a quick-menu action (see # Tile above).
 
 ### First arrival / empty state
 
@@ -225,7 +225,7 @@ The greeting/status line and any ambient "everything's fine" prose are **impleme
 
 ## Locked: no home-screen widgets in v1
 
-Umbrel ships app-contributed home-screen widgets as a first-class `umbreld` module. malmo does **not** have a widget concept in v1, and the home screen shows no cards on a healthy box. Reasons:
+Umbrel ships app-contributed home-screen widgets as a first-class `umbreld` module. moose does **not** have a widget concept in v1, and the home screen shows no cards on a healthy box. Reasons:
 
 - It's the calm-launcher position: apps get the breathing room; the chrome stays quiet.
 - Widgets are an app-author contract (a manifest surface, a render sandbox, a security boundary) that we are not opening in v1.
@@ -262,7 +262,7 @@ A scan of the neighbors (May 2026) shows everyone separates *files* per user but
 - **TrueNAS SCALE** — per-user separation is ZFS datasets + ACLs; running two instances of an app is a *manual admin* chart deployment with no notion of "this instance belongs to Alex."
 - **Synology DSM** — real multi-user OS, and you *can* run multiple Docker instances, but it's manual (separate containers, manual ports + reverse-proxy rules); Package Center packages are single-instance.
 
-The universal fallback is "one shared instance + the app's own internal multi-user (if it has any), layered on shared files" — which is exactly the no-SSO tension in `SPEC.md`, and exactly what breaks for personal-data apps. The reason no one ships identity-driven per-user instances is the plumbing (per-instance routing, certs, databases). malmo already has that plumbing, so it can ship the thing the neighbors punt on. This is squarely on the "app ecosystem is the strongest pillar" thesis.
+The universal fallback is "one shared instance + the app's own internal multi-user (if it has any), layered on shared files" — which is exactly the no-SSO tension in `SPEC.md`, and exactly what breaks for personal-data apps. The reason no one ships identity-driven per-user instances is the plumbing (per-instance routing, certs, databases). moose already has that plumbing, so it can ship the thing the neighbors punt on. This is squarely on the "app ecosystem is the strongest pillar" thesis.
 
 ---
 

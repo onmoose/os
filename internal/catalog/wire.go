@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/malmoos/malmo/internal/manifest"
+	"github.com/onmoose/moose/internal/manifest"
 )
 
 // wire.go models the control plane's published catalog API as the box consumes
@@ -117,7 +117,7 @@ type wireApp struct {
 	Footprint        manifest.Footprint `json:"footprint"`
 
 	// ExternalCosts is money a THIRD PARTY charges to make the app useful (a
-	// model-provider API key, a mail provider). It is NOT what malmo charges for
+	// model-provider API key, a mail provider). It is NOT what moose charges for
 	// the app — that is authored in the curation source next to
 	// listed/environments and is not on this wire.
 	ExternalCosts []ExternalCost `json:"external_costs,omitempty"`
@@ -140,7 +140,7 @@ type wireApp struct {
 	Rank     *int `json:"rank,omitempty"`
 
 	// Manifest / Compose are the DEV AND TEST SEED SEAM ONLY, and the published
-	// catalog never carries them. A staged snapshot file (MALMO_CATALOG_FILE —
+	// catalog never carries them. A staged snapshot file (MOOSE_CATALOG_FILE —
 	// dev/mkcatalog, dev/test-qemu, dev/cloud/test) has no control plane behind
 	// it to serve the two document routes, so it inlines the verbatim bytes here
 	// and Load reads them instead of fetching. A record from a real control plane
@@ -150,7 +150,7 @@ type wireApp struct {
 }
 
 // ExternalCost is one third-party charge an app depends on: what someone OTHER
-// than malmo bills the user to make the app useful (a model-provider API key, a
+// than moose bills the user to make the app useful (a model-provider API key, a
 // mail provider). Mirror of cloud catalog.ExternalCost, so it is both a wire
 // shape and the shape Detail exposes.
 //
@@ -204,7 +204,7 @@ func (f catalogFile) verify() error {
 
 // parseSnapshot unmarshals raw GET /catalog bytes and verifies them in one step —
 // the only way a browse payload enters the box, whether fetched from the control
-// plane or read from a staged local file (the dev/test seam, MALMO_CATALOG_FILE).
+// plane or read from a staged local file (the dev/test seam, MOOSE_CATALOG_FILE).
 func parseSnapshot(data []byte) (catalogFile, error) {
 	var f catalogFile
 	if err := json.Unmarshal(data, &f); err != nil {

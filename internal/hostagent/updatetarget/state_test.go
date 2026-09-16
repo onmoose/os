@@ -26,7 +26,7 @@ func TestSnapshot_NoTickYet(t *testing.T) {
 
 func TestSnapshot_Outcomes(t *testing.T) {
 	unpinned := goodTarget()
-	unpinned.BrainImage = "ghcr.io/malmoos/brain:v0.7.0"
+	unpinned.BrainImage = "ghcr.io/onmoose/brain:v0.7.0"
 
 	cases := []struct {
 		name    string
@@ -67,7 +67,7 @@ func TestSnapshot_Outcomes(t *testing.T) {
 // needs to see what that source is actually serving.
 func TestSnapshot_KeepsTheRefusedAnswer(t *testing.T) {
 	unpinned := goodTarget()
-	unpinned.BrainImage = "ghcr.io/malmoos/brain:v0.7.0"
+	unpinned.BrainImage = "ghcr.io/onmoose/brain:v0.7.0"
 	l := newLoop(&fakeSource{target: unpinned}, fakeRunning{brain: oldBrain, ui: oldUI}, &fakeApplier{}, ptr(at(12, 3, 30)))
 	l.Tick(context.Background())
 
@@ -149,14 +149,14 @@ func TestSnapshot_ConcurrentReadAndTick(t *testing.T) {
 // them may carry the password.
 func TestRedactURL(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"https://user:secret@malmo.example/target", "https://redacted@malmo.example/target"},
+		{"https://user:secret@moose.example/target", "https://redacted@moose.example/target"},
 		// A secret hides in the query as readily as in the userinfo, and this
 		// is the likelier shape: a box pointed at a signed or tokenized source.
-		{"https://malmo.example/target?token=secret", "https://malmo.example/target?redacted"},
+		{"https://moose.example/target?token=secret", "https://moose.example/target?redacted"},
 		// The query is replaced, not deleted: "this box asks with parameters"
 		// and "this box asks with none" are different situations.
-		{"https://malmo.example/target", "https://malmo.example/target"},
-		{"https://malmo.example/target#secret", "https://malmo.example/target"},
+		{"https://moose.example/target", "https://moose.example/target"},
+		{"https://moose.example/target#secret", "https://moose.example/target"},
 		{"", ""},
 		{"://nope", "(unreadable URL)"},
 	}

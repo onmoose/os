@@ -1,20 +1,20 @@
-# malmo Threat Model
+# moose Threat Model
 
-> The security lens for the whole spec. `AUTH.md`, `APP_ISOLATION.md`, `STORAGE.md`, `MALMO_NETWORK.md`, and `USERS_AND_GROUPS.md` each defend against an attacker; this doc writes down *who that attacker is*, *what we protect*, and — most importantly — *what we deliberately don't defend against*. It is a checking framework and a place to point when arguing edge cases.
+> The security lens for the whole spec. `AUTH.md`, `APP_ISOLATION.md`, `STORAGE.md`, `MOOSE_NETWORK.md`, and `USERS_AND_GROUPS.md` each defend against an attacker; this doc writes down *who that attacker is*, *what we protect*, and — most importantly — *what we deliberately don't defend against*. It is a checking framework and a place to point when arguing edge cases.
 
-> **Environment profiles.** This doc's posture is the `appliance` one: the user owns the hardware, and the box is closed-by-default. The **hosted** profile (cloud VM) differs on two load-bearing points — malmo-operated infra is inside the trust boundary (an honest convenience tier, not operator-blind), and the exposure posture inverts to public-by-default / auth-gated. See `ENVIRONMENT.md` # Threat model (hosted) and # Public-by-default, auth-gated.
+> **Environment profiles.** This doc's posture is the `appliance` one: the user owns the hardware, and the box is closed-by-default. The **hosted** profile (cloud VM) differs on two load-bearing points — moose-operated infra is inside the trust boundary (an honest convenience tier, not operator-blind), and the exposure posture inverts to public-by-default / auth-gated. See `ENVIRONMENT.md` # Threat model (hosted) and # Public-by-default, auth-gated.
 
 ## Stance — this doc owns no mitigations
 
 Every "how we defend X" lives in the doc that owns X. This document is an **index of what we defend and what we don't**; the other docs are the *how*. If reading this makes us want to change a defense, that's the threat model doing its job — but the change lands in the owning doc, and an entry goes in `DECISIONS.md`. The threat model documents; it does not decide.
 
-**Scope: v1 only — closed-by-default, LAN-first.** The deferred mesh / remote-access surface (`MALMO_NETWORK.md` # Deferred) changes the internet-facing boundary materially; it is **out of scope here** and gets its own pass when it ships (see # When this model changes). Everything below assumes the v1 posture: no app or service publicly exposed, cloud is DNS + certs only.
+**Scope: v1 only — closed-by-default, LAN-first.** The deferred mesh / remote-access surface (`MOOSE_NETWORK.md` # Deferred) changes the internet-facing boundary materially; it is **out of scope here** and gets its own pass when it ships (see # When this model changes). Everything below assumes the v1 posture: no app or service publicly exposed, cloud is DNS + certs only.
 
 ## The trust model (read this first)
 
-malmo is a **household appliance**, and almost every security decision follows from one assumption:
+moose is a **household appliance**, and almost every security decision follows from one assumption:
 
-> **Members of a household broadly trust each other. malmo is not hardening one member against another at kernel grade. The real adversaries are (1) the network — LAN and internet, (2) a compromised app, and (3) physical possession of a drive that left the building.**
+> **Members of a household broadly trust each other. moose is not hardening one member against another at kernel grade. The real adversaries are (1) the network — LAN and internet, (2) a compromised app, and (3) physical possession of a drive that left the building.**
 
 This single paragraph justifies a large fraction of the spec, and naming it stops reviewers from relitigating decisions against the wrong adversary:
 
@@ -31,22 +31,22 @@ Where the trust model does **not** extend: the network (treated as hostile), app
 |---|---|---|
 | User content (Photos, Documents, …) | `/home/<user>/` (`STORAGE.md`) | Cross-user read; drive theft; ransomware-via-app |
 | PAM credentials | `/etc/shadow` (`AUTH.md`) | Credential theft, offline cracking |
-| App state + per-user managed-service DBs | `/var/lib/malmo/state/instances/<id>/` (`APP_ISOLATION.md`) | Cross-app / cross-user access |
-| Brain SQLite (accounts, sessions, audit log) | `/var/lib/malmo/state/malmo.db` (+ `-wal`) | Tamper (esp. audit log), session theft |
+| App state + per-user managed-service DBs | `/var/lib/moose/state/instances/<id>/` (`APP_ISOLATION.md`) | Cross-app / cross-user access |
+| Brain SQLite (accounts, sessions, audit log) | `/var/lib/moose/state/moose.db` (+ `-wal`) | Tamper (esp. audit log), session theft |
 | LUKS keys / TPM seal | OS drive + TPM (`STORAGE.md`) | Whole-box theft, Secure-Boot subversion |
-| Box network position | nftables, closed-by-default (`MALMO_NETWORK.md`) | Remote exploitation, lateral movement |
-| Privacy metadata (who-runs-what, audit trail, cloud DNS queries) | brain SQLite + cloud (`LOGGING.md`, `MALMO_NETWORK.md`) | Disclosure / correlation |
+| Box network position | nftables, closed-by-default (`MOOSE_NETWORK.md`) | Remote exploitation, lateral movement |
+| Privacy metadata (who-runs-what, audit trail, cloud DNS queries) | brain SQLite + cloud (`LOGGING.md`, `MOOSE_NETWORK.md`) | Disclosure / correlation |
 
 ## Actors / principals
 
 | Principal | Capability assumption |
 |---|---|
 | **Anonymous LAN device** | On the same L2 network; can reach any LAN-exposed port; can attempt mDNS spoofing, ARP tricks. Present and untrusted. |
-| **Authenticated member** | Valid malmo password; unprivileged Linux user; owns their own data + per-user app instances. Trusted (household). |
+| **Authenticated member** | Valid moose password; unprivileged Linux user; owns their own data + per-user app instances. Trusted (household). |
 | **Admin** | Member + `sudo` + host mutation via the dashboard/host-agent. Trusted; a compromised admin is high-impact by design. |
 | **App container** | Runs code we didn't write. **Assume it can be compromised.** Confined to its declared permissions. |
 | **Catalog app author** | Submits manifests. Trusted via curation, not via sandbox. A *deliberately* malicious author is out of scope (curation's job). |
-| **malmo cloud** | DNS resolver + ACME helper. Sees box-ids and query metadata; never sees traffic or data. Honest-but-curious. |
+| **moose cloud** | DNS resolver + ACME helper. Sees box-ids and query metadata; never sees traffic or data. Honest-but-curious. |
 | **Possessor of a removed drive** | Has a drive that left the box. Hostile. Defended by LUKS. |
 | **Possessor of the whole box** | Physical theft of the running/poweroff box incl. TPM. **Out of scope beyond at-rest encryption.** |
 | **Internet attacker** | Off-LAN, no mesh credential. In v1 has **no reachable surface** (closed-by-default). |
@@ -61,9 +61,9 @@ The box presents **no surface to the public internet in v1.** SSH/SMB are firewa
 
 | Threat | Mitigation (owner) | Residual |
 |---|---|---|
-| Remote exploitation of an exposed service | Closed-by-default; SSH/SMB scoped to RFC1918+mesh via nftables (`AUTH.md` # Device access, `BUILD.md` # SSH); no public-exposure toggle (`MALMO_NETWORK.md` # closed by default) | BYO-domain + explicit advanced exposure is the user's consciously-accepted risk |
+| Remote exploitation of an exposed service | Closed-by-default; SSH/SMB scoped to RFC1918+mesh via nftables (`AUTH.md` # Device access, `BUILD.md` # SSH); no public-exposure toggle (`MOOSE_NETWORK.md` # closed by default) | BYO-domain + explicit advanced exposure is the user's consciously-accepted risk |
 | Apps reaching the internet uninvited | `internet: false` → `internal: true` bridge, kernel-level (no NAT route) (`APP_ISOLATION.md` # internet) | — (host ports are admission-rejected for both doors; nothing binds to the host) |
-| Cloud-mediated LAN access concerns | Cloud resolves names + sets ACME TXT only; no proxy/tunnel (`MALMO_NETWORK.md`) | Cloud learns box-id exists and who queries it (metadata, not content) |
+| Cloud-mediated LAN access concerns | Cloud resolves names + sets ACME TXT only; no proxy/tunnel (`MOOSE_NETWORK.md`) | Cloud learns box-id exists and who queries it (metadata, not content) |
 
 ### B2 — App container ↔ host (assume breach)
 
@@ -74,11 +74,11 @@ The richest boundary. The right question is not "can an app be compromised" (ass
 | Container escape to host root | `cap_drop: ALL`; `privileged`, docker socket, `SYS_ADMIN` admission-rejected for **both doors**; Docker default seccomp/AppArmor (`APP_ISOLATION.md` # Forbidden for both doors, # Capabilities) | No userns remap, no custom seccomp in v1 (Docker defaults deemed sufficient). **Admission blocks escape via an app's *own* compose only — it does nothing about reaching the socket-proxy over the network at runtime; see the Brain↔Docker row, a live gap until #187.** |
 | App lies about declared permissions | Enforced at kernel/Docker layer, not metadata — violations silently fail + log (`APP_ISOLATION.md` # Failure mode) | — |
 | Compromised app reads beyond its scope | Per-app bridge (no inter-app traffic); bind-mounts limited to the declared `folders` at their elected source (one user's home, or the household-shared tree the owner can already reach); other homes not on its filesystem (`APP_ISOLATION.md` # Filesystem) | Blast radius = the app's declared permissions + its mounted folders + its own managed DB. An app *can* read everything its grants allow — that's the grant, not a leak |
-| Brain↔Docker control-plane abuse | Brain talks to Docker via socket-proxy, not raw socket (`CONTROL_PLANE.md` # Locked: Docker socket exposure) | **Live gap, pending #187.** The proxy is body-blind — an allowed `POST /containers/create` can carry `Privileged:true` + `Binds:["/:/host"]`, then `/start`, and run as host root. Measured on a real box (#430). The proxy sits on `malmo-ingress`, which app `main_service` containers also join, so any compromised app reaches `docker-proxy:2375` with `curl`. Not closable by the allowlist (the brain needs `CONTAINERS`+`POST`); the fix is network isolation — #187 takes apps off `malmo-ingress`, leaving only the brain able to reach `:2375` |
-| Compromised control-plane container (Caddy, `malmo-ui`, socket-proxy) | Same sandbox app containers get: `cap_drop: ALL` (Caddy keeps only `NET_BIND_SERVICE`), `no-new-privileges`, read-only root on Caddy + `malmo-ui` (`CONTROL_PLANE.md` # Locked: control-plane container hardening, #431) | The **brain** container is not sandboxed — it needs `CAP_CHOWN` to own app data dirs, so its capability set has to be named and proven on a booted box first. The socket-proxy runs with a writable root (its image writes `/tmp`, `/run`, `/var/lib/haproxy`) |
+| Brain↔Docker control-plane abuse | Brain talks to Docker via socket-proxy, not raw socket (`CONTROL_PLANE.md` # Locked: Docker socket exposure) | **Live gap, pending #187.** The proxy is body-blind — an allowed `POST /containers/create` can carry `Privileged:true` + `Binds:["/:/host"]`, then `/start`, and run as host root. Measured on a real box (#430). The proxy sits on `moose-ingress`, which app `main_service` containers also join, so any compromised app reaches `docker-proxy:2375` with `curl`. Not closable by the allowlist (the brain needs `CONTAINERS`+`POST`); the fix is network isolation — #187 takes apps off `moose-ingress`, leaving only the brain able to reach `:2375` |
+| Compromised control-plane container (Caddy, `moose-ui`, socket-proxy) | Same sandbox app containers get: `cap_drop: ALL` (Caddy keeps only `NET_BIND_SERVICE`), `no-new-privileges`, read-only root on Caddy + `moose-ui` (`CONTROL_PLANE.md` # Locked: control-plane container hardening, #431) | The **brain** container is not sandboxed — it needs `CAP_CHOWN` to own app data dirs, so its capability set has to be named and proven on a booted box first. The socket-proxy runs with a writable root (its image writes `/tmp`, `/run`, `/var/lib/haproxy`) |
 | Privileged Door-2 app | **Rejected** — admission is door-symmetric; `privileged`/socket/`cap_add`/host-ports/host-namespaces are refused for custom compose exactly as for store apps, because a container escape on a multi-user box hits every member, not just the (admin-only) installer (`APP_ISOLATION.md` # Trust tiers, `DECISIONS.md` 2026-06-02) | An admin who needs such a container runs it over SSH (`AUTH.md` # SSH is rescue) — deliberate, not one-paste; that residual is the box owner's own root access |
 
-**Blast-radius summary:** one compromised store app reaches its own data, its user's declared folders, and the internet (if granted) — **not** host root, other users' homes, or other apps. That containment is the security claim; preventing the compromise itself is curation's job, not the sandbox's. **One caveat holds this open today:** the socket-proxy is reachable from app containers on `malmo-ingress`, and reaching it is host root (Brain↔Docker row). The claim is true once #187 closes that network path; until then it is the box's most severe open gap.
+**Blast-radius summary:** one compromised store app reaches its own data, its user's declared folders, and the internet (if granted) — **not** host root, other users' homes, or other apps. That containment is the security claim; preventing the compromise itself is curation's job, not the sandbox's. **One caveat holds this open today:** the socket-proxy is reachable from app containers on `moose-ingress`, and reaching it is host root (Brain↔Docker row). The claim is true once #187 closes that network path; until then it is the box's most severe open gap.
 
 ### B3 — Member ↔ admin
 
@@ -89,13 +89,13 @@ The richest boundary. The right question is not "can an app be compromised" (ass
 | Demoted admin retains power | `gpasswd -d` flips group membership (`USERS_AND_GROUPS.md`) | Live `sudo`/SSH session keeps capability until logout — accepted under household trust |
 | Compromised admin SSH | SSH off-by-account-by-default; admin must opt in (`AUTH.md` # Device access) | A compromised admin shell is root — accepted; marginal, since the admin can already mutate the host via host-agent |
 
-### B4 — Box ↔ malmo cloud
+### B4 — Box ↔ moose cloud
 
 | Threat | Mitigation (owner) | Residual |
 |---|---|---|
-| Cloud compromise injects bad data | Cloud is DNS + ACME-helper only; per-box keypair auth; enrollment opt-in (`MALMO_NETWORK.md`) | Compromised cloud could mis-resolve a box-id; cannot decrypt traffic or reach data |
-| Cloud sees user activity | No traffic ever traverses cloud servers (`MALMO_NETWORK.md` # What cloud actually does) | Cloud sees box-ids and which devices query them — disclosed; privacy-doc surface |
-| Privacy-strict user wants zero cloud | Enrollment is opt-in; box never contacts cloud if declined; BYO-domain alternative (`MALMO_NETWORK.md`) | — |
+| Cloud compromise injects bad data | Cloud is DNS + ACME-helper only; per-box keypair auth; enrollment opt-in (`MOOSE_NETWORK.md`) | Compromised cloud could mis-resolve a box-id; cannot decrypt traffic or reach data |
+| Cloud sees user activity | No traffic ever traverses cloud servers (`MOOSE_NETWORK.md` # What cloud actually does) | Cloud sees box-ids and which devices query them — disclosed; privacy-doc surface |
+| Privacy-strict user wants zero cloud | Enrollment is opt-in; box never contacts cloud if declined; BYO-domain alternative (`MOOSE_NETWORK.md`) | — |
 
 ### B5 — At-rest disk ↔ removed drive / stolen box
 
@@ -132,8 +132,8 @@ The most-trusted internal boundary: host-agent runs as root and trusts the brain
 
 | Threat | Mitigation (owner) | Residual |
 |---|---|---|
-| Unauthorized process drives host-agent | UNIX socket access gated by the `malmo` group, kernel-enforced; **exactly one member** (brain's runtime UID), CI-asserted (`USERS_AND_GROUPS.md` # Group reference, `AUTH.md` # Test invariant) | The CI invariant *is* the entire authz model here — if group membership is wrong, the boundary is broken |
-| Brain compromise | — | A compromised brain = host compromise, by design. The brain is the trusted control plane; isolating it from host-agent would defeat its purpose. Defense is keeping the brain small + the `malmo`-group invariant tight |
+| Unauthorized process drives host-agent | UNIX socket access gated by the `moose` group, kernel-enforced; **exactly one member** (brain's runtime UID), CI-asserted (`USERS_AND_GROUPS.md` # Group reference, `AUTH.md` # Test invariant) | The CI invariant *is* the entire authz model here — if group membership is wrong, the boundary is broken |
+| Brain compromise | — | A compromised brain = host compromise, by design. The brain is the trusted control plane; isolating it from host-agent would defeat its purpose. Defense is keeping the brain small + the `moose`-group invariant tight |
 
 ## Out of scope (named loudly)
 
@@ -168,7 +168,7 @@ Each is defensible under the household trust model and the v1 scope; each has a 
 
 One item on this list is **not** knowingly accepted — it is a live gap with a fix in flight, listed here so a reader scanning this section does not miss the box's most severe current exposure:
 
-- **A compromised *app* can escape to host root via the socket-proxy, until #187.** The proxy is body-blind and shares `malmo-ingress` with app `main_service` containers, so any compromised app can reach `docker-proxy:2375` and start a privileged, host-bind-mounted container (measured, #430; B2 Brain↔Docker row). This is item 11 widened from "the brain" to "any app," and it closes when #187 takes apps off that network — not a residual we accept, a bug we are fixing.
+- **A compromised *app* can escape to host root via the socket-proxy, until #187.** The proxy is body-blind and shares `moose-ingress` with app `main_service` containers, so any compromised app can reach `docker-proxy:2375` and start a privileged, host-bind-mounted container (measured, #430; B2 Brain↔Docker row). This is item 11 widened from "the brain" to "any app," and it closes when #187 takes apps off that network — not a residual we accept, a bug we are fixing.
 
 ## Methodology note
 
@@ -176,7 +176,7 @@ The per-boundary tables above are the deliverable. **STRIDE** (Spoofing, Tamperi
 
 ## When this model changes
 
-This is a **living document**, revisited when a trust boundary moves. The known future trigger: **remote access via the mesh** (`MALMO_NETWORK.md` # Deferred). When it ships, B1 changes shape — `.malmo.network` names become reachable off-LAN, scoped pairing introduces a new principal (a paired-but-non-household device, e.g. "grandma sees Photos"), and the closed-by-default claim narrows to "closed except to identity-paired devices." That warrants a dedicated boundary pass and `DECISIONS.md` entries; it is explicitly not modeled here.
+This is a **living document**, revisited when a trust boundary moves. The known future trigger: **remote access via the mesh** (`MOOSE_NETWORK.md` # Deferred). When it ships, B1 changes shape — `.onmoose.network` names become reachable off-LAN, scoped pairing introduces a new principal (a paired-but-non-household device, e.g. "grandma sees Photos"), and the closed-by-default claim narrows to "closed except to identity-paired devices." That warrants a dedicated boundary pass and `DECISIONS.md` entries; it is explicitly not modeled here.
 
 ## Locked decisions
 

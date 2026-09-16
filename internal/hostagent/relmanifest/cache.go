@@ -8,7 +8,7 @@ import (
 )
 
 // cacheFile is the cached manifest's name inside the state dir
-// (RELEASE_MANIFEST.md # Failure modes names /var/lib/malmo/manifest.json).
+// (RELEASE_MANIFEST.md # Failure modes names /var/lib/moose/manifest.json).
 const cacheFile = "manifest.json"
 
 // ManifestPath is the cached manifest's path inside the state dir.
@@ -60,7 +60,7 @@ func Save(dir string, raw []byte, signature string) error {
 // an offline box acts on (RELEASE_MANIFEST.md # Failure modes: "keeps the
 // last-known manifest ... updates pause until connectivity returns"), so
 // trusting it unchecked would make the local file system a way around the
-// signature — anything that can write /var/lib/malmo could then choose the
+// signature — anything that can write /var/lib/moose could then choose the
 // version the box runs.
 //
 // A missing cache returns ok=false with a nil error: that is the normal state

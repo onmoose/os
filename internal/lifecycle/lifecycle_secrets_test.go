@@ -2,7 +2,7 @@ package lifecycle
 
 // Per-app secret generation + injection (SERVICE_PROVISIONING.md # Env-var
 // injection): the brain generates a CSPRNG value for each declared secret,
-// persists it, and re-emits it as MALMO_SECRET_<NAME> in the instance .env.
+// persists it, and re-emits it as MOOSE_SECRET_<NAME> in the instance .env.
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/store"
 )
 
 const secretsManifest = `
@@ -58,10 +58,10 @@ func TestInstallInjectsGeneratedSecret(t *testing.T) {
 	e := newTestEnv(t)
 	inst, env := installSecretApp(t, e)
 
-	// The .env carries MALMO_SECRET_AUTH with a non-empty generated value.
-	val := envValue(env, "MALMO_SECRET_AUTH")
+	// The .env carries MOOSE_SECRET_AUTH with a non-empty generated value.
+	val := envValue(env, "MOOSE_SECRET_AUTH")
 	if val == "" {
-		t.Fatalf("env missing non-empty MALMO_SECRET_AUTH, got:\n%s", env)
+		t.Fatalf("env missing non-empty MOOSE_SECRET_AUTH, got:\n%s", env)
 	}
 	// It matches what was persisted (so re-emit is store-backed, not re-rolled).
 	secrets, err := e.store.GetInstanceSecrets(inst.ID)
@@ -78,7 +78,7 @@ func TestSecretsAreUniquePerInstance(t *testing.T) {
 	// installs in one env within the same second would collide on the PK.
 	_, env1 := installSecretApp(t, newTestEnv(t))
 	_, env2 := installSecretApp(t, newTestEnv(t))
-	if v1, v2 := envValue(env1, "MALMO_SECRET_AUTH"), envValue(env2, "MALMO_SECRET_AUTH"); v1 == v2 {
+	if v1, v2 := envValue(env1, "MOOSE_SECRET_AUTH"), envValue(env2, "MOOSE_SECRET_AUTH"); v1 == v2 {
 		t.Fatalf("two installs reused the same secret %q", v1)
 	}
 }

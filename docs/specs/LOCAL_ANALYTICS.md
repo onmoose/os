@@ -1,6 +1,6 @@
-# malmo Local Analytics
+# moose Local Analytics
 
-> Working spec for the analytics view of a malmo box, surfaced to its owner. **Nothing in this doc leaves the box.** Sibling to `TELEMETRY.md` (project-side telemetry, opt-in, sent off-box). Touches `LOGGING.md` (audit events overlap), `WEB_UI.md` (dashboard surfaces), `AUTH.md` (per-user visibility rules), `CONTROL_PLANE.md` (brain is the producer and the store).
+> Working spec for the analytics view of a moose box, surfaced to its owner. **Nothing in this doc leaves the box.** Sibling to `TELEMETRY.md` (project-side telemetry, opt-in, sent off-box). Touches `LOGGING.md` (audit events overlap), `WEB_UI.md` (dashboard surfaces), `AUTH.md` (per-user visibility rules), `CONTROL_PLANE.md` (brain is the producer and the store).
 
 ## Stance
 
@@ -36,7 +36,7 @@ The Mac mental model: admin can see system logs and who logged in; can't peek at
 
 ## Data stores
 
-Two tables in the brain's SQLite (`/var/lib/malmo/state/malmo.db`). No second database, no Prometheus, no InfluxDB.
+Two tables in the brain's SQLite (`/var/lib/moose/state/moose.db`). No second database, no Prometheus, no InfluxDB.
 
 ### `events` table
 
@@ -60,7 +60,7 @@ Time-series rollups. Shape: `(timestamp, kind, subject, value)`.
 
 | Metric kind | Source | Cadence (full-res) |
 |---|---|---|
-| `app_storage_bytes` | `du` of `/var/lib/malmo/state/instances/<id>/` | Hourly |
+| `app_storage_bytes` | `du` of `/var/lib/moose/state/instances/<id>/` | Hourly |
 | `user_storage_bytes` | `du` of `/home/<user>/` | Hourly |
 | `drive_used_bytes` | `statvfs` per mounted drive (OS drive, data drive) | 10 min |
 | `app_cpu_percent` | Docker stats API, per container | 60 s |
@@ -158,7 +158,7 @@ Out of scope: storage growth attribution ("Photos grew 50 GB this month, mostly 
 - `WEB_UI.md` — top-bar dropdown, per-app page widgets, box overview composition.
 - `BRAIN_UI_PROTOCOL.md` — `/api/v1/system/live` SSE channel (no-replay, counts against the per-session stream cap); standard REST for historical queries.
 - `BRAIN_HOST_PROTOCOL.md` — `GET /v1/system/resources`, the host-agent raw-counter sample the brain polls and diffs for the live stream.
-- `STORAGE.md` — `/var/lib/malmo/state/malmo.db` location, `/var/lib/malmo/state/instances/<id>/` for app storage, `/home/<user>/` for user storage.
+- `STORAGE.md` — `/var/lib/moose/state/moose.db` location, `/var/lib/moose/state/instances/<id>/` for app storage, `/home/<user>/` for user storage.
 
 ## Open
 

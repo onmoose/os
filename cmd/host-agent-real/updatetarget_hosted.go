@@ -5,9 +5,9 @@ package main
 import (
 	"log/slog"
 
-	"github.com/malmoos/malmo/internal/hostagent/relmanifest"
-	"github.com/malmoos/malmo/internal/hostagent/updatetarget"
-	"github.com/malmoos/malmo/internal/profile"
+	"github.com/onmoose/moose/internal/hostagent/relmanifest"
+	"github.com/onmoose/moose/internal/hostagent/updatetarget"
+	"github.com/onmoose/moose/internal/profile"
 )
 
 // buildProfile is the environment profile this binary was built for. It is a
@@ -24,7 +24,7 @@ const buildProfile = string(profile.Hosted)
 // provision time** through the seed's update_target_url field (updateconfig.go,
 // UPDATES.md # 8.4). That is how one box proves a release before the fleet gets
 // it: a hosted box has no SSH, and the seed is the only channel a real box has
-// for a per-box fact. MALMO_UPDATE_TARGET_URL stays underneath it as the local
+// for a per-box fact. MOOSE_UPDATE_TARGET_URL stays underneath it as the local
 // hand-edit the boot proof uses. Empty means the control plane's public endpoint.
 //
 // **The box says who it is.** The seed's box_id goes out as a query parameter,

@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/profile"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/profile"
 )
 
 // Request-rate throttling (BRAIN_UI_PROTOCOL.md # Rate limiting & abuse). Two
@@ -23,7 +23,7 @@ import (
 // The third plane (≤16 concurrent SSE streams per session) is a separate budget
 // and lives in streamcap.go — opening a stream must not draw from plane 1.
 const (
-	// Plane 1 — per-session request rate, keyed on the malmo_session token over
+	// Plane 1 — per-session request rate, keyed on the moose_session token over
 	// authenticated short requests: 120 req/min sustained, burst 60. In a token
 	// bucket the burst is the capacity and the sustained rate is the refill.
 	sessionRateBurst  = 60
@@ -260,7 +260,7 @@ func writeRateLimited(w http.ResponseWriter, scope string, retry time.Duration) 
 	w.WriteHeader(http.StatusTooManyRequests)
 	_ = json.NewEncoder(w).Encode(rateLimitedBody{
 		Code:    "rate-limited",
-		Message: "malmo is busy — please retry in a moment.",
+		Message: "moose is busy — please retry in a moment.",
 		Details: rateLimitedDetails{Scope: scope, RetryAfterS: secs},
 	})
 }

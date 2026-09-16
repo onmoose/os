@@ -14,10 +14,10 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/hostclient"
-	"github.com/malmoos/malmo/internal/store"
-	"github.com/malmoos/malmo/internal/version"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/hostclient"
+	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/moose/internal/version"
 )
 
 // TestSystemStorage_RequiresAuth: the Storage poll needs a session like every
@@ -154,7 +154,7 @@ func TestSystemVersion_HostDown_StillAnswers(t *testing.T) {
 // EnsureControlPlane reads.
 func TestSystemVersion_ReportsUIImage(t *testing.T) {
 	dir := t.TempDir()
-	compose := "services:\n  malmo-ui:\n    image: ghcr.io/malmoos/ui:v1.2.3\n"
+	compose := "services:\n  moose-ui:\n    image: ghcr.io/onmoose/ui:v1.2.3\n"
 	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte(compose), 0o644); err != nil {
 		t.Fatalf("stage compose: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestSystemVersion_ReportsUIImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("systemVersion: %v", err)
 	}
-	if out.Body.UIImage != "ghcr.io/malmoos/ui:v1.2.3" {
+	if out.Body.UIImage != "ghcr.io/onmoose/ui:v1.2.3" {
 		t.Fatalf("ui image: got %q", out.Body.UIImage)
 	}
 }

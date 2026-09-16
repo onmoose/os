@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // twoImageManifest is the fixture for the footprint cases: two images with

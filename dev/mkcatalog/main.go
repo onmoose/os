@@ -1,12 +1,12 @@
 // Command mkcatalog generates a control-plane catalog snapshot (the GET /catalog
 // browse wire format, with each app's manifest and compose inlined for the seed
 // seam) from one or more on-disk app packages, optionally with a curated
-// landing page. The brain reads that snapshot once at boot (MALMO_CATALOG_FILE,
+// landing page. The brain reads that snapshot once at boot (MOOSE_CATALOG_FILE,
 // internal/catalog/remote.go # loadSnapshotFile) and installs an app from it, so
 // this exercises the real remote read path (verify → project → Load) with no
 // catalog/ directory in the image and no control plane to reach. The file is an
 // input for dev and test lanes only — a box keeps no catalog on disk and a real
-// one never sets MALMO_CATALOG_FILE.
+// one never sets MOOSE_CATALOG_FILE.
 //
 // Two callers:
 //
@@ -17,7 +17,7 @@
 //     apps/<id>/manifest.yml + compose straight from a store curation checkout,
 //     so it needs no verdict on the app (unlike the control plane's own publish
 //     tool, which serves only listed: true records) — you boot the app to
-//     *decide* its verdict. The Makefile points MALMO_CATALOG_URL at an inert
+//     *decide* its verdict. The Makefile points MOOSE_CATALOG_URL at an inert
 //     address so the background sync can't replace the seed with the real
 //     published catalog.
 //
@@ -46,8 +46,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/manifest"
+	"github.com/onmoose/moose/internal/catalog"
+	"github.com/onmoose/moose/internal/manifest"
 	"gopkg.in/yaml.v3"
 )
 

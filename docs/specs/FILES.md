@@ -1,4 +1,4 @@
-# malmo in-dashboard file manager
+# moose in-dashboard file manager
 
 > Working spec for the **Files** destination in the dashboard — the in-product surface for browsing, uploading, downloading, and organizing a user's own content and the household-shared tree. Companion to `STORAGE.md` (the on-disk layout, use-case folders, and `0750`/`02770` permissions this surface renders), `DASHBOARD.md` (the dock destination this fills), `AUTH.md` (session + per-user scoping), `BRAIN_UI_PROTOCOL.md` (the `/api/v1/files/*` surface), `BRAIN_HOST_PROTOCOL.md` (the `/v1/files/*` host-agent family that does the actual filesystem work), `APP_ISOLATION.md` (how apps see the same folders), and `DISCOVERY.md` (whose "the dashboard is the browse surface" claim this makes good on).
 
@@ -17,16 +17,16 @@ The file manager exposes exactly two top-level scopes:
 | Scope | Maps to | Who sees it |
 |---|---|---|
 | **My files** | `/home/<user>/` | The signed-in user, their own home only. |
-| **Shared** | `/srv/malmo/shared/` | Every household user (the `malmo-shared` group, `STORAGE.md` # Permissions). |
+| **Shared** | `/srv/moose/shared/` | Every household user (the `moose-shared` group, `STORAGE.md` # Permissions). |
 
 Within each root the user browses freely. **The use-case folders are not hardcoded here.** `STORAGE.md` lets users rename, delete, and add folders under their home, so the file manager lists *whatever exists* in `/home/<user>/` rather than a fixed `Photos/Music/...` menu. A renamed `Photos/` → `Pictures/` simply shows as `Pictures/`; a user-created `Receipts/` shows up with no special-casing.
 
 **Out of scope, by construction:**
 
-- **App state** (`/var/lib/malmo/state/instances/<id>/`, managed-service data). This is malmo's bookkeeping, "never user-facing" (`STORAGE.md`). The file manager is for user *content*, not the plumbing apps write underneath it.
+- **App state** (`/var/lib/moose/state/instances/<id>/`, managed-service data). This is moose's bookkeeping, "never user-facing" (`STORAGE.md`). The file manager is for user *content*, not the plumbing apps write underneath it.
 - **Other users' homes.** See # Authorization.
 - **The rest of the host filesystem** (`/etc`, `/var`, another `/home/<other>`). The two roots are the entire navigable surface. This is a UX boundary; the security boundary is the UID drop in # Execution.
-- **`~/Shared`** as a *separate* entry. `/home/<user>/Shared` is a symlink to `/srv/malmo/shared/` (`STORAGE.md`); the file manager presents the shared tree once, as the **Shared** root, and does not also descend into it through the symlink (avoids a confusing double-listing).
+- **`~/Shared`** as a *separate* entry. `/home/<user>/Shared` is a symlink to `/srv/moose/shared/` (`STORAGE.md`); the file manager presents the shared tree once, as the **Shared** root, and does not also descend into it through the symlink (avoids a confusing double-listing).
 
 **Hidden files** (dotfiles like `~/.config`, `~/.ssh`) are the user's own data but are hidden by default with a "show hidden files" toggle — a Finder-style convenience, not a security boundary (the UID drop already means a user only ever reaches what they could reach on the host anyway).
 
@@ -54,14 +54,14 @@ The brain runs in a container behind the docker-socket-proxy and **cannot touch 
 
 > **All file operations execute inside host-agent, with host-agent dropping to the requesting user's Linux UID/GID for the duration of each operation.** The brain is the policy/validation layer and a transparent byte-pipe for transfers; it never reads or writes user content itself.
 
-Privilege-drop per operation (`setresuid`/`setresgid` to the user's malmo UID in the 3000+ range, or a forked child that does so) is what makes the whole model safe and correct:
+Privilege-drop per operation (`setresuid`/`setresgid` to the user's moose UID in the 3000+ range, or a forked child that does so) is what makes the whole model safe and correct:
 
 - **POSIX permissions become the kernel-enforced backstop.** `0750` on `/home/<user>/` and `02770` on the shared tree do the real enforcement, identical to how every app already reaches user content (`APP_ISOLATION.md` # User content). Authorization bugs in the brain degrade to "denied," not "leaked."
 - **File ownership is correct natively.** An uploaded or newly created file is owned by the user's UID — the same contract the compose `user:` directive gives app instances. No `chown` dance, no `PUID`/`PGID` convention.
 - **Symlink attacks are contained for free.** An op running as the user's UID can only follow a symlink to something that UID could already read. A symlink to `/etc/passwd` reads world-readable bytes; a symlink to another user's home is denied by the kernel. No special symlink-resolution guard needed.
 - **It is the shape fscrypt wants.** When per-user encryption lands (`STORAGE.md`), host-agent acting as the user with their key loaded is exactly right. Building it this way now keeps that migration data-only.
 
-**host-agent owns path resolution.** The brain passes `(username, root, relative-path)`; host-agent resolves the logical root to an absolute path (`My files` → the user's home via the existing `/v1/users/{username}/home` lookup; `Shared` → `/srv/malmo/shared/`), re-validates containment, and executes as the UID. The brain stays free of host-path knowledge, mirroring how app installs resolve bind-mount sources through host-agent rather than hardcoding `/home`.
+**host-agent owns path resolution.** The brain passes `(username, root, relative-path)`; host-agent resolves the logical root to an absolute path (`My files` → the user's home via the existing `/v1/users/{username}/home` lookup; `Shared` → `/srv/moose/shared/`), re-validates containment, and executes as the UID. The brain stays free of host-path knowledge, mirroring how app installs resolve bind-mount sources through host-agent rather than hardcoding `/home`.
 
 ### Transfers — a streaming binary body
 
@@ -80,7 +80,7 @@ This is a **deliberate exception to the ">5s = job" rule** (`BRAIN_HOST_PROTOCOL
 | **Upload** | One or more files into the current directory, streamed. Browser-native progress. |
 | **New folder** | `mkdir` within a root. |
 | **Rename** | A move within the same directory. |
-| **Move** | Within or across the two roots (a move from **My files** to **Shared** is a real cross-tree move; host-agent does it as the UID, so it only succeeds where the user has write access on both ends — the `malmo-shared` group grants the shared side). |
+| **Move** | Within or across the two roots (a move from **My files** to **Shared** is a real cross-tree move; host-agent does it as the UID, so it only succeeds where the user has write access on both ends — the `moose-shared` group grants the shared side). |
 | **Copy** | Same scope rules as move. |
 | **Delete** | Permanent (no trash in v1 — see deferred). The user's own data; confirmed in the UI, not elevation-gated (see # Audit & elevation). |
 
@@ -101,13 +101,13 @@ New `/api/v1/files/*` surface in `BRAIN_UI_PROTOCOL.md`, public-API-posture cons
 - Metadata ops (list, stat, mkdir, move, copy, delete) are **Pattern A** (sync request/response): `path` is `<root>/<relative>`, errors are the standard `{code, message, details?}`.
 - Content ops (download, upload) are **streaming endpoints**, the deliberate non-job exception above.
 
-Authentication is the same `malmo_session` cookie (`AUTH.md`); no separate auth path. The full route list, request/response shapes, and the streaming-body contract are specified in `BRAIN_UI_PROTOCOL.md` # files (and its `BRAIN_HOST_PROTOCOL.md` # files counterpart) rather than duplicated here — this doc owns the *product surface and policy*, those docs own the *wire*.
+Authentication is the same `moose_session` cookie (`AUTH.md`); no separate auth path. The full route list, request/response shapes, and the streaming-body contract are specified in `BRAIN_UI_PROTOCOL.md` # files (and its `BRAIN_HOST_PROTOCOL.md` # files counterpart) rather than duplicated here — this doc owns the *product surface and policy*, those docs own the *wire*.
 
 ## Relationship to SMB
 
 The file manager and SMB (`STORAGE.md` # Cross-device access) are complementary, not redundant:
 
-- **Same files on disk.** Both operate on `/home/<user>/` and `/srv/malmo/shared/` with the same `0750`/`02770` permissions and the same identity (the user's malmo account). A file uploaded via the dashboard appears in the SMB share and vice versa, instantly — there is no separate store.
+- **Same files on disk.** Both operate on `/home/<user>/` and `/srv/moose/shared/` with the same `0750`/`02770` permissions and the same identity (the user's moose account). A file uploaded via the dashboard appears in the SMB share and vice versa, instantly — there is no separate store.
 - **Different audiences.** SMB is the native, bulk, "mount it as a drive and drag thousands of photos" path for users who set it up. The file manager is the zero-setup, works-from-any-browser, works-on-the-phone path for users who never will — explicitly the north-star audience.
 - **The file manager needs no SMB.** SMB is off-by-account-by-default (`AUTH.md` # Device access); the Files destination works regardless, because it goes through host-agent, not Samba.
 
@@ -125,16 +125,16 @@ Folds in the former `NEXT.md` Tier-4 "data-import flows" item.
 
 ## Failure modes
 
-- **Data drive missing.** When the data drive is enrolled but absent, `/home` and `/srv/malmo` writes are blocked and the box runs degraded (`STORAGE.md` # Data drive enrollment marker, `HEALTH.md`). The Files view surfaces the existing `data-drive-missing` issue (reusing `blocks_writes`) rather than presenting an empty or half-populated tree as if normal — the same degraded-state treatment the rest of the dashboard uses.
+- **Data drive missing.** When the data drive is enrolled but absent, `/home` and `/srv/moose` writes are blocked and the box runs degraded (`STORAGE.md` # Data drive enrollment marker, `HEALTH.md`). The Files view surfaces the existing `data-drive-missing` issue (reusing `blocks_writes`) rather than presenting an empty or half-populated tree as if normal — the same degraded-state treatment the rest of the dashboard uses.
 - **Disk full on upload.** A write that would exhaust the drive fails with `507 Insufficient Storage`, linked to the `disk-full` health issue (`HEALTH.md`) so the user is routed to "what's eating my disk" rather than a bare error.
-- **Permission denied.** Within a user's own two roots this should not occur (the UID owns its home and is in `malmo-shared`); if it does (e.g. an app left a file owned by a service UID in a shared folder), it surfaces as a plain per-item error, not a whole-view failure.
+- **Permission denied.** Within a user's own two roots this should not occur (the UID owns its home and is in `moose-shared`); if it does (e.g. an app left a file owned by a service UID in a shared folder), it surfaces as a plain per-item error, not a whole-view failure.
 - **Large-file streaming.** Transfers are streamed end-to-end (# Transfers); the brain does not buffer whole files, so a 4 GB download does not pin brain memory.
 
 ## Cross-references
 
 - `STORAGE.md` — the on-disk layout, use-case folders, `0750`/`02770` permissions, `Shared/`, and the SMB pairing this surface mirrors.
 - `DASHBOARD.md` — the **Files** dock destination (# global navigation) this doc fills.
-- `AUTH.md` — `malmo_session` cookie; per-user scoping; SSH/SMB as the other access paths.
+- `AUTH.md` — `moose_session` cookie; per-user scoping; SSH/SMB as the other access paths.
 - `BRAIN_UI_PROTOCOL.md` — `/api/v1/files/*` (metadata Pattern A + streaming content).
 - `BRAIN_HOST_PROTOCOL.md` — `/v1/files/*` host-agent family, executed as the user UID; the streaming-body wire shape.
 - `APP_ISOLATION.md` — apps reach the same folders by bind mount; the UID-as-user and "design as if fscrypt is on" contracts this surface follows.

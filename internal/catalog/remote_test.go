@@ -72,7 +72,7 @@ func makeSnapshot(t *testing.T, apps []wireApp) (body []byte, etag string) {
 }
 
 // seedApps returns testApps with each app's install payload inlined, the shape a
-// staged local seed file carries (MALMO_CATALOG_FILE) because it has no control
+// staged local seed file carries (MOOSE_CATALOG_FILE) because it has no control
 // plane behind it to serve the document routes.
 func seedApps() []wireApp {
 	apps := testApps()
@@ -164,7 +164,7 @@ func newRemote(baseURL, env, cacheDir string) *remoteSource {
 }
 
 // newRemoteFromFile builds a remoteSource seeded from a local snapshot file, the
-// dev/test seam (MALMO_CATALOG_FILE).
+// dev/test seam (MOOSE_CATALOG_FILE).
 func newRemoteFromFile(baseURL, env, cacheDir, snapshotFile string) *remoteSource {
 	c := NewRemote(RemoteOptions{
 		BaseURL: baseURL, Environment: env,
@@ -378,7 +378,7 @@ func TestRemoteKeepsNoSnapshotOnDisk(t *testing.T) {
 	}
 }
 
-// TestRemoteSnapshotFileSeed covers the dev/test seam (MALMO_CATALOG_FILE): a
+// TestRemoteSnapshotFileSeed covers the dev/test seam (MOOSE_CATALOG_FILE): a
 // local file seeds the store at construction, the brain never writes to it, and
 // its inlined install payload lets an air-gapped lane install with no control
 // plane to fetch documents from.
@@ -776,7 +776,7 @@ func TestRemote304KeepsSnapshot(t *testing.T) {
 // TestBrowseURLEscapesEnv: the environment goes on the query string, so a value
 // with URL syntax in it can't rewrite the request path.
 func TestBrowseURLEscapesEnv(t *testing.T) {
-	r := newRemote("https://malmo.invalid", "hosted&x=1 /../y", t.TempDir())
+	r := newRemote("https://moose.invalid", "hosted&x=1 /../y", t.TempDir())
 	got := r.browseURL()
 	u, err := url.Parse(got)
 	if err != nil {

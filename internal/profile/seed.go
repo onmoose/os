@@ -11,9 +11,9 @@ import (
 // DefaultSeedPath is the well-known, root-owned path the hosted cloud image's
 // first-boot unit materializes the provisioning seed to (ENVIRONMENT.md #
 // Provisioning & first-boot). The brain makes it overridable via
-// MALMO_SEED_PATH for tests; in the appliance profile no seed exists and the
+// MOOSE_SEED_PATH for tests; in the appliance profile no seed exists and the
 // path is never read.
-const DefaultSeedPath = "/var/lib/malmo/seed.json"
+const DefaultSeedPath = "/var/lib/moose/seed.json"
 
 // ErrSeedAbsent is returned by ReadSeed when no seed file exists at the path.
 // On a hosted box this is the "provisioned without a seed" case: the brain logs
@@ -37,7 +37,7 @@ var ErrSeedAbsent = errors.New("seed absent")
 type Seed struct {
 	// BoxID is the box's permanent identity in `base-suffix` form (e.g.
 	// "cindy-fox"), allocated at provision and frozen for the life of the
-	// install (MALMO_NETWORK.md). The brain persists and surfaces it.
+	// install (MOOSE_NETWORK.md). The brain persists and surfaces it.
 	BoxID string `json:"box_id"`
 	// AssertionVerificationKey is the portal's Ed25519 *public* key in standard
 	// (padded) base64 — 44 chars for the 32-byte key, the same for every box in v1
@@ -47,7 +47,7 @@ type Seed struct {
 	// handshake, not a /setup secret.
 	AssertionVerificationKey string `json:"assertion_verification_key"`
 	// Enrollment carries the per-box acme-dns account the box's Caddy uses to
-	// obtain and renew its `*.<box-id>.malmo.network` wildcard cert via ACME
+	// obtain and renew its `*.<box-id>.onmoose.network` wildcard cert via ACME
 	// DNS-01 (C3b; ENVIRONMENT.md # Networking & discovery). The JSON shape
 	// mirrors the cloud producer's wire contract byte-for-byte (cloud
 	// internal/seed.EnrollmentCredentials) — the two repos meet at this format,

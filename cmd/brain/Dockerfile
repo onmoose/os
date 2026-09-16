@@ -1,5 +1,5 @@
 # check=skip=InvalidDefaultArgInFrom
-# malmo-brain control-plane image (BUILD.md # 5; DECISIONS.md 2026-06-13).
+# moose-brain control-plane image (BUILD.md # 5; DECISIONS.md 2026-06-13).
 # Build context is the repo root, through `make brain-image` — that target feeds
 # the two base images in from dev/control-plane/images.lock. They have no default
 # here on purpose: a default is a second copy of a pin, free to drift, and a bare
@@ -25,11 +25,11 @@ COPY . .
 # root), but .git is excluded (.dockerignore — never ship dev/VCS state into the
 # image), so the commit can't be resolved with `git rev-parse` in here. The
 # Makefile's brain-image target passes it in as a build-arg instead.
-ARG MALMO_COMMIT=unknown
+ARG MOOSE_COMMIT=unknown
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w \
-      -X github.com/malmoos/malmo/internal/version.Version=$(cat VERSION) \
-      -X github.com/malmoos/malmo/internal/version.Commit=${MALMO_COMMIT}" \
-      -o /out/malmo-brain ./cmd/brain
+      -X github.com/onmoose/moose/internal/version.Version=$(cat VERSION) \
+      -X github.com/onmoose/moose/internal/version.Commit=${MOOSE_COMMIT}" \
+      -o /out/moose-brain ./cmd/brain
 
 FROM ${BRAIN_RUNTIME_IMAGE} AS runtime
 # docker-ce-cli + docker-compose-plugin from Docker's official apt repo — the
@@ -52,8 +52,8 @@ RUN set -eux; \
 # guard — CONTROL_PLANE.md # Locked: host-agent launches the brain container).
 # Must equal internal/protocol.Major; bump both together with the /v<N> URL
 # prefix.
-LABEL malmo.protocol.major="1"
-COPY --from=build /out/malmo-brain /usr/local/bin/malmo-brain
+LABEL moose.protocol.major="1"
+COPY --from=build /out/moose-brain /usr/local/bin/moose-brain
 # State dir and catalog are bind-mounts the supervisor provides at runtime; the
-# brain reads its config from MALMO_* env (cmd/brain/main.go # loadConfig).
-ENTRYPOINT ["/usr/local/bin/malmo-brain"]
+# brain reads its config from MOOSE_* env (cmd/brain/main.go # loadConfig).
+ENTRYPOINT ["/usr/local/bin/moose-brain"]

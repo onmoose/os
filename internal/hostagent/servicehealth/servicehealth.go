@@ -15,7 +15,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // issueServiceDown is the registered issue ID raised per non-active unit.
@@ -26,7 +26,7 @@ const issueServiceDown = "service-down"
 // Avahi, chrony, Samba). The names are the Debian systemd unit names.
 //
 // Two units that an older list named are intentionally absent:
-//   - caddy — Caddy is a brain-managed container (malmo-caddy), not a host
+//   - caddy — Caddy is a brain-managed container (moose-caddy), not a host
 //     systemd unit, on every profile; there is no caddy.service for
 //     `systemctl is-active` to query, so watching it here only ever yields a
 //     phantom service-down. Its liveness is a locus-C check (HEALTH.md

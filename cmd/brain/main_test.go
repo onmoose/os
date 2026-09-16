@@ -11,16 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/api"
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/health"
-	"github.com/malmoos/malmo/internal/lifecycle"
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/notify"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/api"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/events"
+	"github.com/onmoose/moose/internal/health"
+	"github.com/onmoose/moose/internal/lifecycle"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/notify"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // fakeEventStore captures audit rows so the per-issue emission can be asserted
@@ -1227,7 +1227,7 @@ func TestAppProbe_MDNSFallback(t *testing.T) {
 }
 
 // On hosted the probe must address the public wildcard route host
-// "<slug>.<box-id>.malmo.network" — not "<slug>.local", which has no Caddy route
+// "<slug>.<box-id>.onmoose.network" — not "<slug>.local", which has no Caddy route
 // and would 404 into a perpetual app-unresponsive flap. MDNSName is empty on
 // hosted (no LAN to multicast on), so the appliance fallback would otherwise win.
 func TestAppProbe_HostedWildcardHost(t *testing.T) {
@@ -1241,7 +1241,7 @@ func TestAppProbe_HostedWildcardHost(t *testing.T) {
 	reader := &fakeContainerReader{containers: []lifecycle.ManagedContainer{
 		{InstanceID: "app", Service: "web", Running: true, StartedAt: clk.now().Add(-5 * time.Minute)},
 	}}
-	rt := &stubRoundTripper{status: map[string]int{"myapp.cindy-fox.malmo.network": 200}}
+	rt := &stubRoundTripper{status: map[string]int{"myapp.cindy-fox.onmoose.network": 200}}
 	d, _, _, _ := newTestProbeDetector(lister, loader, reader, rt, clk)
 	d.SetEnvironment(profile.Hosted, "cindy-fox")
 
@@ -1249,7 +1249,7 @@ func TestAppProbe_HostedWildcardHost(t *testing.T) {
 	if rt.last == nil {
 		t.Fatal("expected a probe request")
 	}
-	if want := "myapp.cindy-fox.malmo.network"; rt.last.Host != want {
+	if want := "myapp.cindy-fox.onmoose.network"; rt.last.Host != want {
 		t.Errorf("probe Host = %q, want %q (hosted wildcard route host)", rt.last.Host, want)
 	}
 }
@@ -1293,7 +1293,7 @@ func TestProbeBaseURL(t *testing.T) {
 }
 
 // TestTrustedProxiesConfig covers the env-var wiring behind the brain's client-IP
-// trust boundary (#329): the sentinel distinguishes an unset MALMO_TRUSTED_PROXIES
+// trust boundary (#329): the sentinel distinguishes an unset MOOSE_TRUSTED_PROXIES
 // (⇒ the private-range default) from one deliberately set to empty (⇒ trust no
 // proxy at all, key every per-IP bucket on the peer address). Collapsing the two
 // would silently hand back the default to an operator who asked for the opposite.
@@ -1301,8 +1301,8 @@ func TestProbeBaseURL(t *testing.T) {
 // the process.
 func TestTrustedProxiesConfig(t *testing.T) {
 	t.Run("unset falls back to the private-range default", func(t *testing.T) {
-		t.Setenv("MALMO_TRUSTED_PROXIES", "")
-		if err := os.Unsetenv("MALMO_TRUSTED_PROXIES"); err != nil {
+		t.Setenv("MOOSE_TRUSTED_PROXIES", "")
+		if err := os.Unsetenv("MOOSE_TRUSTED_PROXIES"); err != nil {
 			t.Fatalf("unsetenv: %v", err)
 		}
 		got := trustedProxies(loadConfig().trustedProxies)
@@ -1312,14 +1312,14 @@ func TestTrustedProxiesConfig(t *testing.T) {
 	})
 
 	t.Run("explicitly empty trusts nothing", func(t *testing.T) {
-		t.Setenv("MALMO_TRUSTED_PROXIES", "")
+		t.Setenv("MOOSE_TRUSTED_PROXIES", "")
 		if got := trustedProxies(loadConfig().trustedProxies); len(got) != 0 {
 			t.Fatalf("prefixes = %v, want none", got)
 		}
 	})
 
 	t.Run("explicit spec is parsed", func(t *testing.T) {
-		t.Setenv("MALMO_TRUSTED_PROXIES", "172.18.0.0/16")
+		t.Setenv("MOOSE_TRUSTED_PROXIES", "172.18.0.0/16")
 		got := trustedProxies(loadConfig().trustedProxies)
 		if len(got) != 1 || got[0].String() != "172.18.0.0/16" {
 			t.Fatalf("prefixes = %v, want [172.18.0.0/16]", got)

@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/manifest"
+	"github.com/onmoose/moose/internal/manifest"
 )
 
 // ErrNotFound is returned by the lookup methods when no app exists for the id (on

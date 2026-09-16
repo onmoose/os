@@ -2,7 +2,7 @@
 
 > Working spec for what **Settings** is: the panel tree behind the dock's fourth item, who sees which panel, and where the scattered `Settings → X` destinations named across the other specs actually live. Companion to `DASHBOARD.md` (which owns the dock that reaches Settings and the top bar), `AUTH.md` (the role model and elevation window this doc gates on), and the subsystem docs that own each panel's deep behavior.
 >
-> This doc owns the **shell and the index** — the bucket split, the panel inventory, role gating, and delegation. It does **not** re-own per-panel UX: `STORAGE.md` owns the add/eject-drive flow, `MALMO_NETWORK.md` the secure-URLs toggle, `UPDATES.md` the rollback affordance, `USERS_AND_GROUPS.md` the user-management flows, and so on. Settings is the frame those panels slot into; each panel's row says "this exists, it's gated like this, its behavior lives there."
+> This doc owns the **shell and the index** — the bucket split, the panel inventory, role gating, and delegation. It does **not** re-own per-panel UX: `STORAGE.md` owns the add/eject-drive flow, `MOOSE_NETWORK.md` the secure-URLs toggle, `UPDATES.md` the rollback affordance, `USERS_AND_GROUPS.md` the user-management flows, and so on. Settings is the frame those panels slot into; each panel's row says "this exists, it's gated like this, its behavior lives there."
 
 ## North star for this surface
 
@@ -35,10 +35,10 @@ Every panel below is already implied by an existing spec. The **owning doc** col
 | | Notifications | Per-category mute toggles | `NOTIFICATIONS.md` # Configuration | any user (role-filtering the list is a `NEXT.md` open item) |
 | **Box settings** | Users | Create / reset password / role change; per-user pending update facts | `USERS_AND_GROUPS.md`, `UPDATES.md` # Admin visibility | admin |
 | | Storage | Capacity, add / eject data drive, recovery passphrase | `STORAGE.md` | admin |
-| | Network | WiFi, static IP, hostname, multi-NIC priority, mesh enrollment | `MALMO_NETWORK.md`, `FIRST_RUN.md` | admin |
+| | Network | WiFi, static IP, hostname, multi-NIC priority, mesh enrollment | `MOOSE_NETWORK.md`, `FIRST_RUN.md` | admin |
 | | Sharing | Samba network shares, media streaming (DLNA) | `SERVICE_PROVISIONING.md` | admin |
 | | Outgoing email | SMTP provider registry (add / edit / delete / test-send) apps bind to for sending email. Adding one is a provider picker plus the credential, not seven blank fields; host / port / encryption sit behind Advanced settings | `SERVICE_PROVISIONING.md` # BYO outgoing mail | admin |
-| | Remote access | Tailscale / Headscale UI at `/settings/tailscale` | `SERVICE_PROVISIONING.md`, `MALMO_NETWORK.md` | admin |
+| | Remote access | Tailscale / Headscale UI at `/settings/tailscale` | `SERVICE_PROVISIONING.md`, `MOOSE_NETWORK.md` | admin |
 | | Updates | Aggregate app + OS view, check-for-updates, rollback | `UPDATES.md` | admin |
 | | Privacy | Telemetry on/off (single toggle, both streams), last-transmission timestamp | `TELEMETRY.md` # Settings UI | admin |
 | | System | Logs viewer + access-log toggle, download diagnostics, time/region/NTP, system health, restart/shutdown, About, factory-reset. (The **Activity**/audit-log view is reachable from here for admins but is a sibling all-users route — see role gating below.) | `LOGGING.md`, `TIME.md`, `HEALTH.md`, `AUTH.md` | admin |
@@ -71,7 +71,7 @@ Tier-2 services (Tailscale, Samba, DLNA) have no subdomain of their own; the das
 - `/settings/tailscale` lives under **Remote access**.
 - `/settings/shares` lives under **Sharing**.
 
-These are same-origin dashboard routes, not separate apps — the `malmo_session` cookie just works, which is the whole reason Tier-2 collapses the auth problem (`AUTH.md`). The panel is malmo's UI talking about the underlying systemd unit and config file via host-agent; the user never sees the upstream admin UI. Deep behavior stays in `SERVICE_PROVISIONING.md`.
+These are same-origin dashboard routes, not separate apps — the `moose_session` cookie just works, which is the whole reason Tier-2 collapses the auth problem (`AUTH.md`). The panel is moose's UI talking about the underlying systemd unit and config file via host-agent; the user never sees the upstream admin UI. Deep behavior stays in `SERVICE_PROVISIONING.md`.
 
 ---
 
@@ -95,7 +95,7 @@ The genuinely-new items that no other doc owns yet. SETTINGS.md gives them a hom
 
 - **Restart / Shutdown** — under **System**, admin-only, elevation-gated. Buildable in v1: host-agent already exposes the power capability (`BRAIN_HOST_PROTOCOL.md` # Power — shutdown, reboot; `POST /v1/system/reboot`). The UI path is the only missing piece, and "UI is the path" makes it a v1 requirement, not a nicety.
 - **System health / diagnostics** — a read-only panel under **System** surfacing the `HEALTH.md` check results (pass / warn / fail), borrowing the `yunohost diagnosis` taxonomy that `HEALTH.md` already adopts. Distinct from the top-bar live-resources chevron (`LOCAL_ANALYTICS.md`), which is real-time gauges; this is the check verdicts. v1.
-- **About / Info** — version readout (malmo release, brain, UI, host-agent), box ID, license and links. Under **System**. v1.
+- **About / Info** — version readout (moose release, brain, UI, host-agent), box ID, license and links. Under **System**. v1.
 - **Factory reset / repurpose** — Settings is its home, but the **mechanics are deferred** and tracked in `NEXT.md` # Factory reset / repurpose: it has a security dimension beyond UX (securely destroying LUKS keyslots so an outgoing drive is unreadable), so it is not purely a dashboard flow. SETTINGS.md reserves the slot under **System**, gated by a fresh password prompt, and points at `NEXT.md` for scope (full wipe vs. reset-config-keep-content) and key-destruction mechanics. v1 reserves the slot; the flow is not yet designed.
 - **Backup settings** — the dashboard greeting concept references "last backup," but off-site backup is paid and post-MVP (`NEXT.md` # Backup architecture shape). SETTINGS.md reserves a **Backup** slot under **Box settings** as a stub that points at the deferred architecture; it is not a v1 panel with behavior.
 
@@ -106,7 +106,7 @@ The genuinely-new items that no other doc owns yet. SETTINGS.md gives them a hom
 Recorded so a future PR adding any of these is a deliberate reopening, not drift:
 
 - **Wallpaper / theming.** The calm palette is fixed for v1 (`WEB_UI.md`); no personalization panel.
-- **In-settings terminal / web shell.** SSH is rescue-only (`CLAUDE.md`); malmo deliberately ships no web terminal, unlike ZimaOS/CasaOS.
+- **In-settings terminal / web shell.** SSH is rescue-only (`CLAUDE.md`); moose deliberately ships no web terminal, unlike ZimaOS/CasaOS.
 - **Power scheduling / UPS.** Synology-style power schedules and UPS integration are a plausible later add, deferred from v1.
 - **API tokens.** Long-lived, user-scoped, revocable tokens would live under **My account** if added; tracked in `NEXT.md` (cookie-only auth in v1).
 - **Factory-reset mechanics and backup architecture** — slots reserved above; designs deferred per `NEXT.md`.
@@ -119,7 +119,7 @@ Recorded so a future PR adding any of these is a deliberate reopening, not drift
 - `AUTH.md` — the role model (My account / Box settings maps to member / admin), the server-side router grouping, the elevation window, and the Tier-2 `/settings/<service>` surface.
 - `USERS_AND_GROUPS.md` — the Users panel flows and the full elevation mechanics.
 - `UPDATES.md` — the Updates panel, rollback, and the per-user pending-update facts in Users.
-- `STORAGE.md`, `MALMO_NETWORK.md`, `SERVICE_PROVISIONING.md`, `TIME.md`, `LOGGING.md`, `HEALTH.md`, `TELEMETRY.md`, `NOTIFICATIONS.md` — own the deep behavior of their respective panels.
+- `STORAGE.md`, `MOOSE_NETWORK.md`, `SERVICE_PROVISIONING.md`, `TIME.md`, `LOGGING.md`, `HEALTH.md`, `TELEMETRY.md`, `NOTIFICATIONS.md` — own the deep behavior of their respective panels.
 - `WEB_UI.md` — the stack the panels are built on.
 
 Open items that touch this surface (role-filtering the Notifications list, the Settings → Storage Level-1 walk-through, the Settings → Network panel UX, the Settings → System deep-view graphs, factory-reset and backup designs, API tokens) live in `NEXT.md`, not here.

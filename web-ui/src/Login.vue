@@ -64,7 +64,7 @@ function glyphColor(username: string): string {
 
 <template>
   <main class="auth">
-    <Heading :level="1" class="mb-8 text-center">malmo</Heading>
+    <Heading :level="1" class="mb-8 text-center">moose</Heading>
 
     <!-- User picker -->
     <div v-if="!selected" class="card">

@@ -1,0 +1,33 @@
+# Hosted first-boot seed materializer (C3a cloud-lane, #220; real-cloud channel
+# #246). A first-boot oneshot that lands the provisioning seed at
+# /var/lib/moose/seed.json, where the brain ingests it (profile.DefaultSeedPath;
+# cmd/brain loadHostedEnvironment). The seed arrives either as a systemd
+# credential over SMBIOS (the test lane / fw_cfg clouds) or, when absent, over the
+# real-cloud metadata/user-data endpoint (Hetzner) — see the materializer script.
+#
+# Ordered Before=host-agent.service so the seed is on disk before host-agent
+# launches the brain container — the brain reads the seed once at startup, and
+# /var/lib/moose is bind-mounted into it at the same path (brainlaunch.runSpec),
+# so the host-side file is what the containerized brain sees.
+#
+# After=network.target is a passive ordering point (it does NOT wait for
+# connectivity — systemd-networkd-wait-online stays disabled, ENVIRONMENT.md
+# # Provisioning & first-boot); the metadata fetch does its own bounded in-script
+# retry to ride out the DHCP race. The air-gapped SMBIOS lane short-circuits
+# before any network access, so this ordering never makes it wait.
+#
+# Both channels are optional: an un-seeded boot delivers neither and the
+# materializer no-ops, leaving /setup at 503.
+[Unit]
+Description=moose hosted first-boot provisioning seed (materialize seed.json)
+After=local-fs.target network.target
+Before=host-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ImportCredential=moose.seed
+ExecStart=/usr/local/bin/moose-seed-materialize.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // seedInstance writes an instance row directly, bypassing the install

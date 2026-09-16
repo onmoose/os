@@ -1,6 +1,6 @@
 // Package healthsource reads storage findings written by
-// malmo-storage-verify (BOOT.md # The storage-ready target) from
-// /run/malmo/health/storage.json and returns them to the host-agent HTTP
+// moose-storage-verify (BOOT.md # The storage-ready target) from
+// /run/moose/health/storage.json and returns them to the host-agent HTTP
 // layer as a protocol.StorageHealth payload.
 //
 // Contract (see hostagent.HealthSource): Read always returns a usable
@@ -20,13 +20,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // DefaultPath is the production location of the storage findings file, set
-// by malmo-storage-verify.service. Cross-ref: BOOT.md # The storage-ready
+// by moose-storage-verify.service. Cross-ref: BOOT.md # The storage-ready
 // target.
-const DefaultPath = "/run/malmo/health/storage.json"
+const DefaultPath = "/run/moose/health/storage.json"
 
 // FilesystemHealthSource reads protocol.StorageHealth from a JSON file.
 type FilesystemHealthSource struct {

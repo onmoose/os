@@ -5,7 +5,7 @@
 # (STORAGE.md # First-run flow step 4). Adds a TPM2 keyslot to the root
 # LUKS device bound to PCR 7, authorizing the new keyslot by unlocking an
 # existing one with the recovery keyfile baked at
-# /etc/malmo/secrets/luks-recovery.key.
+# /etc/moose/secrets/luks-recovery.key.
 #
 # The command is exactly STORAGE.md's (systemd-cryptenroll
 # --tpm2-device=auto --tpm2-pcrs=7); only its caller differs — a oneshot
@@ -17,8 +17,8 @@
 # the next boot rather than silently staying un-enrolled.
 set -euo pipefail
 
-KEYFILE=/etc/malmo/secrets/luks-recovery.key
-MARKER=/var/lib/malmo/.luks-tpm-enrolled
+KEYFILE=/etc/moose/secrets/luks-recovery.key
+MARKER=/var/lib/moose/.luks-tpm-enrolled
 
 # Resolve the LUKS backing device from the mounted root. The root is
 # /dev/mapper/luks-<uuid>; systemd-cryptenroll operates on the backing

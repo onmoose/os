@@ -2,7 +2,7 @@
 
 How the dashboard front-end is built, as it exists in the repo today. This is the **code-level map** for someone about to edit `web-ui/`. It is the third leg of three web-ui docs — read them in this order:
 
-- **`docs/specs/WEB_UI.md`** — the design source of truth: stack picks, deploy model (`malmo-ui` container), versioning posture, and the architectural rules ("server state lives in Query", "SSE is the cache-invalidation channel", "`<script setup>` only"). Read it first; this doc assumes those decisions.
+- **`docs/specs/WEB_UI.md`** — the design source of truth: stack picks, deploy model (`moose-ui` container), versioning posture, and the architectural rules ("server state lives in Query", "SSE is the cache-invalidation channel", "`<script setup>` only"). Read it first; this doc assumes those decisions.
 - **`docs/architecture.md`** — the *external* contract: how the browser, web-ui, brain, and Caddy wire together (REST `/api/v1/*` + SSE, cookie auth).
 - **This doc** — the *internal* shape: folder layout, the cross-cutting modules, state model, and recipes for adding a view/component/query.
 

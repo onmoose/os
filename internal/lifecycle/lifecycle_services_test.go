@@ -3,7 +3,7 @@ package lifecycle
 // Managed-service provisioning (SERVICE_PROVISIONING.md # Tier 1): an app that
 // declares `services.database: {type: postgres}` gets a per-app database+role in
 // the shared Postgres instance, with credentials injected as
-// MALMO_SERVICE_DATABASE_*. Driven against the fake docker driver (whose
+// MOOSE_SERVICE_DATABASE_*. Driven against the fake docker driver (whose
 // RunOneOff default succeeds and ContainerHealth defaults to "healthy", so the
 // readiness poll passes and the psql CREATE one-shot returns ok).
 
@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/store"
 )
 
 const dbManifest = `
@@ -42,7 +42,7 @@ services:
   app:
     image: traefik/whoami:v1.10.3
     environment:
-      POSTGRES_URL: ${MALMO_SERVICE_DATABASE_DSN}
+      POSTGRES_URL: ${MOOSE_SERVICE_DATABASE_DSN}
 `
 
 // installDBApp installs dbapp (manifest id overridable so two can coexist in one
@@ -119,21 +119,21 @@ func TestInstallProvisionsPostgres(t *testing.T) {
 
 	// The .env carries the injected credential family.
 	env := readInstanceEnv(t, e, inst.ID)
-	dsn := envValue(env, "MALMO_SERVICE_DATABASE_DSN")
-	wantHost := "postgres-15.malmo.internal"
+	dsn := envValue(env, "MOOSE_SERVICE_DATABASE_DSN")
+	wantHost := "postgres-15.moose.internal"
 	if !strings.HasPrefix(dsn, "postgres://") || !strings.Contains(dsn, wantHost) {
 		t.Fatalf("DSN = %q, want postgres:// … %s", dsn, wantHost)
 	}
-	if got := envValue(env, "MALMO_SERVICE_DATABASE_HOST"); got != wantHost {
+	if got := envValue(env, "MOOSE_SERVICE_DATABASE_HOST"); got != wantHost {
 		t.Fatalf("HOST = %q, want %q", got, wantHost)
 	}
-	if got := envValue(env, "MALMO_SERVICE_DATABASE_NAME"); got != g.DBName {
+	if got := envValue(env, "MOOSE_SERVICE_DATABASE_NAME"); got != g.DBName {
 		t.Fatalf("NAME = %q, want %q", got, g.DBName)
 	}
 
 	// The app service is attached to the service network in the override.
 	override := readInstanceFile(t, e, inst.ID, "compose.override.yml")
-	if !strings.Contains(override, "malmo-svc-postgres-15") {
+	if !strings.Contains(override, "moose-svc-postgres-15") {
 		t.Fatalf("override missing service network:\n%s", override)
 	}
 }
@@ -204,20 +204,20 @@ func TestInstallProvisionsMySQLFamily(t *testing.T) {
 			// The injected family carries the dot-folded host, port 3306, and a
 			// mysql:// DSN for both engines (one wire protocol).
 			env := readInstanceEnv(t, e, inst.ID)
-			wantHost := tc.stem + ".malmo.internal"
-			if got := envValue(env, "MALMO_SERVICE_DATABASE_HOST"); got != wantHost {
+			wantHost := tc.stem + ".moose.internal"
+			if got := envValue(env, "MOOSE_SERVICE_DATABASE_HOST"); got != wantHost {
 				t.Fatalf("HOST = %q, want %q", got, wantHost)
 			}
-			if got := envValue(env, "MALMO_SERVICE_DATABASE_PORT"); got != "3306" {
+			if got := envValue(env, "MOOSE_SERVICE_DATABASE_PORT"); got != "3306" {
 				t.Fatalf("PORT = %q, want 3306", got)
 			}
-			dsn := envValue(env, "MALMO_SERVICE_DATABASE_DSN")
+			dsn := envValue(env, "MOOSE_SERVICE_DATABASE_DSN")
 			if !strings.HasPrefix(dsn, "mysql://") || !strings.Contains(dsn, wantHost+":3306/"+g.DBName) {
 				t.Fatalf("DSN = %q, want mysql:// … %s:3306/%s", dsn, wantHost, g.DBName)
 			}
 
 			override := readInstanceFile(t, e, inst.ID, "compose.override.yml")
-			if !strings.Contains(override, "malmo-svc-"+tc.stem) {
+			if !strings.Contains(override, "moose-svc-"+tc.stem) {
 				t.Fatalf("override missing service network:\n%s", override)
 			}
 		})
@@ -241,7 +241,7 @@ func TestUninstallDropsMySQLDB(t *testing.T) {
 // TestInstallProvisionsValkeyViaRedisAlias proves the compatibility alias: an
 // app that declares `type: redis, version: "7"` is provisioned on the Valkey
 // engine (valkey/8) — the grant stores the engine identity, the names key off
-// valkey, and malmo never spins up an upstream redis instance. The native
+// valkey, and moose never spins up an upstream redis instance. The native
 // `type: valkey` path is covered by TestInstallProvisionsValkeyNative.
 func TestInstallProvisionsValkeyViaRedisAlias(t *testing.T) {
 	e := newTestEnv(t)
@@ -318,17 +318,17 @@ func assertValkeyProvisioned(t *testing.T, e *testEnv, inst store.Instance, g st
 	// DSN with no database path (clients default to logical DB 0; redis:// is the
 	// universal RESP scheme).
 	env := readInstanceEnv(t, e, inst.ID)
-	wantHost := "valkey-8.malmo.internal"
-	if got := envValue(env, "MALMO_SERVICE_DATABASE_HOST"); got != wantHost {
+	wantHost := "valkey-8.moose.internal"
+	if got := envValue(env, "MOOSE_SERVICE_DATABASE_HOST"); got != wantHost {
 		t.Fatalf("HOST = %q, want %q", got, wantHost)
 	}
-	if got := envValue(env, "MALMO_SERVICE_DATABASE_PORT"); got != "6379" {
+	if got := envValue(env, "MOOSE_SERVICE_DATABASE_PORT"); got != "6379" {
 		t.Fatalf("PORT = %q, want 6379", got)
 	}
-	if got := envValue(env, "MALMO_SERVICE_DATABASE_NAME"); got != "" {
+	if got := envValue(env, "MOOSE_SERVICE_DATABASE_NAME"); got != "" {
 		t.Fatalf("NAME = %q, want empty (valkey has no database)", got)
 	}
-	dsn := envValue(env, "MALMO_SERVICE_DATABASE_DSN")
+	dsn := envValue(env, "MOOSE_SERVICE_DATABASE_DSN")
 	if !strings.HasPrefix(dsn, "redis://") || !strings.Contains(dsn, wantHost+":6379") {
 		t.Fatalf("DSN = %q, want redis:// … %s:6379", dsn, wantHost)
 	}
@@ -337,13 +337,13 @@ func assertValkeyProvisioned(t *testing.T, e *testEnv, inst store.Instance, g st
 	}
 
 	override := readInstanceFile(t, e, inst.ID, "compose.override.yml")
-	if !strings.Contains(override, "malmo-svc-valkey-8") {
+	if !strings.Contains(override, "moose-svc-valkey-8") {
 		t.Fatalf("override missing service network:\n%s", override)
 	}
 }
 
 // TestRedisAndValkeyCoalesce is the heart of the alias decision: a redis-7 app
-// and a valkey-8 app must share ONE engine instance (malmo-svc-valkey-8), not
+// and a valkey-8 app must share ONE engine instance (moose-svc-valkey-8), not
 // two. Proves redis-7 normalizes to valkey-8 *before* the lazy-spinup gate, so
 // the second install reuses the existing service_instances row.
 func TestRedisAndValkeyCoalesce(t *testing.T) {

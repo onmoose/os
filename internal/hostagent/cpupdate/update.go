@@ -34,23 +34,23 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/brainlaunch"
-	"github.com/malmoos/malmo/internal/hostagent/controlplane"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/hostagent/brainlaunch"
+	"github.com/onmoose/moose/internal/hostagent/controlplane"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // controlPlaneProject is the compose project the staged control-plane stack
 // runs under. It must match internal/lifecycle's constant of the same name: the
 // brain and host-agent both bring this stack up, and two project names would
 // give one compose file two independent sets of containers.
-const controlPlaneProject = "malmo-control-plane"
+const controlPlaneProject = "moose-control-plane"
 
 // brainPort is the port the brain listens on inside its container (cmd/brain's
-// MALMO_LISTEN default). The brain publishes no port, so the health probe dials
+// MOOSE_LISTEN default). The brain publishes no port, so the health probe dials
 // the container's own address on the ingress network.
 const brainPort = 8080
 
-// uiPort is the port the malmo-ui container serves the dashboard bundle on.
+// uiPort is the port the moose-ui container serves the dashboard bundle on.
 const uiPort = 80
 
 // revertBudget bounds the rollback. It is deliberately generous and wholly
@@ -79,7 +79,7 @@ type Docker interface {
 	ImageLabel(ctx context.Context, ref, label string) (string, error)
 	// Run starts a detached container from the brain's launch spec.
 	Run(ctx context.Context, spec brainlaunch.RunSpec) error
-	// ComposeUp reconciles the staged control-plane project (Caddy + malmo-ui)
+	// ComposeUp reconciles the staged control-plane project (Caddy + moose-ui)
 	// to whatever the compose file in dir now declares.
 	ComposeUp(ctx context.Context, dir, project string) (string, error)
 	// ContainerIP reports a container's address on its network, so the health
@@ -281,11 +281,11 @@ func declare(o Options, l controlplane.Ledger, res Result) error {
 // **The compose stack goes up first, and the brain is started last.** UPDATES.md
 // # 3 step 3c used to say the opposite ("brain first, then UI"), and that order
 // is a race: the brain runs `docker compose up -d` on this same
-// `malmo-control-plane` project at every startup (lifecycle.EnsureControlPlane),
+// `moose-control-plane` project at every startup (lifecycle.EnsureControlPlane),
 // so a brain started before ComposeUp boots straight into the compose run
 // host-agent is in the middle of. Two composes on one project then interleave
 // the rename dance compose does to recreate a service, they collide on the
-// backup name, and the box is left with **no container named `malmo-ui` at
+// backup name, and the box is left with **no container named `moose-ui` at
 // all** — after which this transaction's own health check cannot resolve the
 // UI's address, reports the update unhealthy, and reverts a change that was
 // otherwise fine. That is not a theory: it is what the booted-box lane saw on

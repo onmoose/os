@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // fakeDocker records calls and returns programmed results so Launch's sequence
@@ -97,21 +97,21 @@ func (f *fakeDocker) NetworkCreate(_ context.Context, name string) error {
 
 func testConfig() Config {
 	return Config{
-		Image:         "malmo-brain:dev",
-		ImageTar:      "/var/lib/malmo/brain-image.tar",
-		ContainerName: "malmo-brain",
-		DataDir:       "/var/lib/malmo",
-		StateDir:      "/var/lib/malmo/state",
-		SocketPath:    "/var/run/malmo/agent.sock",
+		Image:         "moose-brain:dev",
+		ImageTar:      "/var/lib/moose/brain-image.tar",
+		ContainerName: "moose-brain",
+		DataDir:       "/var/lib/moose",
+		StateDir:      "/var/lib/moose/state",
+		SocketPath:    "/var/run/moose/agent.sock",
 
-		Network:            "malmo-ingress",
+		Network:            "moose-ingress",
 		ProxyImage:         "tecnativa/docker-socket-proxy:v0.4.2",
-		ProxyImageTar:      "/var/lib/malmo/control-plane/images/docker-socket-proxy.tar",
-		ProxyContainerName: "malmo-docker-proxy",
-		ControlPlaneDir:    "/var/lib/malmo/control-plane",
-		UIUpstream:         "malmo-ui:80",
-		CatalogURL:         "https://malmo.network",
-		CatalogCacheDir:    "/var/lib/malmo/catalog-cache",
+		ProxyImageTar:      "/var/lib/moose/control-plane/images/docker-socket-proxy.tar",
+		ProxyContainerName: "moose-docker-proxy",
+		ControlPlaneDir:    "/var/lib/moose/control-plane",
+		UIUpstream:         "moose-ui:80",
+		CatalogURL:         "https://onmoose.network",
+		CatalogCacheDir:    "/var/lib/moose/catalog-cache",
 	}
 }
 
@@ -153,93 +153,93 @@ func TestLaunchRunSpec(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 	s := f.lastRun
-	if s.Name != "malmo-brain" || s.Image != "malmo-brain:dev" {
+	if s.Name != "moose-brain" || s.Image != "moose-brain:dev" {
 		t.Errorf("run spec name/image = %q/%q", s.Name, s.Image)
 	}
 	if s.Restart != "unless-stopped" {
 		t.Errorf("restart policy = %q, want unless-stopped", s.Restart)
 	}
-	if !hasMount(s.Mounts, "/var/run/malmo", "/var/run/malmo") {
+	if !hasMount(s.Mounts, "/var/run/moose", "/var/run/moose") {
 		t.Errorf("missing host-agent socket-dir mount: %+v", s.Mounts)
 	}
-	if !hasMount(s.Mounts, "/var/lib/malmo", "/var/lib/malmo") {
+	if !hasMount(s.Mounts, "/var/lib/moose", "/var/lib/moose") {
 		t.Errorf("missing data-dir mount: %+v", s.Mounts)
 	}
-	if v := envVal(s.Env, "MALMO_STATE_DIR"); v != "/var/lib/malmo/state" {
-		t.Errorf("MALMO_STATE_DIR = %q, want /var/lib/malmo/state", v)
+	if v := envVal(s.Env, "MOOSE_STATE_DIR"); v != "/var/lib/moose/state" {
+		t.Errorf("MOOSE_STATE_DIR = %q, want /var/lib/moose/state", v)
 	}
-	if v := envVal(s.Env, "MALMO_AGENT_SOCK"); v != "/var/run/malmo/agent.sock" {
-		t.Errorf("MALMO_AGENT_SOCK = %q, want the socket path", v)
+	if v := envVal(s.Env, "MOOSE_AGENT_SOCK"); v != "/var/run/moose/agent.sock" {
+		t.Errorf("MOOSE_AGENT_SOCK = %q, want the socket path", v)
 	}
 	// M1b: the brain joins the ingress network and is pointed at the proxy +
 	// Caddy + the staged control-plane compose. It must never get the raw socket.
-	if s.Network != "malmo-ingress" {
-		t.Errorf("brain network = %q, want malmo-ingress", s.Network)
+	if s.Network != "moose-ingress" {
+		t.Errorf("brain network = %q, want moose-ingress", s.Network)
 	}
 	if v := envVal(s.Env, "DOCKER_HOST"); v != "tcp://docker-proxy:2375" {
 		t.Errorf("DOCKER_HOST = %q, want tcp://docker-proxy:2375", v)
 	}
-	if v := envVal(s.Env, "MALMO_CADDY_ADMIN"); v != "http://malmo-caddy:2019" {
-		t.Errorf("MALMO_CADDY_ADMIN = %q, want http://malmo-caddy:2019", v)
+	if v := envVal(s.Env, "MOOSE_CADDY_ADMIN"); v != "http://moose-caddy:2019" {
+		t.Errorf("MOOSE_CADDY_ADMIN = %q, want http://moose-caddy:2019", v)
 	}
-	if v := envVal(s.Env, "MALMO_CONTROL_PLANE_DIR"); v != "/var/lib/malmo/control-plane" {
-		t.Errorf("MALMO_CONTROL_PLANE_DIR = %q", v)
+	if v := envVal(s.Env, "MOOSE_CONTROL_PLANE_DIR"); v != "/var/lib/moose/control-plane" {
+		t.Errorf("MOOSE_CONTROL_PLANE_DIR = %q", v)
 	}
-	if v := envVal(s.Env, "MALMO_DASHBOARD_UI_UPSTREAM"); v != "malmo-ui:80" {
-		t.Errorf("MALMO_DASHBOARD_UI_UPSTREAM = %q, want malmo-ui:80", v)
+	if v := envVal(s.Env, "MOOSE_DASHBOARD_UI_UPSTREAM"); v != "moose-ui:80" {
+		t.Errorf("MOOSE_DASHBOARD_UI_UPSTREAM = %q, want moose-ui:80", v)
 	}
 	// The control-plane catalog origin + asset cache dir (icons and screenshots
 	// only — the snapshot is never written to disk). The cache is under DataDir, so
 	// it rides the data-dir mount (no separate Mount entry).
-	if v := envVal(s.Env, "MALMO_CATALOG_URL"); v != "https://malmo.network" {
-		t.Errorf("MALMO_CATALOG_URL = %q, want https://malmo.network", v)
+	if v := envVal(s.Env, "MOOSE_CATALOG_URL"); v != "https://onmoose.network" {
+		t.Errorf("MOOSE_CATALOG_URL = %q, want https://onmoose.network", v)
 	}
-	if v := envVal(s.Env, "MALMO_CATALOG_CACHE_DIR"); v != "/var/lib/malmo/catalog-cache" {
-		t.Errorf("MALMO_CATALOG_CACHE_DIR = %q, want /var/lib/malmo/catalog-cache", v)
+	if v := envVal(s.Env, "MOOSE_CATALOG_CACHE_DIR"); v != "/var/lib/moose/catalog-cache" {
+		t.Errorf("MOOSE_CATALOG_CACHE_DIR = %q, want /var/lib/moose/catalog-cache", v)
 	}
-	// OfflineInstall defaults off → the brain gets no MALMO_OFFLINE_INSTALL.
-	if v := envVal(s.Env, "MALMO_OFFLINE_INSTALL"); v != "" {
-		t.Errorf("MALMO_OFFLINE_INSTALL = %q, want unset when OfflineInstall is false", v)
+	// OfflineInstall defaults off → the brain gets no MOOSE_OFFLINE_INSTALL.
+	if v := envVal(s.Env, "MOOSE_OFFLINE_INSTALL"); v != "" {
+		t.Errorf("MOOSE_OFFLINE_INSTALL = %q, want unset when OfflineInstall is false", v)
 	}
 	// CaddyImage empty (the appliance/dev default) → the brain gets no
-	// MALMO_CADDY_IMAGE, so the control-plane compose stays on stock caddy:2-alpine.
-	if v := envVal(s.Env, "MALMO_CADDY_IMAGE"); v != "" {
-		t.Errorf("MALMO_CADDY_IMAGE = %q, want unset when CaddyImage is empty", v)
+	// MOOSE_CADDY_IMAGE, so the control-plane compose stays on stock caddy:2-alpine.
+	if v := envVal(s.Env, "MOOSE_CADDY_IMAGE"); v != "" {
+		t.Errorf("MOOSE_CADDY_IMAGE = %q, want unset when CaddyImage is empty", v)
 	}
 	if hasMount(s.Mounts, "/var/run/docker.sock", "/var/run/docker.sock") {
 		t.Error("brain must NOT mount the raw Docker socket")
 	}
 	// An unmarked box (no ProfileMarkerPath) gets no marker mount — the brain
 	// resolves appliance, the no-op default.
-	if hasMount(s.Mounts, "/etc/malmo/profile", "/etc/malmo/profile") {
+	if hasMount(s.Mounts, "/etc/moose/profile", "/etc/moose/profile") {
 		t.Errorf("unexpected profile-marker mount when ProfileMarkerPath is empty: %+v", s.Mounts)
 	}
 }
 
 // On a marked box host-agent mounts the environment-profile marker read-only at
 // the same path so the containerized brain resolves the profile (appliance vs
-// hosted) exactly as it would natively — otherwise it can't see /etc/malmo and
+// hosted) exactly as it would natively — otherwise it can't see /etc/moose and
 // always reads appliance, leaving a hosted box's /setup gate disarmed.
 func TestLaunchRunSpecProfileMarkerMount(t *testing.T) {
 	f := newFake()
 	cfg := testConfig()
-	cfg.ProfileMarkerPath = "/etc/malmo/profile"
+	cfg.ProfileMarkerPath = "/etc/moose/profile"
 	if err := Launch(context.Background(), f, cfg); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
 	s := f.lastRun
-	if !hasMount(s.Mounts, "/etc/malmo/profile", "/etc/malmo/profile") {
+	if !hasMount(s.Mounts, "/etc/moose/profile", "/etc/moose/profile") {
 		t.Errorf("missing same-path profile-marker mount: %+v", s.Mounts)
 	}
 	for _, m := range s.Mounts {
-		if m.Source == "/etc/malmo/profile" && !m.ReadOnly {
+		if m.Source == "/etc/moose/profile" && !m.ReadOnly {
 			t.Errorf("profile-marker mount must be read-only: %+v", m)
 		}
 	}
 }
 
 // On a baked, air-gapped box the brain is launched in offline-install mode; unset
-// catalog vars leave MALMO_CATALOG_URL / MALMO_CATALOG_CACHE_DIR off rather than
+// catalog vars leave MOOSE_CATALOG_URL / MOOSE_CATALOG_CACHE_DIR off rather than
 // pointing at "" (the brain then falls back to its own defaults).
 func TestLaunchRunSpecOfflineAndNoCatalog(t *testing.T) {
 	f := newFake()
@@ -251,17 +251,17 @@ func TestLaunchRunSpecOfflineAndNoCatalog(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 	s := f.lastRun
-	if v := envVal(s.Env, "MALMO_OFFLINE_INSTALL"); v != "true" {
-		t.Errorf("MALMO_OFFLINE_INSTALL = %q, want true", v)
+	if v := envVal(s.Env, "MOOSE_OFFLINE_INSTALL"); v != "true" {
+		t.Errorf("MOOSE_OFFLINE_INSTALL = %q, want true", v)
 	}
-	if v := envVal(s.Env, "MALMO_CATALOG_URL"); v != "" {
-		t.Errorf("MALMO_CATALOG_URL = %q, want unset when CatalogURL is empty", v)
+	if v := envVal(s.Env, "MOOSE_CATALOG_URL"); v != "" {
+		t.Errorf("MOOSE_CATALOG_URL = %q, want unset when CatalogURL is empty", v)
 	}
-	if v := envVal(s.Env, "MALMO_CATALOG_CACHE_DIR"); v != "" {
-		t.Errorf("MALMO_CATALOG_CACHE_DIR = %q, want unset when CatalogCacheDir is empty", v)
+	if v := envVal(s.Env, "MOOSE_CATALOG_CACHE_DIR"); v != "" {
+		t.Errorf("MOOSE_CATALOG_CACHE_DIR = %q, want unset when CatalogCacheDir is empty", v)
 	}
-	if v := envVal(s.Env, "MALMO_CATALOG_FILE"); v != "" {
-		t.Errorf("MALMO_CATALOG_FILE = %q, want unset when CatalogFile is empty", v)
+	if v := envVal(s.Env, "MOOSE_CATALOG_FILE"); v != "" {
+		t.Errorf("MOOSE_CATALOG_FILE = %q, want unset when CatalogFile is empty", v)
 	}
 }
 
@@ -270,27 +270,27 @@ func TestLaunchRunSpecOfflineAndNoCatalog(t *testing.T) {
 func TestLaunchRunSpecCatalogFile(t *testing.T) {
 	f := newFake()
 	cfg := testConfig()
-	cfg.CatalogFile = "/var/lib/malmo/catalog-seed.json"
+	cfg.CatalogFile = "/var/lib/moose/catalog-seed.json"
 	if err := Launch(context.Background(), f, cfg); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if v := envVal(f.lastRun.Env, "MALMO_CATALOG_FILE"); v != "/var/lib/malmo/catalog-seed.json" {
-		t.Errorf("MALMO_CATALOG_FILE = %q, want the staged snapshot path", v)
+	if v := envVal(f.lastRun.Env, "MOOSE_CATALOG_FILE"); v != "/var/lib/moose/catalog-seed.json" {
+		t.Errorf("MOOSE_CATALOG_FILE = %q, want the staged snapshot path", v)
 	}
 }
 
-// The hosted profile sets CaddyImage; it must reach the brain as MALMO_CADDY_IMAGE
+// The hosted profile sets CaddyImage; it must reach the brain as MOOSE_CADDY_IMAGE
 // so the control-plane compose substitutes the caddy-dns/acmedns build for the
 // wildcard cert (os #207/C3b).
 func TestLaunchRunSpecCaddyImage(t *testing.T) {
 	f := newFake()
 	cfg := testConfig()
-	cfg.CaddyImage = "malmo-caddy-acmedns:dev"
+	cfg.CaddyImage = "moose-caddy-acmedns:dev"
 	if err := Launch(context.Background(), f, cfg); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if v := envVal(f.lastRun.Env, "MALMO_CADDY_IMAGE"); v != "malmo-caddy-acmedns:dev" {
-		t.Errorf("MALMO_CADDY_IMAGE = %q, want malmo-caddy-acmedns:dev", v)
+	if v := envVal(f.lastRun.Env, "MOOSE_CADDY_IMAGE"); v != "moose-caddy-acmedns:dev" {
+		t.Errorf("MOOSE_CADDY_IMAGE = %q, want moose-caddy-acmedns:dev", v)
 	}
 }
 
@@ -301,18 +301,18 @@ func TestEnsureTransportSeedsNetworkAndProxy(t *testing.T) {
 	if err := EnsureTransport(context.Background(), f, testConfig()); err != nil {
 		t.Fatalf("EnsureTransport: %v", err)
 	}
-	if f.netCalls != 1 || f.lastNet != "malmo-ingress" {
-		t.Errorf("network create calls=%d last=%q, want 1 malmo-ingress", f.netCalls, f.lastNet)
+	if f.netCalls != 1 || f.lastNet != "moose-ingress" {
+		t.Errorf("network create calls=%d last=%q, want 1 moose-ingress", f.netCalls, f.lastNet)
 	}
 	if f.runCalls != 1 {
 		t.Fatalf("run calls = %d, want 1 (proxy launched)", f.runCalls)
 	}
 	s := f.lastRun
-	if s.Name != "malmo-docker-proxy" || s.Network != "malmo-ingress" {
+	if s.Name != "moose-docker-proxy" || s.Network != "moose-ingress" {
 		t.Errorf("proxy spec name/network = %q/%q", s.Name, s.Network)
 	}
 	// The brain dials the proxy by the docker-proxy alias regardless of the
-	// container's malmo-prefixed name.
+	// container's moose-prefixed name.
 	if len(s.Aliases) != 1 || s.Aliases[0] != "docker-proxy" {
 		t.Errorf("proxy aliases = %v, want [docker-proxy]", s.Aliases)
 	}
@@ -376,8 +376,8 @@ func TestEnsureTransportRecreatesUnsandboxedProxy(t *testing.T) {
 	if err := EnsureTransport(context.Background(), f, testConfig()); err != nil {
 		t.Fatalf("EnsureTransport: %v", err)
 	}
-	if f.removeCalls != 1 || f.lastRemove != "malmo-docker-proxy" {
-		t.Fatalf("remove calls=%d last=%q, want 1 malmo-docker-proxy", f.removeCalls, f.lastRemove)
+	if f.removeCalls != 1 || f.lastRemove != "moose-docker-proxy" {
+		t.Fatalf("remove calls=%d last=%q, want 1 moose-docker-proxy", f.removeCalls, f.lastRemove)
 	}
 	if f.runCalls != 1 {
 		t.Fatalf("run calls = %d, want 1 (proxy relaunched hardened)", f.runCalls)
@@ -458,7 +458,7 @@ func TestEnsureTransportLoadsAbsentProxyImage(t *testing.T) {
 	if f.runCalls != 1 {
 		t.Fatalf("run calls = %d, want 1 (proxy launched after load)", f.runCalls)
 	}
-	if f.lastRun.Name != "malmo-docker-proxy" {
+	if f.lastRun.Name != "moose-docker-proxy" {
 		t.Errorf("ran %q, want the proxy after loading its image", f.lastRun.Name)
 	}
 }
@@ -493,8 +493,8 @@ func TestFirstBootSequenceLoadsEachImageFromItsOwnTarball(t *testing.T) {
 		}
 	}
 	// Proxy then brain — two distinct containers, in order.
-	if len(f.runSpecs) != 2 || f.runSpecs[0].Name != "malmo-docker-proxy" || f.runSpecs[1].Name != "malmo-brain" {
-		t.Errorf("ran %d containers (%+v), want [malmo-docker-proxy malmo-brain]", len(f.runSpecs), f.runSpecs)
+	if len(f.runSpecs) != 2 || f.runSpecs[0].Name != "moose-docker-proxy" || f.runSpecs[1].Name != "moose-brain" {
+		t.Errorf("ran %d containers (%+v), want [moose-docker-proxy moose-brain]", len(f.runSpecs), f.runSpecs)
 	}
 }
 

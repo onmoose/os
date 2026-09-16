@@ -1,8 +1,8 @@
-# malmo Contributor License Agreement
+# moose Contributor License Agreement
 
 **Version 1.0**
 
-Thank you for contributing to malmo. This Contributor License Agreement ("Agreement") sets out the terms under which you contribute to the malmo project (the "Project"). It exists so that the Project can be stewarded responsibly over time while guaranteeing — in writing — that the Project always remains open source.
+Thank you for contributing to moose. This Contributor License Agreement ("Agreement") sets out the terms under which you contribute to the moose project (the "Project"). It exists so that the Project can be stewarded responsibly over time while guaranteeing — in writing — that the Project always remains open source.
 
 You keep ownership of your work. This is a **license**, not an assignment of copyright. You grant the Steward broad rights so the Project can be maintained, licensed, and relicensed as needed, and in return the Steward makes a binding promise that the Project stays open (Section 5).
 
@@ -57,4 +57,4 @@ The Steward is under no obligation to use or incorporate any Contribution. This 
 
 ---
 
-**How to agree:** sign this document, accept it through the Project's automated contributor-agreement tool, or reply in writing (including by email) stating that you agree to malmo Contributor License Agreement Version 1.0, including for your prior Contributions.
+**How to agree:** sign this document, accept it through the Project's automated contributor-agreement tool, or reply in writing (including by email) stating that you agree to moose Contributor License Agreement Version 1.0, including for your prior Contributions.

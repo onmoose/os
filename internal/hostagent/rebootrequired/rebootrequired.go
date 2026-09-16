@@ -10,7 +10,7 @@
 //
 // Why host-agent owns it (DECISIONS.md 2026-05-31): the brain runs containerized
 // and can't read the host's /run; the flag is Debian's, set by apt regardless of
-// malmo's own app-update path — so host-agent reading the file is the only
+// moose's own app-update path — so host-agent reading the file is the only
 // coherent locus. It self-clears on reboot (/run is tmpfs): the file vanishes and
 // the next poll clears the issue.
 //
@@ -27,7 +27,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // issueRebootRequired is the registered issue ID raised while a reboot is pending.

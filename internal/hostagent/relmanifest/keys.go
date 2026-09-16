@@ -13,7 +13,7 @@ import (
 // key directory, no CA and no transparency log, so the build is the only place
 // trust can be established. Stamp it with:
 //
-//	go build -ldflags "-X github.com/malmoos/malmo/internal/hostagent/relmanifest.BakedKeys=<key>[,<key>]"
+//	go build -ldflags "-X github.com/onmoose/moose/internal/hostagent/relmanifest.BakedKeys=<key>[,<key>]"
 //
 // **There is deliberately no environment-variable override.** The point of
 // baking the key in is that changing which releases a box will accept requires

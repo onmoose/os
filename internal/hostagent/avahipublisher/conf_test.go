@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/hostagent/netstate"
+	"github.com/onmoose/moose/internal/hostagent/netstate"
 )
 
 // debianDefaultConf mirrors the shape of Debian's shipped avahi-daemon.conf:

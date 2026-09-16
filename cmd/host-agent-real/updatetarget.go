@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/malmoos/malmo/internal/hostagent"
-	"github.com/malmoos/malmo/internal/hostagent/brainlaunch"
-	"github.com/malmoos/malmo/internal/hostagent/relmanifest"
-	"github.com/malmoos/malmo/internal/hostagent/updatetarget"
+	"github.com/onmoose/moose/internal/hostagent"
+	"github.com/onmoose/moose/internal/hostagent/brainlaunch"
+	"github.com/onmoose/moose/internal/hostagent/relmanifest"
+	"github.com/onmoose/moose/internal/hostagent/updatetarget"
 )
 
 // startUpdateTarget starts the loop that learns this box's control-plane target
@@ -117,10 +117,10 @@ type targetSource struct {
 // inside the guest, and because a box under test may be pointed elsewhere.
 func repositories() updatetarget.Repositories {
 	r := updatetarget.DefaultRepositories
-	if v := os.Getenv("MALMO_UPDATE_BRAIN_REPO"); v != "" {
+	if v := os.Getenv("MOOSE_UPDATE_BRAIN_REPO"); v != "" {
 		r.Brain = v
 	}
-	if v := os.Getenv("MALMO_UPDATE_UI_REPO"); v != "" {
+	if v := os.Getenv("MOOSE_UPDATE_UI_REPO"); v != "" {
 		r.UI = v
 	}
 	return r

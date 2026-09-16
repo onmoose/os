@@ -296,7 +296,7 @@ func TestParseRejectsBadConfig(t *testing.T) {
 		"lowercase app_env":   "- app_env: openai_key\n    title: T\n    description: D",
 		"hyphen app_env":      "- app_env: API-KEY\n    title: T\n    description: D",
 		"leading digit":       "- app_env: 2FA\n    title: T\n    description: D",
-		"MALMO_ prefix":       "- app_env: MALMO_X\n    title: T\n    description: D",
+		"MOOSE_ prefix":       "- app_env: MOOSE_X\n    title: T\n    description: D",
 		"reserved PATH":       "- app_env: PATH\n    title: T\n    description: D",
 		"reserved LD_PRELOAD": "- app_env: LD_PRELOAD\n    title: T\n    description: D",
 		"duplicate app_env":   "- app_env: TOKEN\n    title: T\n    description: D\n  - app_env: TOKEN\n    title: T2\n    description: D2",
@@ -417,7 +417,7 @@ services:
 
 func TestParseRejectsBadServices(t *testing.T) {
 	cases := map[string]string{
-		// mongodb is deliberately not a recognised managed type — malmo declined a
+		// mongodb is deliberately not a recognised managed type — moose declined a
 		// managed MongoDB service; Mongo apps bundle their own engine
 		// (DECISIONS.md 2026-06-25, docs/progress/mongodb-compat-spike.md). Keep it rejected.
 		"unknown type":    "database:\n    type: mongodb\n    version: \"7\"",

@@ -4,13 +4,13 @@
 # ExtraTrees copy, before image finalization.
 #
 # Responsibilities for slice 0021:
-#   - Enable malmo-storage-ready.target via .wants symlink.
-#   - Ensure /run/malmo/health/ exists via tmpfiles.d (cleaner than
+#   - Enable moose-storage-ready.target via .wants symlink.
+#   - Ensure /run/moose/health/ exists via tmpfiles.d (cleaner than
 #     the reporter's mkdir -p; tracked as a known gap in 0019).
 #   - Make the storage-verify binary executable.
 #   - Enable sshd and host-agent.service (#164: host-agent-real is now
 #     the real binary that launches the brain container; it runs long
-#     so RuntimeDirectory=malmo stays put — the /bin/true-exits hazard
+#     so RuntimeDirectory=moose stays put — the /bin/true-exits hazard
 #     that kept it disabled is gone).
 #   - Pre-commit machine-id + mask systemd-firstboot so the interactive
 #     firstboot wizard doesn't block sysinit.target.
@@ -22,53 +22,53 @@ set -euo pipefail
 # created by `systemctl enable`, but in the chroot we can't run
 # systemctl — drop the symlink manually.
 mkdir -p /etc/systemd/system/multi-user.target.wants
-ln -sf /etc/systemd/system/malmo-storage-ready.target \
-    /etc/systemd/system/multi-user.target.wants/malmo-storage-ready.target
+ln -sf /etc/systemd/system/moose-storage-ready.target \
+    /etc/systemd/system/multi-user.target.wants/moose-storage-ready.target
 
-# malmo primary group (#166). New users are created with `useradd --gid malmo`
-# (internal/hostagent/usermgr defaults PrimaryGroup to "malmo"), so the group
+# moose primary group (#166). New users are created with `useradd --gid moose`
+# (internal/hostagent/usermgr defaults PrimaryGroup to "moose"), so the group
 # must exist before the headless /setup runs. GID 3000 per FIRST_RUN.md #
-# Identity & display names (the malmo-reserved range); idempotent so a rebuild
+# Identity & display names (the moose-reserved range); idempotent so a rebuild
 # over an existing tree is a no-op. The `sudo` group is provisioned by the sudo
 # package (mkosi.conf), so SetRole's admin -> sudo add has its target too.
-getent group malmo >/dev/null || groupadd -g 3000 malmo
+getent group moose >/dev/null || groupadd -g 3000 moose
 
-# malmo-app service identity + malmo-shared household group (#167). host-agent's
+# moose-app service identity + moose-shared household group (#167). host-agent's
 # /v1/identity/well-known resolves these by name (usermgr.WellKnownIdentity:
-# user.Lookup("malmo-app") + LookupGroup("malmo-shared")), and the brain calls it
+# user.Lookup("moose-app") + LookupGroup("moose-shared")), and the brain calls it
 # for ANY folder app — so without them a folder-app install rolls back with
 # "well-known-identity-failed". Fixed well-known IDs 2000/2001 (APP_ISOLATION.md #
 # Runtime identity — "/v1/identity/well-known: 2000/2001"); a real box provisions
-# them at build, the test image must too. malmo-app is a no-login system account.
+# them at build, the test image must too. moose-app is a no-login system account.
 # Idempotent so a rebuild over an existing tree is a no-op.
-getent group malmo-app >/dev/null    || groupadd -g 2000 malmo-app
-getent group malmo-shared >/dev/null || groupadd -g 2001 malmo-shared
-getent passwd malmo-app >/dev/null   || useradd -r -u 2000 -g malmo-app \
-    -M -d /nonexistent -s /usr/sbin/nologin malmo-app
+getent group moose-app >/dev/null    || groupadd -g 2000 moose-app
+getent group moose-shared >/dev/null || groupadd -g 2001 moose-shared
+getent passwd moose-app >/dev/null   || useradd -r -u 2000 -g moose-app \
+    -M -d /nonexistent -s /usr/sbin/nologin moose-app
 
-# /etc/pam.d/malmo staged into the image overlay by bootstrap.sh (dev/pam/malmo).
+# /etc/pam.d/moose staged into the image overlay by bootstrap.sh (dev/pam/moose).
 
-# tmpfiles.d entry for /run/malmo/health (cleaner than the reporter's
+# tmpfiles.d entry for /run/moose/health (cleaner than the reporter's
 # mkdir -p; see 0019 known gaps).
 mkdir -p /etc/tmpfiles.d
-cat >/etc/tmpfiles.d/malmo.conf <<'EOF'
-d /run/malmo 0755 root root -
-d /run/malmo/health 0755 root root -
+cat >/etc/tmpfiles.d/moose.conf <<'EOF'
+d /run/moose 0755 root root -
+d /run/moose/health 0755 root root -
 EOF
 
 # Ensure storage-verify is executable. ExtraTrees should preserve mode
 # but be defensive.
-chmod 0755 /usr/lib/malmo/malmo-storage-verify
+chmod 0755 /usr/lib/moose/moose-storage-verify
 
 # First-boot TPM2 enrollment unit (slice 0023 Stage 2). The unit declares
-# WantedBy=malmo-storage-ready.target; we can't run `systemctl enable` in
+# WantedBy=moose-storage-ready.target; we can't run `systemctl enable` in
 # the chroot, so drop the .wants symlink manually (same idiom as the
 # storage-ready target above). It's a run-once oneshot gated on a marker,
 # so it self-disables after the first successful enroll.
-chmod 0755 /usr/lib/malmo/first-boot-tpm-enroll.sh
-mkdir -p /etc/systemd/system/malmo-storage-ready.target.wants
-ln -sf /etc/systemd/system/malmo-tpm-enroll.service \
-    /etc/systemd/system/malmo-storage-ready.target.wants/malmo-tpm-enroll.service
+chmod 0755 /usr/lib/moose/first-boot-tpm-enroll.sh
+mkdir -p /etc/systemd/system/moose-storage-ready.target.wants
+ln -sf /etc/systemd/system/moose-tpm-enroll.service \
+    /etc/systemd/system/moose-storage-ready.target.wants/moose-tpm-enroll.service
 
 # sshd: key-only root login. (sshd_config drop-in is in mkosi.extra/.)
 chmod 0700 /root/.ssh 2>/dev/null || true
@@ -83,8 +83,8 @@ ln -sf /lib/systemd/system/ssh.service \
 # manual .wants idiom as everything else (no `systemctl enable` in the chroot).
 # It is a standing policy: loaded every boot regardless of whether any account has
 # SSH on, so there is no window where :22 is reachable from off the LAN.
-ln -sf /etc/systemd/system/malmo-ssh-firewall.service \
-    /etc/systemd/system/multi-user.target.wants/malmo-ssh-firewall.service
+ln -sf /etc/systemd/system/moose-ssh-firewall.service \
+    /etc/systemd/system/multi-user.target.wants/moose-ssh-firewall.service
 
 # Disable services we don't want eating boot time / pulling in deps.
 systemctl --root=/ disable systemd-networkd-wait-online.service \
@@ -104,17 +104,17 @@ systemctl --root=/ mask systemd-firstboot.service >/dev/null 2>&1 || true
 # Preset file so systemctl-preset-all on first boot keeps ssh + host-agent
 # enabled. host-agent.service has WantedBy=multi-user.target; #164 runs the real
 # host-agent-real (which launches the brain), and it stays running, so the
-# RuntimeDirectory=malmo teardown that the old /bin/true stub triggered on exit
+# RuntimeDirectory=moose teardown that the old /bin/true stub triggered on exit
 # no longer applies — the unit is enabled.
 mkdir -p /usr/lib/systemd/system-preset
-cat > /usr/lib/systemd/system-preset/99-malmo-medium-test.preset <<'EOF'
+cat > /usr/lib/systemd/system-preset/99-moose-medium-test.preset <<'EOF'
 enable ssh.service
-enable malmo-ssh-firewall.service
+enable moose-ssh-firewall.service
 enable NetworkManager.service
 enable avahi-daemon.service
 enable docker.service
 enable containerd.service
-enable malmo-load-images.service
+enable moose-load-images.service
 enable host-agent.service
 disable NetworkManager-wait-online.service
 EOF
@@ -124,17 +124,17 @@ ln -sf /etc/systemd/system/host-agent.service \
     /etc/systemd/system/multi-user.target.wants/host-agent.service
 
 # Docker + first-boot control-plane image load (#163). docker-ce is baked from
-# Docker's apt repo; enable docker.service (ordered After=malmo-storage-ready.
+# Docker's apt repo; enable docker.service (ordered After=moose-storage-ready.
 # target via the drop-in staged in mkosi.extra) and the run-once image-load
 # oneshot. As elsewhere, we can't `systemctl enable` in the chroot — drop the
 # .wants symlinks manually (the preset above is the belt-and-suspenders half).
-chmod 0755 /usr/lib/malmo/load-control-plane-images.sh
+chmod 0755 /usr/lib/moose/load-control-plane-images.sh
 ln -sf /lib/systemd/system/docker.service \
     /etc/systemd/system/multi-user.target.wants/docker.service
 ln -sf /lib/systemd/system/containerd.service \
     /etc/systemd/system/multi-user.target.wants/containerd.service
-ln -sf /etc/systemd/system/malmo-load-images.service \
-    /etc/systemd/system/multi-user.target.wants/malmo-load-images.service
+ln -sf /etc/systemd/system/moose-load-images.service \
+    /etc/systemd/system/multi-user.target.wants/moose-load-images.service
 
 # Networking is split by MAC between networkd and NetworkManager (#130):
 # the first NIC (52:54:00:6d:6c:01, pinned in run-medium-tests.sh) carries
@@ -154,7 +154,7 @@ MACAddress=52:54:00:6d:6c:01
 DHCP=yes
 EOF
 mkdir -p /etc/NetworkManager/conf.d
-cat > /etc/NetworkManager/conf.d/90-malmo-medium-test.conf << 'EOF'
+cat > /etc/NetworkManager/conf.d/90-moose-medium-test.conf << 'EOF'
 [keyfile]
 unmanaged-devices=mac:52:54:00:6d:6c:01
 EOF

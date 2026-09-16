@@ -4,7 +4,7 @@
 # the qcow2 cloud artifact, and boot it in QEMU to prove the control plane comes up,
 # the hosted first-boot provisioning seed + admin-bootstrap gate work, AND the new
 # admin can drive the trimmed first-run wizard to completion — the box becomes a
-# working, admin-owned, served, first-run-complete malmo. The cloud analogue of
+# working, admin-owned, served, first-run-complete moose. The cloud analogue of
 # dev/test-qemu/run-medium-tests.sh, MINUS swtpm + LUKS (no TPM/disk encryption in
 # hosted — "the disk IS the installed system", ENVIRONMENT.md # Provisioning), PLUS
 # the seed delivery + wizard the medium lane has no analogue for.
@@ -13,14 +13,14 @@
 # box-id + first admin carry boot→boot), then a fourth legacy-BIOS smoke boot on
 # its own overlay (#277), one virtio NIC with restrict=on (air-gapped — the seed
 # arrives over SMBIOS, never the network), serial-log capture per boot. The in-VM
-# self-check (cloud-assertions.sh, run by malmo-cloud-assertions.
-# service) reads which scenario to assert from a `malmo.assert` SMBIOS credential,
+# self-check (cloud-assertions.sh, run by moose-cloud-assertions.
+# service) reads which scenario to assert from a `moose.assert` SMBIOS credential,
 # writes its verdict to the serial console, and powers the box off cleanly on PASS
 # (no SSH in hosted — ENVIRONMENT.md # Access & files). This driver greps the verdict:
 #
-#   boot 1  un-seeded   no seed → GET /_malmo/sso ⇒ 503; /setup ⇒ 403 (gate armed)
+#   boot 1  un-seeded   no seed → GET /_moose/sso ⇒ 503; /setup ⇒ 403 (gate armed)
 #   boot 2  seeded      seed A over SMBIOS (with a complete acme-dns enrollment) →
-#                       assertion key ingested → a bad token on GET /_malmo/sso ⇒ 401
+#                       assertion key ingested → a bad token on GET /_moose/sso ⇒ 401
 #                       (verifier armed); /setup ⇒ 403; brain logged 'provisioning
 #                       seed ingested' under box_id A; the brain APPLIES the wildcard-
 #                       TLS config (acme-dns DNS-01 issuer + :443 bound) — no real cert
@@ -54,8 +54,8 @@
 #
 # The seed is delivered as a systemd credential over SMBIOS type 11 (the same
 # mechanism the medium lane uses for the LUKS passphrase; on a real cloud the same
-# seed.json arrives via cloud-init). malmo-seed.service materializes it to
-# /var/lib/malmo/seed.json before host-agent launches the brain.
+# seed.json arrives via cloud-init). moose-seed.service materializes it to
+# /var/lib/moose/seed.json before host-agent launches the brain.
 #
 # See docs/specs/TESTING.md # Full-stack control-plane integration,
 # docs/progress/cloud-vm-boot-proof.md, docs/progress/cloud-seed-delivery.md, and
@@ -64,11 +64,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${REPO_ROOT}/.dev/cloud-boot"
-IMAGE_OUT="${WORK}/malmo-cloud.raw"
+IMAGE_OUT="${WORK}/moose-cloud.raw"
 VERSION="$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)"
-QCOW2="${WORK}/malmo-${VERSION}-amd64.qcow2"
+QCOW2="${WORK}/moose-${VERSION}-amd64.qcow2"
 
-RUN_DIR="$(mktemp -d -t malmo-cloud.XXXXXX)"
+RUN_DIR="$(mktemp -d -t moose-cloud.XXXXXX)"
 OVERLAY="${RUN_DIR}/overlay.qcow2"   # writable, persisted across the three boots
 QEMU_SERIAL="${RUN_DIR}/serial.log"  # set per-phase by run_boot
 QEMU_PID=""
@@ -124,7 +124,7 @@ BOX_ID_SSH=heron-birch
 #     convenience — sharing one would leave every later boot on images this scenario
 #     built.
 # All three are in the gate — see ci-cloud-image.yml.
-BOOTS="${MALMO_CLOUD_BOOTS:-unseeded seeded frozen bios access update ssh}"
+BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen bios access update ssh}"
 should_run() { case " $BOOTS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # QEMU writes serial logs as root (this script runs under sudo). Resolve the
@@ -139,7 +139,7 @@ dump_serial() {
     cp "$QEMU_SERIAL" "$saved" 2>/dev/null || true
     [ -n "$CALLER" ] && chown "$CALLER":"$(id -gn "$CALLER" 2>/dev/null || echo "$CALLER")" "$saved" 2>/dev/null || true
     echo "--- serial: control-plane / assertion lines ---" >&2
-    grep -niE 'cloud-assertions|malmo|docker|caddy|brain|host-agent|networkd|fail' "$QEMU_SERIAL" 2>/dev/null | tail -40 >&2 || true
+    grep -niE 'cloud-assertions|moose|docker|caddy|brain|host-agent|networkd|fail' "$QEMU_SERIAL" 2>/dev/null | tail -40 >&2 || true
     echo "--- serial: tail 30 ---" >&2
     tail -30 "$QEMU_SERIAL" >&2 || true
     echo "--- full serial log saved (caller-readable): ${saved} ---" >&2
@@ -215,7 +215,7 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ACCEL=kvm; fi
 #     path runs.
 #   - enrollment: a COMPLETE acme-dns credential block, so the brain runs its
 #     wildcard-TLS pass (cmd/brain EnsureWildcardTLS) — configures Caddy's acme-dns
-#     DNS-01 issuer for "*.<box-id>.malmo.network" and binds :443. The values are
+#     DNS-01 issuer for "*.<box-id>.onmoose.network" and binds :443. The values are
 #     inert here: air-gapped (restrict=on) the box never reaches acme-dns/Let's
 #     Encrypt, so no real cert issues — the lane asserts the brain APPLIES the
 #     config and :443 comes up (the #278 regression class), not that a cert exists.
@@ -226,8 +226,8 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ACCEL=kvm; fi
 #     a per-box fact, so this is the one place the lane can prove that channel;
 #     an environment drop-in would prove a path production never takes. Left out
 #     everywhere else, which is what an un-steered box receives — those boots keep
-#     the dead-port MALMO_UPDATE_TARGET_URL from bootstrap.sh.
-# Prints `io.systemd.credential.binary:malmo.seed=<base64>`.
+#     the dead-port MOOSE_UPDATE_TARGET_URL from bootstrap.sh.
+# Prints `io.systemd.credential.binary:moose.seed=<base64>`.
 seed_cred_keyed() { # box_id key_b64 [update_target_url] -> SMBIOS value string
     local box_id="$1" key="$2" target="${3:-}" json target_field=""
     # An `if`, not `[ … ] && …`: under `set -e` a false test as the whole
@@ -237,7 +237,7 @@ seed_cred_keyed() { # box_id key_b64 [update_target_url] -> SMBIOS value string
     fi
     json="$(printf '{"box_id":"%s","assertion_verification_key":"%s",%s"enrollment":{"subdomain":"%s","username":"%s","password":"%s"}}' \
         "$box_id" "$key" "$target_field" "cloud-lane-acmedns-subdomain" "cloud-lane-acmedns-user" "cloud-lane-acmedns-pass")"
-    printf 'io.systemd.credential.binary:malmo.seed=%s' "$(printf '%s' "$json" | base64 -w0)"
+    printf 'io.systemd.credential.binary:moose.seed=%s' "$(printf '%s' "$json" | base64 -w0)"
 }
 # The unkeyed boots: a random 32-byte key (this box holds no matching private key).
 seed_cred() { seed_cred_keyed "$1" "$(head -c 32 /dev/urandom | base64 -w0)"; }
@@ -303,7 +303,7 @@ run_boot() {
     qemu_args+=(
         -netdev "user,id=n0,restrict=on"
         -device "virtio-net-pci,netdev=n0,mac=52:54:00:c1:0d:01"
-        -smbios "type=11,value=io.systemd.credential:malmo.assert=${mode}"
+        -smbios "type=11,value=io.systemd.credential:moose.assert=${mode}"
         "$@"
         -no-reboot
     )
@@ -327,8 +327,8 @@ run_boot() {
     local timeout="${VERDICT_TIMEOUT:-480}"
     local v=""
     for _i in $(seq 1 "$timeout"); do
-        if grep -q 'MALMO_CLOUD_ASSERTIONS:' "$QEMU_SERIAL" 2>/dev/null; then
-            v="$(grep -o 'MALMO_CLOUD_ASSERTIONS:.*' "$QEMU_SERIAL" | tail -1 | tr -d '\r')"
+        if grep -q 'MOOSE_CLOUD_ASSERTIONS:' "$QEMU_SERIAL" 2>/dev/null; then
+            v="$(grep -o 'MOOSE_CLOUD_ASSERTIONS:.*' "$QEMU_SERIAL" | tail -1 | tr -d '\r')"
             break
         fi
         if ! kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -349,7 +349,7 @@ run_boot() {
     fi
     echo "phase=${phase} verdict: ${v}"
     # Match the verdict EXACTLY, not as a substring. The guest emits either
-    # "MALMO_CLOUD_ASSERTIONS: PASS" or "MALMO_CLOUD_ASSERTIONS: FAIL: <reason>",
+    # "MOOSE_CLOUD_ASSERTIONS: PASS" or "MOOSE_CLOUD_ASSERTIONS: FAIL: <reason>",
     # and the old `*PASS*` glob read any failure whose REASON happened to contain
     # the letters "pass" as a pass. That is not hypothetical: a new assertion
     # failing with "PATH GATE BYPASS — ..." turned a genuinely red access boot
@@ -357,7 +357,7 @@ run_boot() {
     # just echoed (#415). Any word like bypass/passphrase/password in a failure
     # message re-opens it, so anchor on the verdict word itself.
     case "$v" in
-        "MALMO_CLOUD_ASSERTIONS: PASS"*)
+        "MOOSE_CLOUD_ASSERTIONS: PASS"*)
             # Print what the guest proved, not only that it passed. A PASS used to
             # discard every `cloud-assertions:` line (dump_serial runs on failure
             # only), so a scenario that silently stopped asserting — a section
@@ -383,7 +383,7 @@ run_boot() {
 }
 
 # --- 4. boot 1: un-seeded. No seed credential → the brain stays unprovisioned and
-# GET /_malmo/sso returns 503 and /setup returns 403 (the SSO gate is armed but
+# GET /_moose/sso returns 503 and /setup returns 403 (the SSO gate is armed but
 # closed — never the appliance's open empty-box behavior). Also the standalone C2
 # control-plane-up proof.
 if should_run unseeded; then
@@ -395,7 +395,7 @@ echo "boot 1 OK — control plane up, hosted SSO gate armed (503, unprovisioned)
 fi
 
 # --- 5. boot 2: seeded. Deliver seed A → the brain ingests the assertion key; a
-# bad/unsigned token on /_malmo/sso is 401 (the verifier is armed) and /setup is 403
+# bad/unsigned token on /_moose/sso is 401 (the verifier is armed) and /setup is 403
 # (disabled on hosted). The ingested box-id A persists on the overlay. The positive
 # owner-create + wizard path needs the portal private key (cloud on-ramp).
 if should_run seeded; then
@@ -410,7 +410,7 @@ fi
 # overlay. The brain loads its persisted box-id A from SQLite and ignores the new
 # seed; the dashboard + /api still serve under box_id A and the brain does not
 # re-ingest. Proves a re-delivered or changed seed cannot re-key a provisioned box
-# (MALMO_NETWORK.md frozen identity).
+# (MOOSE_NETWORK.md frozen identity).
 if should_run frozen; then
 if ! run_boot "frozen" "frozen:${BOX_ID_A}" -smbios "type=11,value=$(seed_cred "$BOX_ID_B")"; then
     echo "cloud gate proof: ${VERDICT}" >&2
@@ -444,7 +444,7 @@ fi
 # fresh overlay + box-id, seeded with a TEST-PORTAL key so the box can mint a real
 # owner session (the positive path the box-only SSO gate above can't reach). The
 # harness holds the matching private key and mints a valid owner assertion, delivered
-# over a second credential (malmo.sso_token); the in-VM cloud-assertions.sh drives
+# over a second credential (moose.sso_token); the in-VM cloud-assertions.sh drives
 # SSO → installs whoami air-gapped → proves the restricted gate (302 without a
 # session, proxied-through WITH the owner's forward-auth cookie), the public toggle
 # (reachable with no session), and the Cookie-strip invariant (the app upstream never
@@ -485,9 +485,9 @@ if should_run access; then
     VERDICT_TIMEOUT=720
     if ! run_boot "access" "access" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_ACCESS" "$ACCESS_KEY")" \
-        -smbios "type=11,value=io.systemd.credential.binary:malmo.sso_token=$(printf '%s' "$ACCESS_TOKEN" | base64 -w0)" \
-        -smbios "type=11,value=io.systemd.credential.binary:malmo.sso_token2=$(printf '%s' "$ACCESS_TOKEN2" | base64 -w0)" \
-        -smbios "type=11,value=io.systemd.credential.binary:malmo.sso_token3=$(printf '%s' "$ACCESS_TOKEN3" | base64 -w0)"; then
+        -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$ACCESS_TOKEN" | base64 -w0)" \
+        -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token2=$(printf '%s' "$ACCESS_TOKEN2" | base64 -w0)" \
+        -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token3=$(printf '%s' "$ACCESS_TOKEN3" | base64 -w0)"; then
         echo "cloud gate proof: ${VERDICT}" >&2
         exit 1
     fi
@@ -539,7 +539,7 @@ if should_run update; then
     VERDICT_TIMEOUT=1500
     if ! run_boot "update" "update" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_UPDATE" "$UPDATE_KEY" "$UPDATE_TARGET_URL")" \
-        -smbios "type=11,value=io.systemd.credential.binary:malmo.sso_token=$(printf '%s' "$UPDATE_TOKEN" | base64 -w0)"; then
+        -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$UPDATE_TOKEN" | base64 -w0)"; then
         echo "cloud update proof: ${VERDICT}" >&2
         exit 1
     fi
@@ -586,7 +586,7 @@ if should_run ssh; then
     VERDICT_TIMEOUT=900
     if ! run_boot "ssh" "ssh" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_SSH" "$SSH_KEY_B64")" \
-        -smbios "type=11,value=io.systemd.credential.binary:malmo.sso_token=$(printf '%s' "$SSH_TOKEN" | base64 -w0)"; then
+        -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$SSH_TOKEN" | base64 -w0)"; then
         echo "cloud ssh proof: ${VERDICT}" >&2
         exit 1
     fi

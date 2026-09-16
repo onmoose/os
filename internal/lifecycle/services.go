@@ -3,23 +3,23 @@ package lifecycle
 // Managed data services — Tier 1 (SERVICE_PROVISIONING.md). The brain runs one
 // shared container per service type+version (lazy spinup), and provisions a
 // per-app credential inside it. Credentials are injected back into the app as
-// MALMO_SERVICE_<NAME>_*. v1 supports Postgres, the MySQL family (mysql,
+// MOOSE_SERVICE_<NAME>_*. v1 supports Postgres, the MySQL family (mysql,
 // mariadb — one code path, per-engine deltas only), and Valkey. The SQL engines
 // get a per-app database+role; Valkey has no database concept, so the per-app
 // unit is an ACL user with full keyspace — the credential itself is the
 // isolation boundary (revocable on uninstall), not a keyspace partition.
 //
-// Valkey is the BSD-3 Linux Foundation fork of Redis 7.2.4; malmo runs it for
+// Valkey is the BSD-3 Linux Foundation fork of Redis 7.2.4; moose runs it for
 // both the `valkey` and the `redis` manifest types — `redis` is a pure
 // compatibility alias, normalized to the Valkey engine (redis 7 → valkey 8) by
 // normalizeEngine before anything in this file touches it, so the maps and code
-// paths below only ever know "valkey". malmo never runs upstream Redis at any
-// version: Redis 7.4+ is RSALv2/SSPLv1 and Redis 8+ is AGPLv3, both on malmo's
+// paths below only ever know "valkey". moose never runs upstream Redis at any
+// version: Redis 7.4+ is RSALv2/SSPLv1 and Redis 8+ is AGPLv3, both on moose's
 // avoid-list (DECISIONS.md 2026-06-13).
 //
 // Provisioning runs the service's own client (psql / mysql / mariadb /
 // valkey-cli) in a throwaway one-shot container — `docker run --rm --network
-// malmo-svc-<k>-<v> --env-file <serviceDir>/.env <serviceImage> <client …>`
+// moose-svc-<k>-<v> --env-file <serviceDir>/.env <serviceImage> <client …>`
 // (DockerDriver.RunOneOff) — rather than a Go SQL client or a `docker exec` into
 // the long-running service container. Two constraints shape this: the brain
 // never joins the service's Docker network (only the ephemeral container does —
@@ -27,7 +27,7 @@ package lifecycle
 // docker-socket-proxy that fronts the brain's only Docker path denies the EXEC
 // family, so `docker exec` is unavailable in production (DECISIONS.md 2026-06-14;
 // CONTROL_PLANE.md # Docker socket exposure). The client connects over TCP to
-// the service's <kind>-<version>.malmo.internal alias, so it authenticates with
+// the service's <kind>-<version>.moose.internal alias, so it authenticates with
 // a password: the superuser password rides --env-file (the same .env the service
 // compose uses) and a wrapper `sh -c` remaps it to the client's expected env var
 // (PGPASSWORD / MYSQL_PWD / REDISCLI_AUTH) so it never reaches host argv; the
@@ -47,8 +47,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // serviceReadyTimeout bounds the lazy-spinup readiness wait (a cold database
@@ -60,7 +60,7 @@ const serviceReadyTimeout = 90 * time.Second
 // identity the brain actually provisions. `redis` is a BSD-3 compatibility alias
 // for the Valkey engine: a `redis: "7"` declaration normalizes to `valkey: "8"`
 // (Valkey 8 is RESP/ACL-compatible with Redis 7), so a redis-7 app and a
-// valkey-8 app coalesce onto the one shared malmo-svc-valkey-8 instance. malmo
+// valkey-8 app coalesce onto the one shared moose-svc-valkey-8 instance. moose
 // never runs upstream Redis (license: see file header). All other types pass
 // through unchanged. Normalization happens once, early (provisionServices and
 // serviceNetworkNames), so the maps and provisioning paths below only ever see
@@ -80,7 +80,7 @@ var servicePort = map[string]int{"postgres": 5432, "mysql": 3306, "mariadb": 330
 // NEXT.md). valkey/valkey is the BSD-3 image (never upstream redis).
 var serviceImageRepo = map[string]string{"postgres": "postgres", "mysql": "mysql", "mariadb": "mariadb", "valkey": "valkey/valkey"}
 
-// serviceDSNScheme is the URL scheme writeEnv stamps into MALMO_SERVICE_*_DSN.
+// serviceDSNScheme is the URL scheme writeEnv stamps into MOOSE_SERVICE_*_DSN.
 // MariaDB speaks the MySQL wire protocol, so both family members use mysql://;
 // Valkey speaks RESP, so the universal redis:// scheme every client understands.
 var serviceDSNScheme = map[string]string{"postgres": "postgres", "mysql": "mysql", "mariadb": "mysql", "valkey": "redis"}
@@ -103,7 +103,7 @@ var mysqlTools = map[string]struct{ client, admin, rootPWVar string }{
 // serviceName is the "<kind>-<version>" stem used for the container name, the
 // Docker network, the compose project, and the in-network DNS alias. Dots in a
 // version (mysql "8.0") fold to dashes — compose project names reject dots —
-// so mysql 8.0 names mysql-8-0 / malmo-svc-mysql-8-0 / mysql-8-0.malmo.internal.
+// so mysql 8.0 names mysql-8-0 / moose-svc-mysql-8-0 / mysql-8-0.moose.internal.
 func serviceName(kind, version string) string {
 	return kind + "-" + strings.ReplaceAll(version, ".", "-")
 }
@@ -111,19 +111,19 @@ func serviceName(kind, version string) string {
 // serviceContainerName is the compose container_name and the brain's handle for
 // the readiness poll's `docker inspect` (the brain no longer execs into it).
 func serviceContainerName(kind, version string) string {
-	return "malmo-svc-" + serviceName(kind, version)
+	return "moose-svc-" + serviceName(kind, version)
 }
 
 // serviceNetworkName is the dedicated internal network apps attach to in order
 // to reach this service; no declaration → no membership → no reachability.
 func serviceNetworkName(kind, version string) string {
-	return "malmo-svc-" + serviceName(kind, version)
+	return "moose-svc-" + serviceName(kind, version)
 }
 
 // serviceDNSAlias is the host apps put in their DSN. Matches the name
-// SERVICE_PROVISIONING.md states verbatim (e.g. postgres-15.malmo.internal).
+// SERVICE_PROVISIONING.md states verbatim (e.g. postgres-15.moose.internal).
 func serviceDNSAlias(kind, version string) string {
-	return serviceName(kind, version) + ".malmo.internal"
+	return serviceName(kind, version) + ".moose.internal"
 }
 
 func (m *Manager) serviceDir(kind, version string) string {
@@ -481,7 +481,7 @@ func (m *Manager) dropServiceGrants(ctx context.Context, instanceID string, gran
 // startup. `restart: unless-stopped` already keeps them alive across a daemon
 // restart; this covers the case where the whole host (or Docker) was reset and
 // the brain comes back first. Best-effort. Service containers carry the
-// malmo.service label (not malmo.managed=true), so the app-orphan reaper in
+// moose.service label (not moose.managed=true), so the app-orphan reaper in
 // Reconcile never touches them.
 func (m *Manager) reconcileServices(ctx context.Context) {
 	instances, err := m.store.ListServiceInstances()
@@ -538,7 +538,7 @@ func (m *Manager) writeServiceDir(kind, version, superuserPW string) error {
 
 // postgresServiceCompose renders the shared-Postgres compose. The network is
 // external (the brain creates it `--internal` before `up`); the service joins it
-// under the postgres-<version>.malmo.internal alias apps use in their DSN, and
+// under the postgres-<version>.moose.internal alias apps use in their DSN, and
 // pg_isready backs the healthcheck the brain polls for readiness. container_name
 // is the brain's inspect handle.
 //
@@ -579,7 +579,7 @@ func postgresServiceCompose(version string) string {
       timeout: 3s
       retries: 10
     labels:
-      malmo.service: %s
+      moose.service: %s
 networks:
   svc:
     name: %s
@@ -617,7 +617,7 @@ func mysqlServiceCompose(kind, version string) string {
       timeout: 3s
       retries: 10
     labels:
-      malmo.service: %s
+      moose.service: %s
 networks:
   svc:
     name: %s
@@ -659,7 +659,7 @@ func valkeyServiceCompose(version string) string {
       timeout: 3s
       retries: 10
     labels:
-      malmo.service: %s
+      moose.service: %s
 networks:
   svc:
     name: %s

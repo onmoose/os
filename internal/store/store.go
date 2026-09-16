@@ -66,7 +66,7 @@ const (
 	ExposureRestricted = "restricted"
 )
 
-// User is a malmo dashboard account. The brain mirrors a Linux account
+// User is a moose dashboard account. The brain mirrors a Linux account
 // (USERS_AND_GROUPS.md); the *password* lives in PAM via host-agent, never
 // in this row. `recovery_hash` is set only for admins (AUTH.md # Recovery).
 type User struct {
@@ -199,7 +199,7 @@ func (s *Store) migrate() error {
 		-- service_grants: the per-app database+role the brain provisioned inside a
 		-- service_instance (SERVICE_PROVISIONING.md # Provisioning protocol). One
 		-- row per (app instance, logical service name); injected back as
-		-- MALMO_SERVICE_<NAME>_*. Cascades with the app instance so uninstall
+		-- MOOSE_SERVICE_<NAME>_*. Cascades with the app instance so uninstall
 		-- reclaims the bookkeeping (the DB/role drop is a separate docker-exec
 		-- step in lifecycle). password is plaintext at rest, as above.
 		CREATE TABLE IF NOT EXISTS service_grants (
@@ -215,7 +215,7 @@ func (s *Store) migrate() error {
 		);
 		-- mail_providers: admin-registered outgoing SMTP providers (BYO outgoing
 		-- mail, SERVICE_PROVISIONING.md). The brain holds the credential and
-		-- injects it into bound apps as MALMO_MAIL_*; there is no malmo-run
+		-- injects it into bound apps as MOOSE_MAIL_*; there is no moose-run
 		-- relay. password is plaintext at rest (same trust model as
 		-- instance_secrets; hardening deferred, NEXT.md # App-secret injection
 		-- hardening).
@@ -239,7 +239,7 @@ func (s *Store) migrate() error {
 		);
 		-- instance_mail_bindings: which provider a mail-capable app sends
 		-- through — at most one per instance; an unbound instance gets no
-		-- MALMO_MAIL_* vars at all. Cascades with the app instance, and with
+		-- MOOSE_MAIL_* vars at all. Cascades with the app instance, and with
 		-- the provider so deleting a provider unbinds its apps (never the
 		-- reverse — apps always survive provider deletion).
 		CREATE TABLE IF NOT EXISTS instance_mail_bindings (
@@ -545,7 +545,7 @@ func (s *Store) GetInstanceImages(instanceID string) ([]InstanceImage, error) {
 
 // InstanceSecret is one generated per-app secret (SERVICE_PROVISIONING.md #
 // Env-var injection). Name is the manifest-declared snake_case key; Value is
-// the generated, encoded secret the brain re-emits as MALMO_SECRET_<NAME>.
+// the generated, encoded secret the brain re-emits as MOOSE_SECRET_<NAME>.
 type InstanceSecret struct {
 	Name  string
 	Value string
@@ -720,7 +720,7 @@ func (s *Store) ListServiceInstances() ([]ServiceInstance, error) {
 // ServiceGrant is one per-app database+role provisioned inside a service
 // instance (SERVICE_PROVISIONING.md # Per-app isolation). LogicalName is the
 // manifest's `services:` map key; the brain re-emits the credentials as
-// MALMO_SERVICE_<LogicalName>_*.
+// MOOSE_SERVICE_<LogicalName>_*.
 type ServiceGrant struct {
 	LogicalName string
 	Kind        string

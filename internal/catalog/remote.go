@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/malmoos/malmo/internal/manifest"
+	"github.com/onmoose/moose/internal/manifest"
 )
 
 // remote.go is the box's thin-client catalog: it consumes the control plane's

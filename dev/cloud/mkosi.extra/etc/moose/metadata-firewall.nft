@@ -1,0 +1,43 @@
+#!/usr/sbin/nft -f
+#
+# moose hosted cloud image — block container/forwarded egress to the cloud
+# metadata endpoint (169.254.169.254). #251; ENVIRONMENT.md # Provisioning &
+# first-boot, # Public-by-default.
+#
+# The cloud user-data that carries the box's first-boot seed (the admin-bootstrap
+# secret + the acme-dns password) stays retrievable at 169.254.169.254 for the
+# whole life of the server, not just first boot. Docker NATs container egress out
+# the host NIC, so without this rule any local process — including an untrusted
+# third-party app container — could read those secrets: the classic cloud-metadata
+# SSRF (cf. the 2019 Capital One breach). Leaking the acme-dns password is the
+# worst case — it is the long-lived credential to rewrite _acme-challenge.<box-id>
+# and so mint/MITM the box's *.<box-id>.onmoose.network wildcard cert.
+#
+# Forward hook, NOT output: the first-boot seed materializer fetches the endpoint
+# as host root in the host netns (OUTPUT path) once at boot
+# (moose-seed-materialize.sh); app and control-plane containers reach it over a
+# Docker bridge (FORWARD path — the destination IP survives the POSTROUTING
+# masquerade). Dropping only in `forward` blocks every container (apps AND the
+# brain, which reads the seed from disk, never from metadata) while leaving the
+# host-root first-boot fetch untouched. So it is a STANDING policy applied every
+# boot, with no "unblock until seeded" timing or state.
+#
+# Own table at a pre-Docker priority so loading it never flushes Docker's own
+# nat/filter rules (separate nftables tables are independent) and the DROP is
+# evaluated first; `policy accept` so all non-metadata forwarded traffic passes
+# through to Docker untouched. This is the first moose-owned in-guest rule on
+# hosted; a future host-agent firewall reconciler (deferred, NEXT.md) subsumes it.
+#
+# The leading `add` then `delete` makes re-running the unit idempotent: the `add`
+# ensures the table exists so the `delete` can't fail on a first, absent run, then
+# the block below re-creates it from scratch.
+
+add table inet moose_metadata
+delete table inet moose_metadata
+
+table inet moose_metadata {
+	chain forward {
+		type filter hook forward priority -300; policy accept;
+		ip daddr 169.254.169.254 counter drop
+	}
+}

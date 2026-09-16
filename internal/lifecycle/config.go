@@ -2,7 +2,7 @@ package lifecycle
 
 // User-supplied app configuration (APP_MANIFEST.md # D4). A manifest `config:`
 // field declares a value only the user can provide (an API token, an external
-// connection string, a provider/model selector). Unlike the MALMO_* injected
+// connection string, a provider/model selector). Unlike the MOOSE_* injected
 // family, the value lands DIRECTLY under its own app_env name in the target
 // service's compose-override environment — no indirection, no mapping line.
 // writeOverride stamps it at install; SetConfig re-stamps it on a post-install
@@ -15,8 +15,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/store"
 
 	"gopkg.in/yaml.v3"
 )

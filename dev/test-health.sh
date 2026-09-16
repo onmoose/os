@@ -2,10 +2,10 @@
 # End-to-end demo of the storage-health pipeline (slice 0019).
 #
 # What this proves:
-#   1. malmo-storage-verify reads a marker + canary tree and writes a
-#      protocol.StorageHealth payload to /run/malmo/health/storage.json
+#   1. moose-storage-verify reads a marker + canary tree and writes a
+#      protocol.StorageHealth payload to /run/moose/health/storage.json
 #      (here pointed at a tempdir).
-#   2. The fake host-agent, wired with MALMO_HEALTH_PATH, serves that file's
+#   2. The fake host-agent, wired with MOOSE_HEALTH_PATH, serves that file's
 #      findings in the storage category of GET /v1/health/system.
 #   3. The brain polls host-agent on a short interval, reconciles findings
 #      into health.Manager, and surfaces typed issues at GET /api/v1/health.
@@ -25,12 +25,12 @@ set -euo pipefail
 # --- workspace -----------------------------------------------------------
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORK="$(mktemp -d -t malmo-health-XXXXXX)"
+WORK="$(mktemp -d -t moose-health-XXXXXX)"
 echo "workspace: $WORK"
 
 SOCK="$WORK/agent.sock"
 HEALTH_FILE="$WORK/storage.json"
-FIXTURE_ROOT="$WORK/fixture"        # MALMO_VERIFY_ROOT
+FIXTURE_ROOT="$WORK/fixture"        # MOOSE_VERIFY_ROOT
 STATE_DIR="$WORK/state"
 CATALOG_CACHE_DIR="$WORK/catalog-cache"
 COOKIE_JAR="$WORK/cookies"
@@ -42,7 +42,7 @@ BRAIN="http://127.0.0.1:${BRAIN_PORT}"
 TEST_USER="healthtest"
 TEST_PASS="healthtest-pw"
 
-mkdir -p "$FIXTURE_ROOT/etc/malmo" "$FIXTURE_ROOT/srv/malmo" "$FIXTURE_ROOT/var/lib/malmo" \
+mkdir -p "$FIXTURE_ROOT/etc/moose" "$FIXTURE_ROOT/srv/moose" "$FIXTURE_ROOT/var/lib/moose" \
          "$STATE_DIR" "$CATALOG_CACHE_DIR"
 
 # --- cleanup -------------------------------------------------------------
@@ -86,9 +86,9 @@ wait_for() {
 }
 
 reporter() {
-  MALMO_VERIFY_ROOT="$FIXTURE_ROOT" \
-  MALMO_VERIFY_OUT="$HEALTH_FILE" \
-    "$ROOT/malmo-storage-verify"
+  MOOSE_VERIFY_ROOT="$FIXTURE_ROOT" \
+  MOOSE_VERIFY_OUT="$HEALTH_FILE" \
+    "$ROOT/moose-storage-verify"
 }
 
 # Fetch /api/v1/health and return the JSON.
@@ -116,33 +116,33 @@ wait_for_issues() {
 # --- build ---------------------------------------------------------------
 
 step "building binaries"
-( cd "$ROOT" && go build -o ./malmo-storage-verify ./cmd/malmo-storage-verify )
+( cd "$ROOT" && go build -o ./moose-storage-verify ./cmd/moose-storage-verify )
 ( cd "$ROOT" && go build -o ./host-agent          ./cmd/host-agent )
 ( cd "$ROOT" && go build -o ./brain               ./cmd/brain )
 
 # --- launch host-agent ---------------------------------------------------
 
-step "launching fake host-agent (MALMO_HEALTH_PATH=$HEALTH_FILE)"
+step "launching fake host-agent (MOOSE_HEALTH_PATH=$HEALTH_FILE)"
 # Seed an initial empty findings file so host-agent has something to serve
 # before the first reporter run.
 echo '{"checked_at":"1970-01-01T00:00:00Z","findings":[]}' > "$HEALTH_FILE"
-MALMO_AGENT_SOCK="$SOCK" \
-MALMO_HEALTH_PATH="$HEALTH_FILE" \
+MOOSE_AGENT_SOCK="$SOCK" \
+MOOSE_HEALTH_PATH="$HEALTH_FILE" \
   "$ROOT/host-agent" >"$AGENT_LOG" 2>&1 &
 AGENT_PID=$!
 wait_for "host-agent socket" test -S "$SOCK"
 
 # --- launch brain --------------------------------------------------------
 
-step "launching brain (MALMO_HEALTH_POLL=500ms)"
-MALMO_LISTEN=":${BRAIN_PORT}" \
-MALMO_STATE_DIR="$STATE_DIR" \
-MALMO_CATALOG_URL="http://127.0.0.1:1" \
-MALMO_CATALOG_CACHE_DIR="$CATALOG_CACHE_DIR" \
-MALMO_AGENT_SOCK="$SOCK" \
-MALMO_HEALTH_POLL="500ms" \
-MALMO_CADDY_ADMIN="http://127.0.0.1:1" \
-MALMO_LOG_LEVEL="info" \
+step "launching brain (MOOSE_HEALTH_POLL=500ms)"
+MOOSE_LISTEN=":${BRAIN_PORT}" \
+MOOSE_STATE_DIR="$STATE_DIR" \
+MOOSE_CATALOG_URL="http://127.0.0.1:1" \
+MOOSE_CATALOG_CACHE_DIR="$CATALOG_CACHE_DIR" \
+MOOSE_AGENT_SOCK="$SOCK" \
+MOOSE_HEALTH_POLL="500ms" \
+MOOSE_CADDY_ADMIN="http://127.0.0.1:1" \
+MOOSE_LOG_LEVEL="info" \
   "$ROOT/brain" >"$BRAIN_LOG" 2>&1 &
 BRAIN_PID=$!
 wait_for "brain HTTP" curl -sS "$BRAIN/api/v1/auth/state"
@@ -169,7 +169,7 @@ echo "PASS: GET /api/v1/health → issues = []"
 # --- assertion 2: drive enrolled but missing ---------------------------
 
 step "case B — marker present, drive absent: data-drive-missing"
-cat >"$FIXTURE_ROOT/etc/malmo/data-drive.enrolled" <<EOF
+cat >"$FIXTURE_ROOT/etc/moose/data-drive.enrolled" <<EOF
 {"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}
 EOF
 reporter
@@ -184,8 +184,8 @@ echo "PASS: data-drive-missing raised with severity=error, blocks_writes/apps/us
 # --- assertion 3: drive reattached, healthy ----------------------------
 
 step "case C — drive reattached + canaries match: issue clears"
-echo abc-123 > "$FIXTURE_ROOT/srv/malmo/.canary"
-echo abc-123 > "$FIXTURE_ROOT/var/lib/malmo/.canary"
+echo abc-123 > "$FIXTURE_ROOT/srv/moose/.canary"
+echo abc-123 > "$FIXTURE_ROOT/var/lib/moose/.canary"
 reporter
 wait_for_issues ""
 echo "PASS: data-drive-missing cleared on next poll"
@@ -193,7 +193,7 @@ echo "PASS: data-drive-missing cleared on next poll"
 # --- assertion 4: bind landed on wrong fs ------------------------------
 
 step "case D — bind canary differs from data-drive canary: canary-mismatch"
-echo stale-uuid > "$FIXTURE_ROOT/var/lib/malmo/.canary"
+echo stale-uuid > "$FIXTURE_ROOT/var/lib/moose/.canary"
 reporter
 wait_for_issues "canary-mismatch"
 sev=$(issues | jq -r '.issues[0].severity')
@@ -203,8 +203,8 @@ echo "PASS: canary-mismatch raised with severity=critical"
 # --- assertion 5: wrong drive plugged in -------------------------------
 
 step "case E — canary UUID does not match marker: data-drive-wrong"
-echo xyz-999 > "$FIXTURE_ROOT/srv/malmo/.canary"
-echo xyz-999 > "$FIXTURE_ROOT/var/lib/malmo/.canary"
+echo xyz-999 > "$FIXTURE_ROOT/srv/moose/.canary"
+echo xyz-999 > "$FIXTURE_ROOT/var/lib/moose/.canary"
 reporter
 wait_for_issues "data-drive-wrong"
 sev=$(issues | jq -r '.issues[0].severity')

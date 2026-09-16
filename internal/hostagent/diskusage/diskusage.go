@@ -21,7 +21,7 @@ import (
 	"log/slog"
 	"syscall"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // Mount points and labels of the volumes of interest (STORAGE.md mount layout).
@@ -30,7 +30,7 @@ import (
 const (
 	osDiskMount   = "/"
 	osDiskLabel   = "System"
-	dataDiskMount = "/srv/malmo"
+	dataDiskMount = "/srv/moose"
 	dataDiskLabel = "Data"
 )
 
@@ -47,7 +47,7 @@ type Reporter struct {
 }
 
 // New returns a Reporter measuring the OS drive (/) and the data drive
-// (/srv/malmo).
+// (/srv/moose).
 func New() *Reporter {
 	return &Reporter{
 		osPath:   osDiskMount,
@@ -68,7 +68,7 @@ func (r *Reporter) DataDisk() (free, total int64) {
 
 // Disks returns one entry per mounted volume of interest for the Storage bars:
 // the OS drive ("System") always, the data drive ("Data") only when it is a
-// distinct mount. On a Level-0 box /srv/malmo is a plain directory on the OS
+// distinct mount. On a Level-0 box /srv/moose is a plain directory on the OS
 // drive (STORAGE.md), so a successful statfs is not enough to call it a data
 // drive — we include it only when its backing filesystem differs from the OS
 // drive's. A volume whose statfs fails is omitted rather than reported as zero.
@@ -86,7 +86,7 @@ func (r *Reporter) Disks() []protocol.DiskSpace {
 }
 
 // dataDrivePresent reports whether the data-drive path is a distinct filesystem
-// from the OS drive. False when /srv/malmo is missing (no data drive ever) or
+// from the OS drive. False when /srv/moose is missing (no data drive ever) or
 // shares the OS drive's device (Level-0: a directory on the OS drive). Any
 // lookup error fails open to "absent" so a probe failure drops the Data bar
 // rather than showing a duplicate of System.

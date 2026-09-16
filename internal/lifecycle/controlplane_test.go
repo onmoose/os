@@ -16,7 +16,7 @@ func TestEnsureControlPlaneUpsTheStack(t *testing.T) {
 	docker := newFakeDocker()
 	m := &Manager{docker: docker}
 
-	if err := m.EnsureControlPlane(context.Background(), "/var/lib/malmo/control-plane"); err != nil {
+	if err := m.EnsureControlPlane(context.Background(), "/var/lib/moose/control-plane"); err != nil {
 		t.Fatalf("EnsureControlPlane: %v", err)
 	}
 	if !docker.called("ControlPlaneUp") {
@@ -24,7 +24,7 @@ func TestEnsureControlPlaneUpsTheStack(t *testing.T) {
 	}
 	// The fixed project name is what makes the stack idempotent across reboots.
 	c := docker.Calls()[0]
-	if c.args[0] != "/var/lib/malmo/control-plane" || c.args[1] != controlPlaneProject {
+	if c.args[0] != "/var/lib/moose/control-plane" || c.args[1] != controlPlaneProject {
 		t.Errorf("ControlPlaneUp args = %v, want [dir %s]", c.args, controlPlaneProject)
 	}
 }
@@ -34,7 +34,7 @@ func TestEnsureControlPlaneErrorPropagates(t *testing.T) {
 	docker.controlPlaneUpErr = errors.New("compose boom")
 	m := &Manager{docker: docker}
 
-	if err := m.EnsureControlPlane(context.Background(), "/var/lib/malmo/control-plane"); err == nil {
+	if err := m.EnsureControlPlane(context.Background(), "/var/lib/moose/control-plane"); err == nil {
 		t.Fatal("want error when the control-plane compose up fails")
 	}
 }
@@ -72,18 +72,18 @@ func TestControlPlaneUIImage_ReadsPinnedImage(t *testing.T) {
 services:
   caddy:
     image: caddy:2-alpine
-  malmo-ui:
-    image: ghcr.io/malmoos/ui:v0.6.0
+  moose-ui:
+    image: ghcr.io/onmoose/ui:v0.6.0
     read_only: true
 networks:
-  malmo:
+  moose:
     external: true
 `)
 	img, err := ControlPlaneUIImage(dir)
 	if err != nil {
 		t.Fatalf("want no error, got %v", err)
 	}
-	if img != "ghcr.io/malmoos/ui:v0.6.0" {
+	if img != "ghcr.io/onmoose/ui:v0.6.0" {
 		t.Fatalf("got %q", img)
 	}
 }
@@ -114,7 +114,7 @@ func TestControlPlaneUIImage_RealStagedCompose(t *testing.T) {
 	// Asserting the exact tag would break on every legitimate image bump. What
 	// must hold is that a UI image is found and named.
 	if img == "" || !strings.Contains(img, "ui") {
-		t.Fatalf("real staged compose: got %q, want a malmo-ui image ref", img)
+		t.Fatalf("real staged compose: got %q, want a moose-ui image ref", img)
 	}
 }
 
@@ -132,9 +132,9 @@ func TestControlPlaneUIImage_MissingFile(t *testing.T) {
 func TestControlPlaneUIImage_Rejects(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"no ui service", "services:\n  caddy:\n    image: caddy:2-alpine\n"},
-		{"no image key", "services:\n  malmo-ui:\n    read_only: true\n"},
-		{"blank image", "services:\n  malmo-ui:\n    image: \"   \"\n"},
-		{"interpolated image", "services:\n  malmo-ui:\n    image: ${MALMO_UI_IMAGE:-malmo-ui:dev}\n"},
+		{"no image key", "services:\n  moose-ui:\n    read_only: true\n"},
+		{"blank image", "services:\n  moose-ui:\n    image: \"   \"\n"},
+		{"interpolated image", "services:\n  moose-ui:\n    image: ${MOOSE_UI_IMAGE:-moose-ui:dev}\n"},
 		{"not yaml", "services: [this: is: not: valid\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

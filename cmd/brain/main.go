@@ -1,4 +1,4 @@
-// Command brain is malmo-brain — the control-plane daemon (CONTROL_PLANE.md).
+// Command brain is moose-brain — the control-plane daemon (CONTROL_PLANE.md).
 // In production it runs as a container supervised by host-agent; in dev it runs
 // natively (`go run`) against the local Docker socket and the fake host-agent.
 package main
@@ -25,23 +25,23 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"github.com/malmoos/malmo/internal/api"
-	"github.com/malmoos/malmo/internal/applog"
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/caddy"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/health"
-	"github.com/malmoos/malmo/internal/hostclient"
-	"github.com/malmoos/malmo/internal/lifecycle"
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/notify"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/store"
-	"github.com/malmoos/malmo/internal/systemlive"
-	"github.com/malmoos/malmo/internal/version"
+	"github.com/onmoose/moose/internal/api"
+	"github.com/onmoose/moose/internal/applog"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/caddy"
+	"github.com/onmoose/moose/internal/catalog"
+	"github.com/onmoose/moose/internal/events"
+	"github.com/onmoose/moose/internal/health"
+	"github.com/onmoose/moose/internal/hostclient"
+	"github.com/onmoose/moose/internal/lifecycle"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/notify"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/moose/internal/systemlive"
+	"github.com/onmoose/moose/internal/version"
 )
 
 // caddyReadyTimeout bounds the wait for Caddy's admin API after the brain brings
@@ -73,7 +73,7 @@ func main() {
 		fatal("create state dir", "err", err)
 	}
 
-	st, err := store.Open(filepath.Join(cfg.stateDir, "malmo.db"))
+	st, err := store.Open(filepath.Join(cfg.stateDir, "moose.db"))
 	if err != nil {
 		fatal("open store", "err", err)
 	}
@@ -88,7 +88,7 @@ func main() {
 	boxID, assertionKeyB64, enrollment := loadHostedEnvironment(prof, st, cfg.seedPath)
 	// Decode the portal verification key the SSO handler checks ownership
 	// assertions against (internal/assertion). An invalid key disables SSO (nil
-	// key ⇒ /_malmo/sso returns 503) rather than crashing the brain — the box can
+	// key ⇒ /_moose/sso returns 503) rather than crashing the brain — the box can
 	// still serve once re-seeded. Empty on appliance / an un-seeded hosted box.
 	var assertionKey ed25519.PublicKey
 	if assertionKeyB64 != "" {
@@ -131,19 +131,19 @@ func main() {
 	life := lifecycle.NewManager(st, cat, host, cd, dock, bus, cfg.stateDir)
 	life.SetOfflineInstall(cfg.offlineInstall)
 	// On hosted, per-app routes and surfaced URLs use the public
-	// "<slug>.<box-id>.malmo.network" scheme instead of "<slug>.local"
+	// "<slug>.<box-id>.onmoose.network" scheme instead of "<slug>.local"
 	// (ENVIRONMENT.md # Networking & discovery), and the resolved profile also
 	// gates the hosted-only resource-limit CPU cap (#211). Appliance leaves the
 	// box-id empty and the lifecycle keeps its .local/mDNS path.
 	life.SetEnvironment(prof, boxID)
 	// The box Caddy dials this same brain upstream for the hosted per-app
 	// forward_auth verify subrequest (#306) that it dials for the dashboard's
-	// /api + /_malmo legs; wire it from the one config value.
+	// /api + /_moose legs; wire it from the one config value.
 	life.SetBrainUpstream(cfg.dashboardBrainUpstream)
 
-	// Production: the brain owns the control-plane stack (Caddy + malmo-ui) and
+	// Production: the brain owns the control-plane stack (Caddy + moose-ui) and
 	// brings it up from the compose staged by host-agent before it configures any
-	// routes (CONTROL_PLANE.md # Caddy is malmo substrate / # the dashboard UI is
+	// routes (CONTROL_PLANE.md # Caddy is moose substrate / # the dashboard UI is
 	// a brain-launched container). The socket-proxy itself is host-agent-seeded
 	// transport, not part of this stack. In dev controlPlaneDir is empty: Caddy is
 	// a standalone dev container and the UI is Vite, so this whole block is
@@ -189,7 +189,7 @@ func main() {
 		slog.Warn("caddy: ensure catch-all failed; continuing", "err", err)
 	}
 	// Hosted wildcard HTTPS (ENVIRONMENT.md # Networking & discovery): tell Caddy
-	// to obtain "*.<box-id>.malmo.network" via its acme-dns DNS-01 issuer and bind
+	// to obtain "*.<box-id>.onmoose.network" via its acme-dns DNS-01 issuer and bind
 	// :443, always-on (no toggle). Skipped on appliance and on a hosted box with no
 	// complete enrollment. Synchronous, fast, and best-effort: EnsureWildcardTLS
 	// only applies config (the automate entry + policy + :443) — Caddy obtains the
@@ -319,18 +319,18 @@ func main() {
 	if err != nil {
 		fatal("listen", "listen", cfg.listen, "err", err)
 	}
-	slog.Info("malmo-brain listening",
+	slog.Info("moose-brain listening",
 		"listen", cfg.listen, "state_dir", cfg.stateDir, "catalog_cache_dir", cfg.catalogAssetCacheDir)
 
 	// Dashboard host route (WEB_UI.md # deploy model): /api/v1/* → brain,
-	// everything else → malmo-ui. Production-only — gated on the UI upstream being
+	// everything else → moose-ui. Production-only — gated on the UI upstream being
 	// set, which dev never does. Inserted at index 0 (PUT) so it sorts before the
 	// catch-all. Installed here, after the listener is bound, so Caddy's /api leg
 	// only goes live once this brain can answer it.
 	if cfg.dashboardUIUpstream != "" {
 		// On hosted the dashboard is served at the box apex
-		// "<box-id>.malmo.network" (under the box's wildcard cert), not the
-		// appliance's "malmo.local" (ENVIRONMENT.md # Networking & discovery).
+		// "<box-id>.onmoose.network" (under the box's wildcard cert), not the
+		// appliance's "moose.local" (ENVIRONMENT.md # Networking & discovery).
 		dashboardHost := cfg.dashboardHost
 		if prof == profile.Hosted && boxID != "" {
 			dashboardHost = profile.HostedDashboardHost(boxID)
@@ -398,7 +398,7 @@ type boxMetaStore interface {
 // HTTPS).
 //
 // On appliance it is a no-op. On hosted: a box-id already persisted is the
-// install's frozen identity (MALMO_NETWORK.md) — load it, the stored key, and the
+// install's frozen identity (MOOSE_NETWORK.md) — load it, the stored key, and the
 // stored enrollment, and ignore the seed on every subsequent boot (so a
 // re-delivered seed cannot re-key a provisioned box). Otherwise this is the first
 // hosted boot: read the seed, persist the key and enrollment *then* the box-id
@@ -548,10 +548,10 @@ type config struct {
 }
 
 func loadConfig() config {
-	caddyListen := env("MALMO_CADDY_LISTEN", ":80")
+	caddyListen := env("MOOSE_CADDY_LISTEN", ":80")
 	return config{
-		listen:   env("MALMO_LISTEN", ":8080"),
-		stateDir: env("MALMO_STATE_DIR", "./.dev/state"),
+		listen:   env("MOOSE_LISTEN", ":8080"),
+		stateDir: env("MOOSE_STATE_DIR", "./.dev/state"),
 		// Control-plane catalog: the public-read catalog origin every box syncs the
 		// GET /catalog browse payload from (CATALOG step 3, cloud #62). Served on the apex
 		// (cloud specs/CATALOG.md), overridable to point a box at staging or an inert
@@ -559,60 +559,60 @@ func loadConfig() config {
 		// and screenshots only — never the snapshot, which the box holds in memory and
 		// re-fetches (APP_STORE.md # Failure modes).
 		//
-		// MALMO_CATALOG_FILE is a dev/test seam, not a box setting: a local snapshot to
+		// MOOSE_CATALOG_FILE is a dev/test seam, not a box setting: a local snapshot to
 		// start from when there is no reachable control plane (make dev-app, the QEMU
 		// boot proofs). The brain reads it and never writes it. Production leaves it
 		// unset.
-		catalogBaseURL:       env("MALMO_CATALOG_URL", "https://malmo.network"),
-		catalogAssetCacheDir: env("MALMO_CATALOG_CACHE_DIR", "/var/lib/malmo/catalog-cache"),
-		catalogSnapshotFile:  env("MALMO_CATALOG_FILE", ""),
-		catalogRefresh:       envDuration("MALMO_CATALOG_REFRESH", 0), // 0 ⇒ package default
-		agentSock:            env("MALMO_AGENT_SOCK", protocol.SocketPath),
-		caddyAdmin:           env("MALMO_CADDY_ADMIN", "http://localhost:2019"),
+		catalogBaseURL:       env("MOOSE_CATALOG_URL", "https://onmoose.network"),
+		catalogAssetCacheDir: env("MOOSE_CATALOG_CACHE_DIR", "/var/lib/moose/catalog-cache"),
+		catalogSnapshotFile:  env("MOOSE_CATALOG_FILE", ""),
+		catalogRefresh:       envDuration("MOOSE_CATALOG_REFRESH", 0), // 0 ⇒ package default
+		agentSock:            env("MOOSE_AGENT_SOCK", protocol.SocketPath),
+		caddyAdmin:           env("MOOSE_CADDY_ADMIN", "http://localhost:2019"),
 		caddyListen:          caddyListen,
-		caddyProbeURL:        env("MALMO_CADDY_PROBE_URL", probeBaseURL(caddyListen)),
+		caddyProbeURL:        env("MOOSE_CADDY_PROBE_URL", probeBaseURL(caddyListen)),
 		// Control-plane / dashboard wiring is production-only. controlPlaneDir and
 		// dashboardUIUpstream default empty so the containerless dev brain skips
 		// both the compose bring-up and the dashboard route; the containerized
 		// brain (host-agent's run-spec) sets them.
-		controlPlaneDir:        env("MALMO_CONTROL_PLANE_DIR", ""),
-		dashboardHost:          env("MALMO_DASHBOARD_HOST", "malmo.local"),
-		dashboardBrainUpstream: env("MALMO_DASHBOARD_BRAIN_UPSTREAM", "malmo-brain:8080"),
-		dashboardUIUpstream:    env("MALMO_DASHBOARD_UI_UPSTREAM", ""),
-		logLevel:               env("MALMO_LOG_LEVEL", "info"),
-		logFormat:              env("MALMO_LOG_FORMAT", "text"),
-		healthPollPeriod:       envDuration("MALMO_HEALTH_POLL", 60*time.Second),
-		notifyPrunePeriod:      envDuration("MALMO_NOTIFY_PRUNE", time.Hour),
+		controlPlaneDir:        env("MOOSE_CONTROL_PLANE_DIR", ""),
+		dashboardHost:          env("MOOSE_DASHBOARD_HOST", "moose.local"),
+		dashboardBrainUpstream: env("MOOSE_DASHBOARD_BRAIN_UPSTREAM", "moose-brain:8080"),
+		dashboardUIUpstream:    env("MOOSE_DASHBOARD_UI_UPSTREAM", ""),
+		logLevel:               env("MOOSE_LOG_LEVEL", "info"),
+		logFormat:              env("MOOSE_LOG_FORMAT", "text"),
+		healthPollPeriod:       envDuration("MOOSE_HEALTH_POLL", 60*time.Second),
+		notifyPrunePeriod:      envDuration("MOOSE_NOTIFY_PRUNE", time.Hour),
 		// A baked, air-gapped box has no registry: it docker-loads every image
 		// from the offline bundle and trusts the catalog-promised digest on a pull
 		// failure (CONTROL_PLANE.md # First-boot brain bootstrap). Off by default —
 		// a box with a registry pulls and verifies against it.
-		offlineInstall: envBool("MALMO_OFFLINE_INSTALL", false),
+		offlineInstall: envBool("MOOSE_OFFLINE_INSTALL", false),
 		// Environment-profile marker (ENVIRONMENT.md # How the profile is realized).
-		// The image stamps /etc/malmo/profile; the path is overridable for tests and
+		// The image stamps /etc/moose/profile; the path is overridable for tests and
 		// `make dev`, where no marker exists and the brain defaults to appliance.
-		profilePath: env("MALMO_PROFILE_PATH", profile.DefaultMarkerPath),
+		profilePath: env("MOOSE_PROFILE_PATH", profile.DefaultMarkerPath),
 		// Hosted first-boot provisioning seed (ENVIRONMENT.md # Provisioning). Read
 		// only when profile == hosted; absent on appliance. Overridable for tests
 		// and the cloud-lane harness.
-		seedPath: env("MALMO_SEED_PATH", profile.DefaultSeedPath),
+		seedPath: env("MOOSE_SEED_PATH", profile.DefaultSeedPath),
 		// Public acme-dns API endpoint the box's Caddy pushes its `_acme-challenge`
 		// TXT to for DNS-01 (C3b). A box-side constant — the same for every box, so
 		// it is not part of the seeded payload (cloud specs/ARCHITECTURE.md
 		// Contract 2). The canonical value is pinned cloud-side once the public
 		// acme-dns face is deployed (cloud issue tracking it); overridable here so
 		// the box can be pointed at staging or a self-hosted acme-dns.
-		acmeDNSEndpoint: env("MALMO_ACMEDNS_ENDPOINT", "https://auth.malmo.network"),
+		acmeDNSEndpoint: env("MOOSE_ACMEDNS_ENDPOINT", "https://auth.onmoose.network"),
 		// Proxies the brain will read an X-Forwarded-For from when deriving the
 		// client IP its per-IP throttles key on (#329). Comma-separated IPs/CIDRs.
 		// Unset ⇒ the private ranges (see api.DefaultTrustedProxies), which is every
 		// address a peer on the box's own Docker network can have. Set it empty to
 		// pin the brain to the peer address alone.
-		trustedProxies: envRaw("MALMO_TRUSTED_PROXIES", defaultTrustedProxiesSentinel),
+		trustedProxies: envRaw("MOOSE_TRUSTED_PROXIES", defaultTrustedProxiesSentinel),
 	}
 }
 
-// defaultTrustedProxiesSentinel marks "MALMO_TRUSTED_PROXIES was not set", so an
+// defaultTrustedProxiesSentinel marks "MOOSE_TRUSTED_PROXIES was not set", so an
 // operator can still set it to the empty string to mean "trust no proxy" — a
 // distinction a plain default string would erase.
 const defaultTrustedProxiesSentinel = "\x00default"
@@ -628,7 +628,7 @@ func trustedProxies(spec string) []netip.Prefix {
 	}
 	prefixes, err := api.ParseTrustedProxies(spec)
 	if err != nil {
-		fatal("parse MALMO_TRUSTED_PROXIES", "err", err)
+		fatal("parse MOOSE_TRUSTED_PROXIES", "err", err)
 	}
 	slog.Info("trusted proxies configured", "trusted_proxies", spec)
 	return prefixes
@@ -638,7 +638,7 @@ func trustedProxies(spec string) []netip.Prefix {
 // EnsureServer) into a base URL the app-unresponsive probe can dial. ":80" →
 // "http://127.0.0.1:80". The probe sets the route Host header and Caddy routes
 // by Host, so the dial target is just Caddy's listener. Override with
-// MALMO_CADDY_PROBE_URL when Caddy isn't at localhost (e.g. the brain in a
+// MOOSE_CADDY_PROBE_URL when Caddy isn't at localhost (e.g. the brain in a
 // container reaching a Caddy container by service name).
 func probeBaseURL(caddyListen string) string {
 	host, port, err := net.SplitHostPort(caddyListen)
@@ -899,7 +899,7 @@ func checkAgentVersion(ctx context.Context, host agentStatusReader, healthMgr *h
 
 	var raised, cleared []health.IssueKey
 	if !agentVersionAcceptable(status.AgentVersion, minimumAgentVersion) {
-		details := fmt.Sprintf("The system agent is running an older version (%s) than this malmo needs (%s or newer). It will update automatically; if this persists, check the box's internet connection.",
+		details := fmt.Sprintf("The system agent is running an older version (%s) than this moose needs (%s or newer). It will update automatically; if this persists, check the box's internet connection.",
 			status.AgentVersion, minimumAgentVersion)
 		if healthMgr.Raise("version-mismatch", "", details) {
 			raised = []health.IssueKey{{ID: "version-mismatch"}}
@@ -1202,7 +1202,7 @@ type appProbeDetector struct {
 
 	// profile + boxID select the probe's Host header to match the Caddy route
 	// (the same scheme the lifecycle keys routes on and the API surfaces). On
-	// hosted there is no mDNS, so the route host is "<slug>.<box-id>.malmo.network"
+	// hosted there is no mDNS, so the route host is "<slug>.<box-id>.onmoose.network"
 	// and probing "<slug>.local" hits Caddy's catch-all 404 — every probed app
 	// would flap to app-unresponsive. Set once at startup via SetEnvironment; the
 	// empty default keeps the appliance ".local" path.
@@ -1284,7 +1284,7 @@ func (d *appProbeDetector) check(ctx context.Context) {
 		}
 		probed[inst.ID] = true
 		// Address the app at its real Caddy route host (mirrors api getAppURL):
-		// hosted's public "<slug>.<box-id>.malmo.network" takes precedence, then
+		// hosted's public "<slug>.<box-id>.onmoose.network" takes precedence, then
 		// the announced mDNS name, then the reconstructed "<slug>.local".
 		var host string
 		switch {

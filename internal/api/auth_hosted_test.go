@@ -5,9 +5,9 @@ import (
 	"io"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // Hosted-profile /setup divergence (issue #275). The hosted box bootstraps its

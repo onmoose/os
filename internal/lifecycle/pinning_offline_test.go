@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/store"
 	"gopkg.in/yaml.v3"
 )
 

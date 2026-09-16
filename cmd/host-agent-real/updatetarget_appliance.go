@@ -3,9 +3,9 @@
 package main
 
 import (
-	"github.com/malmoos/malmo/internal/hostagent/relmanifest"
-	"github.com/malmoos/malmo/internal/hostagent/updatetarget"
-	"github.com/malmoos/malmo/internal/profile"
+	"github.com/onmoose/moose/internal/hostagent/relmanifest"
+	"github.com/onmoose/moose/internal/hostagent/updatetarget"
+	"github.com/onmoose/moose/internal/profile"
 )
 
 // buildProfile is the environment profile this binary was built for. See the

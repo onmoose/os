@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/admission"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/admission"
+	"github.com/onmoose/moose/internal/catalog"
+	"github.com/onmoose/moose/internal/events"
+	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/moose/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,7 +47,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	stateDir := t.TempDir()
 	catDir := t.TempDir()
-	s, err := store.Open(filepath.Join(stateDir, "malmo.db"))
+	s, err := store.Open(filepath.Join(stateDir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestInstallUnpullableImageRollsBack(t *testing.T) {
 	// Rollback before any network / route / compose work.
 	for _, m := range []string{"NetworkCreate", "ComposeUp"} {
 		// NetworkCreate for the per-app net specifically; allow no calls.
-		if methodsContainArg(e.docker.Calls(), m, "malmo-app-") {
+		if methodsContainArg(e.docker.Calls(), m, "moose-app-") {
 			t.Fatalf("%s for per-app net must not run on pull failure", m)
 		}
 	}
@@ -356,7 +356,7 @@ func TestInstallComposeUpFailureRollsBack(t *testing.T) {
 		t.Fatalf("instance row must be rolled back")
 	}
 	// teardown drops the per-app network.
-	if !methodsContainArg(e.docker.Calls(), "NetworkRemove", "malmo-app-") {
+	if !methodsContainArg(e.docker.Calls(), "NetworkRemove", "moose-app-") {
 		t.Fatalf("expected NetworkRemove for per-app net during rollback")
 	}
 }
@@ -418,7 +418,7 @@ func TestUninstallTearsDownEvenIfStepsFail(t *testing.T) {
 	if e.host.isPublished(inst.Slug) {
 		t.Fatalf("mDNS still published")
 	}
-	if !methodsContainArg(e.docker.Calls(), "NetworkRemove", "malmo-app-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "NetworkRemove", "moose-app-"+inst.ID) {
 		t.Fatalf("per-app NetworkRemove not called: %v", e.docker.methods())
 	}
 	if _, err := os.Stat(filepath.Join(e.stateDir, "instances", inst.ID)); !os.IsNotExist(err) {
@@ -538,10 +538,10 @@ func TestReconcileBringsRunningInstanceBackUp(t *testing.T) {
 	}
 	// Per-app network must be re-created before compose up (the override
 	// declares it external, so compose fails if the network was pruned).
-	if !methodsContainArg(e.docker.Calls(), "NetworkCreate", "malmo-app-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "NetworkCreate", "moose-app-"+inst.ID) {
 		t.Fatalf("NetworkCreate for per-app net not called during reconcile: %v", e.docker.methods())
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("ComposeUp not called for drifted instance: %v", e.docker.methods())
 	}
 	// Route re-asserted.
@@ -613,7 +613,7 @@ func TestReconcileStopsStoppedButRunningInstance(t *testing.T) {
 	if err := e.m.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeStop", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeStop", "moose-"+inst.ID) {
 		t.Fatalf("ComposeStop not called: %v", e.docker.methods())
 	}
 }
@@ -631,7 +631,7 @@ func TestReconcileTearsDownOrphanContainers(t *testing.T) {
 	if !e.docker.called("RemoveContainersByInstance") {
 		t.Fatalf("orphan path must call RemoveContainersByInstance: %v", e.docker.methods())
 	}
-	if !methodsContainArg(e.docker.Calls(), "NetworkRemove", "malmo-app-ghost-id") {
+	if !methodsContainArg(e.docker.Calls(), "NetworkRemove", "moose-app-ghost-id") {
 		t.Fatalf("orphan NetworkRemove not called: %v", e.docker.methods())
 	}
 }
@@ -681,7 +681,7 @@ func contains(s, sub string) bool {
 // Docker's journald driver tags log lines with the *running* container's
 // name; without a pin, compose appends a replica suffix ("-1") and the Logs
 // tail's exact CONTAINER_NAME match finds nothing. The override must pin the
-// main service to the malmo-<id>-<service> stem MainContainerName returns,
+// main service to the moose-<id>-<service> stem MainContainerName returns,
 // and must leave sidecars unpinned (an explicit container_name forbids
 // scaling, which only the main service guarantees).
 func TestOverridePinsMainContainerName(t *testing.T) {
@@ -701,7 +701,7 @@ func TestOverridePinsMainContainerName(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(readInstanceFile(t, e, inst.ID, "compose.override.yml")), &doc); err != nil {
 		t.Fatalf("parse override: %v", err)
 	}
-	want := "malmo-" + inst.ID + "-web"
+	want := "moose-" + inst.ID + "-web"
 	if got := doc.Services["web"]["container_name"]; got != want {
 		t.Fatalf("main service container_name = %v, want %q", got, want)
 	}

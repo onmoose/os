@@ -36,7 +36,7 @@
 // When LAN is nil, Publish falls back to #129's single-address behavior: the
 // kernel's route-chosen source address (netstate.DetectIPv4) announced with
 // interface index -1 ("all interfaces"). No production binary takes this path
-// today — cmd/host-agent-real and cmd/malmo-network-verify always set LAN, and
+// today — cmd/host-agent-real and cmd/moose-network-verify always set LAN, and
 // the dev inner loop uses FakePublisher, not this type. It is the preserved
 // #129 compatibility shim and is exercised only by tests.
 //
@@ -61,7 +61,7 @@ import (
 	"sync"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/malmoos/malmo/internal/hostagent/netstate"
+	"github.com/onmoose/moose/internal/hostagent/netstate"
 )
 
 // Avahi DBus constants from <avahi-common/defs.h>.
@@ -137,7 +137,7 @@ type DBusPublisher struct {
 // The primary name is "<slug>" + HostSuffix (e.g. "photos.local"). If Avahi
 // reports a name collision (another device on the LAN already owns it), Publish
 // retries once with a box-qualified fallback, "<slug>-<box>" + HostSuffix (e.g.
-// "photos-malmo.local"), where <box> is this host's name. The caller (the
+// "photos-moose.local"), where <box> is this host's name. The caller (the
 // brain) must use the *returned* name for the URL it shows and the Caddy route
 // it writes — it may differ from the primary on collision. See DISCOVERY.md.
 //
@@ -294,7 +294,7 @@ func (p *DBusPublisher) tryPublish(hostname string, targets []addressTarget) (db
 func (p *DBusPublisher) boxLabel() string {
 	h, err := os.Hostname()
 	if err != nil {
-		return "malmo"
+		return "moose"
 	}
 	return sanitizeBoxLabel(h)
 }

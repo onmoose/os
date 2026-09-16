@@ -28,15 +28,15 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
-// DefaultDropInPath is the sshd config fragment malmo owns. It is rendered
+// DefaultDropInPath is the sshd config fragment moose owns. It is rendered
 // whole on every change, never line-edited: the file is a projection of the
 // enabled set, so anything hand-added to it is not preserved (which is also why
 // the brain surfaces drift here rather than silently re-applying — see the
 // asymmetric drift policy in BRAIN_HOST_PROTOCOL.md # B).
-const DefaultDropInPath = "/etc/ssh/sshd_config.d/malmo-allowed.conf"
+const DefaultDropInPath = "/etc/ssh/sshd_config.d/moose-allowed.conf"
 
 // DefaultUnit is the systemd unit for sshd on Debian.
 const DefaultUnit = "ssh.service"
@@ -284,7 +284,7 @@ func (m *Manager) State() (protocol.SSHState, error) {
 	}, nil
 }
 
-// ManagedKeysDir holds one root-owned file per enabled account. malmo's keys
+// ManagedKeysDir holds one root-owned file per enabled account. moose's keys
 // live here and **never** in the user's home directory.
 //
 // This is the whole answer to a class of attack. host-agent runs as root, and
@@ -296,10 +296,10 @@ func (m *Manager) State() (protocol.SSHState, error) {
 //
 // The per-account Match block points sshd at this file *and* at the user's own
 // `~/.ssh/authorized_keys`, so keys a user added from their own shell keep
-// working and malmo never has to parse, preserve or delete them. sshd reads a
+// working and moose never has to parse, preserve or delete them. sshd reads a
 // path outside the home as root and requires it to be root-owned and not
 // group- or world-writable, which is what the 0755/0644 modes below are for.
-const ManagedKeysDir = "/etc/ssh/malmo-authorized-keys"
+const ManagedKeysDir = "/etc/ssh/moose-authorized-keys"
 
 func (m *Manager) managedKeysDir() string {
 	if m.KeysDir != "" {
@@ -320,7 +320,7 @@ func (m *Manager) managedKeysPath(username string) (string, error) {
 	return filepath.Join(m.managedKeysDir(), username), nil
 }
 
-// writeKeys writes the account's malmo-managed keys, or removes the file when
+// writeKeys writes the account's moose-managed keys, or removes the file when
 // the account is disabled or has none. Every path here is root-owned, so nothing
 // the account can change is followed or trusted.
 func (m *Manager) writeKeys(username string, keys []string, enabled bool) error {

@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // The hosted confirm step (issue #469). Destructive admin actions ask the user

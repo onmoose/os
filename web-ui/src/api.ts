@@ -119,7 +119,7 @@ export type DiskSpace = Schemas["DiskSpaceDTO"];
 export type AppSecrets = Schemas["AppSecretsDTO"];
 export type AppSecret = Schemas["AppSecretDTO"];
 // SSHAccess is the whole Settings -> SSH screen state for the signed-in user:
-// the on/off flag, whether the account also demands the malmo password, the
+// the on/off flag, whether the account also demands the moose password, the
 // account's keys, and key_required, the server's answer to "does this box make
 // a public key the mandatory factor?" (true on hosted, false on the appliance).
 // The screen reads key_required rather than checking the profile itself, so the
@@ -148,7 +148,7 @@ export interface CustomInspectResult {
 
 // CustomFolderGrant is one Door-2 folder grant: a use-case folder (Source
 // picker), the in-container destination the admin types (target — Door-2 has no
-// author to map MALMO_FOLDER_<NAME>), and read/write.
+// author to map MOOSE_FOLDER_<NAME>), and read/write.
 export interface CustomFolderGrant {
   folder: string;
   mode?: "read" | "write";

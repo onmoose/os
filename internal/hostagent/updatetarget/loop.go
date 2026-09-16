@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/controlplane"
+	"github.com/onmoose/moose/internal/hostagent/controlplane"
 )
 
 // PollInterval is how often the box asks its source what it should be running.
@@ -53,9 +53,9 @@ type RunningPair interface {
 // that carry the pair). It is the same pair cpupdate reverts to, read from the
 // same place, so the loop's comparison and the transaction's cannot drift.
 type LedgerPair struct {
-	// Dir is MALMO_CONTROL_PLANE_DIR.
+	// Dir is MOOSE_CONTROL_PLANE_DIR.
 	Dir string
-	// BrainDefault is the ref this box shipped with (MALMO_BRAIN_IMAGE), used
+	// BrainDefault is the ref this box shipped with (MOOSE_BRAIN_IMAGE), used
 	// before the first update has written a ledger.
 	BrainDefault string
 }
@@ -232,7 +232,7 @@ func (l *Loop) windowFrom() string {
 // control plane owns, and it has to be changeable while the box runs
 // (UPDATES.md # 8.1). An answer with no window is "no opinion", not "use the
 // default": treating it as the default would silently outrank the operator's own
-// MALMO_UPDATE_WINDOW.
+// MOOSE_UPDATE_WINDOW.
 //
 // A window the box cannot read warns and falls back. That is deliberately unlike
 // a bad target, which stops the loop: a wrong hour can only apply an update at

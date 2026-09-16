@@ -1,28 +1,28 @@
 [Unit]
-Description=malmo host-agent (HTTP/JSON over /var/run/malmo/agent.sock)
-Documentation=https://github.com/malmoos/malmo/blob/main/docs/specs/BRAIN_HOST_PROTOCOL.md
-Documentation=https://github.com/malmoos/malmo/blob/main/docs/specs/BOOT.md
-After=malmo-storage-ready.target docker.service
-Wants=malmo-storage-ready.target
+Description=moose host-agent (HTTP/JSON over /var/run/moose/agent.sock)
+Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/BRAIN_HOST_PROTOCOL.md
+Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/BOOT.md
+After=moose-storage-ready.target docker.service
+Wants=moose-storage-ready.target
 Requires=docker.service
 # Per BOOT.md # Failure → recovery target: OnFailure routes to recovery
 # *only* on host-agent's bounded restart policy (5 starts in 60s).
 # StartLimit* must live in [Unit] (canonical since systemd 229); the [Service]
 # aliases behave subtly differently under `systemctl reset-failed`.
-OnFailure=malmo-recovery.target
+OnFailure=moose-recovery.target
 StartLimitBurst=5
 StartLimitIntervalSec=60s
 
 [Service]
 Type=simple
-ExecStart=/usr/lib/malmo/host-agent-real
+ExecStart=/usr/lib/moose/host-agent-real
 Restart=on-failure
 RestartSec=2s
 # Hardening (Type=notify + watchdog deferred to CONTROL_PLANE.md follow-up).
 User=root
-RuntimeDirectory=malmo
+RuntimeDirectory=moose
 RuntimeDirectoryMode=0755
-# Keep /run/malmo when the unit stops, instead of letting systemd delete and
+# Keep /run/moose when the unit stops, instead of letting systemd delete and
 # recreate it (os#447). The brain reaches the socket through a bind mount of
 # this *directory* (brainlaunch.runSpec), and Docker resolves a bind mount when
 # the container starts, not on every call. So a fresh directory inode is a
@@ -39,8 +39,8 @@ RuntimeDirectoryMode=0755
 # host-agent unlinks a stale agent.sock before it binds
 # (cmd/host-agent-real/main.go), so a preserved socket node does not block a
 # restart. It also stops host-agent's own stop from deleting
-# /run/malmo/health/storage.json, which a *different* unit
-# (malmo-storage-verify) writes and the brain reads (BOOT.md # The storage-ready
+# /run/moose/health/storage.json, which a *different* unit
+# (moose-storage-verify) writes and the brain reads (BOOT.md # The storage-ready
 # target).
 RuntimeDirectoryPreserve=yes
 # No ImportCredential= for the per-box update settings, on purpose. systemd

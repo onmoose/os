@@ -7,10 +7,10 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/notify"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/events"
+	"github.com/onmoose/moose/internal/notify"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // maxNotificationLimit caps the bell list page size (mirrors maxAuditLimit).

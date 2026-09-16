@@ -12,11 +12,11 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/moose/internal/store"
 )
 
 // Device access — the per-account SSH opt-in (AUTH.md # Device access).
@@ -95,7 +95,7 @@ func (s *Server) keyRequired() bool {
 }
 
 // effectiveRequirePassword resolves what the account asked for against what the
-// profile makes mandatory. On the appliance the malmo password is the mandatory
+// profile makes mandatory. On the appliance the moose password is the mandatory
 // factor and the key is the optional second lock, so the answer is always true
 // no matter what the caller sent; on hosted the key is mandatory and the
 // password is the account's own choice (AUTH.md # Device access, the profile
@@ -135,7 +135,7 @@ func (s *Server) getMySSH(ctx context.Context, _ *struct{}) (*struct {
 func (s *Server) setMySSH(ctx context.Context, in *struct {
 	Body struct {
 		Enabled bool `json:"enabled"`
-		// Optional, and only meaningful on hosted: it asks for the malmo password
+		// Optional, and only meaningful on hosted: it asks for the moose password
 		// as a second required method alongside the key. On the appliance the
 		// password is the mandatory factor already, so omitting this changes
 		// nothing and the server resolves it to true either way

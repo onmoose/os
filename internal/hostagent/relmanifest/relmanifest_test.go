@@ -371,7 +371,7 @@ func TestLoadWithNoCacheIsNotAnError(t *testing.T) {
 }
 
 // Re-verifying on read is what stops the local file system being a way around
-// the signature: anything that can write /var/lib/malmo could otherwise choose
+// the signature: anything that can write /var/lib/moose could otherwise choose
 // the version the box runs.
 func TestLoadRefusesACacheEditedOnDisk(t *testing.T) {
 	dir := t.TempDir()

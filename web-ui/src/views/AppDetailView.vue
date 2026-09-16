@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // App detail page (/store/:id) — the catalog app's full view, structured like an
 // app-store product page (header → screenshots → description → pricing + info).
-// The screenshots open full screen, and the pricing panel shows what malmo
+// The screenshots open full screen, and the pricing panel shows what moose
 // charges plus the third-party costs the manifest declares. Both are imported
 // from the marketing store's app page (cloud internal/web/templates/pages/app.html)
 // so the two store surfaces show one catalog the same way. This is
@@ -132,7 +132,7 @@ const hasLinks = computed(
   () => !!(homepageUrl.value || sourceUrl.value || supportUrl.value || changelogUrl.value),
 );
 
-// PRICE is what malmo charges for this app. Every catalog app is free today and
+// PRICE is what moose charges for this app. Every catalog app is free today and
 // the catalog wire carries no per-app price — it is authored in the curation
 // source (APP_STORE.md # Catalog schema) — so the page states it in one place
 // rather than the template hardcoding it, the way the marketing store's app page
@@ -141,7 +141,7 @@ const hasLinks = computed(
 const PRICE = "Free";
 
 // extraCosts is what a THIRD PARTY charges to make the app useful (a model
-// provider, a mail provider). Not malmo's charge; the note behind the panel's
+// provider, a mail provider). Not moose's charge; the note behind the panel's
 // info tooltip says so.
 const extraCosts = computed(() => app.value?.external_costs ?? []);
 
@@ -412,10 +412,10 @@ watch(shots, (list) => {
         <p v-else class="text-sm text-muted-foreground">No description provided.</p>
 
         <aside class="space-y-8 text-sm">
-          <!-- Pricing panel: what malmo charges, then what a third party charges
+          <!-- Pricing panel: what moose charges, then what a third party charges
                to make the app useful. A required cost opens expanded — it is the
                one someone has to read before installing; an optional one stays
-               collapsed. The "you pay the provider, not malmo" note sits behind
+               collapsed. The "you pay the provider, not moose" note sits behind
                an info tooltip so the panel stays quiet when nobody asks. The
                tooltip is CSS only (group-hover / group-focus-within), so it opens
                on hover for a pointer and on focus for a keyboard or a tap. -->
@@ -442,7 +442,7 @@ watch(shots, (list) => {
                     role="tooltip"
                     class="pointer-events-none absolute left-0 top-full z-10 mt-1.5 w-56 rounded-lg border border-border bg-card p-3 text-xs text-muted-foreground opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
                   >
-                    You pay the provider directly. malmo never charges you for these.
+                    You pay the provider directly. moose never charges you for these.
                   </span>
                 </span>
               </div>

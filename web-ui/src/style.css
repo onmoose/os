@@ -1,7 +1,7 @@
 /* Tailwind 4 entry (WEB_UI.md: CSS-based config via @theme, no tailwind.config.js).
    The @theme block is the Oatmeal design system — the olive palette + Inter /
    Instrument Serif — shared verbatim with cloud (internal/web/tailwind/input.css)
-   so the two malmo surfaces match exactly (DECISIONS.md 2026-07-01). The app's
+   so the two moose surfaces match exactly (DECISIONS.md 2026-07-01). The app's
    existing shadcn-vue semantic tokens (background, foreground, accent, …) are
    repointed onto olive values here, so the whole UI recolors from this one file.
    Light theme only for now; the dark-mode trigger is a downstream decision.

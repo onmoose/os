@@ -2,7 +2,7 @@
 // Settings → Outgoing email: admin-only SMTP provider management
 // (SERVICE_PROVISIONING.md # BYO outgoing mail, issues #122 and #426). Apps
 // that can send email bind to one of these providers at install time (or later
-// from their detail page); the brain injects the credentials as MALMO_MAIL_*
+// from their detail page); the brain injects the credentials as MOOSE_MAIL_*
 // env vars.
 //
 // This view is the account list. Adding one lives on its own two routes

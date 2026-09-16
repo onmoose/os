@@ -13,10 +13,10 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/moose/internal/audit"
+	"github.com/onmoose/moose/internal/catalog"
+	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/moose/internal/store"
 )
 
 func (s *Server) registerAppExposure(api huma.API) {

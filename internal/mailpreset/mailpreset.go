@@ -10,7 +10,7 @@
 // the credential broker's per-provider logic has to be Go anyway
 // (DECISIONS.md 2026-08-27 D1, NEXT.md # On-box credential broker).
 //
-// A leaf package with no malmo dependencies. Two consumers justify it over an
+// A leaf package with no moose dependencies. Two consumers justify it over an
 // inline constant in the API: the API serves and validates against it, and the
 // broker will later need the same provider identity server-side.
 package mailpreset

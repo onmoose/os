@@ -8,11 +8,11 @@
 #   2. Build the storage-verify binary statically.
 #   3. Generate a test SSH keypair under .dev/qemu/ if absent.
 #   4. Stage mkosi.extra/ with: dist/systemd/ units at their on-target
-#      paths, the storage-verify binary at /usr/lib/malmo/, root's
+#      paths, the storage-verify binary at /usr/lib/moose/, root's
 #      authorized_keys, and sshd config drop-in.
 #   5. Invoke `mkosi build` (cached after first run).
 #
-# Idempotent via .dev/qemu/.malmo-medium-ready (versioned content gate,
+# Idempotent via .dev/qemu/.moose-medium-ready (versioned content gate,
 # same idiom as dev/test-nspawn/bootstrap.sh).
 set -euo pipefail
 
@@ -20,10 +20,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TEST_DIR="${REPO_ROOT}/dev/test-qemu"
 WORK="${REPO_ROOT}/.dev/qemu"
 EXTRA="${TEST_DIR}/mkosi.extra"
-CANARY="${WORK}/.malmo-medium-ready"
+CANARY="${WORK}/.moose-medium-ready"
 CANARY_VERSION="v30"  # bump when mkosi.conf changes require a clean rebuild
 PASSPHRASE_FILE="${TEST_DIR}/mkosi.passphrase"  # LUKS recovery key (slice 0023); gitignored
-IMAGE_OUT="${WORK}/malmo-medium.raw"
+IMAGE_OUT="${WORK}/moose-medium.raw"
 SSH_KEY="${WORK}/ssh-key"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -137,25 +137,25 @@ if [ -f "$CANARY" ] && [ "$(cat "$CANARY")" = "$CANARY_VERSION" ] \
 fi
 
 # --- 2. build storage-verify statically
-VERIFY_BIN="${WORK}/malmo-storage-verify"
+VERIFY_BIN="${WORK}/moose-storage-verify"
 if [ -n "$CALLER" ]; then
     sudo -u "$CALLER" env CGO_ENABLED=0 "$GO" build -o "$VERIFY_BIN" \
-        "${REPO_ROOT}/cmd/malmo-storage-verify/"
+        "${REPO_ROOT}/cmd/moose-storage-verify/"
 else
     CGO_ENABLED=0 "$GO" build -o "$VERIFY_BIN" \
-        "${REPO_ROOT}/cmd/malmo-storage-verify/"
+        "${REPO_ROOT}/cmd/moose-storage-verify/"
 fi
 
 # network-verify (#130): drives the real netstate + avahipublisher packages
 # against the VM's NetworkManager and avahi-daemon. CGO-free on purpose —
 # host-agent-real needs libpam at build time, this doesn't.
-NETVERIFY_BIN="${WORK}/malmo-network-verify"
+NETVERIFY_BIN="${WORK}/moose-network-verify"
 if [ -n "$CALLER" ]; then
     sudo -u "$CALLER" env CGO_ENABLED=0 "$GO" build -o "$NETVERIFY_BIN" \
-        "${REPO_ROOT}/cmd/malmo-network-verify/"
+        "${REPO_ROOT}/cmd/moose-network-verify/"
 else
     CGO_ENABLED=0 "$GO" build -o "$NETVERIFY_BIN" \
-        "${REPO_ROOT}/cmd/malmo-network-verify/"
+        "${REPO_ROOT}/cmd/moose-network-verify/"
 fi
 
 # host-agent-real (#164): the production privileged binary, which now launches
@@ -175,10 +175,10 @@ fi
 # --- 3. SSH keypair
 if [ ! -f "$SSH_KEY" ]; then
     if [ -n "$CALLER" ]; then
-        sudo -u "$CALLER" ssh-keygen -t ed25519 -N "" -C "malmo-medium-test" \
+        sudo -u "$CALLER" ssh-keygen -t ed25519 -N "" -C "moose-medium-test" \
             -f "$SSH_KEY"
     else
-        ssh-keygen -t ed25519 -N "" -C "malmo-medium-test" -f "$SSH_KEY"
+        ssh-keygen -t ed25519 -N "" -C "moose-medium-test" -f "$SSH_KEY"
     fi
 fi
 chmod 0600 "$SSH_KEY"
@@ -190,7 +190,7 @@ chmod 0600 "$SSH_KEY"
 # generated recovery passphrase. Generated once, persisted, gitignored.
 # run-medium-tests.sh reads it back to build the first-boot SMBIOS
 # credential; the enrollment service reads the staged copy at
-# /etc/malmo/secrets/luks-recovery.key. Single source of truth.
+# /etc/moose/secrets/luks-recovery.key. Single source of truth.
 if [ ! -f "$PASSPHRASE_FILE" ]; then
     # 32 hex chars, no newline — matches the cryptsetup/crypttab keyfile format.
     head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$PASSPHRASE_FILE"
@@ -203,11 +203,11 @@ fi
 # --- 4. stage mkosi.extra/
 rm -rf "$EXTRA"
 mkdir -p "$EXTRA/etc/systemd/system" \
-         "$EXTRA/usr/lib/malmo" \
+         "$EXTRA/usr/lib/moose" \
          "$EXTRA/root/.ssh" \
          "$EXTRA/etc/ssh/sshd_config.d" \
          "$EXTRA/etc/pam.d" \
-         "$EXTRA/etc/malmo/secrets" \
+         "$EXTRA/etc/moose/secrets" \
          "$EXTRA/etc/docker" \
          "$EXTRA/etc/systemd/system/docker.service.d" \
          "$EXTRA/usr/local/bin"
@@ -232,20 +232,20 @@ EOF
 # to docker.service; under the 10000-per-30s default a single chatty container
 # silently starves every other container's lines. Disabled here rather than
 # globally, so real system services keep their cap. Byte-identical to the
-# hosted lane's dev/cloud/mkosi.extra/.../10-malmo-logging.conf.
-cat > "$EXTRA/etc/systemd/system/docker.service.d/10-malmo-logging.conf" <<'EOF'
+# hosted lane's dev/cloud/mkosi.extra/.../10-moose-logging.conf.
+cat > "$EXTRA/etc/systemd/system/docker.service.d/10-moose-logging.conf" <<'EOF'
 [Service]
 LogRateLimitIntervalSec=0
 LogRateLimitBurst=0
 EOF
 
 # Recovery keyfile baked at the production path STORAGE.md specifies
-# (/etc/malmo/secrets/luks-recovery.key, mode 0400, root-owned). The
+# (/etc/moose/secrets/luks-recovery.key, mode 0400, root-owned). The
 # first-boot enrollment service reads it via systemd-cryptenroll
 # --unlock-key-file to authorize adding the TPM2 keyslot — exactly what
 # host-agent's first-run would do in production.
-cp "$PASSPHRASE_FILE" "$EXTRA/etc/malmo/secrets/luks-recovery.key"
-chmod 0400 "$EXTRA/etc/malmo/secrets/luks-recovery.key"
+cp "$PASSPHRASE_FILE" "$EXTRA/etc/moose/secrets/luks-recovery.key"
+chmod 0400 "$EXTRA/etc/moose/secrets/luks-recovery.key"
 
 # Kernel cmdline for the encrypted root (slice 0023). systemd-repart
 # derives the LUKS header UUID from the pinned root partition UUID (see
@@ -273,87 +273,87 @@ printf 'rd.luks.uuid=%s rd.luks.options=tpm2-device=auto root=/dev/mapper/luks-%
 
 # dist/systemd units. Same shape as 0020's staging but installed
 # permanently into the image rather than bind-mounted at runtime.
-cp "${REPO_ROOT}/dist/systemd/malmo-storage-ready.target"   "$EXTRA/etc/systemd/system/"
-cp "${REPO_ROOT}/dist/systemd/malmo-storage-verify.service" "$EXTRA/etc/systemd/system/"
-cp "${REPO_ROOT}/dist/systemd/malmo-recovery.target"        "$EXTRA/etc/systemd/system/"
+cp "${REPO_ROOT}/dist/systemd/moose-storage-ready.target"   "$EXTRA/etc/systemd/system/"
+cp "${REPO_ROOT}/dist/systemd/moose-storage-verify.service" "$EXTRA/etc/systemd/system/"
+cp "${REPO_ROOT}/dist/systemd/moose-recovery.target"        "$EXTRA/etc/systemd/system/"
 
 # host-agent.service runs the real host-agent-real (#164/#165): it binds the
 # agent socket and, after Docker is ready, seeds the brain's Docker transport
 # (ingress network + socket-proxy) and launches the brain container (the postinst
-# enables the unit). The brain then reconciles Caddy + malmo-ui from the staged
+# enables the unit). The brain then reconciles Caddy + moose-ui from the staged
 # control-plane compose (M1b). A medium-lane drop-in points the bootstrap at the
 # bundle's dev-tagged images + tarballs and orders host-agent after the first-boot
 # image load so every image is present when the bootstrap runs.
 cp "${REPO_ROOT}/dist/systemd/host-agent.service" "$EXTRA/etc/systemd/system/"
-cp "$HOSTAGENT_BIN" "$EXTRA/usr/lib/malmo/host-agent-real"
-chmod 0755 "$EXTRA/usr/lib/malmo/host-agent-real"
+cp "$HOSTAGENT_BIN" "$EXTRA/usr/lib/moose/host-agent-real"
+chmod 0755 "$EXTRA/usr/lib/moose/host-agent-real"
 
 mkdir -p "$EXTRA/etc/systemd/system/host-agent.service.d"
-cat > "$EXTRA/etc/systemd/system/host-agent.service.d/10-malmo-brain-image.conf" <<'EOF'
+cat > "$EXTRA/etc/systemd/system/host-agent.service.d/10-moose-brain-image.conf" <<'EOF'
 [Unit]
 # The control-plane images are docker-loaded by the first-boot oneshot; order
 # after it so the bootstrap finds them present rather than re-loading tarballs.
-After=malmo-load-images.service
+After=moose-load-images.service
 
 [Service]
-Environment=MALMO_BRAIN_IMAGE=malmo-brain:dev
-Environment=MALMO_BRAIN_IMAGE_TAR=/var/lib/malmo/control-plane-images/malmo-brain.tar
+Environment=MOOSE_BRAIN_IMAGE=moose-brain:dev
+Environment=MOOSE_BRAIN_IMAGE_TAR=/var/lib/moose/control-plane-images/moose-brain.tar
 # M1b: the socket-proxy image + tarball, the staged control-plane compose dir,
-# and the malmo-ui dial target the brain installs the dashboard route with. The
+# and the moose-ui dial target the brain installs the dashboard route with. The
 # proxy tarball lives in the same bundle dir the first-boot loader reads.
-Environment=MALMO_PROXY_IMAGE=tecnativa/docker-socket-proxy:v0.4.2
-Environment=MALMO_PROXY_IMAGE_TAR=/var/lib/malmo/control-plane-images/docker-socket-proxy.tar
-Environment=MALMO_CONTROL_PLANE_DIR=/var/lib/malmo/control-plane
-Environment=MALMO_DASHBOARD_UI_UPSTREAM=malmo-ui:80
+Environment=MOOSE_PROXY_IMAGE=tecnativa/docker-socket-proxy:v0.4.2
+Environment=MOOSE_PROXY_IMAGE_TAR=/var/lib/moose/control-plane-images/docker-socket-proxy.tar
+Environment=MOOSE_CONTROL_PLANE_DIR=/var/lib/moose/control-plane
+Environment=MOOSE_DASHBOARD_UI_UPSTREAM=moose-ui:80
 # M2 (#167): the Door-1 store (cloud #62). The guest is air-gapped (restrict=on),
 # so the brain can't reach the real control plane; a whoami snapshot is staged at
 # build time (see below) and the brain seeds its store from that file at boot
 # (internal/catalog/remote.go # loadSnapshotFile). A real box sets no
-# MALMO_CATALOG_FILE and keeps no catalog on disk — this is a test-lane seam. Point
+# MOOSE_CATALOG_FILE and keeps no catalog on disk — this is a test-lane seam. Point
 # the catalog URL at an inert address (nothing listening) so the background sync
 # fails fast and cleanly instead of hanging on DNS. Offline-install mode stays on so
 # the brain trusts the catalog-promised digest of the docker-loaded whoami image
 # instead of pulling (APP_LIFECYCLE.md # image digest pinning).
-Environment=MALMO_CATALOG_URL=http://127.0.0.1:9
-Environment=MALMO_CATALOG_FILE=/var/lib/malmo/catalog-seed.json
-Environment=MALMO_OFFLINE_INSTALL=1
+Environment=MOOSE_CATALOG_URL=http://127.0.0.1:9
+Environment=MOOSE_CATALOG_FILE=/var/lib/moose/catalog-seed.json
+Environment=MOOSE_OFFLINE_INSTALL=1
 EOF
 
 # PAM service for host-agent-real's verify-password (#166). pamverifier dials
-# the "malmo" PAM service; install the canonical stack (auth+account via
+# the "moose" PAM service; install the canonical stack (auth+account via
 # pam_unix) so the headless first-run admin authenticates against /etc/shadow.
-# Without it pam_start("malmo") falls back to /etc/pam.d/other (deny) and /login
-# 401s. The malmo group + sudo group it needs are provisioned at build time
+# Without it pam_start("moose") falls back to /etc/pam.d/other (deny) and /login
+# 401s. The moose group + sudo group it needs are provisioned at build time
 # (mkosi.postinst.chroot + the sudo package in mkosi.conf).
-cp "${REPO_ROOT}/dev/pam/malmo" "$EXTRA/etc/pam.d/malmo"
+cp "${REPO_ROOT}/dev/pam/moose" "$EXTRA/etc/pam.d/moose"
 
 # storage-verify binary.
-cp "$VERIFY_BIN" "$EXTRA/usr/lib/malmo/malmo-storage-verify"
-chmod 0755 "$EXTRA/usr/lib/malmo/malmo-storage-verify"
+cp "$VERIFY_BIN" "$EXTRA/usr/lib/moose/moose-storage-verify"
+chmod 0755 "$EXTRA/usr/lib/moose/moose-storage-verify"
 
 # network-verify binary (#130 in-VM driver).
-cp "$NETVERIFY_BIN" "$EXTRA/usr/lib/malmo/malmo-network-verify"
-chmod 0755 "$EXTRA/usr/lib/malmo/malmo-network-verify"
+cp "$NETVERIFY_BIN" "$EXTRA/usr/lib/moose/moose-network-verify"
+chmod 0755 "$EXTRA/usr/lib/moose/moose-network-verify"
 
 # First-boot TPM2 enrollment (slice 0023 Stage 2): the run-once unit +
 # its enrollment script. The unit gates on a marker (run-once); the
-# postinst wires its .wants symlink under malmo-storage-ready.target.
+# postinst wires its .wants symlink under moose-storage-ready.target.
 # This is the test-lane stand-in for host-agent's first-run enrollment.
-cp "${TEST_DIR}/malmo-tpm-enroll.service" "$EXTRA/etc/systemd/system/"
-cp "${TEST_DIR}/first-boot-tpm-enroll.sh" "$EXTRA/usr/lib/malmo/first-boot-tpm-enroll.sh"
-chmod 0755 "$EXTRA/usr/lib/malmo/first-boot-tpm-enroll.sh"
+cp "${TEST_DIR}/moose-tpm-enroll.service" "$EXTRA/etc/systemd/system/"
+cp "${TEST_DIR}/first-boot-tpm-enroll.sh" "$EXTRA/usr/lib/moose/first-boot-tpm-enroll.sh"
+chmod 0755 "$EXTRA/usr/lib/moose/first-boot-tpm-enroll.sh"
 
 # The appliance's own static config (#467): the SSH LAN/mesh scoping rule, its
 # loader unit, and the sshd hardening drop-in. Checked in under appliance/ at
 # their in-image paths and copied in whole — see appliance/README.md for why they
-# are not in this script. On a real box the malmo .deb ships them; the medium lane
+# are not in this script. On a real box the moose .deb ships them; the medium lane
 # is the only thing that builds an appliance image today.
 cp -a "${TEST_DIR}/appliance/etc/." "$EXTRA/etc/"
 
 # sshd: allow root key-login, no passwords (TEST IMAGE ONLY).
 #
 # Named to sort FIRST in sshd_config.d/. sshd takes the first value it obtains for
-# a keyword and reads the drop-ins in filename order, so malmo-hardening.conf's
+# a keyword and reads the drop-ins in filename order, so moose-hardening.conf's
 # `PermitRootLogin no` would otherwise win and shut the harness out of its own
 # image — every in-VM assertion here runs over this root connection.
 #
@@ -395,9 +395,9 @@ echo "building + saving control-plane image bundle (docker build)..."
 make -C "$REPO_ROOT" control-plane-images
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 
-# Stage the tarballs into the image at /var/lib/malmo/control-plane-images/.
-mkdir -p "$EXTRA/var/lib/malmo/control-plane-images"
-cp "$CP_BUNDLE"/*.tar "$EXTRA/var/lib/malmo/control-plane-images/"
+# Stage the tarballs into the image at /var/lib/moose/control-plane-images/.
+mkdir -p "$EXTRA/var/lib/moose/control-plane-images"
+cp "$CP_BUNDLE"/*.tar "$EXTRA/var/lib/moose/control-plane-images/"
 
 # --- 4c. app image + test catalog for the full-stack app-install lane (M2, #167)
 # The full-stack lane installs a catalog app (whoami) end-to-end, air-gapped. The
@@ -417,7 +417,7 @@ WHOAMI_REF="traefik/whoami@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c
 docker pull "$WHOAMI_REF"
 docker tag "$WHOAMI_REF" traefik/whoami:v1.10.3
 docker save traefik/whoami:v1.10.3 \
-    -o "$EXTRA/var/lib/malmo/control-plane-images/whoami.tar"
+    -o "$EXTRA/var/lib/moose/control-plane-images/whoami.tar"
 
 # Stage a catalog snapshot with a whoami app (cloud #62). No catalog/ directory is
 # baked into the image and the guest is air-gapped, so the brain reads this file
@@ -427,35 +427,35 @@ docker save traefik/whoami:v1.10.3 \
 # (a copy of the shipping whoami plus a documents:write folder grant, so install
 # exercises a real use-case-folder bind mount + content-survives-uninstall) and
 # stamps the integrity digest the brain verifies. It rides the brain's
-# /var/lib/malmo mount.
-mkdir -p "$EXTRA/var/lib/malmo"
+# /var/lib/moose mount.
+mkdir -p "$EXTRA/var/lib/moose"
 "$GO" -C "$REPO_ROOT" run ./dev/mkcatalog \
     -pkg "${TEST_DIR}/catalog/whoami" \
-    -out "$EXTRA/var/lib/malmo/catalog-seed.json"
+    -out "$EXTRA/var/lib/moose/catalog-seed.json"
 
-# Stage the control-plane compose + caddy.json at /var/lib/malmo/control-plane/
+# Stage the control-plane compose + caddy.json at /var/lib/moose/control-plane/
 # (M1b): the brain runs `docker compose up` here, and Caddy bind-mounts caddy.json
 # from this dir. It must be the SAME host path the brain container sees (the
 # daemon resolves compose bind sources as host paths — socket-proxy-compose-
 # validation.md), which host-agent's brain run-spec mounts same-path via
-# /var/lib/malmo. The proxy is intentionally absent from this compose; host-agent
+# /var/lib/moose. The proxy is intentionally absent from this compose; host-agent
 # seeds it. These staged files + the new host-agent env are baked into the image,
 # so CANARY_VERSION is bumped above to force a clean rebuild.
-mkdir -p "$EXTRA/var/lib/malmo/control-plane"
-cp "${REPO_ROOT}/dev/control-plane/compose.yml" "$EXTRA/var/lib/malmo/control-plane/"
-cp "${REPO_ROOT}/dev/control-plane/caddy.json"   "$EXTRA/var/lib/malmo/control-plane/"
+mkdir -p "$EXTRA/var/lib/moose/control-plane"
+cp "${REPO_ROOT}/dev/control-plane/compose.yml" "$EXTRA/var/lib/moose/control-plane/"
+cp "${REPO_ROOT}/dev/control-plane/caddy.json"   "$EXTRA/var/lib/moose/control-plane/"
 
 # First-boot docker-load oneshot + its script (postinst wires the .wants symlink).
-cp "${TEST_DIR}/malmo-load-images.service" "$EXTRA/etc/systemd/system/"
-cp "${TEST_DIR}/load-control-plane-images.sh" "$EXTRA/usr/lib/malmo/load-control-plane-images.sh"
-chmod 0755 "$EXTRA/usr/lib/malmo/load-control-plane-images.sh"
+cp "${TEST_DIR}/moose-load-images.service" "$EXTRA/etc/systemd/system/"
+cp "${TEST_DIR}/load-control-plane-images.sh" "$EXTRA/usr/lib/moose/load-control-plane-images.sh"
+chmod 0755 "$EXTRA/usr/lib/moose/load-control-plane-images.sh"
 
 # Order docker.service after storage assembly (BOOT.md; #163). Best-effort
 # ordering, not a strict gate — Docker still starts if storage partially failed.
 mkdir -p "$EXTRA/etc/systemd/system/docker.service.d"
-cat > "$EXTRA/etc/systemd/system/docker.service.d/10-malmo-storage.conf" <<'EOF'
+cat > "$EXTRA/etc/systemd/system/docker.service.d/10-moose-storage.conf" <<'EOF'
 [Unit]
-After=malmo-storage-ready.target
+After=moose-storage-ready.target
 EOF
 
 # Docker's apt repo for the image build (mkosi.conf # PackageManagerTrees).
@@ -556,8 +556,8 @@ fi
 # and ImageId).
 if [ ! -f "$IMAGE_OUT" ]; then
     # mkosi 22+ default extension is .raw; some versions emit
-    # malmo-medium.raw or malmo-medium.
-    for cand in "${WORK}/malmo-medium.raw" "${WORK}/malmo-medium"; do
+    # moose-medium.raw or moose-medium.
+    for cand in "${WORK}/moose-medium.raw" "${WORK}/moose-medium"; do
         if [ -f "$cand" ]; then
             ln -sf "$(basename "$cand")" "$IMAGE_OUT" 2>/dev/null || \
                 cp "$cand" "$IMAGE_OUT"

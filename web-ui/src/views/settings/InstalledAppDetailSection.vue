@@ -439,7 +439,7 @@ const saveConfig = useMutation({
                read as a limit that isn't there. The summary line above says THAT
                some paths are open; this says which. Badge shape ported from
                Tailwind Plus (elements/badges 13-small-with-border) with the palette
-               mapped to malmo's tokens, and set in mono because a path is a literal
+               mapped to moose's tokens, and set in mono because a path is a literal
                string someone types, like the secrets and env fields below. -->
           <div
             v-if="exposure === 'restricted' && publicPaths.length > 0"
@@ -476,7 +476,7 @@ const saveConfig = useMutation({
                "which of my accounts", and an account is recognised by its
                provider's logo faster than by a name someone typed. Shape ported
                from Tailwind Plus (forms/select-menus 05-custom-with-avatar) with
-               the palette on malmo's tokens and the Headless UI primitives mapped
+               the palette on moose's tokens and the Headless UI primitives mapped
                to reka-ui, which is what this project already ships. -->
           <SelectRoot
             :model-value="app.mail_provider_id || NO_PROVIDER"

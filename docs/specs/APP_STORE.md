@@ -1,22 +1,22 @@
-# malmo App Store
+# moose App Store
 
-> How malmo publishes and serves the catalog of installable apps to every box. Companion to `APP_MANIFEST.md` (the contract being published), `APP_LIFECYCLE.md` (what the box does after fetching), `UPDATES.md` (the update flow that consumes catalog version bumps), and `RELEASE_MANIFEST.md` (the sibling doc this one borrows its publishing shape from).
+> How moose publishes and serves the catalog of installable apps to every box. Companion to `APP_MANIFEST.md` (the contract being published), `APP_LIFECYCLE.md` (what the box does after fetching), `UPDATES.md` (the update flow that consumes catalog version bumps), and `RELEASE_MANIFEST.md` (the sibling doc this one borrows its publishing shape from).
 
-The scope here is the **app catalog**: how apps reach a malmo box, what the box trusts, and what infrastructure we run to publish it. Container images themselves are not hosted by us — they live in their authors' registries (Docker Hub, GHCR, …). What we publish is the metadata that tells the box which image bytes to trust for each app version.
+The scope here is the **app catalog**: how apps reach a moose box, what the box trusts, and what infrastructure we run to publish it. Container images themselves are not hosted by us — they live in their authors' registries (Docker Hub, GHCR, …). What we publish is the metadata that tells the box which image bytes to trust for each app version.
 
-> **Superseded — read this first (`DECISIONS.md` 2026-07-02, cloud `specs/CATALOG.md`).** The publish + trust model below (a static, minisign-**signed** `catalog.json` served from a CDN at `store.malmo.network`, with per-app `manifest.yml`/`compose.yml` fetched on demand and hash-chained to a signed root) is **not what shipped.** As built (OS #62 / cloud #62, restructured in #434): the catalog is served by the **control plane's dynamic HTTP API**, on two seams. The box fetches **browse data** for its own surface in one request (`GET /catalog?env=<environment>`) — display records, the landing page, the category vocabulary, and an opaque `version` token — checks the schema version, **holds it in memory**, and projects the store locally. It fetches an app's **install payload** only when it installs that app, by following the `manifest_url` / `compose_url` on that app's record (`application/yaml`, the verbatim file). The box keeps **no copy of the browse data on disk**, so it always renders what the endpoint serves now; a box that has not synced shows an empty store. There is **no Ed25519/minisign signature and no integrity digest**: the box only ever fetches from the malmo control plane over **TLS**, which authenticates the origin, and HTTP framing catches a truncated body. The digest that used to sit on the snapshot was doing cache work, not security work, and it made every new published field a flag day (# What the box models). No catalog is baked into the box image. The sections below are kept for the schema field semantics (`icon_glyph`, `footprint`, `images`, curation/`listed:`), which carry over; treat their signing/CDN mechanics as historical. The live wire shape is cloud `specs/CATALOG.md`; the box consumer is `../progress/catalog-remote-thin-client.md`.
+> **Superseded — read this first (`DECISIONS.md` 2026-07-02, cloud `specs/CATALOG.md`).** The publish + trust model below (a static, minisign-**signed** `catalog.json` served from a CDN at `store.onmoose.network`, with per-app `manifest.yml`/`compose.yml` fetched on demand and hash-chained to a signed root) is **not what shipped.** As built (OS #62 / cloud #62, restructured in #434): the catalog is served by the **control plane's dynamic HTTP API**, on two seams. The box fetches **browse data** for its own surface in one request (`GET /catalog?env=<environment>`) — display records, the landing page, the category vocabulary, and an opaque `version` token — checks the schema version, **holds it in memory**, and projects the store locally. It fetches an app's **install payload** only when it installs that app, by following the `manifest_url` / `compose_url` on that app's record (`application/yaml`, the verbatim file). The box keeps **no copy of the browse data on disk**, so it always renders what the endpoint serves now; a box that has not synced shows an empty store. There is **no Ed25519/minisign signature and no integrity digest**: the box only ever fetches from the moose control plane over **TLS**, which authenticates the origin, and HTTP framing catches a truncated body. The digest that used to sit on the snapshot was doing cache work, not security work, and it made every new published field a flag day (# What the box models). No catalog is baked into the box image. The sections below are kept for the schema field semantics (`icon_glyph`, `footprint`, `images`, curation/`listed:`), which carry over; treat their signing/CDN mechanics as historical. The live wire shape is cloud `specs/CATALOG.md`; the box consumer is `../progress/catalog-remote-thin-client.md`.
 
 ## What the store is
 
 A static, signed JSON catalog served from a CDN, backed by a git repo. Same shape as `RELEASE_MANIFEST.md`:
 
 ```
-https://store.malmo.network/catalog.json
-https://store.malmo.network/catalog.json.minisig
-https://store.malmo.network/apps/<id>/manifest.yml
-https://store.malmo.network/apps/<id>/docker-compose.yml
-https://store.malmo.network/apps/<id>/icon.png
-https://store.malmo.network/apps/<id>/screenshots/...
+https://store.onmoose.network/catalog.json
+https://store.onmoose.network/catalog.json.minisig
+https://store.onmoose.network/apps/<id>/manifest.yml
+https://store.onmoose.network/apps/<id>/docker-compose.yml
+https://store.onmoose.network/apps/<id>/icon.png
+https://store.onmoose.network/apps/<id>/screenshots/...
 ```
 
 `catalog.json` is the **index** — one entry per app with the current published version, content hashes, and resolved image digests. Per-app `manifest.yml` and `docker-compose.yml` are fetched on demand at install time. The catalog itself is small even at scale (~300 bytes per entry — see Scaling below).
@@ -79,18 +79,18 @@ Anything not in the schema is implicit (per-app file paths follow the URL conven
 
 > **Superseded (`DECISIONS.md` 2026-07-02, #434).** There is no signature in the shipped design, and no integrity digest either — trust is **TLS to the control plane** (see the banner at the top). The minisign/pubkey-rotation mechanics in this section did not ship. The *digest pinning* of image bytes (below) carries over: the resolved `@sha256:…` digests live in each app's `images` block inside the verbatim manifest the box re-parses, and the brain still pulls by digest.
 
-The catalog is **signed with minisign (Ed25519)** by the malmo store key. Brain verifies on every fetch and refuses to act on an unsigned or invalidly-signed catalog.
+The catalog is **signed with minisign (Ed25519)** by the moose store key. Brain verifies on every fetch and refuses to act on an unsigned or invalidly-signed catalog.
 
 - **Pubkey is baked into the brain image** at build time. Same forward-compat pattern as `RELEASE_MANIFEST.md`: verifier accepts a **list** of pubkeys, so rotation is dual-sign-then-drop without a flag day.
 - **Store signing key is separate from the release-manifest signing key.** Different blast radius — a compromised store key lets an attacker publish a malicious app manifest; a compromised release key lets them ship a malicious brain. Separating them limits damage.
 
-**Image bytes are pinned by digest in the catalog, not in the manifest.** Authors declare `image: photoprism/photoprism:2.4.1` (version, ergonomic). CI resolves the digest at catalog-build time and writes it into the `images` map. The brain pulls by `@sha256:...` derived from the catalog. The signed catalog is the binding from "the malmo store promises version 2.4.1" to "these specific bytes."
+**Image bytes are pinned by digest in the catalog, not in the manifest.** Authors declare `image: photoprism/photoprism:2.4.1` (version, ergonomic). CI resolves the digest at catalog-build time and writes it into the `images` map. The brain pulls by `@sha256:...` derived from the catalog. The signed catalog is the binding from "the moose store promises version 2.4.1" to "these specific bytes."
 
 Consequences:
 
 - Tag mutation on an upstream registry (intentional or compromised) does not affect installed boxes — they pulled the digest the catalog promised.
 - A new release of the app is a CI run that resolves the new digest and a PR that bumps `version` + `images` in the catalog.
-- Authors never manage SHAs; manifest stays readable and portable (the same manifest still runs outside malmo with normal `docker compose pull`).
+- Authors never manage SHAs; manifest stays readable and portable (the same manifest still runs outside moose with normal `docker compose pull`).
 
 **Image sizes are display-only, not part of the trust binding.** The same CI run that resolves a digest also records the image's `download_bytes` / `disk_bytes` (# Catalog schema). These exist purely to tell the user the on-disk footprint before they install; they gate nothing — a size that drifts from reality is a cosmetic bug, not an integrity failure. Only the digest binds bytes.
 
@@ -110,10 +110,10 @@ Consequences:
 
 ## Submission and promotion
 
-The catalog source of truth is a git repo (`github.com/malmo/store` or similar). Each app is a directory:
+The catalog source of truth is a git repo (`github.com/moose/store` or similar). Each app is a directory:
 
 ```
-github.com/malmo/store
+github.com/moose/store
 ├── apps/
 │   ├── photoprism/
 │   │   ├── manifest.yml
@@ -139,15 +139,15 @@ The maintainer signs `catalog.json` offline (hardware token), commits `.minisig`
 
 For the v1 single-maintainer phase, self-merge is fine. Branch protection (require an additional reviewer) is a one-setting change with no doc impact.
 
-## v1 catalog is hand-curated by malmo
+## v1 catalog is hand-curated by moose
 
 The first apps are written by us — manifests wrapping popular open-source projects (Immich, Paperless-ngx, Jellyfin, Navidrome, etc.). Authors aren't yet submitting their own manifests; the store repo is the catalog.
 
 This shapes the v1 trust model intentionally:
 
-- **Every manifest is signed-by-malmo** because every manifest is *authored-by-malmo*.
+- **Every manifest is signed-by-moose** because every manifest is *authored-by-moose*.
 - **Curation policy is enforced by review**, not by automation — we set the bar (`files_first_class` preferred; `app_managed_user_content` rare and labeled; stdout logging; declared-vs-actual permission match).
-- **Third-party authorship** lands later — when the catalog ecosystem matures, app authors will submit PRs against `malmo/store` (still signed by us) before the model evolves further into per-store keys.
+- **Third-party authorship** lands later — when the catalog ecosystem matures, app authors will submit PRs against `moose/store` (still signed by us) before the model evolves further into per-store keys.
 
 The data model below already accommodates additional catalogs from day one, so the transition is additive when it happens.
 
@@ -158,7 +158,7 @@ Curation sometimes needs to **withdraw an app that can't currently ship** — an
 The brain enforces it asymmetrically, by intent:
 
 - **Store-facing paths filter it out.** The browse list (`GET /api/v1/catalog`) omits unlisted apps, the detail page (`GET /api/v1/catalog/:id`) returns 404, and both install paths (`/install-plan` and the `POST /api/v1/apps` install action) return 404 — so a stale store link or a scripted call can't install a deliberately-withdrawn app. To the store, the app simply doesn't exist.
-- **By-id resolution stays honest.** Loading the manifest by id (for an already-installed instance's dashboard card, for reconciliation, for serving its icon, for `malmo manifest lint`) ignores the flag. An app unlisted *after* someone installed it keeps working and stays manageable — withdrawal affects discovery and new installs, never a running instance.
+- **By-id resolution stays honest.** Loading the manifest by id (for an already-installed instance's dashboard card, for reconciliation, for serving its icon, for `moose manifest lint`) ignores the flag. An app unlisted *after* someone installed it keeps working and stays manageable — withdrawal affects discovery and new installs, never a running instance.
 
 This is a **curation control, not access control**: it's box-wide, not per-user or per-role, and there is no "show unlisted apps" path in v1. `listed: false` is the mechanism that enforces a `Blocked` or `Rejected` curation verdict — it pulls the app from the store while its adaptation work stays intact in the catalog.
 
@@ -168,16 +168,16 @@ This is a **curation control, not access control**: it's box-wide, not per-user 
 
 ```
 catalogs:
-  - id: malmo
-    name: malmo
-    url: https://store.malmo.network/catalog.json
+  - id: moose
+    name: moose
+    url: https://store.onmoose.network/catalog.json
     pubkeys: [<minisign-pubkey>]
     builtin: true
 ```
 
 A third-party catalog later is the same row with `builtin: false` and its own URL + pubkeys, added through a settings flow that doesn't exist yet. The brain's verify-fetch-install pipeline already operates per-catalog. Apps include their `catalog_id` in SQLite so "this app came from store X" is recorded from day one — avoiding a retrofit when the second catalog ships.
 
-The UI in v1 shows one tab: the malmo store. No settings affordance to add another.
+The UI in v1 shows one tab: the moose store. No settings affordance to add another.
 
 ## Scaling: when single-file catalog becomes too much
 
@@ -209,7 +209,7 @@ As shipped (cloud #62; the live wire shape is cloud `specs/CATALOG.md`), end-to-
 
 1. **Store git repo** (cloud-side) — the authoring source of truth: one directory per app with its `manifest.yml` + `compose.yml` + assets.
 2. **CI on the repo** — schema lint, admission check, image-pullability check, digest resolution, and catalog regeneration (browse records + the per-app documents + assets).
-3. **The control plane's catalog API**, served **over TLS** on the malmo apex — `GET /catalog?env=<environment>` for browse data, `GET /catalog/apps/{id}/manifest` and `/compose` for an app's two install documents (`application/yaml`, the verbatim file, `Cache-Control: public, max-age=3600`), and `GET /catalog/assets/{id}/{path...}` for artwork. This is a real backend service (part of the malmo cloud control plane), not a static CDN: the box is a thin HTTP client of it.
+3. **The control plane's catalog API**, served **over TLS** on the moose apex — `GET /catalog?env=<environment>` for browse data, `GET /catalog/apps/{id}/manifest` and `/compose` for an app's two install documents (`application/yaml`, the verbatim file, `Cache-Control: public, max-age=3600`), and `GET /catalog/assets/{id}/{path...}` for artwork. This is a real backend service (part of the moose cloud control plane), not a static CDN: the box is a thin HTTP client of it.
 
 Trust is **TLS to the control plane** — there is no signing keypair, no pubkey baked into the brain image, and no integrity digest. The publish flow is git-driven (a store PR regenerates what the API serves); the box-side flow is fetch-project, plus one document fetch per install.
 
@@ -217,7 +217,7 @@ Trust is **TLS to the control plane** — there is no signing keypair, no pubkey
 
 ## Landing page
 
-The store's front page — the box's landing view and the control plane's own store surface at `store.malmo.network` alike — is authored whole in a curated `home.yml`, not derived from any app's own metadata: a single `spotlight:` app id rendered as a banner, plus an ordered list of `groups:` (a `category:` id from the catalog's category list and 1-4 app ids) rendered as packed rows below it. Editing the front page is editing that one file; importing a new app or reordering a manifest's `categories:` never reshuffles it, because the page's shape isn't computed from categories at all.
+The store's front page — the box's landing view and the control plane's own store surface at `store.onmoose.network` alike — is authored whole in a curated `home.yml`, not derived from any app's own metadata: a single `spotlight:` app id rendered as a banner, plus an ordered list of `groups:` (a `category:` id from the catalog's category list and 1-4 app ids) rendered as packed rows below it. Editing the front page is editing that one file; importing a new app or reordering a manifest's `categories:` never reshuffles it, because the page's shape isn't computed from categories at all.
 
 The control plane publishes the block **verbatim** on the snapshot (`CatalogFile.Home`) — carried, not derived, so the curation decision stays with the store curation source, not with a projection the control plane or a box could drift out of step with. The same one filter applies at serve time: an app the block names that isn't advertised on the requesting surface (`Environments`, # Catalog schema above) drops out of its slot — the spotlight goes unset, or the app is skipped within its group — and a group left with no advertised apps is dropped entirely rather than rendered empty. **The environment filter itself is the control plane's**, applied to the `?env=` the box sends (#434): a box receives only apps its surface may show, so it applies no second visibility pass. What the box still does locally is resolve the home block against the apps it received — an id the response does not carry drops out of its slot, and an emptied group is dropped — because it renders its landing from the payload it holds in memory (`internal/catalog/remote.go`).
 
@@ -282,13 +282,13 @@ _(Updated for the shipped design — `DECISIONS.md` 2026-07-02, cloud #62. The e
 - **Browse and install are separate fetches** (#434). Carrying every app's manifest, compose and resolved images inside the browse response made 77% of a 614KB payload install data for apps the box would never install, and it put the box's install path and its store grid behind one shape. Splitting them also killed the index digest, which is what made every published field a flag day.
 - **Environment filtering is server-side.** The box sends `?env=<appliance|hosted>` and shows what it receives; it runs no second visibility pass. An installed app that leaves the box's surface keeps working (its manifest lives next to the installation) but loses its catalog-supplied card metadata (# Failure modes).
 - **Every published URL is opaque.** The box follows `icon_url`, `screenshot_urls`, `manifest_url` and `compose_url` as given and assembles no paths of its own, so artwork or documents can move to another origin without a box-side change.
-- **App manifests and compose files are authored in the store, not in `os`.** The `os` repo holds the schema, the admission policy, and the tooling; the artifacts live in `malmoos/store` and reach a box only through the published snapshot. Catalog fixtures in `os` are synthetic.
+- **App manifests and compose files are authored in the store, not in `os`.** The `os` repo holds the schema, the admission policy, and the tooling; the artifacts live in `onmoose/store` and reach a box only through the published snapshot. Catalog fixtures in `os` are synthetic.
 - **No signing, and no integrity digest.** Trust is **TLS to the control plane**, which authenticates the origin; HTTP framing catches a truncated body. A signature would re-authenticate bytes TLS already covers, for a key-distribution cost and no threat it closes. The digest was cache machinery wearing an integrity label, and it cost a flag day per published field (#434); the opaque `version` token does the cache job. The schema version stays as the one refusal.
 - **Authors declare image versions; CI resolves digests into the published catalog.** The brain pulls by digest — the resolved `@sha256:…` lives in each app's `images:` block inside the verbatim manifest the box fetches and re-parses. Tag mutation on upstream registries can't ship malicious code to a box.
 - **The manifest + compose are fetched per app, at install time,** and then **persisted next to the installation**. That is what keeps routine box operation off the catalog service and keeps an installed app's manifest alive after the app is unpublished. There are no per-app hash-chained files: the documents are plain `application/yaml` behind TLS.
 - **Verification happens in the brain** (not host-agent). The brain owns app lifecycle and re-parses each manifest with its own `manifest.Parse`, staying the sole enforcer of the manifest contract.
 - **We don't host container images.** Authors publish to their own registries. The box's local image cache delivers the "app keeps working if the developer disappears" property. Image mirroring is deferred.
-- **v1 catalog is hand-curated by malmo.** Every manifest is malmo-authored. Third-party authorship (PRs against the store) lands later.
+- **v1 catalog is hand-curated by moose.** Every manifest is moose-authored. Third-party authorship (PRs against the store) lands later.
 - **No baked catalog in the box image.** Every box — appliance and hosted — is a control-plane thin client (`DECISIONS.md` 2026-07-02).
 - **Promotion is a PR against the store repo** with a regenerated snapshot. CI validates schema, admission rules, image reachability, and digests; merge is the publish action (the control plane then serves the new snapshot).
 - **Category display text is authored, never derived.** The snapshot carries a `categories` vocabulary (id + `label`, in authored order); the box renders the label on pills, group headings, the category page, and the app detail panel (# Category labels). Deriving display text from the id is what made two store surfaces disagree about the same category.

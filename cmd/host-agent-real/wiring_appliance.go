@@ -6,22 +6,22 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/malmoos/malmo/internal/hostagent"
-	"github.com/malmoos/malmo/internal/hostagent/avahipublisher"
-	"github.com/malmoos/malmo/internal/hostagent/clockhealth"
-	"github.com/malmoos/malmo/internal/hostagent/diskusage"
-	"github.com/malmoos/malmo/internal/hostagent/healthsource"
-	"github.com/malmoos/malmo/internal/hostagent/journalsource"
-	"github.com/malmoos/malmo/internal/hostagent/netstate"
-	"github.com/malmoos/malmo/internal/hostagent/pamverifier"
-	"github.com/malmoos/malmo/internal/hostagent/procsource"
-	"github.com/malmoos/malmo/internal/hostagent/rampressure"
-	"github.com/malmoos/malmo/internal/hostagent/rebootrequired"
-	"github.com/malmoos/malmo/internal/hostagent/servicehealth"
-	"github.com/malmoos/malmo/internal/hostagent/sshaccess"
-	"github.com/malmoos/malmo/internal/hostagent/timezone"
-	"github.com/malmoos/malmo/internal/hostagent/usermgr"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/moose/internal/hostagent"
+	"github.com/onmoose/moose/internal/hostagent/avahipublisher"
+	"github.com/onmoose/moose/internal/hostagent/clockhealth"
+	"github.com/onmoose/moose/internal/hostagent/diskusage"
+	"github.com/onmoose/moose/internal/hostagent/healthsource"
+	"github.com/onmoose/moose/internal/hostagent/journalsource"
+	"github.com/onmoose/moose/internal/hostagent/netstate"
+	"github.com/onmoose/moose/internal/hostagent/pamverifier"
+	"github.com/onmoose/moose/internal/hostagent/procsource"
+	"github.com/onmoose/moose/internal/hostagent/rampressure"
+	"github.com/onmoose/moose/internal/hostagent/rebootrequired"
+	"github.com/onmoose/moose/internal/hostagent/servicehealth"
+	"github.com/onmoose/moose/internal/hostagent/sshaccess"
+	"github.com/onmoose/moose/internal/hostagent/timezone"
+	"github.com/onmoose/moose/internal/hostagent/usermgr"
+	"github.com/onmoose/moose/internal/protocol"
 )
 
 // buildAgent wires the full appliance host integration: real PAM, user
@@ -54,7 +54,7 @@ func buildAgent() (*hostagent.Agent, func()) {
 	// flips sudo group membership via gpasswd; delete-user shells out to
 	// userdel -r -f (see docs/progress/host-agent-delete-user.md).
 	a := hostagent.New(
-		&pamverifier.PAMVerifier{Service: "malmo"},
+		&pamverifier.PAMVerifier{Service: "moose"},
 		pub,
 	)
 	a.UserMgr = &usermgr.LinuxUserManager{}

@@ -10,7 +10,7 @@
 #
 # Same image + catalog-promised digest as the appliance lane: the cloud test image
 # bakes that one image into the offline bundle and installs air-gapped
-# (MALMO_OFFLINE_INSTALL), so the promised digest is the trust anchor
+# (MOOSE_OFFLINE_INSTALL), so the promised digest is the trust anchor
 # (APP_LIFECYCLE.md # image digest pinning).
 id: whoami
 manifest_version: 1

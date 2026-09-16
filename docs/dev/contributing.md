@@ -1,4 +1,4 @@
-# Working on malmo
+# Working on moose
 
 The end-to-end loop for contributing an implementation slice: get oriented, pick a task, branch, build, test, document, open a PR, review it. Read this once; it links out to the docs that own each step rather than repeating them.
 
@@ -8,7 +8,7 @@ This guide is written so a contributor **and their coding agent** can both follo
 
 Read in this order. Don't skip [`../../CLAUDE.md`](../../CLAUDE.md) — it holds the load-bearing conventions and overrides default agent behavior.
 
-1. **[`../../CLAUDE.md`](../../CLAUDE.md)** — what malmo is, the audience, the locked decisions, and the code/doc discipline you're held to. The annotated map of every spec lives in [`../README.md`](../README.md) # Specs.
+1. **[`../../CLAUDE.md`](../../CLAUDE.md)** — what moose is, the audience, the locked decisions, and the code/doc discipline you're held to. The annotated map of every spec lives in [`../README.md`](../README.md) # Specs.
 2. **[`../specs/SPEC.md`](../specs/SPEC.md)** and **[`../specs/CONTROL_PLANE.md`](../specs/CONTROL_PLANE.md)** — the vision and the control-plane architecture (brain + host-agent + Caddy).
 3. **[`../README.md`](../README.md)** — the doc map. You don't read every spec now; you read the one(s) your task touches, end-to-end, when you pick it up.
 4. **[`running-locally.md`](running-locally.md)** — get the stack running natively (no VM) before you write a line.
@@ -18,7 +18,7 @@ The spec docs are the source of truth and cross-reference each other heavily. Wh
 
 ## Step 1 — Pick a task
 
-Actionable implementation work lives in **[GitHub Issues](https://github.com/malmoos/malmo/issues)** — the parallel-work board. Find work and claim it:
+Actionable implementation work lives in **[GitHub Issues](https://github.com/onmoose/moose/issues)** — the parallel-work board. Find work and claim it:
 
 ```bash
 gh issue list --label accepted --label P1           # accepted + highest priority; also P2, P3
@@ -67,7 +67,7 @@ The inner dev loop is all native, no VM — see [`running-locally.md`](running-l
 
 Every behavioral change ships with tests. Which layer depends on what you touched — see [`testing-brain.md`](testing-brain.md) for the brain pyramid (unit → store → lifecycle-with-fakes → API → integration → e2e) and [`../specs/TESTING.md`](../specs/TESTING.md) for the boot-level lanes (nspawn fast / QEMU medium / soak).
 
-**Test data is synthetic and self-contained.** Write fixtures with fake data in the shape you need; don't check in a copy of a payload a malmo endpoint serves. This matters most for the app catalog: the artifacts are authored in `malmoos/store` and reach a box only through the published snapshot, so `internal/catalog/testdata/snapshot.json` is hand-written fake apps in the published wire shape. Keep it hand-written — regenerating it from the Go types it is checked against would make `TestNoUnmodeledFields` agree with itself and test nothing. `go test ./internal/catalog -run TestVerifyFixtureSnapshot -update` re-stamps its digest after you edit the shape.
+**Test data is synthetic and self-contained.** Write fixtures with fake data in the shape you need; don't check in a copy of a payload a moose endpoint serves. This matters most for the app catalog: the artifacts are authored in `onmoose/store` and reach a box only through the published snapshot, so `internal/catalog/testdata/snapshot.json` is hand-written fake apps in the published wire shape. Keep it hand-written — regenerating it from the Go types it is checked against would make `TestNoUnmodeledFields` agree with itself and test nothing. `go test ./internal/catalog -run TestVerifyFixtureSnapshot -update` re-stamps its digest after you edit the shape.
 
 Before you push, run the gate:
 
@@ -143,7 +143,7 @@ Feature work always branches off `dev` and PRs into `dev` — that's covered abo
   - **If the tag already exists** (this merge didn't bump `VERSION`), the run is a clean no-op — no tag, no release, no image build. This is the common case for most `main` pushes and is expected to stay green.
   - **If the tag doesn't exist** (this merge bumped `VERSION`), the workflow tags the merge commit `vX.Y.Z`, creates a GitHub Release for it, and then triggers the hosted cloud-image build+publish (`ci-cloud-image.yml`) for that same commit with publishing enabled. The Release notes are the **release PR's own body**, with the generated commit list appended under it; if that body is missing or too short to be a summary, the notes fall back to the generated list alone. So the summary you write in the release PR is what people read on the Release page — write it for someone deciding whether to upgrade, not for someone reading commits.
 - The cloud-image build is invoked directly as a reusable workflow (`workflow_call`), not via `ci-cloud-image.yml`'s `push: tags` trigger — a tag pushed with the default `GITHUB_TOKEN` (as `release.yml` does) does not fire another workflow's tag-push trigger, so relying on that event would silently tag a release and never build or publish it. `ci-cloud-image.yml`'s `push: tags: v*` trigger still exists as a manual escape hatch for a human pushing a tag by hand; see that workflow's header comment for the full reasoning.
-- A tagged release always ships an image stamped with that same version, runs the full seeded-boot gate, and attaches the image to the GitHub Release as `malmo-vX.Y.Z-amd64.raw.xz` + a `.sha256` sidecar. That Release asset is the only published artifact — the provider-snapshot upload was removed in #352, so a release no longer pushes to any hosting provider. `workflow_dispatch` on `ci-cloud-image.yml` remains available for manual build-only or build+publish runs outside the release flow (see the workflow's header comment).
+- A tagged release always ships an image stamped with that same version, runs the full seeded-boot gate, and attaches the image to the GitHub Release as `moose-vX.Y.Z-amd64.raw.xz` + a `.sha256` sidecar. That Release asset is the only published artifact — the provider-snapshot upload was removed in #352, so a release no longer pushes to any hosting provider. `workflow_dispatch` on `ci-cloud-image.yml` remains available for manual build-only or build+publish runs outside the release flow (see the workflow's header comment).
 
 Contributors never push directly to `main`; the tag and the GitHub Release are created automatically by `release.yml`, not by hand.
 
