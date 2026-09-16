@@ -20,7 +20,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // DefaultPath is the production location of the storage findings file, set

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/onmoose/moose/internal/caddy"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/caddy"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // call records one driver invocation across any fake. We keep it as a flat

@@ -21,7 +21,7 @@ import (
 	"log/slog"
 	"syscall"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // Mount points and labels of the volumes of interest (STORAGE.md mount layout).

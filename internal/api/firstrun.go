@@ -8,8 +8,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // This file is the brain side of the first-run wizard's non-account steps

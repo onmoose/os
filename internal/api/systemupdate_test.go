@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/hostclient"
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/hostclient"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/store"
 )
 
 // updateHarness is a brain Server wired to a canned host-agent job surface. It

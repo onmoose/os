@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/relmanifest"
+	"github.com/onmoose/os/internal/hostagent/relmanifest"
 )
 
 // startReleasePoll starts the appliance release-manifest poll and returns a

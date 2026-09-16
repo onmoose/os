@@ -3,8 +3,8 @@ package api
 import (
 	"testing"
 
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // toDTO surfaces the per-app URL by profile: hosted is public HTTPS at

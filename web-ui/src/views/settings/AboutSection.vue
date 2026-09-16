@@ -78,7 +78,7 @@ const uiImage = computed(() => v.value?.ui_image ?? "");
       </details>
 
       <a
-        href="https://github.com/onmoose/moose"
+        href="https://github.com/onmoose/os"
         target="_blank"
         rel="noopener noreferrer"
         class="inline-block text-sm text-accent hover:underline"

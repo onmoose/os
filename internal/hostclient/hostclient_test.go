@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 	"golang.org/x/crypto/bcrypt"
 )
 

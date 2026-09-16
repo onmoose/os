@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 func statDir(t *testing.T, dir string) (os.FileInfo, *syscall.Stat_t) {

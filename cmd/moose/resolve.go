@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // imageSizer resolves the catalog ImageRef (pinned digest + download/disk

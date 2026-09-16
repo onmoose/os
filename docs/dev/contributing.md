@@ -18,7 +18,7 @@ The spec docs are the source of truth and cross-reference each other heavily. Wh
 
 ## Step 1 — Pick a task
 
-Actionable implementation work lives in **[GitHub Issues](https://github.com/onmoose/moose/issues)** — the parallel-work board. Find work and claim it:
+Actionable implementation work lives in **[GitHub Issues](https://github.com/onmoose/os/issues)** — the parallel-work board. Find work and claim it:
 
 ```bash
 gh issue list --label accepted --label P1           # accepted + highest priority; also P2, P3

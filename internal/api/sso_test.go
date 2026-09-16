@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/assertion"
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/assertion"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // Portal-to-box SSO handshake, box side (issue #275). These drive the

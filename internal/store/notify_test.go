@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/notify"
+	"github.com/onmoose/os/internal/notify"
 )
 
 func newNotification(dedupKey string) notify.Notification {

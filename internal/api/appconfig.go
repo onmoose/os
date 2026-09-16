@@ -17,9 +17,9 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/manifest"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/store"
 )
 
 func (s *Server) registerAppConfig(api huma.API) {

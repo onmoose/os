@@ -12,10 +12,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/catalog"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 func hostedExposureServer(t *testing.T, owner, scope, state string) (*Server, string, string) {

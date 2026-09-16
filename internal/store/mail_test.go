@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/mailpreset"
+	"github.com/onmoose/os/internal/mailpreset"
 )
 
 func sampleProvider(id, label string) MailProvider {

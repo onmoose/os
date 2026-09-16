@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // --- sumUnpackedLayers: pure save-stream parsing, no docker ----------------

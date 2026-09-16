@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/onmoose/moose/internal/admission"
+	"github.com/onmoose/os/internal/admission"
 )
 
 // check is exercised with admission.CheckStructure (the daemon-free admission

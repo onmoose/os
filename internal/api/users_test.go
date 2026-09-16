@@ -13,13 +13,13 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/catalog"
-	"github.com/onmoose/moose/internal/events"
-	"github.com/onmoose/moose/internal/hostclient"
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/hostclient"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/store"
 )
 
 // setupAdmin bootstraps an admin via the wire (POST /setup) and leaves a

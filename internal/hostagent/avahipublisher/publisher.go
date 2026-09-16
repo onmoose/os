@@ -61,7 +61,7 @@ import (
 	"sync"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/onmoose/moose/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/hostagent/netstate"
 )
 
 // Avahi DBus constants from <avahi-common/defs.h>.

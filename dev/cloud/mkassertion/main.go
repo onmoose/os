@@ -43,8 +43,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/onmoose/moose/internal/assertion"
-	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/os/internal/assertion"
+	"github.com/onmoose/os/internal/profile"
 )
 
 func main() {

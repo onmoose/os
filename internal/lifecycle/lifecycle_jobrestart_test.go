@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 
 	"gopkg.in/yaml.v3"
 )

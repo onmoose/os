@@ -44,12 +44,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/onmoose/moose/internal/hostagent"
-	"github.com/onmoose/moose/internal/hostagent/avahipublisher"
-	"github.com/onmoose/moose/internal/hostagent/healthsource"
-	"github.com/onmoose/moose/internal/hostagent/netstate"
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/version"
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/hostagent/avahipublisher"
+	"github.com/onmoose/os/internal/hostagent/healthsource"
+	"github.com/onmoose/os/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/version"
 )
 
 func main() {

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/onmoose/moose/internal/caddy"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/caddy"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // DockerDriver is the narrow surface lifecycle needs from Docker. Production

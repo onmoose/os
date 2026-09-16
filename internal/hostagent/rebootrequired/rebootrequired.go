@@ -27,7 +27,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // issueRebootRequired is the registered issue ID raised while a reboot is pending.

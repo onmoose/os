@@ -14,7 +14,7 @@
 # production image and the boot-proof test lane that Include=..'s it.
 [Unit]
 Description=moose — block container egress to the cloud metadata endpoint (169.254.169.254)
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/ENVIRONMENT.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/ENVIRONMENT.md
 Before=docker.service host-agent.service
 After=nftables.service
 

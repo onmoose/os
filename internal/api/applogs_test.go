@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // TestLogVisibility pins the per-app-log authorization matrix. It is STRICTER

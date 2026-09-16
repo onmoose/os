@@ -25,9 +25,9 @@ MOOSE_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 # runtime override on purpose — changing which releases a box accepts should take
 # a new, apt-signed binary, not an edit to a unit file.
 MOOSE_RELEASE_KEYS ?=
-LDFLAGS := -X github.com/onmoose/moose/internal/version.Version=$(MOOSE_VERSION) \
-           -X github.com/onmoose/moose/internal/version.Commit=$(MOOSE_COMMIT) \
-           -X github.com/onmoose/moose/internal/hostagent/relmanifest.BakedKeys=$(MOOSE_RELEASE_KEYS)
+LDFLAGS := -X github.com/onmoose/os/internal/version.Version=$(MOOSE_VERSION) \
+           -X github.com/onmoose/os/internal/version.Commit=$(MOOSE_COMMIT) \
+           -X github.com/onmoose/os/internal/hostagent/relmanifest.BakedKeys=$(MOOSE_RELEASE_KEYS)
 
 export MOOSE_AGENT_SOCK := $(AGENT_SOCK)
 export MOOSE_STATE_DIR := $(STATE_DIR)

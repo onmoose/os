@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // The pair the fake box "runs", and the pair a fake target offers. Both are

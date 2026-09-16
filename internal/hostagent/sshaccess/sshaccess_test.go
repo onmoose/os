@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // newManager builds a Manager pointed at a temp drop-in, with sshd and systemctl

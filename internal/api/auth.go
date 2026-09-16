@@ -14,10 +14,10 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // publicPaths lists routes the auth middleware lets through without a

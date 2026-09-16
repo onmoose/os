@@ -41,7 +41,7 @@
 Description=moose — grow the root partition and filesystem to fill the provider disk
 Documentation=man:systemd-repart.service(8)
 Documentation=man:systemd-growfs(8)
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/ENVIRONMENT.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/ENVIRONMENT.md
 ConditionVirtualization=!container
 Before=docker.service host-agent.service
 

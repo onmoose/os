@@ -11,16 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/api"
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/events"
-	"github.com/onmoose/moose/internal/health"
-	"github.com/onmoose/moose/internal/lifecycle"
-	"github.com/onmoose/moose/internal/manifest"
-	"github.com/onmoose/moose/internal/notify"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/api"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/health"
+	"github.com/onmoose/os/internal/lifecycle"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/notify"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/store"
 )
 
 // fakeEventStore captures audit rows so the per-issue emission can be asserted

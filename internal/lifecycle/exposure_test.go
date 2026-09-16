@@ -14,9 +14,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 func installWhoami(t *testing.T, e *testEnv) store.Instance {

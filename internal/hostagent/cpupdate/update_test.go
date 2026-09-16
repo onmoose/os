@@ -11,16 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/brainlaunch"
-	"github.com/onmoose/moose/internal/hostagent/controlplane"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent/brainlaunch"
+	"github.com/onmoose/os/internal/hostagent/controlplane"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 const (
 	oldBrain = "moose-brain:latest"
 	oldUI    = "moose-ui:dev"
-	newBrain = "ghcr.io/onmoose/moose-brain@sha256:new"
-	newUI    = "ghcr.io/onmoose/moose-ui@sha256:new"
+	newBrain = "ghcr.io/onmoose/os-brain@sha256:new"
+	newUI    = "ghcr.io/onmoose/os-ui@sha256:new"
 )
 
 // fakeDocker records every call in order. The order is the point: this

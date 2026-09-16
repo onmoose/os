@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/notify"
+	"github.com/onmoose/os/internal/notify"
 )
 
 // --- harness helpers for the bell read surface ---------------------------

@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/store"
 )
 
 // v1 action vocabulary (LOGGING.md # Write path).

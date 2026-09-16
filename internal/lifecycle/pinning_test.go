@@ -9,7 +9,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // An author who writes BOTH a tag and a digest (`name:tag@sha256:…` — a

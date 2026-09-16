@@ -32,7 +32,7 @@
 # no-ops and an existing box's keys are never rotated underneath it.
 [Unit]
 Description=moose — generate sshd host keys if they are missing
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/BUILD.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/BUILD.md
 Before=ssh.service
 ConditionPathIsReadWrite=/etc/ssh
 

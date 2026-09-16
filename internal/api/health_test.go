@@ -10,15 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/catalog"
-	"github.com/onmoose/moose/internal/events"
-	"github.com/onmoose/moose/internal/health"
-	"github.com/onmoose/moose/internal/hostagent"
-	"github.com/onmoose/moose/internal/hostclient"
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/health"
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/hostclient"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/store"
 )
 
 // healthHarness wires a real hostagent.Agent (with FakeHealthSource) behind a

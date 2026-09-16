@@ -1,6 +1,6 @@
 [Unit]
 Description=moose first-boot LUKS TPM2 enrollment (PCR 7)
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/STORAGE.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/STORAGE.md
 # Run once. The script writes the marker only on a successful enroll; a
 # failed enroll leaves the marker absent so this re-runs next boot.
 ConditionPathExists=!/var/lib/moose/.luks-tpm-enrolled

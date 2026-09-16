@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
 )
 
 // seedFile writes a seed at a fresh path and points MOOSE_SEED_PATH at it, the

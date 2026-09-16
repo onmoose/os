@@ -7,10 +7,10 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/store"
 )
 
 // sshFailUser makes the harness's /v1/ssh/set-access mock answer 500, so the

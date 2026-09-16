@@ -22,10 +22,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/admission"
-	"github.com/onmoose/moose/internal/catalog"
-	"github.com/onmoose/moose/internal/events"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/admission"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/store"
 )
 
 func TestLivePostgresProvisioning(t *testing.T) {

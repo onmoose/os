@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // CookieName is the dashboard's session cookie. AUTH.md # Sessions.

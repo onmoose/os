@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // stubUpdater is a SystemUpdater a test drives by hand: it records the refs it

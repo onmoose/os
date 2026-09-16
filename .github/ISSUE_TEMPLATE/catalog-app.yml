@@ -49,5 +49,5 @@ body:
     attributes:
       label: Before submitting
       options:
-        - label: I searched [existing suggestions](https://github.com/onmoose/moose/issues?q=is%3Aissue+label%3Acatalog) and there isn't already one open for this app (if there is, I'll 👍 it instead).
+        - label: I searched [existing suggestions](https://github.com/onmoose/os/issues?q=is%3Aissue+label%3Acatalog) and there isn't already one open for this app (if there is, I'll 👍 it instead).
           required: false

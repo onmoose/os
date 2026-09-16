@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // Hosted per-app forward-auth verify endpoint + cookie minting (issue #305).

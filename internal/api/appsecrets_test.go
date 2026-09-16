@@ -18,11 +18,11 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/catalog"
-	"github.com/onmoose/moose/internal/events"
-	"github.com/onmoose/moose/internal/lifecycle"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/lifecycle"
+	"github.com/onmoose/os/internal/store"
 )
 
 const revealManifestYAML = `

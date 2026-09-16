@@ -25,7 +25,7 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 **Previously:** the project was called malmo. The hosted apex was `malmo.network`, the product site `malmo.com`, the GitHub org `malmoos`, the Go module `github.com/malmoos/malmo`, and every name on a box carried the word: `/var/lib/malmo`, `/etc/pam.d/malmo`, the `malmo-shared` group, the `malmo-ingress` network, the `malmo.instance_id` label, the `malmo_session` cookie, the `MALMO_*` env vars an app is given, and the `X-Malmo-User` header forward auth sets.
 
-**Now:** the project is **moose**. The hosted apex is `onmoose.network`, the product site `mooseos.com`, the org `onmoose`, the repo `moose`, and the module `github.com/onmoose/moose`. Every name follows: paths, host accounts, systemd units, containers, labels, cookies, headers, env vars, the `/_moose/` API leg, and the dashboard copy. The appliance dashboard is `moose.local`.
+**Now:** the project is **moose**. The hosted apex is `onmoose.network`, the product site `mooseos.com`, the org `onmoose`, the repo `os`, and the module `github.com/onmoose/os`. Every name follows: paths, host accounts, systemd units, containers, labels, cookies, headers, env vars, the `/_moose/` API leg, and the dashboard copy. The appliance dashboard is `moose.local`.
 
 Two calls sit inside the rename.
 

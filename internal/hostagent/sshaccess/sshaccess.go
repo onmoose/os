@@ -28,7 +28,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // DefaultDropInPath is the sshd config fragment moose owns. It is rendered

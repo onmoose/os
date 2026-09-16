@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/systemlive"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/systemlive"
 )
 
 // constSampler is the canned host-resources source the api harness wires into

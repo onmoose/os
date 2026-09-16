@@ -15,7 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // Error is a rejection with a stable, user-facing message naming the field.

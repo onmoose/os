@@ -1,6 +1,6 @@
 [Unit]
 Description=moose storage assembly attempted
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/BOOT.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/BOOT.md
 # Best-effort milestone, not a strict gate. Per BOOT.md # The storage-ready
 # target: services depending on storage Want= this target, not Require= it.
 # Individual mount/verify failures do not stop downstream services starting.

@@ -1,7 +1,7 @@
 [Unit]
 Description=moose host-agent (HTTP/JSON over /var/run/moose/agent.sock)
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/BRAIN_HOST_PROTOCOL.md
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/BOOT.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/BRAIN_HOST_PROTOCOL.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/BOOT.md
 After=moose-storage-ready.target docker.service
 Wants=moose-storage-ready.target
 Requires=docker.service

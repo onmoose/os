@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 const sec = int64(time.Second) // 1e9 ns, the per-call ts spacing in rampSampler

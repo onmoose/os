@@ -3,8 +3,8 @@ package api
 import (
 	"testing"
 
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // tzFailSentinel is referenced by the harness's set-timezone mock (auth_test.go):

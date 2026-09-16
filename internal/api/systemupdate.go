@@ -25,9 +25,9 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/hostclient"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/hostclient"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 func (s *Server) registerSystemUpdate(api huma.API) {

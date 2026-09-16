@@ -31,7 +31,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // ErrProtocolMismatch is returned (wrapped) when the brain image's declared

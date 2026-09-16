@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 func TestRaise_NewIssueReturnsTrue(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/onmoose/moose/internal/health"
+	"github.com/onmoose/os/internal/health"
 )
 
 // IntegrityCheck runs SQLite's PRAGMA integrity_check and returns its result.

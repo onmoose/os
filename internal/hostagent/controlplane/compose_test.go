@@ -34,7 +34,7 @@ func stageRealCompose(t *testing.T) (dir string, original string) {
 func TestRewriteUIImageChangesExactlyOneLine(t *testing.T) {
 	dir, original := stageRealCompose(t)
 
-	old, err := RewriteUIImage(dir, "ghcr.io/onmoose/moose-ui@sha256:abc123")
+	old, err := RewriteUIImage(dir, "ghcr.io/onmoose/os-ui@sha256:abc123")
 	if err != nil {
 		t.Fatalf("RewriteUIImage: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestRewriteUIImageChangesExactlyOneLine(t *testing.T) {
 		t.Fatalf("changed %d lines (%v), want exactly 1", len(changed), changed)
 	}
 	got := after[changed[0]]
-	if got != "    image: ghcr.io/onmoose/moose-ui@sha256:abc123" {
+	if got != "    image: ghcr.io/onmoose/os-ui@sha256:abc123" {
 		t.Errorf("rewritten line = %q, want the same indent and key with the new ref", got)
 	}
 	// The caddy service's interpolated image is the neighbour most at risk from
@@ -75,7 +75,7 @@ func TestRewriteUIImageChangesExactlyOneLine(t *testing.T) {
 // — the same read the brain performs on its next boot.
 func TestRewriteUIImageIsReadableAsYAML(t *testing.T) {
 	dir, _ := stageRealCompose(t)
-	const ref = "ghcr.io/onmoose/moose-ui@sha256:deadbeef"
+	const ref = "ghcr.io/onmoose/os-ui@sha256:deadbeef"
 	if _, err := RewriteUIImage(dir, ref); err != nil {
 		t.Fatalf("RewriteUIImage: %v", err)
 	}

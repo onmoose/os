@@ -3,9 +3,9 @@
 package main
 
 import (
-	"github.com/onmoose/moose/internal/hostagent/relmanifest"
-	"github.com/onmoose/moose/internal/hostagent/updatetarget"
-	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/os/internal/hostagent/relmanifest"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/profile"
 )
 
 // buildProfile is the environment profile this binary was built for. See the

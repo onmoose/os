@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/onmoose/moose/internal/hostagent"
-	"github.com/onmoose/moose/internal/hostagent/brainlaunch"
-	"github.com/onmoose/moose/internal/hostagent/relmanifest"
-	"github.com/onmoose/moose/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/hostagent/brainlaunch"
+	"github.com/onmoose/os/internal/hostagent/relmanifest"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
 )
 
 // startUpdateTarget starts the loop that learns this box's control-plane target

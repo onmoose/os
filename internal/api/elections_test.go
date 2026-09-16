@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/onmoose/moose/internal/lifecycle"
-	"github.com/onmoose/moose/internal/manifest"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/lifecycle"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/store"
 )
 
 // jellyfinManifest parses the shared folders fixture: movies (write,

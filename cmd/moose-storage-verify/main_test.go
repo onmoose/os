@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // TestWriteAtomic_NoTempLeftovers asserts the standard atomic-write

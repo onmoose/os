@@ -21,8 +21,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/onmoose/moose/internal/events"
-	"github.com/onmoose/moose/internal/health"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/health"
 )
 
 // Category groups notifications in the inbox (NOTIFICATIONS.md # The

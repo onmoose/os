@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // diskSource reads app manifests from a directory tree:

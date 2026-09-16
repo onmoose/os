@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // Hosted forward-auth token + cookie (issue #305). These exercise the second,

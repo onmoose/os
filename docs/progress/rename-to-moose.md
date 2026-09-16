@@ -5,7 +5,7 @@
 - **Specs touched:** every file in `docs/specs/`; `MALMO_NETWORK.md` renamed to `MOOSE_NETWORK.md`; new `DECISIONS.md` entry (2026-09-16)
 - **Closes:** #489
 
-The project is now called **moose**. The hosted apex moves from `malmo.network` to `onmoose.network`, the product site from `malmo.com` to `mooseos.com`, and the code from `github.com/malmoos/malmo` to `github.com/onmoose/moose`. `DECISIONS.md` 2026-09-16 records the two calls inside the rename: a clean break with no compatibility layer, and an app-facing contract renamed in lockstep with `onmoose/store`.
+The project is now called **moose**. The hosted apex moves from `malmo.network` to `onmoose.network`, the product site from `malmo.com` to `mooseos.com`, and the code from `github.com/malmoos/malmo` to `github.com/onmoose/os`. `DECISIONS.md` 2026-09-16 records the two calls inside the rename: a clean break with no compatibility layer, and an app-facing contract renamed in lockstep with `onmoose/store`.
 
 ## What was done
 
@@ -34,6 +34,10 @@ One mechanical pass over 371 files, about 4,950 mentions, then the file and dire
 - `make test-nopam` green, all packages. The PAM package is not built here because `github.com/msteinert/pam/v2` does not compile on this machine, which is true on `dev` as well and unrelated to the rename. CI covers it.
 - `gofmt` clean, and `make openapi-check` reports the spec fresh.
 - `git grep -i malmo -- ':!docs/progress' ':!docs/specs/DECISIONS.md'` returns nothing.
+- `make build`, `make host-agent-real-hosted` and `make control-plane-images` all build. The brain image carries the renamed OCI label `moose.protocol.major=1`, which is the gate `brainlaunch` and `cpupdate` read.
+- `make test-caddy` passes end to end: catch-all 404, subdomain route, forged `X-Forwarded-For` replaced, no path routing, and the route withdrawn on uninstall. `make test-avahi` and `make test-netstate` pass against real Avahi and NetworkManager.
+- A real install through the API, with the catalog seeded from the paired `onmoose/store` branch: the session cookie came back as `moose_session`, the container carried `moose.managed` / `moose.instance_id` / `moose.manifest_id`, the generated `.env` carried `MOOSE_APP_URL`, `MOOSE_DATA_DIR` and `MOOSE_FOLDER_DOCUMENTS`, and inside the container `WHOAMI_DOCUMENTS_PATH=/moose/documents`. It answered 200 through Caddy and through real mDNS at `files-demo.local`, and uninstall removed the container, the route and the instance dir.
+- `make test-health` fails ("issues did not converge"), and fails the same way on `dev` in a clean worktree. The lane builds the host-agent unstamped, so it reports version `dev` and the brain raises a version-mismatch issue the lane does not expect. Pre-existing, not caused by the rename.
 
 ## What's next
 
@@ -46,5 +50,4 @@ One mechanical pass over 371 files, about 4,950 mentions, then the file and dire
 
 - Nothing here ran on a booted box. The claims about paths, units, accounts and the seed rest on the unit suite and on reading the diff, until the cloud image lane runs on the branch.
 - The appliance medium lane (swtpm and LUKS) is local-only and was not run, so the renamed LUKS-era unit graph and the `moose-tpm-enroll` path are unproven.
-- `make dev` was not exercised end to end in this session, so the renamed dev Caddy, the `moose-ingress` network and `moose.local` are unproven in the inner loop.
 - The gitignored mkosi staging trees under `dev/cloud/` and `dev/test-qemu/` still hold old-name files on this machine. They are build output and are rebuilt, but a stale local tree can confuse a local image build until it is cleaned.

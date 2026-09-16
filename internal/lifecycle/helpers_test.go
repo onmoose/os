@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/manifest"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/store"
 )
 
 func TestRepoOf(t *testing.T) {

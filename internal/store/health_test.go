@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/health"
+	"github.com/onmoose/os/internal/health"
 )
 
 func newHealthIssue(id string) health.Issue {

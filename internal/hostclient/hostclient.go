@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 type Client struct {

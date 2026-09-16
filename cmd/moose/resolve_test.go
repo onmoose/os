@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // fakeSizer stands in for the Docker daemon: canned refs by image, or a forced

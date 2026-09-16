@@ -32,7 +32,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/hostagent/netstate"
 )
 
 // TestDBusPublisher_PublishAndUnpublish exercises the full Publish → Unpublish

@@ -1,6 +1,6 @@
 [Unit]
 Description=moose storage canary + enrollment-marker reporter
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/BOOT.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/BOOT.md
 # Reporter, not a gate. No OnFailure= per BOOT.md # Failure → recovery target.
 # The reporter writes findings to /run/moose/health/storage.json which
 # host-agent reads and forwards to the brain via GET /v1/health/storage.

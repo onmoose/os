@@ -67,7 +67,7 @@ The inner/outer boundary is also the **cross-platform / Linux-only** boundary. T
 
 **Start every piece of work from a fresh branch off latest `dev`:** `git checkout dev && git pull && git checkout -b <branch>`. Never commit straight to `dev` or `main`. `dev` is the default branch and where feature PRs land; a PR from `dev` into `main` is how the maintainer cuts a release, so a contributor never targets `main` directly.
 
-Actionable parallel work lives in [GitHub Issues](https://github.com/onmoose/moose/issues) (`gh issue list --label P1`).
+Actionable parallel work lives in [GitHub Issues](https://github.com/onmoose/os/issues) (`gh issue list --label P1`).
 
 **After opening a PR, run a self-review** using a fresh sonnet agent with no conversation history — it has no attachment to the implementation choices you made. In Claude Code: `/code-review low Read docs/progress/<your-slug>.md first for context, then review the diff per docs/dev/code-review.md.` Address every Block finding before the PR merges; note any disagreements in the progress entry's Known gaps. **The self-review is not done until Greptile's review has also been read** — it posts as a PR comment a few minutes after the PR opens, so a clean agent review on a fresh PR proves nothing on its own. Read it (`gh pr view <N> --comments`), then confirm, dismiss, or extend each finding per `docs/dev/code-review.md` # Prior review comments.
 

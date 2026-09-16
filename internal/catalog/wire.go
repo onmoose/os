@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // wire.go models the control plane's published catalog API as the box consumes

@@ -9,8 +9,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/onmoose/moose/internal/hostagent/netstate"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // --- stub verifier ---

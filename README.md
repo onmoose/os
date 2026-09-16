@@ -136,7 +136,7 @@ The host-integrated parts (boot ordering, LUKS/TPM, systemd, the cloud image) ar
 
 New contributor (or pointing a coding agent at the repo)? Start with [`docs/dev/contributing.md`](docs/dev/contributing.md), the end-to-end loop (orient → pick a task → branch → build → test → document → PR).
 
-- Open implementation tasks live in [GitHub Issues](https://github.com/onmoose/moose/issues) (`gh issue list --label P1`).
+- Open implementation tasks live in [GitHub Issues](https://github.com/onmoose/os/issues) (`gh issue list --label P1`).
 - All work happens on a branch off latest `dev` and lands via a PR into `dev`. Never commit straight to `dev` or `main`. A PR from `dev` into `main` is how the maintainer cuts a release — contributors don't target `main` directly.
 - Link the issue your PR closes with `Closes #<N>`.
 - **Every change ships with documentation.** A code change is not complete until its docs are written in the same change.

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 func TestUseraddArgs_Defaults(t *testing.T) {

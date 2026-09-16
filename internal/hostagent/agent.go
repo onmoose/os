@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/netstate"
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/version"
+	"github.com/onmoose/os/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/version"
 	"golang.org/x/crypto/bcrypt"
 )
 

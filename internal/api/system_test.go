@@ -14,10 +14,10 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/hostclient"
-	"github.com/onmoose/moose/internal/store"
-	"github.com/onmoose/moose/internal/version"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/hostclient"
+	"github.com/onmoose/os/internal/store"
+	"github.com/onmoose/os/internal/version"
 )
 
 // TestSystemStorage_RequiresAuth: the Storage poll needs a session like every

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/assertion"
-	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/os/internal/assertion"
+	"github.com/onmoose/os/internal/profile"
 )
 
 // TestMintRoundTrip is the contract this tool exists to satisfy: a token it mints

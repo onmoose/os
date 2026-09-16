@@ -3,20 +3,20 @@
 package main
 
 import (
-	"github.com/onmoose/moose/internal/hostagent"
-	"github.com/onmoose/moose/internal/hostagent/clockhealth"
-	"github.com/onmoose/moose/internal/hostagent/diskusage"
-	"github.com/onmoose/moose/internal/hostagent/healthsource"
-	"github.com/onmoose/moose/internal/hostagent/journalsource"
-	"github.com/onmoose/moose/internal/hostagent/pamverifier"
-	"github.com/onmoose/moose/internal/hostagent/procsource"
-	"github.com/onmoose/moose/internal/hostagent/rampressure"
-	"github.com/onmoose/moose/internal/hostagent/rebootrequired"
-	"github.com/onmoose/moose/internal/hostagent/servicehealth"
-	"github.com/onmoose/moose/internal/hostagent/sshaccess"
-	"github.com/onmoose/moose/internal/hostagent/timezone"
-	"github.com/onmoose/moose/internal/hostagent/usermgr"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/hostagent/clockhealth"
+	"github.com/onmoose/os/internal/hostagent/diskusage"
+	"github.com/onmoose/os/internal/hostagent/healthsource"
+	"github.com/onmoose/os/internal/hostagent/journalsource"
+	"github.com/onmoose/os/internal/hostagent/pamverifier"
+	"github.com/onmoose/os/internal/hostagent/procsource"
+	"github.com/onmoose/os/internal/hostagent/rampressure"
+	"github.com/onmoose/os/internal/hostagent/rebootrequired"
+	"github.com/onmoose/os/internal/hostagent/servicehealth"
+	"github.com/onmoose/os/internal/hostagent/sshaccess"
+	"github.com/onmoose/os/internal/hostagent/timezone"
+	"github.com/onmoose/os/internal/hostagent/usermgr"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // buildAgent wires the slim hosted-cloud host integration (ENVIRONMENT.md

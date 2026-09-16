@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/onmoose/moose/internal/hostagent"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // LinuxUserManager implements hostagent.UserManager against the local system.

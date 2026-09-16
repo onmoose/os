@@ -14,7 +14,7 @@ Documentation discipline).
 
 **New contributor?** Start with [`dev/contributing.md`](dev/contributing.md) — the
 end-to-end loop (orient → pick a task → branch → build → test → document → PR).
-Actionable parallel work lives in [GitHub Issues](https://github.com/onmoose/moose/issues)
+Actionable parallel work lives in [GitHub Issues](https://github.com/onmoose/os/issues)
 (`gh issue list --label P1`).
 
 ## Specs
@@ -45,7 +45,7 @@ doesn't duplicate the list.
 ## Dev guides
 
 - [`dev/contributing.md`](dev/contributing.md) — the contributor loop: orient,
-  pick a task from [GitHub Issues](https://github.com/onmoose/moose/issues), branch
+  pick a task from [GitHub Issues](https://github.com/onmoose/os/issues), branch
   off `dev`, build, test, document, PR into `dev`. Read this first if you're new.
 - [`dev/running-locally.md`](dev/running-locally.md) — run the whole stack
   natively (no VM), and the two-loop dev model.

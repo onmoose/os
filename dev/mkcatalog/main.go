@@ -46,8 +46,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/onmoose/moose/internal/catalog"
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/manifest"
 	"gopkg.in/yaml.v3"
 )
 

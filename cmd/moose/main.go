@@ -30,8 +30,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/onmoose/moose/internal/admission"
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/admission"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 const usage = "usage:\n  moose manifest lint    <path/to/manifest.yml>\n  moose manifest check   <path/to/manifest.yml>\n  moose manifest resolve <path/to/manifest.yml>"

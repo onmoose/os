@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/onmoose/moose/internal/manifest"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 
 	"gopkg.in/yaml.v3"
 )

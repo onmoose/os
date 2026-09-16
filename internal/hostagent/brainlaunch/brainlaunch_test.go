@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // fakeDocker records calls and returns programmed results so Launch's sequence

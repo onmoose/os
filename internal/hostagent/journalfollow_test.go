@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // stubLogSource emits a fixed set of lines then closes the channel, so the

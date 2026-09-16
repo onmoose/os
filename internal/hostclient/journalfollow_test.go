@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // startLogAgent serves /v1/journal/follow on a UNIX socket. container "two"

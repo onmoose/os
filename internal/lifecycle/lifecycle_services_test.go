@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 const dbManifest = `

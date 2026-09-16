@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // Severity is one of info | warning | error | critical per HEALTH.md.

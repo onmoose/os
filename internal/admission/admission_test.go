@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // TestCheckStructure is the table-driven core of the admission policy

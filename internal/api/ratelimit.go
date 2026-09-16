@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/onmoose/moose/internal/audit"
-	"github.com/onmoose/moose/internal/auth"
-	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
 )
 
 // Request-rate throttling (BRAIN_UI_PROTOCOL.md # Rate limiting & abuse). Two

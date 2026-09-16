@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // Stop/start authorization + transition guards. The harness builds the server

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/updatetarget"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // The report is the whole point of #443: the loop's decision, readable by

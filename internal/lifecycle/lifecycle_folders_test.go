@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/onmoose/moose/internal/hostclient"
-	"github.com/onmoose/moose/internal/manifest"
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/hostclient"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/store"
 	"gopkg.in/yaml.v3"
 )
 

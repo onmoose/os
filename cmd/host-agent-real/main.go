@@ -36,13 +36,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent"
-	"github.com/onmoose/moose/internal/hostagent/brainlaunch"
-	"github.com/onmoose/moose/internal/hostagent/controlplane"
-	"github.com/onmoose/moose/internal/hostagent/cpupdate"
-	"github.com/onmoose/moose/internal/profile"
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/version"
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/hostagent/brainlaunch"
+	"github.com/onmoose/os/internal/hostagent/controlplane"
+	"github.com/onmoose/os/internal/hostagent/cpupdate"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/version"
 )
 
 func main() {

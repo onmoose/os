@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/controlplane"
-	"github.com/onmoose/moose/internal/hostagent/relmanifest"
+	"github.com/onmoose/os/internal/hostagent/controlplane"
+	"github.com/onmoose/os/internal/hostagent/relmanifest"
 )
 
 // The four references these tests move between. Written out through digest()

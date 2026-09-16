@@ -13,7 +13,7 @@
 # and race it. Both are Wants-free ordering: neither unit is pulled in by this one.
 [Unit]
 Description=moose — scope SSH (:22) to the LAN and the mesh
-Documentation=https://github.com/onmoose/moose/blob/main/docs/specs/BUILD.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/BUILD.md
 Before=ssh.service host-agent.service
 After=nftables.service
 ConditionPathExists=/etc/nftables.d/moose-ssh.conf

@@ -34,9 +34,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/brainlaunch"
-	"github.com/onmoose/moose/internal/hostagent/controlplane"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent/brainlaunch"
+	"github.com/onmoose/os/internal/hostagent/controlplane"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // controlPlaneProject is the compose project the staged control-plane stack

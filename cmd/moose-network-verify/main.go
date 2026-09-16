@@ -26,9 +26,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/onmoose/moose/internal/hostagent/avahipublisher"
-	"github.com/onmoose/moose/internal/hostagent/netstate"
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent/avahipublisher"
+	"github.com/onmoose/os/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 func main() {

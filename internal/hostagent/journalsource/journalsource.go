@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // Reader implements hostagent.LogSource over real journalctl.

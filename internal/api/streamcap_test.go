@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/onmoose/moose/internal/auth"
+	"github.com/onmoose/os/internal/auth"
 )
 
 // --- streamCap unit tests (deterministic, no HTTP) -----------------------

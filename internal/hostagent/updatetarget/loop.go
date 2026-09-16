@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/onmoose/moose/internal/hostagent/controlplane"
+	"github.com/onmoose/os/internal/hostagent/controlplane"
 )
 
 // PollInterval is how often the box asks its source what it should be running.

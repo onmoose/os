@@ -27,8 +27,8 @@ COPY . .
 # Makefile's brain-image target passes it in as a build-arg instead.
 ARG MOOSE_COMMIT=unknown
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w \
-      -X github.com/onmoose/moose/internal/version.Version=$(cat VERSION) \
-      -X github.com/onmoose/moose/internal/version.Commit=${MOOSE_COMMIT}" \
+      -X github.com/onmoose/os/internal/version.Version=$(cat VERSION) \
+      -X github.com/onmoose/os/internal/version.Commit=${MOOSE_COMMIT}" \
       -o /out/moose-brain ./cmd/brain
 
 FROM ${BRAIN_RUNTIME_IMAGE} AS runtime

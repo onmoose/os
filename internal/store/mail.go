@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/onmoose/moose/internal/mailpreset"
+	"github.com/onmoose/os/internal/mailpreset"
 )
 
 // Mail provider encryption modes. tls is implicit TLS (smtps, usually port

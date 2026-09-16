@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // fixturePath is the pinned browse payload this file's fixture-reading tests use.

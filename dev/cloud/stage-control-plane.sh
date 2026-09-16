@@ -47,7 +47,7 @@ stage_version_ldflags() {
     else
         c="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     fi
-    printf -- '-X github.com/onmoose/moose/internal/version.Version=%s -X github.com/onmoose/moose/internal/version.Commit=%s' "$v" "$c"
+    printf -- '-X github.com/onmoose/os/internal/version.Version=%s -X github.com/onmoose/os/internal/version.Commit=%s' "$v" "$c"
 }
 
 # Build a Go binary, as the invoking user when running under sudo so the caller

@@ -19,8 +19,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/onmoose/moose/internal/protocol"
-	"github.com/onmoose/moose/internal/storageverify"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/storageverify"
 )
 
 func main() {

@@ -2,7 +2,7 @@
 
 package main
 
-import "github.com/onmoose/moose/internal/hostagent/relmanifest"
+import "github.com/onmoose/os/internal/hostagent/relmanifest"
 
 // startReleasePoll does nothing on a hosted box.
 //

@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/onmoose/moose/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // InstallFootprint is the box-specific install estimate behind the install-plan

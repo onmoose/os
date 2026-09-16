@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // mailEnvLines renders a provider as the MOOSE_MAIL_* env lines: the discrete

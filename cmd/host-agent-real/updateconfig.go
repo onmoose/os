@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/onmoose/moose/internal/hostagent/updatetarget"
-	"github.com/onmoose/moose/internal/profile"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/profile"
 )
 
 // This file resolves the two per-box update settings: which update target this

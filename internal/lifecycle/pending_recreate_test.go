@@ -11,7 +11,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/onmoose/moose/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // pendingRecreate reads an instance's owed-recreate marker from the store.
