@@ -171,10 +171,21 @@ var ignoredTopLevelKeys = map[string]string{
 // box believes in stays reviewable as one readable file, and that a json tag
 // renamed in wire.go without the fixture following is caught here.
 //
-// The fixture is hand-authored; keep it that way. Never regenerate it from the
-// Go types in this package — a fixture generated from the very structs it is
-// checked against agrees with them always, and this test becomes a test of
-// nothing.
+// **Never regenerate the fixture from the Go types in THIS package.** A fixture
+// generated from the very structs it is checked against agrees with them always,
+// and this test becomes a test of nothing. That rule is why the fixture was
+// hand-authored for a while.
+//
+// It is now written by the publisher that builds the published catalog, from the
+// publisher's OWN wire types. That is not circular: those types are the other
+// side of this contract, so the comparison this test makes is exactly the one it
+// is for — their shape against the shape modelled here. A json tag renamed on
+// either side and not followed on the other still fails here.
+//
+// The apps in it stay SYNTHETIC — three invented records covering the shape, not
+// the real catalog. This repo is public and the catalog is private, so a fixture
+// carrying real records would publish it. That is not hypothetical: it is what
+// the older copies of this file did.
 func TestNoUnmodeledFields(t *testing.T) {
 	data, err := os.ReadFile(fixturePath)
 	if err != nil {
