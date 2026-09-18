@@ -22,9 +22,10 @@ import (
 	"github.com/onmoose/os/internal/manifest"
 )
 
-// remote.go is the box's thin-client catalog: it consumes the control plane's
-// public-read catalog API (cloud specs/CATALOG.md) instead of reading a baked
-// directory.
+// remote.go is the box's thin-client catalog: it consumes the catalog service's
+// public-read API instead of reading a baked directory. That service is published
+// and served separately from the box, and its assets may sit on a different origin
+// again, which is why every published URL here is opaque (resolveURL).
 //
 // It fetches on two seams, for two different reasons (#434):
 //
@@ -54,7 +55,7 @@ import (
 // app's manifest survives the app being unpublished. Nothing on this path is
 // called for an app that is already installed.
 //
-// It stays the box↔cloud install contract: Load re-parses the fetched manifest
+// It stays the box-to-catalog install contract: Load re-parses the fetched manifest
 // with the box's own manifest.Parse, so the box remains the sole enforcer of the
 // manifest contract.
 
@@ -69,7 +70,7 @@ const (
 	httpTimeout = 30 * time.Second
 	// maxSnapshotBytes / maxDocumentBytes / maxAssetBytes cap how much a single
 	// response body can pull into memory: the timeout bounds wall-clock, not
-	// bytes, so a compromised or MITM'd control plane must not be able to
+	// bytes, so a compromised or MITM'd catalog service must not be able to
 	// pressure box memory with an unbounded body. All three are far above any
 	// real payload — browse records are display text, a manifest or compose is a
 	// few KB of YAML, assets are icons and screenshots — so a legitimate catalog
@@ -89,10 +90,10 @@ const (
 	assetTTL = 24 * time.Hour
 )
 
-// RemoteOptions configures the control-plane catalog client. BaseURL is the
-// control plane's origin serving the catalog API (the client appends /catalog and
-// resolves the record's own URLs against it); Environment is the box's own surface
-// ("appliance"|"hosted"), sent as ?env= so the control plane returns only apps this
+// RemoteOptions configures the remote catalog client. BaseURL is the catalog
+// service's origin (the client appends /catalog and resolves the record's own
+// relative URLs against it); Environment is the box's own surface
+// ("appliance"|"hosted"), sent as ?env= so the service returns only apps this
 // box may show; AssetCacheDir holds proxied icons and screenshots (never the
 // browse payload). SnapshotFile is a dev/test-only seam — see the field comment.
 type RemoteOptions struct {
@@ -100,10 +101,10 @@ type RemoteOptions struct {
 	Environment   string
 	AssetCacheDir string
 	// SnapshotFile is a local browse payload to start from, for dev and test lanes
-	// that run a brain with no reachable control plane (make dev-app, the QEMU boot
+	// that run a brain with no reachable catalog service (make dev-app, the QEMU boot
 	// proofs, dev/test-health.sh). It is read once at construction and never
 	// written: it is an input, not a cache. Such a file inlines each app's manifest
-	// and compose (wireApp.Manifest / Compose), because there is no control plane
+	// and compose (wireApp.Manifest / Compose), because there is no catalog service
 	// behind it to serve the document routes. Production leaves it empty — a real
 	// box gets its catalog from BaseURL and nowhere else.
 	SnapshotFile    string
@@ -111,7 +112,7 @@ type RemoteOptions struct {
 	HTTPClient      *http.Client
 }
 
-// remoteSource implements source against the control-plane catalog API. Reads
+// remoteSource implements source against the catalog service's API. Reads
 // project from the in-memory browse payload under an RLock; the background sync
 // loop swaps a freshly fetched-and-verified one in under the write lock, so a
 // read never blocks on the network and never sees a half-applied snapshot. The
@@ -168,7 +169,7 @@ func newSnapshot(f catalogFile) *snapshot {
 	return s
 }
 
-// NewRemote builds a control-plane-backed catalog. It does not touch the network
+// NewRemote builds a catalog backed by the catalog service. It does not touch the network
 // — call StartRefresh to begin syncing — so a box starts with an empty store and
 // fills it when the first sync lands. When SnapshotFile is set (dev and test
 // lanes only) it is read here to seed that starting state.
@@ -199,7 +200,7 @@ func NewRemote(opts RemoteOptions) *Catalog {
 }
 
 // loadSnapshotFile seeds the in-memory browse payload from a local file, for the
-// dev and test lanes that run a brain against no reachable control plane
+// dev and test lanes that run a brain against no reachable catalog service
 // (RemoteOptions.SnapshotFile). It is read here and never written back — the file
 // belongs to whoever staged it, not to the brain. Best-effort by design: an absent
 // or invalid file leaves the store empty and the sync loop still runs, because
@@ -225,7 +226,7 @@ func (r *remoteSource) loadSnapshotFile(path string) {
 // startRefresh runs the background sync loop bound to ctx: one immediate sync (so
 // a freshly booted box populates its store promptly) then one per interval. Each
 // attempt is independent and best-effort — a failure keeps whatever payload is
-// already in memory and the loop retries next tick — so a control plane blip
+// already in memory and the loop retries next tick — so a catalog service blip
 // during uptime never empties a store that has synced. A second call is a no-op
 // (the started guard): one sync loop only, no matter how many times cmd/brain
 // wires it.
@@ -253,14 +254,14 @@ func (r *remoteSource) startRefresh(ctx context.Context) {
 }
 
 // browseURL is the browse fetch: GET /catalog?env=<this box's surface>. The
-// control plane filters to that surface, so the box shows exactly what it is
+// catalog service filters to that surface, so the box shows exactly what it is
 // given and applies no visibility filter of its own.
 func (r *remoteSource) browseURL() string {
 	return r.baseURL + "/catalog?env=" + url.QueryEscape(r.env)
 }
 
 // syncOnce fetches the browse payload once, verifies it, and swaps it in as the
-// new read source. A 304 (the control plane still serves the version the box last
+// new read source. A 304 (the catalog service still serves the version the box last
 // saw) is the common no-op path. A transport error, a non-200/304 status, or a
 // failed verify returns an error and leaves the current payload untouched.
 func (r *remoteSource) syncOnce(ctx context.Context) error {
@@ -309,7 +310,7 @@ func (r *remoteSource) syncOnce(ctx context.Context) error {
 }
 
 // quoteETag wraps a version token as a strong ETag, so the box's If-None-Match
-// matches the header the control plane serves. An empty token yields an empty
+// matches the header the catalog service serves. An empty token yields an empty
 // string, which callers read as "no validator to send".
 func quoteETag(version string) string {
 	if version == "" {
@@ -328,7 +329,7 @@ func (r *remoteSource) current() *snapshot {
 
 // entryOfApp / detailOfApp project a published app into the box's grid / detail
 // shapes. The icon and screenshot URLs are the brain's own asset routes (the
-// remote source proxies the underlying control-plane asset behind them), so the UI
+// remote source proxies the underlying published asset behind them), so the UI
 // contract is identical to the disk source. Featured/Rank stay off Entry/Detail (a
 // card is a card); the segmented Home/Category views select the featured apps and
 // project each as a plain Entry (see featured, below).
@@ -370,10 +371,9 @@ func detailOfApp(a *wireApp) Detail {
 	return d
 }
 
-// List returns the browse grid: one Entry per app the control plane returned for
-// this box's surface, in stable by-name order. There is no environment filter
-// here — the ?env= on the fetch is the filter (cloud specs/CATALOG.md #
-// Visibility). An empty (never-synced) store returns no entries, not an error.
+// List returns the browse grid: one Entry per app the catalog service returned
+// for this box's surface, in stable by-name order. There is no environment filter
+// here — the ?env= on the fetch is the filter. An empty (never-synced) store returns no entries, not an error.
 func (r *remoteSource) List() ([]Entry, error) {
 	snap := r.current()
 	if snap == nil {
@@ -468,7 +468,7 @@ func rankOf(a *wireApp) int {
 // both an empty store and an unknown id: from the box's side they are the same
 // answer, "this catalog has no such app right now".
 //
-// Since environment filtering moved to the control plane, an app that LEAVES this
+// Since environment filtering moved to the catalog service, an app that LEAVES this
 // box's surface (or leaves the catalog) stops resolving here, including for an
 // instance already installed from it. The install itself is unaffected — the
 // manifest and compose were written next to the installation — but the card loses
@@ -506,7 +506,7 @@ func (r *remoteSource) Detail(id string) (Detail, error) {
 
 // Load fetches the app's two install documents and returns the parsed manifest
 // plus the verbatim compose bytes. The manifest is re-parsed with the box's own
-// manifest.Parse — the box, not the cloud, enforces the manifest contract.
+// manifest.Parse — the box, not the catalog, enforces the manifest contract.
 //
 // This is an install-path call and it goes over the network, so it takes the
 // caller's context. Nothing on the routine box paths reaches it: an installed
@@ -542,7 +542,7 @@ func (r *remoteSource) Load(ctx context.Context, id string) (*manifest.Manifest,
 // fetchDocument GETs one install document (manifest or compose) by following the
 // URL the browse record carries, capped at maxDocumentBytes. The body is the
 // verbatim file, served as application/yaml — there is no decode step and the
-// content type is not asserted on, so the control plane can restate it (text/yaml
+// content type is not asserted on, so the catalog service can restate it (text/yaml
 // -> application/yaml) without breaking a box.
 //
 // A record with no URL for the document is a catalog integrity problem, not a

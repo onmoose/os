@@ -10,7 +10,9 @@ Nothing in the box's behaviour changes here. The code was already right, for a r
 
 ## What was done
 
-**The vocabulary is now "the catalog service".** Every place that said the control plane serves, publishes, or filters the catalog now names the service instead. That is `APP_STORE.md` (the superseded banner, # Failure modes, # What we run, # Landing page, # Category labels, # What the box models, and the locked-calls list), `docs/architecture.md` (the `catalog` package row and the App store bullet), `BRAIN_UI_PROTOCOL.md` # the asset routes, `NEXT.md` # catalog content policy, `CLAUDE.md`, `README.md`, and three files in `docs/dev/`. The same pass went through the code comments that carry the claim: `internal/catalog/wire.go`, `disk.go`, `remote.go`, and the catalog wiring in `cmd/brain/main.go`. One log message changed with them, `catalog: remote control-plane source` to `catalog: remote source`; nothing reads it.
+**The vocabulary is now "the catalog service".** Every place that said the control plane serves, publishes, or filters the catalog now names the service instead. That is `APP_STORE.md` (the superseded banner, # Failure modes, # What we run, # Landing page, # Category labels, # What the box models, and the locked-calls list), `docs/architecture.md` (the `catalog` package row and the App store bullet), `BRAIN_UI_PROTOCOL.md` # the asset routes, `NEXT.md` # catalog content policy, `CLAUDE.md`, `README.md`, and three files in `docs/dev/`. The same pass went through every code comment that carries the claim: all of `internal/catalog` (`catalog.go`, `wire.go`, `remote.go`, `disk.go`, and the three test files) and the catalog wiring in `cmd/brain/main.go`. One log message changed with them, `catalog: remote control-plane source` to `catalog: remote source`; nothing reads it.
+
+**Two uses of "control plane" were left alone on purpose, and they are not the same word.** In this repo the phrase also means the box's **own** control-plane daemon: `moose-brain` plus Caddy plus `moose-ui`, which is what `CONTROL_PLANE.md` is about. Those stay (`cmd/brain/main.go` lines 1, 48, 144 and the `control-plane stack up failed` warning). So do the cloud seams that really are the control plane's: the seed and the acme-dns endpoint. `grep` alone cannot tell the three apart, which is why the pass was read rather than run.
 
 **`CLAUDE.md`'s seam list said three things come from the control plane.** Two do. The catalog is the third and it does not, so the section is now "What a box is sent from outside it" and the catalog row says plainly that it is a different operator on a different deploy, so a catalog edit never touches the control plane.
 
@@ -27,6 +29,8 @@ Nothing in the box's behaviour changes here. The code was already right, for a r
 ## What was checked
 
 `gofmt` clean, `go vet` clean on the touched packages, and `make test-nopam` green, including the new test. The fixture rule is asserted by the tests that already exist: `TestNoUnmodeledFields` and `TestParseFixtureSnapshot` still pass against the hand-written snapshot, which is the point of keeping it hand-written.
+
+The publish-flow sentences added to `APP_STORE.md` (the publisher rebuilds the tree on merge, the tree is never committed) were checked against `onmoose/store` rather than inferred: `/dist/` is in its `.gitignore`, and its publish workflow runs on merge to `main` and rebuilds, uploads and deploys in that order.
 
 The live endpoint was read rather than assumed: `GET https://catalog.onmoose.io/catalog?env=hosted` answers 200 and its records carry `icon_url` on `storage.googleapis.com`, which is the fact that made the asset sentences wrong.
 

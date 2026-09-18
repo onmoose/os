@@ -83,7 +83,7 @@ func seedApps() []wireApp {
 	return apps
 }
 
-// fakeCP is a controllable control-plane catalog fake. It serves the browse
+// fakeCP is a controllable catalog-service fake. It serves the browse
 // payload (honouring If-None-Match), the two per-app document routes, and per-app
 // assets, and counts hits so tests can assert what is fetched and when.
 type fakeCP struct {
@@ -184,7 +184,7 @@ func TestRemoteSyncAndProject(t *testing.T) {
 	}
 
 	// The box asks for its own surface and shows exactly what it gets back: the
-	// visibility filter is the control plane's now, not a second box-side pass.
+	// visibility filter is the catalog service's now, not a second box-side pass.
 	cp.mu.Lock()
 	env := cp.lastEnv
 	cp.mu.Unlock()
@@ -351,7 +351,7 @@ func TestRemoteKeepsNoSnapshotOnDisk(t *testing.T) {
 	if l, _ := r.List(); len(l) != 2 {
 		t.Fatalf("List after sync = %d apps, want 2", len(l))
 	}
-	srv.Close() // control plane now unreachable
+	srv.Close() // catalog now unreachable
 
 	// A failed sync leaves the payload this source already holds untouched.
 	if err := r.syncOnce(context.Background()); err == nil {
@@ -394,7 +394,7 @@ func TestRemoteSnapshotFileSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No control plane at all: the seed is the whole store.
+	// No catalog service at all: the seed is the whole store.
 	r := newRemoteFromFile("http://127.0.0.1:1", "hosted", t.TempDir(), path)
 	if l, _ := r.List(); len(l) != 2 {
 		t.Fatalf("seeded List = %d apps, want 2", len(l))
@@ -409,7 +409,7 @@ func TestRemoteSnapshotFileSeed(t *testing.T) {
 		t.Fatalf("seeded Load wrong: id=%q compose=%q", man.ID, compose)
 	}
 	if err := r.syncOnce(context.Background()); err == nil {
-		t.Fatal("syncOnce against no control plane should error")
+		t.Fatal("syncOnce against no catalog service should error")
 	}
 	if l, _ := r.List(); len(l) != 2 {
 		t.Fatalf("List after failed sync = %d apps, want the seeded 2", len(l))
@@ -449,7 +449,7 @@ func TestRemoteNeverSyncedIsEmpty(t *testing.T) {
 
 	r := newRemote(srv.URL, "appliance", t.TempDir())
 	if err := r.syncOnce(context.Background()); err == nil {
-		t.Fatal("want sync error from failing control plane")
+		t.Fatal("want sync error from failing catalog service")
 	}
 	if l, _ := r.List(); len(l) != 0 {
 		t.Fatalf("never-synced store must be empty, got %d", len(l))
@@ -692,7 +692,7 @@ func TestRemoteAssetExpires(t *testing.T) {
 }
 
 // TestRemoteExpiredAssetSurvivesFailedRefresh: once an asset is expired but the
-// control plane is unreachable, the box serves the stale file rather than a
+// catalog is unreachable, the box serves the stale file rather than a
 // broken image. The browse payload has no such fallback; artwork does.
 func TestRemoteExpiredAssetSurvivesFailedRefresh(t *testing.T) {
 	cp := newFakeCP(t, testApps())
@@ -753,7 +753,7 @@ func TestRemoteAssetFetchCollapsesConcurrent(t *testing.T) {
 	}
 
 	// Fire many concurrent first-time icon requests: the per-asset lock must
-	// collapse them into a single control-plane fetch.
+	// collapse them into a single upstream fetch.
 	const n = 20
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -821,7 +821,7 @@ func TestRemote304KeepsSnapshot(t *testing.T) {
 	hits := cp.syncHits
 	cp.mu.Unlock()
 	if hits != 2 {
-		t.Fatalf("sync hit control plane %d times, want 2", hits)
+		t.Fatalf("sync hit the catalog %d times, want 2", hits)
 	}
 }
 

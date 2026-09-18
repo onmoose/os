@@ -49,10 +49,10 @@ func segApps() []wireApp {
 }
 
 // segAppEnvs is which surfaces each fixture app is advertised on. It lives in the
-// test, not on the wire record, because environment filtering is the control
-// plane's job now (#434): GET /catalog returns only the apps for the ?env= it was
-// asked for, and the box shows what it is given. advertisedIn is what the fake
-// control plane below applies, so these tests still prove the two surfaces render
+// test, not on the wire record, because environment filtering is the catalog
+// service's job now (#434): GET /catalog returns only the apps for the ?env= it
+// was asked for, and the box shows what it is given. advertisedIn is what the
+// fake catalog below applies, so these tests still prove the two surfaces render
 // differently — they just prove it through the seam that now does the filtering.
 var segAppEnvs = map[string][]string{
 	"alpha": {"appliance", "hosted"},
@@ -60,7 +60,7 @@ var segAppEnvs = map[string][]string{
 	"gamma": {"appliance", "hosted"},
 }
 
-// advertisedIn returns the apps a control plane would serve to a box on env.
+// advertisedIn returns the apps the catalog would serve to a box on env.
 func advertisedIn(apps []wireApp, env string) []wireApp {
 	var out []wireApp
 	for _, a := range apps {
@@ -390,8 +390,8 @@ func TestCategoryLabelsComeFromTheSnapshot(t *testing.T) {
 
 // A box with no vocabulary — never synced, or a snapshot published before the
 // field existed — still renders something readable rather than a blank pill, and
-// still shows every browsable category. The fallback matches the control plane's
-// own, so the two surfaces agree even in the degraded case.
+// still shows every browsable category. The fallback matches the other store
+// surfaces' own, so they agree even in the degraded case.
 func TestCategoryLabelFallsBackToAReadableID(t *testing.T) {
 	apps := segApps()
 	c := syncedCatalogWithCats(t, apps, wireHomePage{}, nil, "appliance")

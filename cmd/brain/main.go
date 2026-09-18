@@ -552,9 +552,9 @@ func loadConfig() config {
 	return config{
 		listen:   env("MOOSE_LISTEN", ":8080"),
 		stateDir: env("MOOSE_STATE_DIR", "./.dev/state"),
-		// Control-plane catalog: the public-read catalog origin every box syncs the
-		// GET /catalog browse payload from (CATALOG step 3, cloud #62). Served on the apex
-		// (cloud specs/CATALOG.md), overridable to point a box at staging or an inert
+		// Remote catalog: the public-read catalog origin every box syncs the
+		// GET /catalog browse payload from (APP_STORE.md # What we run, #62). It is the
+		// catalog service's own host, overridable to point a box at staging or an inert
 		// address (the air-gapped test lane). The asset cache dir holds proxied icons
 		// and screenshots only — never the snapshot, which the box holds in memory and
 		// re-fetches (APP_STORE.md # Failure modes).

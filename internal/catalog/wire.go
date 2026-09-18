@@ -40,7 +40,7 @@ import (
 // wireSchemaVersion is the published-catalog wire format this box can read. It
 // tracks the catalog service's SchemaVersion; a snapshot stamped with anything else
 // is refused at verify (a format the box can't project), the same staleness guard
-// the cloud designed the version stamp for.
+// the catalog service designed the version stamp for.
 const wireSchemaVersion = 2
 
 // catalogFile is the browse payload served by GET /catalog?env=<environment>:
@@ -197,7 +197,7 @@ func externalCostsOf(costs []manifest.ExternalCost) []ExternalCost {
 // verify refuses a snapshot the box can't project: a schema version it can't
 // read. There is no digest check — see the file comment on why the index digest
 // is gone. Integrity of the bytes is HTTP's job (framing catches a truncated
-// body) and authenticity is TLS's (cloud #62).
+// body) and authenticity is TLS's (#62).
 func (f catalogFile) verify() error {
 	if f.SchemaVersion != wireSchemaVersion {
 		return fmt.Errorf("catalog schema version %d, want %d", f.SchemaVersion, wireSchemaVersion)
@@ -240,8 +240,8 @@ type (
 // home.yml) and calls this once, instead of re-declaring the wire shape.
 //
 // A tool building a snapshot for the local seed seam (dev/mkcatalog) inlines each
-// app's Manifest/Compose, because there is no control plane behind a staged file
-// to serve the two document routes.
+// app's Manifest/Compose, because there is no catalog service behind a staged
+// file to serve the two document routes.
 func BuildSnapshot(apps []SnapshotApp, home SnapshotHome, cats []SnapshotCategory, storeRef string) ([]byte, error) {
 	version, err := contentToken(apps)
 	if err != nil {
@@ -266,7 +266,7 @@ func BuildSnapshot(apps []SnapshotApp, home SnapshotHome, cats []SnapshotCategor
 // contentToken derives an opaque change token for a built snapshot, so two builds
 // of the same apps stamp the same Version and a box seeded from one recognises the
 // other as unchanged. It is a BUILD-side convenience only: no reader recomputes
-// it, and the control plane is free to mint its token any other way.
+// it, and the catalog service is free to mint its token any other way.
 func contentToken(apps []SnapshotApp) (string, error) {
 	b, err := json.Marshal(apps)
 	if err != nil {
