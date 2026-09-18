@@ -12,8 +12,8 @@ import (
 // Caddy serves it and the brain on one host in production, and the Vite dev
 // server proxies /api to the brain so the browser sees one origin there too.
 // What a reflected Origin plus Access-Control-Allow-Credentials *would* buy is
-// an attacker: on hosted, apps live at <slug>.<box-id>.onmoose.network and the
-// dashboard at <box-id>.onmoose.network, which are same-site under a registrable
+// an attacker: on hosted, apps live at <slug>.<box-id>.onmoose.io and the
+// dashboard at <box-id>.onmoose.io, which are same-site under a registrable
 // domain that is not on the Public Suffix List. The owner's SameSite=Lax
 // session cookie therefore rides a fetch from any app to the dashboard host,
 // and a reflected header would let the app read the answer.
@@ -33,7 +33,7 @@ func TestNoCORSHeadersOnAPIResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req.Header.Set("Origin", "https://photos.box-1.onmoose.network")
+	req.Header.Set("Origin", "https://photos.box-1.onmoose.io")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -72,7 +72,7 @@ func TestPreflightIsNotAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req.Header.Set("Origin", "https://photos.box-1.onmoose.network")
+	req.Header.Set("Origin", "https://photos.box-1.onmoose.io")
 	req.Header.Set("Access-Control-Request-Method", "POST")
 	req.Header.Set("Access-Control-Request-Headers", "content-type")
 

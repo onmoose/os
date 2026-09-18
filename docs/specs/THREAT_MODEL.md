@@ -176,7 +176,7 @@ The per-boundary tables above are the deliverable. **STRIDE** (Spoofing, Tamperi
 
 ## When this model changes
 
-This is a **living document**, revisited when a trust boundary moves. The known future trigger: **remote access via the mesh** (`MOOSE_NETWORK.md` # Deferred). When it ships, B1 changes shape — `.onmoose.network` names become reachable off-LAN, scoped pairing introduces a new principal (a paired-but-non-household device, e.g. "grandma sees Photos"), and the closed-by-default claim narrows to "closed except to identity-paired devices." That warrants a dedicated boundary pass and `DECISIONS.md` entries; it is explicitly not modeled here.
+This is a **living document**, revisited when a trust boundary moves. The known future trigger: **remote access via the mesh** (`MOOSE_NETWORK.md` # Deferred). When it ships, B1 changes shape — `.onmoose.io` names become reachable off-LAN, scoped pairing introduces a new principal (a paired-but-non-household device, e.g. "grandma sees Photos"), and the closed-by-default claim narrows to "closed except to identity-paired devices." That warrants a dedicated boundary pass and `DECISIONS.md` entries; it is explicitly not modeled here.
 
 ## Locked decisions
 

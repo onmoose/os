@@ -345,7 +345,7 @@ func TestUpdateTarget_UnreachableKeepsItsReason(t *testing.T) {
 	h := newUpdateHarness(t)
 	h.target = protocol.UpdateTarget{
 		State:  protocol.UpdateTargetUnreachable,
-		Detail: "updatetarget: fetch https://onmoose.network/api/updates/target: dial tcp: connection refused",
+		Detail: "updatetarget: fetch https://api.onmoose.io/api/updates/target: dial tcp: connection refused",
 	}
 	out, err := h.readTarget(adminCtx("u_admin"))
 	if err != nil {

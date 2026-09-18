@@ -36,7 +36,7 @@ moose is built for two environments from one codebase. The split is a build-and-
 |---|---|---|
 | **What it is** | bring-your-own x86 box on your LAN | moose-operated cloud VM, one per tenant |
 | **Audience** | households and families | small and medium businesses |
-| **Reachability** | `<slug>.local` on the LAN; `.onmoose.network` HTTPS opt-in | `<slug>.<box-id>.onmoose.network` public HTTPS, always on |
+| **Reachability** | `<slug>.local` on the LAN; `.onmoose.io` HTTPS opt-in | `<slug>.<box-id>.onmoose.io` public HTTPS, always on |
 | **Install** | USB installer, wipe disk | provisioned from a cloud image, cloud-init-style first boot |
 | **Storage** | physical OS + data drives, LUKS+TPM, mergerfs | virtual block volume(s), provider/KMS encryption |
 | **Network** | NetworkManager (ethernet + WiFi), Avahi/mDNS, Samba/SMB | single virtual NIC, no mDNS, no SMB |
@@ -54,7 +54,7 @@ What runs today (mostly in the native inner loop, see [Quickstart](#quickstart-l
 - **Users and auth.** First-admin setup, PAM-backed login (the host's `/etc/shadow` is the source of truth), opaque cookie sessions, roles mapped to Linux groups, a 5-minute elevation window for destructive ops, recovery-code redemption, rate-limiting and lockout, and an append-only audit log surfaced as an Activity view.
 - **Health and notifications.** A catalog of detectors (service-down, container restart-loop, app-unresponsive, clock-not-synced, RAM pressure, reboot-required, version-mismatch, DB-corrupt) feeding dashboard banners and a notification inbox with per-category mute. Plus live system-resource readouts and disk-usage bars.
 - **Real host-agent (`host-agent-real`).** PAM verify, user create / delete / role / password, real `/proc` sampling, disk and RAM reporting, journal streaming, per-LAN-interface Avahi discovery, and first-boot brain launch (Docker socket proxy + brain container). LUKS/TPM enrollment and the boot-chain units exist and are exercised in the QEMU test lane.
-- **Hosted cloud profile (coming online).** A slim, build-tagged cloud `host-agent`; a lean `mkosi` cloud image with self-bootstrapping first boot; real Let's Encrypt wildcard certs over ACME DNS-01 for `*.<box-id>.onmoose.network` (the `auth.onmoose.network` acme-dns face is live); an app-container egress block for the cloud metadata endpoint; and a portal-to-box SSO handshake so the owner reaches the box through their existing `onmoose.network` login. The image builds, boots, and provisions on a real cloud provider; a CI lane plus a cloud QEMU lane drive the seed → first-run → served-dashboard arc, with full end-to-end acceptance still being hardened.
+- **Hosted cloud profile (coming online).** A slim, build-tagged cloud `host-agent`; a lean `mkosi` cloud image with self-bootstrapping first boot; real Let's Encrypt wildcard certs over ACME DNS-01 for `*.<box-id>.onmoose.io` (the `auth.onmoose.io` acme-dns face is live); an app-container egress block for the cloud metadata endpoint; and a portal-to-box SSO handshake so the owner reaches the box through their existing `mooseos.com` login. The image builds, boots, and provisions on a real cloud provider; a CI lane plus a cloud QEMU lane drive the seed → first-run → served-dashboard arc, with full end-to-end acceptance still being hardened.
 
 What is **not** built yet, so nobody reads this as a finished product: the appliance storage subsystem (`/srv/moose`, mergerfs, and the LUKS unlock at boot beyond the QEMU lane), the production install medium, stream A of updates (the apt and `unattended-upgrades` half), and WiFi/NetworkManager setup in the agent. Stream B is the box updating its own brain and UI. On `hosted` that is built and proven on a booted box. On `appliance` the box can read a signed release manifest, but there is no signing key and no release host yet, so it does nothing on purpose. The authoritative as-built map is [`docs/architecture.md`](docs/architecture.md) (# What is not built yet); per-change history is in [`docs/progress/`](docs/progress/).
 
@@ -65,7 +65,7 @@ A running moose is five processes/artifacts. Three are Go, one is JavaScript, on
 - **`moose-brain`** (`cmd/brain/`, `internal/`) is the control-plane daemon: one Go binary owning SQLite state, the REST+SSE API, the app lifecycle, and the Caddy config. It drives Docker via the `docker compose` CLI.
 - **`host-agent`** is the privileged side. `cmd/host-agent/` is a fake (real wire protocol, in-memory ops) used in the inner loop; `cmd/host-agent-real/` is the real binary, with a build-tagged slim `hosted` variant for the cloud image.
 - **`web-ui`** (`web-ui/`) is the Vue 3 + Vite + TanStack Query dashboard. It talks only to the brain.
-- **Caddy** (`dev/`) is the reverse proxy. It terminates `*.local` (appliance) or `*.<box-id>.onmoose.network` HTTPS (hosted) and routes to app containers and the brain, configured live via Caddy's admin API. Routing is per-subdomain, never path-based (browser same-origin policy is the reason).
+- **Caddy** (`dev/`) is the reverse proxy. It terminates `*.local` (appliance) or `*.<box-id>.onmoose.io` HTTPS (hosted) and routes to app containers and the brain, configured live via Caddy's admin API. Routing is per-subdomain, never path-based (browser same-origin policy is the reason).
 - **SQLite** is the brain's only persistent store (`internal/store/`).
 
 ```

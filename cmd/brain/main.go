@@ -131,7 +131,7 @@ func main() {
 	life := lifecycle.NewManager(st, cat, host, cd, dock, bus, cfg.stateDir)
 	life.SetOfflineInstall(cfg.offlineInstall)
 	// On hosted, per-app routes and surfaced URLs use the public
-	// "<slug>.<box-id>.onmoose.network" scheme instead of "<slug>.local"
+	// "<slug>.<box-id>.onmoose.io" scheme instead of "<slug>.local"
 	// (ENVIRONMENT.md # Networking & discovery), and the resolved profile also
 	// gates the hosted-only resource-limit CPU cap (#211). Appliance leaves the
 	// box-id empty and the lifecycle keeps its .local/mDNS path.
@@ -189,7 +189,7 @@ func main() {
 		slog.Warn("caddy: ensure catch-all failed; continuing", "err", err)
 	}
 	// Hosted wildcard HTTPS (ENVIRONMENT.md # Networking & discovery): tell Caddy
-	// to obtain "*.<box-id>.onmoose.network" via its acme-dns DNS-01 issuer and bind
+	// to obtain "*.<box-id>.onmoose.io" via its acme-dns DNS-01 issuer and bind
 	// :443, always-on (no toggle). Skipped on appliance and on a hosted box with no
 	// complete enrollment. Synchronous, fast, and best-effort: EnsureWildcardTLS
 	// only applies config (the automate entry + policy + :443) — Caddy obtains the
@@ -329,7 +329,7 @@ func main() {
 	// only goes live once this brain can answer it.
 	if cfg.dashboardUIUpstream != "" {
 		// On hosted the dashboard is served at the box apex
-		// "<box-id>.onmoose.network" (under the box's wildcard cert), not the
+		// "<box-id>.onmoose.io" (under the box's wildcard cert), not the
 		// appliance's "moose.local" (ENVIRONMENT.md # Networking & discovery).
 		dashboardHost := cfg.dashboardHost
 		if prof == profile.Hosted && boxID != "" {
@@ -563,7 +563,7 @@ func loadConfig() config {
 		// start from when there is no reachable control plane (make dev-app, the QEMU
 		// boot proofs). The brain reads it and never writes it. Production leaves it
 		// unset.
-		catalogBaseURL:       env("MOOSE_CATALOG_URL", "https://onmoose.network"),
+		catalogBaseURL:       env("MOOSE_CATALOG_URL", "https://catalog.onmoose.io"),
 		catalogAssetCacheDir: env("MOOSE_CATALOG_CACHE_DIR", "/var/lib/moose/catalog-cache"),
 		catalogSnapshotFile:  env("MOOSE_CATALOG_FILE", ""),
 		catalogRefresh:       envDuration("MOOSE_CATALOG_REFRESH", 0), // 0 ⇒ package default
@@ -602,7 +602,7 @@ func loadConfig() config {
 		// Contract 2). The canonical value is pinned cloud-side once the public
 		// acme-dns face is deployed (cloud issue tracking it); overridable here so
 		// the box can be pointed at staging or a self-hosted acme-dns.
-		acmeDNSEndpoint: env("MOOSE_ACMEDNS_ENDPOINT", "https://auth.onmoose.network"),
+		acmeDNSEndpoint: env("MOOSE_ACMEDNS_ENDPOINT", "https://auth.onmoose.io"),
 		// Proxies the brain will read an X-Forwarded-For from when deriving the
 		// client IP its per-IP throttles key on (#329). Comma-separated IPs/CIDRs.
 		// Unset ⇒ the private ranges (see api.DefaultTrustedProxies), which is every
@@ -1202,7 +1202,7 @@ type appProbeDetector struct {
 
 	// profile + boxID select the probe's Host header to match the Caddy route
 	// (the same scheme the lifecycle keys routes on and the API surfaces). On
-	// hosted there is no mDNS, so the route host is "<slug>.<box-id>.onmoose.network"
+	// hosted there is no mDNS, so the route host is "<slug>.<box-id>.onmoose.io"
 	// and probing "<slug>.local" hits Caddy's catch-all 404 — every probed app
 	// would flap to app-unresponsive. Set once at startup via SetEnvironment; the
 	// empty default keeps the appliance ".local" path.
@@ -1284,7 +1284,7 @@ func (d *appProbeDetector) check(ctx context.Context) {
 		}
 		probed[inst.ID] = true
 		// Address the app at its real Caddy route host (mirrors api getAppURL):
-		// hosted's public "<slug>.<box-id>.onmoose.network" takes precedence, then
+		// hosted's public "<slug>.<box-id>.onmoose.io" takes precedence, then
 		// the announced mDNS name, then the reconstructed "<slug>.local".
 		var host string
 		switch {

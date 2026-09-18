@@ -4,19 +4,19 @@
 
 The scope here is the **app catalog**: how apps reach a moose box, what the box trusts, and what infrastructure we run to publish it. Container images themselves are not hosted by us — they live in their authors' registries (Docker Hub, GHCR, …). What we publish is the metadata that tells the box which image bytes to trust for each app version.
 
-> **Superseded — read this first (`DECISIONS.md` 2026-07-02, cloud `specs/CATALOG.md`).** The publish + trust model below (a static, minisign-**signed** `catalog.json` served from a CDN at `store.onmoose.network`, with per-app `manifest.yml`/`compose.yml` fetched on demand and hash-chained to a signed root) is **not what shipped.** As built (OS #62 / cloud #62, restructured in #434): the catalog is served by the **control plane's dynamic HTTP API**, on two seams. The box fetches **browse data** for its own surface in one request (`GET /catalog?env=<environment>`) — display records, the landing page, the category vocabulary, and an opaque `version` token — checks the schema version, **holds it in memory**, and projects the store locally. It fetches an app's **install payload** only when it installs that app, by following the `manifest_url` / `compose_url` on that app's record (`application/yaml`, the verbatim file). The box keeps **no copy of the browse data on disk**, so it always renders what the endpoint serves now; a box that has not synced shows an empty store. There is **no Ed25519/minisign signature and no integrity digest**: the box only ever fetches from the moose control plane over **TLS**, which authenticates the origin, and HTTP framing catches a truncated body. The digest that used to sit on the snapshot was doing cache work, not security work, and it made every new published field a flag day (# What the box models). No catalog is baked into the box image. The sections below are kept for the schema field semantics (`icon_glyph`, `footprint`, `images`, curation/`listed:`), which carry over; treat their signing/CDN mechanics as historical. The live wire shape is cloud `specs/CATALOG.md`; the box consumer is `../progress/catalog-remote-thin-client.md`.
+> **Superseded — read this first (`DECISIONS.md` 2026-07-02, cloud `specs/CATALOG.md`).** The publish + trust model below (a static, minisign-**signed** `catalog.json` served from a CDN at `store.onmoose.io`, with per-app `manifest.yml`/`compose.yml` fetched on demand and hash-chained to a signed root) is **not what shipped.** As built (OS #62 / cloud #62, restructured in #434): the catalog is served by the **control plane's dynamic HTTP API**, on two seams. The box fetches **browse data** for its own surface in one request (`GET /catalog?env=<environment>`) — display records, the landing page, the category vocabulary, and an opaque `version` token — checks the schema version, **holds it in memory**, and projects the store locally. It fetches an app's **install payload** only when it installs that app, by following the `manifest_url` / `compose_url` on that app's record (`application/yaml`, the verbatim file). The box keeps **no copy of the browse data on disk**, so it always renders what the endpoint serves now; a box that has not synced shows an empty store. There is **no Ed25519/minisign signature and no integrity digest**: the box only ever fetches from the moose control plane over **TLS**, which authenticates the origin, and HTTP framing catches a truncated body. The digest that used to sit on the snapshot was doing cache work, not security work, and it made every new published field a flag day (# What the box models). No catalog is baked into the box image. The sections below are kept for the schema field semantics (`icon_glyph`, `footprint`, `images`, curation/`listed:`), which carry over; treat their signing/CDN mechanics as historical. The live wire shape is cloud `specs/CATALOG.md`; the box consumer is `../progress/catalog-remote-thin-client.md`.
 
 ## What the store is
 
 A static, signed JSON catalog served from a CDN, backed by a git repo. Same shape as `RELEASE_MANIFEST.md`:
 
 ```
-https://store.onmoose.network/catalog.json
-https://store.onmoose.network/catalog.json.minisig
-https://store.onmoose.network/apps/<id>/manifest.yml
-https://store.onmoose.network/apps/<id>/docker-compose.yml
-https://store.onmoose.network/apps/<id>/icon.png
-https://store.onmoose.network/apps/<id>/screenshots/...
+https://store.onmoose.io/catalog.json
+https://store.onmoose.io/catalog.json.minisig
+https://store.onmoose.io/apps/<id>/manifest.yml
+https://store.onmoose.io/apps/<id>/docker-compose.yml
+https://store.onmoose.io/apps/<id>/icon.png
+https://store.onmoose.io/apps/<id>/screenshots/...
 ```
 
 `catalog.json` is the **index** — one entry per app with the current published version, content hashes, and resolved image digests. Per-app `manifest.yml` and `docker-compose.yml` are fetched on demand at install time. The catalog itself is small even at scale (~300 bytes per entry — see Scaling below).
@@ -170,7 +170,7 @@ This is a **curation control, not access control**: it's box-wide, not per-user 
 catalogs:
   - id: moose
     name: moose
-    url: https://store.onmoose.network/catalog.json
+    url: https://store.onmoose.io/catalog.json
     pubkeys: [<minisign-pubkey>]
     builtin: true
 ```
@@ -217,7 +217,7 @@ Trust is **TLS to the control plane** — there is no signing keypair, no pubkey
 
 ## Landing page
 
-The store's front page — the box's landing view and the control plane's own store surface at `store.onmoose.network` alike — is authored whole in a curated `home.yml`, not derived from any app's own metadata: a single `spotlight:` app id rendered as a banner, plus an ordered list of `groups:` (a `category:` id from the catalog's category list and 1-4 app ids) rendered as packed rows below it. Editing the front page is editing that one file; importing a new app or reordering a manifest's `categories:` never reshuffles it, because the page's shape isn't computed from categories at all.
+The store's front page — the box's landing view and the control plane's own store surface at `mooseos.com/store` alike — is authored whole in a curated `home.yml`, not derived from any app's own metadata: a single `spotlight:` app id rendered as a banner, plus an ordered list of `groups:` (a `category:` id from the catalog's category list and 1-4 app ids) rendered as packed rows below it. Editing the front page is editing that one file; importing a new app or reordering a manifest's `categories:` never reshuffles it, because the page's shape isn't computed from categories at all.
 
 The control plane publishes the block **verbatim** on the snapshot (`CatalogFile.Home`) — carried, not derived, so the curation decision stays with the store curation source, not with a projection the control plane or a box could drift out of step with. The same one filter applies at serve time: an app the block names that isn't advertised on the requesting surface (`Environments`, # Catalog schema above) drops out of its slot — the spotlight goes unset, or the app is skipped within its group — and a group left with no advertised apps is dropped entirely rather than rendered empty. **The environment filter itself is the control plane's**, applied to the `?env=` the box sends (#434): a box receives only apps its surface may show, so it applies no second visibility pass. What the box still does locally is resolve the home block against the apps it received — an id the response does not carry drops out of its slot, and an emptied group is dropped — because it renders its landing from the payload it holds in memory (`internal/catalog/remote.go`).
 

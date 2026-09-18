@@ -73,7 +73,7 @@ func TestInstall_Hosted_DefaultRestrictedStripsAndGates(t *testing.T) {
 	if fa.VerifyPath != profile.ForwardAuthVerifyPath {
 		t.Errorf("verify path = %q, want %q", fa.VerifyPath, profile.ForwardAuthVerifyPath)
 	}
-	if fa.LoginURL != "https://cindy-fox.onmoose.network/" {
+	if fa.LoginURL != "https://cindy-fox.onmoose.io/" {
 		t.Errorf("login URL = %q, want the box dashboard root", fa.LoginURL)
 	}
 	if len(fa.CopyHeaders) == 0 {

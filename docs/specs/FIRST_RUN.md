@@ -71,7 +71,7 @@ Other Step 1 details:
 
 ### Step 2 — First admin
 
-> **Hosted.** On the appliance, the trust that lets *this* person create the founding admin is physical presence at the box during first boot. A hosted cloud VM has no such gate, and **this whole step does not run there**. The owner already has a `onmoose.network` account, so the portal signs a short-lived ownership assertion and sends the owner's browser to the box; the box checks it against the key in its provisioning seed and creates the founding admin from it, with a username derived from the owner's email and a random password the owner never sees (`ENVIRONMENT.md` # Owner sign-in & seed ingestion — as built). There is no name-and-password form, no recovery code (the portal account is the way back in), and no hosted `/setup` — `POST /setup` returns 403 on hosted, and an unauthenticated visitor is sent to the portal instead of a setup page. Until the box has ingested a seed it has no key, and sign-in returns "not provisioned".
+> **Hosted.** On the appliance, the trust that lets *this* person create the founding admin is physical presence at the box during first boot. A hosted cloud VM has no such gate, and **this whole step does not run there**. The owner already has a portal account at `mooseos.com`, so the portal signs a short-lived ownership assertion and sends the owner's browser to the box; the box checks it against the key in its provisioning seed and creates the founding admin from it, with a username derived from the owner's email and a random password the owner never sees (`ENVIRONMENT.md` # Owner sign-in & seed ingestion — as built). There is no name-and-password form, no recovery code (the portal account is the way back in), and no hosted `/setup` — `POST /setup` returns 403 on hosted, and an unauthenticated visitor is sent to the portal instead of a setup page. Until the box has ingested a seed it has no key, and sign-in returns "not provisioned".
 
 - Two fields: **first name** + **password**. That's it.
 - The first user created is automatically an admin. Admins can create more users (admins or members) later in Settings. Admins are added to the Linux `sudo` group (rescue path when the dashboard is broken); members are unprivileged. See `USERS_AND_GROUPS.md`.
@@ -109,17 +109,17 @@ Full time / NTP model in `TIME.md`. NTP itself (chrony with NTS sources) is up b
 - Inline "What does this collect?" disclosure expands to show the field allowlist.
 - Toggleable from Settings → Privacy later — an admin-only Box panel, since the toggle is box-wide (`SETTINGS.md` # panel inventory). The first-run prompt is the founding admin making that box-level choice once.
 
-Full spec: `TELEMETRY.md`. The one toggle covers both the usage stream and the crash stream; both go to `telemetry.onmoose.network` (a moose-controlled endpoint, not a third-party SaaS).
+Full spec: `TELEMETRY.md`. The one toggle covers both the usage stream and the crash stream; both go to `telemetry.onmoose.io` (a moose-controlled endpoint, not a third-party SaaS).
 
 ### Step 5 — Secure URLs & enrollment (optional) *(appliance only)*
 
-This step is two coupled choices presented as one. Turning on **"Use secure (HTTPS) URLs for my apps"** requires enrolling the box with onmoose.network (to get the subdomain + Let's Encrypt cert). They're the same decision for a new user, so the wizard frames them together.
+This step is two coupled choices presented as one. Turning on **"Use secure (HTTPS) URLs for my apps"** requires enrolling the box with onmoose.io (to get the subdomain + Let's Encrypt cert). They're the same decision for a new user, so the wizard frames them together.
 
 **Framing on the screen:**
 
 > *"Use secure (HTTPS) URLs for your apps?"*
 >
-> *Some apps need HTTPS to work fully — cameras, password managers, app-like installs on your phone. We'll give your moose a name like `cindy-zx9.onmoose.network` and a real certificate, so your apps are reachable at HTTPS URLs on your home network. Your data never leaves your box; only DNS lookups go through our servers.*
+> *Some apps need HTTPS to work fully — cameras, password managers, app-like installs on your phone. We'll give your moose a name like `cindy-zx9.onmoose.io` and a real certificate, so your apps are reachable at HTTPS URLs on your home network. Your data never leaves your box; only DNS lookups go through our servers.*
 >
 > *Tip: **if anyone in your household uses an Android phone, you'll want this on.** Android can't open the default `.local` URLs from a browser; the secure URLs work everywhere.*
 >
@@ -146,7 +146,7 @@ If the user skips:
 
 This step replaces the older "cloud features mention" placeholder. It is still **not** a moose account sign-in — there is no moose cloud account at v1. The enrollment is per-box, anonymous beyond the box-id, and revocable.
 
-> History note: an earlier version of this wizard step presented `.onmoose.network` as an always-on "secure URL channel" exposed per-app via a `requires_https` manifest flag. Replaced 2026-05-14 by the global-toggle model. See `DECISIONS.md`.
+> History note: an earlier version of this wizard step presented `.onmoose.io` as an always-on "secure URL channel" exposed per-app via a `requires_https` manifest flag. Replaced 2026-05-14 by the global-toggle model. See `DECISIONS.md`.
 
 ### Step 6 — Done
 
@@ -204,7 +204,7 @@ What's *on* the dashboard at first arrival is an open question (see below) — e
 
 `moose.local` resolves out of the box on macOS, iOS, and Linux (with `nss-mdns`, almost universal). Two cases need help:
 
-- **Windows clients** need Apple's Bonjour service. Most Windows 10/11 installs do not have it. The "Add another device" / share-link surface in the dashboard detects a Windows User-Agent visiting for the first time and links to the Bonjour Print Services installer with a one-line explanation. If the household is using the secure-URL path, this is moot — `cindy-zx9.onmoose.network` resolves via public DNS on every OS.
+- **Windows clients** need Apple's Bonjour service. Most Windows 10/11 installs do not have it. The "Add another device" / share-link surface in the dashboard detects a Windows User-Agent visiting for the first time and links to the Bonjour Print Services installer with a one-line explanation. If the household is using the secure-URL path, this is moot — `cindy-zx9.onmoose.io` resolves via public DNS on every OS.
 - **Android browsers** do not resolve `.local` at all (see Step 5 above and `DISCOVERY.md`). The only path that works is the secure-URL scheme; the same share surface surfaces this for Android visitors when secure URLs are off.
 
 ## What v1 does not include

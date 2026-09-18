@@ -241,7 +241,7 @@ type loginPickerUser struct {
 // model (AUTH.md # Login screen UX).
 //
 // Hosted is the opposite case and is refused. A hosted box answers on the
-// public internet at "<box-id>.onmoose.network" (ENVIRONMENT.md
+// public internet at "<box-id>.onmoose.io" (ENVIRONMENT.md
 // # Networking & discovery), so the same payload is a tenant roster any scanner
 // can read — and the box-id labels it enumerates are already discoverable from
 // certificate transparency. Nothing on hosted needs it: an unauthenticated

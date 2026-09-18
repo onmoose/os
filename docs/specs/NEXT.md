@@ -194,7 +194,7 @@ The v1 shape is shipped (#122): admin-registered SMTP providers, per-app binding
 - **A box-default provider.** Today every mail-capable app is bound explicitly; a "use for new apps automatically" default would remove a picker step once a box has exactly one provider it always uses.
 - **Brain-sent email riding the same providers.** Notification email digests, password-recovery mail (`# Email-on-file for users` above) — the brain becoming a *consumer* of the provider registry rather than just an injector. This is the promotion trigger: the moment email goes cross-cutting (brain + apps), the `SERVICE_PROVISIONING.md` section graduates to its own `OUTGOING_MAIL.md`.
 - **Re-stamp-on-edit.** A provider edit currently reaches bound apps only at their next rebind/recreate. If edit-propagation demand materializes, the answer is an explicit "apply to N bound apps now" action (visible restarts), not a silent fleet recreate.
-- **A moose-provided sending identity.** Every hosted box already has a free domain (`<box-id>.onmoose.network`) whose DNS moose controls — which means moose, and only moose, can publish the SPF/DKIM/DMARC records that every transactional provider requires. Publish them once and a box could send as `noreply@<box-id>.onmoose.network` with zero user configuration, covering the apps that only mail their own users (Kimai invites, Gitea resets, Paperless alerts). Not v1: v1 is bring-your-own-key. The costs to weigh first are shared-zone reputation (one abusive box hurts every other), per-box quotas, and the fact that an ugly auto-generated sender is wrong for the apps that mail *strangers* (Ghost newsletters, DocuSeal signing requests), which need the user's own domain regardless.
+- **A moose-provided sending identity.** Every hosted box already has a free domain (`<box-id>.onmoose.io`) whose DNS moose controls — which means moose, and only moose, can publish the SPF/DKIM/DMARC records that every transactional provider requires. Publish them once and a box could send as `noreply@<box-id>.onmoose.io` with zero user configuration, covering the apps that only mail their own users (Kimai invites, Gitea resets, Paperless alerts). Not v1: v1 is bring-your-own-key. The costs to weigh first are shared-zone reputation (one abusive box hurts every other), per-box quotas, and the fact that an ugly auto-generated sender is wrong for the apps that mail *strangers* (Ghost newsletters, DocuSeal signing requests), which need the user's own domain regardless.
 - **Relay/smarthost.** Stays rejected, not deferred — residential IPs can't deliver mail, so a box-local relay is a queue plus a deliverability support burden in front of the user's real provider (`DECISIONS.md` 2026-06-12).
 
 **Context:** `SERVICE_PROVISIONING.md` # BYO outgoing mail, `APP_MANIFEST.md` # D3, `DECISIONS.md` 2026-06-12. Password at-rest hardening folds into # App-secret injection hardening above.
@@ -237,14 +237,14 @@ Can the user change the box's display name after first-run? Cascades into mDNS h
 
 ### URL-scheme unification
 
-Two URL schemes, two access models in users' heads: `.local` HTTP on the LAN, `<box-id>.onmoose.network` HTTPS via the toggle. The current model accepts the cognitive cost because the alternatives (always cloud, always `.local`, private CA + cert install on every device) each impose worse failure modes. Worth revisiting once we have real first-run analytics: how many users flip the toggle, how many are confused by the scheme switch, do Android households self-select toward enrolled boxes.
+Two URL schemes, two access models in users' heads: `.local` HTTP on the LAN, `<box-id>.onmoose.io` HTTPS via the toggle. The current model accepts the cognitive cost because the alternatives (always cloud, always `.local`, private CA + cert install on every device) each impose worse failure modes. Worth revisiting once we have real first-run analytics: how many users flip the toggle, how many are confused by the scheme switch, do Android households self-select toward enrolled boxes.
 
 **Context:** `MOOSE_NETWORK.md`, `DISCOVERY.md`, `FIRST_RUN.md`.
 **Why Tier 3:** unification is a v2 question — needs operational data we don't have yet.
 
 ### Documentation surface
 
-Where do user docs and app-author docs live? In-product help drawer, `docs.onmoose.network` (separate Mkdocs/Astro site), `README` files in the catalog repo, all of the above? Yunohost has extensive in-product help; Umbrel docs live on a separate site; TrueNAS has both. Affects the dashboard codebase (`WEB_UI.md`) and the catalog repo layout (`APP_STORE.md`).
+Where do user docs and app-author docs live? In-product help drawer, `docs.mooseos.com` (separate Mkdocs/Astro site), `README` files in the catalog repo, all of the above? Yunohost has extensive in-product help; Umbrel docs live on a separate site; TrueNAS has both. Affects the dashboard codebase (`WEB_UI.md`) and the catalog repo layout (`APP_STORE.md`).
 
 **Context:** `WEB_UI.md`, `APP_STORE.md`, `SPEC.md`.
 **Why Tier 3:** can ship v1 with a thin docs site and add in-product help later, but the *split* between the two needs deciding before either is written at scale.
@@ -305,7 +305,7 @@ Decided in principle: when hooks return, they're **one-shot container images**, 
 
 ### Cert-expired UX
 
-When a box has been offline long enough that `.onmoose.network` certs expired: serve the expired cert with browser warning, transparently redirect to `.local`, or surface a banner in the dashboard. `DISCOVERY.md` makes the `.local` fallback well-defined (per-app records keep working without cloud reachability), so "redirect to `.local` + banner" is the leading option for desktop households — but it doesn't work for Android households, where `.local` URLs are unreachable. The open question is whether to special-case that audience (e.g., a static "your cert expired, plug in for an hour" page served on the LAN IP).
+When a box has been offline long enough that `.onmoose.io` certs expired: serve the expired cert with browser warning, transparently redirect to `.local`, or surface a banner in the dashboard. `DISCOVERY.md` makes the `.local` fallback well-defined (per-app records keep working without cloud reachability), so "redirect to `.local` + banner" is the leading option for desktop households — but it doesn't work for Android households, where `.local` URLs are unreachable. The open question is whether to special-case that audience (e.g., a static "your cert expired, plug in for an hour" page served on the LAN IP).
 
 **Context:** `MOOSE_NETWORK.md` ("Failure modes"), `DISCOVERY.md`.
 
@@ -443,7 +443,7 @@ Loose ends. Each is parked until it bites or a higher-tier topic pulls it in.
 - Custom domain on the LAN — user owns `home.example.com` and wants the dashboard there. Caddy + ACME DNS-01 with their provider, or accept-cert-warning. `MOOSE_NETWORK.md`.
 - Local DNS resolver shape — host runs dnsmasq (container resolution + free Pi-hole-shape ad-blocking as a side effect) vs. pure systemd-resolved. `APP_ISOLATION.md`, `MOOSE_NETWORK.md`.
 - UPnP / port-forwarding stance — closed-by-default implies "no"; state it explicitly so a future "convenience" PR doesn't sleepwalk into it. `MOOSE_NETWORK.md`, `SPEC.md`.
-- `status.onmoose.network` outage-comms surface — boxes show a banner from a cached status JSON when cloud is down. `MOOSE_NETWORK.md`.
+- `status.onmoose.io` outage-comms surface — boxes show a banner from a cached status JSON when cloud is down. `MOOSE_NETWORK.md`.
 - Anti-clone check at enrollment — two boxes with the same `box-id` (cloned ISO) must not both enroll. `MOOSE_NETWORK.md`.
 - **Live-installer WiFi step.** A WiFi-only laptop has no ethernet, so the live ISO itself needs an SSID-picker before "Install to disk" (or be fully offline-installable). Also: WiFi credentials entered in the installer must survive into the installed system's NetworkManager config, not just the live environment. Driver coverage (Realtek/Broadcom non-free firmware) is the connected build-side concern. `BUILD.md`, `FIRST_RUN.md` # Step 1.
 - **Dashboard Settings → Network panel UX.** The plumbing (NM-backed endpoints) is in `BRAIN_HOST_PROTOCOL.md`; the UX details (saved-networks list, signal/security indicators, switch-network "you may briefly lose this page" confirmation, static-IP form, multi-NIC priority controls) belong to `WEB_UI.md`. `BRAIN_HOST_PROTOCOL.md` # Network endpoints, `WEB_UI.md`.
@@ -496,7 +496,7 @@ Loose ends. Each is parked until it bites or a higher-tier topic pulls it in.
 - "What's eating my disk" explorer — top-N folders/apps under `/srv/moose`. Folds into Settings → Storage UX (Tier 3). `STORAGE.md`, `WEB_UI.md`.
 
 **Time**
-- Captive-network NTP fallback — reconsider `time.onmoose.network` if user reports surface (networks that block external NTP). `TIME.md`.
+- Captive-network NTP fallback — reconsider `time.onmoose.io` if user reports surface (networks that block external NTP). `TIME.md`.
 - Per-user display TZ — browser-side `Intl.DateTimeFormat` covers the traveler case in v1; revisit if box-time-regardless requests appear. `TIME.md`.
 - `last-known-time` rollback prevention — persist last-shutdown wall-clock so first-boot-no-network doesn't render 1970 in logs. Polish. `TIME.md`.
 

@@ -5,7 +5,7 @@
 - **Specs touched:** every file in `docs/specs/`; `MALMO_NETWORK.md` renamed to `MOOSE_NETWORK.md`; new `DECISIONS.md` entry (2026-09-16)
 - **Closes:** #489
 
-The project is now called **moose**. The hosted apex moves from `malmo.network` to `onmoose.network`, the product site from `malmo.com` to `mooseos.com`, and the code from `github.com/malmoos/malmo` to `github.com/onmoose/os`. `DECISIONS.md` 2026-09-16 records the two calls inside the rename: a clean break with no compatibility layer, and an app-facing contract renamed in lockstep with `onmoose/store`.
+The project is now called **moose**. The box domain moves from `malmo.network` to `onmoose.io`, the product site from `malmo.com` to `mooseos.com`, and the code from `github.com/malmoos/malmo` to `github.com/onmoose/os`. The two domains are deliberately separate registrable domains rather than one name doing both jobs (# Hostnames, below). `DECISIONS.md` 2026-09-16 records the two calls inside the rename: a clean break with no compatibility layer, and an app-facing contract renamed in lockstep with `onmoose/store`.
 
 ## What was done
 
@@ -25,7 +25,19 @@ One mechanical pass over 371 files, about 4,950 mentions, then the file and dire
 
 **Env vars.** About 60 brain and host-agent names move to `MOOSE_*`. The app-facing set moves with them: `MOOSE_APP_URL`, `MOOSE_INSTANCE_ID`, `MOOSE_DATA_DIR`, `MOOSE_SECRET_*`, `MOOSE_SERVICE_*`, `MOOSE_MAIL_*`, `MOOSE_FOLDER_*`.
 
-**Dashboard.** The package name, the page title, the headings on Login, Setup and Recover, the portal URL `https://onmoose.network`, the About link, and the copy in the telemetry step, the store, the app detail, custom install, outgoing email and SSH screens ("moose password").
+**Dashboard.** The package name, the page title, the headings on Login, Setup and Recover, the portal URL `https://mooseos.com`, the About link, and the copy in the telemetry step, the store, the app detail, custom install, outgoing email and SSH screens ("moose password").
+
+**Hostnames.** `onmoose.io` is the domain every hosted box lives under, and `mooseos.com` is the product site and the portal. They are different registrable domains on purpose: a tenant controls `<box-id>.onmoose.io`, so a shared registrable domain would let a box set a cookie the browser then sends to the portal, and `SameSite=Lax` is no defence when the two are the same site. Everything a box is bound to therefore sits under `onmoose.io`, and each of those gets **its own subdomain** rather than the bare domain, so that the domain a browser-facing stack may later be pointed at cannot break cert renewal or updates for the fleet:
+
+| Baked value | Was | Is |
+| --- | --- | --- |
+| Box domain (`profile.NetworkApex`, the assertion `iss`) | `malmo.network` | `onmoose.io` |
+| Catalog origin (`MOOSE_CATALOG_URL` default) | `https://malmo.network` | `https://catalog.onmoose.io` |
+| acme-dns endpoint (`MOOSE_ACMEDNS_ENDPOINT` default) | `https://auth.malmo.network` | `https://auth.onmoose.io` |
+| Update-target source (`updatetarget.DefaultURL`) | `https://malmo.network/api/updates/target` | `https://api.onmoose.io/api/updates/target` |
+| Portal the hosted dashboard bounces to (`web-ui/src/auth.ts`) | `https://malmo.network` | `https://mooseos.com` |
+
+The assertion `iss` follows the **box** domain, not the portal: the box compares `claims.Iss` against its own `profile.NetworkApex` (`internal/api/sso.go`), so a signer that sent the portal's host would fail every box at once. Every value in that table is compiled into the image and cannot be changed on a provisioned box, which is why they move here rather than later.
 
 **Docs.** `README.md`, `CLAUDE.md`, `docs/architecture.md`, `docs/README.md`, all live specs, all of `docs/dev/`, the issue and PR templates, and the workflows. The frozen history keeps the old name: `docs/progress/` entries and the older `DECISIONS.md` entries are untouched, so `MALMO_NETWORK.md` still appears in their prose as the name of a doc that has since been renamed. No markdown link in a frozen entry pointed at that file, so no frozen entry needed a link fix.
 

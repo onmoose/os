@@ -11,15 +11,15 @@ The scope here is brain + UI only. Debian base updates flow through `unattended-
 A static JSON file served at:
 
 ```
-https://releases.onmoose.network/stable.json
-https://releases.onmoose.network/stable.json.minisig
+https://releases.onmoose.io/stable.json
+https://releases.onmoose.io/stable.json.minisig
 ```
 
-`host-agent` polls the manifest hourly. **As built**, each tick is jittered by up to five minutes — not in the original design, and added because a fleet whose boots cluster (a provider maintenance window, a region-wide power cut) would otherwise hit a static file host in a spike, for no benefit. Also as built: a host-agent binary with **no signing key baked in refuses every manifest and does not poll at all**, which is every build today (# Signing defers key custody until there is a release to sign). That is the deliberate safe state — a box with no way to check a manifest must ignore it, not trust it. When the manifest names a version pair newer than what's installed, the dashboard surfaces an "Update available" prompt (admin-prompted per `UPDATES.md`). When the admin clicks Update, host-agent pulls the named brain and UI images from `registry.onmoose.network` and runs the changed-only transaction described in `UPDATES.md`.
+`host-agent` polls the manifest hourly. **As built**, each tick is jittered by up to five minutes — not in the original design, and added because a fleet whose boots cluster (a provider maintenance window, a region-wide power cut) would otherwise hit a static file host in a spike, for no benefit. Also as built: a host-agent binary with **no signing key baked in refuses every manifest and does not poll at all**, which is every build today (# Signing defers key custody until there is a release to sign). That is the deliberate safe state — a box with no way to check a manifest must ignore it, not trust it. When the manifest names a version pair newer than what's installed, the dashboard surfaces an "Update available" prompt (admin-prompted per `UPDATES.md`). When the admin clicks Update, host-agent pulls the named brain and UI images from `registry.onmoose.io` and runs the changed-only transaction described in `UPDATES.md`.
 
 **As built, this is what stops the appliance updater (#401).** The box now has one update-target seam that both profiles read (`UPDATES.md` # 8.4), and it will only act on an image reference pinned to a digest — a box that resolved a tag itself would be trusting a movable label at update time. A manifest naming `1.4.2` cannot be turned into anything but a tag, so the appliance source reads the verified manifest and **refuses it as unpinned**, leaving the box where it is. Today that is academic (no signing key is baked into any build, so no manifest ever verifies), and closing it means adding optional pinned-reference fields alongside the versions — additive, no `manifest_version` bump, and tracked in `NEXT.md` because it belongs with the appliance release pipeline that does not exist yet.
 
-The manifest names versions, not image URLs. The registry path is fixed (`registry.onmoose.network/moose/brain:vX.Y.Z`, `registry.onmoose.network/moose/ui:vX.Y.Z` — see `BUILD.md`). Keeping it implicit means we can move the registry later without re-cutting every prior manifest.
+The manifest names versions, not image URLs. The registry path is fixed (`registry.onmoose.io/moose/brain:vX.Y.Z`, `registry.onmoose.io/moose/ui:vX.Y.Z` — see `BUILD.md`). Keeping it implicit means we can move the registry later without re-cutting every prior manifest.
 
 ## Manifest schema (v1)
 
@@ -51,7 +51,7 @@ The schema is intentionally small. Anything not in the schema is implicit (regis
 
 ## Where it lives: git + CDN
 
-The source of truth is a git repository (`github.com/moose/releases` or similar). The CDN at `releases.onmoose.network` serves the contents of `main` as static files. A commit on `main` becomes the live manifest within seconds of CDN sync.
+The source of truth is a git repository (`github.com/moose/releases` or similar). The CDN at `releases.onmoose.io` serves the contents of `main` as static files. A commit on `main` becomes the live manifest within seconds of CDN sync.
 
 Why git as the source rather than direct uploads to object storage:
 
@@ -100,7 +100,7 @@ When beta returns (driven by either auto-apply landing post-A/B-images, or fleet
 
 Promoting a new version is a pull request that updates `stable.json` and `stable.json.minisig`. The flow:
 
-1. Maintainer cuts a release tag for the brain and UI images in their respective repositories. CI builds, tests, and publishes the images to `registry.onmoose.network`.
+1. Maintainer cuts a release tag for the brain and UI images in their respective repositories. CI builds, tests, and publishes the images to `registry.onmoose.io`.
 2. Maintainer drafts the new manifest JSON locally, signs it with the offline key (`minisign -S -s ~/.moose/release.key -m stable.json`), and opens a PR against the `releases` repo with both files updated.
 3. CI on the PR validates:
    - JSON parses against the schema (`manifest_version`, required fields, semver shape).
@@ -122,9 +122,9 @@ This is the load-bearing protection in v1. It is independent of phased rollout �
 
 ## Failure modes
 
-- **Pointing a test box somewhere else.** `MOOSE_RELEASE_BASE_URL` replaces the `releases.onmoose.network` base, so a box under test can read a manifest from a local file server. This is safe because **the base URL is not what we trust — the signature is.** A manifest from any host must still verify against the baked keys. So this setting cannot feed a box an unsigned or wrongly signed manifest. Leave it empty for the real releases host.
+- **Pointing a test box somewhere else.** `MOOSE_RELEASE_BASE_URL` replaces the `releases.onmoose.io` base, so a box under test can read a manifest from a local file server. This is safe because **the base URL is not what we trust — the signature is.** A manifest from any host must still verify against the baked keys. So this setting cannot feed a box an unsigned or wrongly signed manifest. Leave it empty for the real releases host.
 
-- **Box can't reach `releases.onmoose.network`:** host-agent keeps the last-known manifest in `/var/lib/moose/manifest.json` (with its signature). Updates pause until connectivity returns. Consistent with `UPDATES.md`: an offline box stays current at its last-applied version.
+- **Box can't reach `releases.onmoose.io`:** host-agent keeps the last-known manifest in `/var/lib/moose/manifest.json` (with its signature). Updates pause until connectivity returns. Consistent with `UPDATES.md`: an offline box stays current at its last-applied version.
   **As built** (`internal/hostagent/relmanifest`): the manifest and its signature share **one** file at that path, and the reason is a crash. Two files means two renames, and a power cut between them leaves the new manifest beside the old signature — a pair that cannot verify, with the previous good manifest already overwritten. The box would then have no usable cache at all, which is not "the previous valid manifest stays in effect". One file is one rename. The cache is also **re-verified when it is read**, so writing `/var/lib/moose` is not a way around the signature.
 - **Signature verification fails:** host-agent logs and ignores the manifest. The previous valid manifest stays in effect. A persistent signature failure surfaces as a dashboard warning after 24 hours (operator should investigate; could indicate a CDN/storage corruption or, very rarely, a compromised publishing path).
 - **`minimum_host_agent` not satisfied:** the manifest is honored as far as "this is the current release" but the prompt does not surface. The next host-agent update from apt resolves it; the prompt appears on the following poll.

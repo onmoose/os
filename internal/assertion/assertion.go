@@ -34,8 +34,9 @@ import (
 // enforces. The JSON tags are the wire contract with the cloud signer — they
 // must match cloud internal/assertion.Claims exactly.
 type Claims struct {
-	// Iss is the issuer, the control-plane apex (e.g. "onmoose.network"). The box
-	// rejects an assertion whose Iss is not its own control-plane apex.
+	// Iss is the issuer, which is the box domain every hosted box lives under
+	// (profile.NetworkApex, "onmoose.io") and not the portal's own host. The box
+	// rejects an assertion whose Iss is not that domain.
 	Iss string `json:"iss"`
 	// Sub is the portal account id that owns the box — the stable owner identity
 	// the box ties its first admin to.

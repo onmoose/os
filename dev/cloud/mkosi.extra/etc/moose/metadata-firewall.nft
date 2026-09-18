@@ -11,7 +11,7 @@
 # third-party app container — could read those secrets: the classic cloud-metadata
 # SSRF (cf. the 2019 Capital One breach). Leaking the acme-dns password is the
 # worst case — it is the long-lived credential to rewrite _acme-challenge.<box-id>
-# and so mint/MITM the box's *.<box-id>.onmoose.network wildcard cert.
+# and so mint/MITM the box's *.<box-id>.onmoose.io wildcard cert.
 #
 # Forward hook, NOT output: the first-boot seed materializer fetches the endpoint
 # as host root in the host netns (OUTPUT path) once at boot

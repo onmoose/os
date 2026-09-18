@@ -97,9 +97,9 @@ type Manager struct {
 	// the cookie.
 	SecureCookies bool
 	// ForwardAuthDomain is the Domain attribute stamped on the hosted
-	// forward-auth cookie (issue #305): the box apex "<box-id>.onmoose.network",
+	// forward-auth cookie (issue #305): the box apex "<box-id>.onmoose.io",
 	// so the browser sends the cookie to every app subdomain
-	// "<slug>.<box-id>.onmoose.network" as well as the dashboard host. Empty on
+	// "<slug>.<box-id>.onmoose.io" as well as the dashboard host. Empty on
 	// appliance (and any box with no box-id), which disables minting — the
 	// appliance never issues a forward-auth cookie.
 	ForwardAuthDomain string

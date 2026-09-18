@@ -201,7 +201,7 @@ The model above is built so off-box transports slot in without reshaping it:
 - The **notification center is the first sink.** A future `email` / `push` / `webhook` sink subscribes to the same routed notification stream and applies its own per-user, per-category delivery preferences.
 - Severity is already the natural dial for "which transports fire" (e.g. critical → all sinks; info → in-product only) when transports exist.
 
-When email-on-file lands (its own `NEXT.md` Tier-2 item) and/or the mobile app ships (deferred with the mesh, `MOOSE_NETWORK.md`), they become additional sinks behind this seam. **No off-box transport, no SMTP relay, no `onmoose.network` dependency, and no email-on-file requirement in v1** — the notification center is fully local and self-contained.
+When email-on-file lands (its own `NEXT.md` Tier-2 item) and/or the mobile app ships (deferred with the mesh, `MOOSE_NETWORK.md`), they become additional sinks behind this seam. **No off-box transport, no SMTP relay, no `onmoose.io` dependency, and no email-on-file requirement in v1** — the notification center is fully local and self-contained.
 
 ## Knock-ons to other docs
 

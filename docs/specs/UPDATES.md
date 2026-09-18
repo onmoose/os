@@ -61,7 +61,7 @@ Tiny native binary, supervises the brain (`CONTROL_PLANE.md`). Updates are rare 
 ### Options
 
 - **A — Auto-update via `unattended-upgrades` from our apt repo.** Same mechanism as the Debian base, just one more source list.
-- **B — Brain orchestrates host-agent updates.** Brain detects a new version on `apt.onmoose.network`, downloads, calls a host-agent self-update endpoint.
+- **B — Brain orchestrates host-agent updates.** Brain detects a new version on `apt.onmoose.io`, downloads, calls a host-agent self-update endpoint.
 - **C — Admin-triggered only.** Settings → "Update moose system."
 
 ### Recommendation: A — `unattended-upgrades` from our apt repo
@@ -90,7 +90,7 @@ This is the most user-visible update stream because the brain + UI together *are
 ### Options on update trigger
 
 - **A — Auto-pull `latest` tag continuously.** Box polls registry, pulls when tag advances.
-- **B — Release manifest.** Box polls a JSON manifest at `releases.onmoose.network/stable.json` that lists the *current* stable version. Gives us a kill switch (retract a bad release) and a place to gate rollouts if we later need pacing. See `RELEASE_MANIFEST.md` for the full schema + publishing pipeline.
+- **B — Release manifest.** Box polls a JSON manifest at `releases.onmoose.io/stable.json` that lists the *current* stable version. Gives us a kill switch (retract a bad release) and a place to gate rollouts if we later need pacing. See `RELEASE_MANIFEST.md` for the full schema + publishing pipeline.
 - **C — Periodic prompt.** Box checks for updates, surfaces "moose X.Y.Z available — update now?" in the UI.
 - **D — Fully manual.** Admin clicks update.
 
@@ -378,7 +378,7 @@ On the `hosted` profile (`ENVIRONMENT.md`) moose operates the box. That single f
 
 ### 8.1 The target version lives in the cloud, per box
 
-The cloud control plane (`onmoose/cloud`, private) holds a **target version per `box_id`**. It does not serve `stable.json`, and a hosted box does not poll `releases.onmoose.network` or verify a minisign signature. That whole mechanism (`RELEASE_MANIFEST.md`) is appliance-only.
+The cloud control plane (`onmoose/cloud`, private) holds a **target version per `box_id`**. It does not serve `stable.json`, and a hosted box does not poll `releases.onmoose.io` or verify a minisign signature. That whole mechanism (`RELEASE_MANIFEST.md`) is appliance-only.
 
 Why per-box rather than one fleet-wide value, or reusing the signed manifest:
 

@@ -494,7 +494,7 @@ type EnrollmentCredentials struct {
 }
 
 // EnsureWildcardTLS configures automatic HTTPS for a hosted box: it tells Caddy
-// to obtain the wildcard cert "*.<box-id>.onmoose.network" via an ACME DNS-01
+// to obtain the wildcard cert "*.<box-id>.onmoose.io" via an ACME DNS-01
 // challenge solved against acme-dns with the box's seeded credentials, and adds
 // the :443 listener so the host-matched app routes serve over it. Hosted-only
 // and always-on (ENVIRONMENT.md # Networking & discovery); the appliance path,
@@ -510,15 +510,15 @@ type EnrollmentCredentials struct {
 // acme-dns DNS-01 issuer (HOW — DNS-01 is the only challenge a wildcard can use).
 //
 // Without the automate entry the wildcard order is never placed: the policy sits
-// idle until an app route for "<slug>.<box-id>.onmoose.network" forces Caddy to try
+// idle until an app route for "<slug>.<box-id>.onmoose.io" forces Caddy to try
 // a cert for that *exact* name, whose DNS-01 challenge lands at
-// "_acme-challenge.<slug>.<box-id>.onmoose.network" — a name that is NOT delegated
-// to acme-dns (only the apex "_acme-challenge.<box-id>.onmoose.network" is), so the
+// "_acme-challenge.<slug>.<box-id>.onmoose.io" — a name that is NOT delegated
+// to acme-dns (only the apex "_acme-challenge.<box-id>.onmoose.io" is), so the
 // challenge can never be answered and every app fails TLS. That was the live #278
 // symptom. Once the wildcard cert exists Caddy serves every "<slug>.<box-id>"
 // from it and never attempts per-app issuance.
 //
-// The base name "<box-id>.onmoose.network" (the dashboard apex) is deliberately NOT
+// The base name "<box-id>.onmoose.io" (the dashboard apex) is deliberately NOT
 // routed through acme-dns: it is a real, publicly-reachable host on :443, so
 // Caddy's default issuer obtains it over tls-alpn-01/http-01 the moment the
 // dashboard route names it — no DNS-01, no acme-dns account write. That leaves

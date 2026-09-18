@@ -47,7 +47,7 @@ type Seed struct {
 	// handshake, not a /setup secret.
 	AssertionVerificationKey string `json:"assertion_verification_key"`
 	// Enrollment carries the per-box acme-dns account the box's Caddy uses to
-	// obtain and renew its `*.<box-id>.onmoose.network` wildcard cert via ACME
+	// obtain and renew its `*.<box-id>.onmoose.io` wildcard cert via ACME
 	// DNS-01 (C3b; ENVIRONMENT.md # Networking & discovery). The JSON shape
 	// mirrors the cloud producer's wire contract byte-for-byte (cloud
 	// internal/seed.EnrollmentCredentials) — the two repos meet at this format,

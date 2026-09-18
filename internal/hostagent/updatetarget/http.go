@@ -20,7 +20,7 @@ import (
 // pointed at an alternative source to prove a release before the fleet gets it.
 // Keeping it configurable also keeps the seam honest — the box knows there is an
 // update-target source, not who operates it.
-const DefaultURL = "https://onmoose.network/api/updates/target"
+const DefaultURL = "https://api.onmoose.io/api/updates/target"
 
 // fetchTimeout bounds one read. The answer is a few hundred bytes off a cached
 // endpoint; anything slower than this is a source that is effectively down, and

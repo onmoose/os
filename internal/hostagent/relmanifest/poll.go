@@ -15,7 +15,7 @@ import (
 // DefaultBaseURL is where the appliance release manifest is published
 // (RELEASE_MANIFEST.md # What the manifest is). The channel file name is
 // appended to it, so a future beta channel is one more file at the same base.
-const DefaultBaseURL = "https://releases.onmoose.network"
+const DefaultBaseURL = "https://releases.onmoose.io"
 
 // PollInterval is the hourly cadence RELEASE_MANIFEST.md specifies.
 const PollInterval = time.Hour

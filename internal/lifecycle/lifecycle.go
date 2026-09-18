@@ -161,7 +161,7 @@ type Manager struct {
 
 	// profile + boxID select the per-app URL scheme. On hosted with a non-empty
 	// box-id, routes are keyed on (and surfaced URLs use)
-	// "<slug>.<box-id>.onmoose.network" and no mDNS is published — there is no LAN
+	// "<slug>.<box-id>.onmoose.io" and no mDNS is published — there is no LAN
 	// to multicast on (ENVIRONMENT.md # Networking & discovery). Appliance leaves
 	// both zero-valued and keeps the ".local"/Avahi path unchanged. profile also
 	// gates resource-limit CPU capping (hosted only — APP_ISOLATION.md # Resource
@@ -212,7 +212,7 @@ const defaultBrainUpstream = "moose-brain:8080"
 func (m *Manager) SetOfflineInstall(v bool) { m.offlineInstall = v }
 
 // SetEnvironment records the environment profile and (on hosted) the box-id, so
-// per-app route hosts and surfaced URLs use the hosted "<slug>.<box-id>.onmoose.network"
+// per-app route hosts and surfaced URLs use the hosted "<slug>.<box-id>.onmoose.io"
 // scheme. cmd/brain wires this from the resolved profile + the ingested seed.
 // Appliance passes an empty box-id and the lifecycle keeps its ".local"/mDNS path.
 func (m *Manager) SetEnvironment(prof profile.Profile, boxID string) {
@@ -221,7 +221,7 @@ func (m *Manager) SetEnvironment(prof profile.Profile, boxID string) {
 }
 
 // hosted reports whether per-app routing should use the public
-// "<slug>.<box-id>.onmoose.network" scheme: the hosted profile with a resolved
+// "<slug>.<box-id>.onmoose.io" scheme: the hosted profile with a resolved
 // box-id. A hosted box that hasn't ingested its seed yet (no box-id) has no apps
 // installed anyway, so falling back to the appliance path is harmless.
 func (m *Manager) hosted() bool {
@@ -807,7 +807,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// with a splash) instead of returning connection-refused for ~120s.
 	//
 	// On hosted there is no LAN and no Avahi: the route host is the public
-	// "<slug>.<box-id>.onmoose.network" and nothing is multicast (ENVIRONMENT.md #
+	// "<slug>.<box-id>.onmoose.io" and nothing is multicast (ENVIRONMENT.md #
 	// Networking & discovery). On appliance the published name is authoritative:
 	// Publish may return a box-qualified collision-fallback ("<slug>-<box>.local")
 	// that differs from the primary "<slug>.local", so the Caddy route and the
@@ -1168,7 +1168,7 @@ func (m *Manager) startFailed(ctx context.Context, inst store.Instance, host, ap
 }
 
 // routeHost is the hostname an instance's Caddy route is keyed on. On hosted it
-// is the public "<slug>.<box-id>.onmoose.network" (no mDNS, no collision fallback).
+// is the public "<slug>.<box-id>.onmoose.io" (no mDNS, no collision fallback).
 // On appliance it is the published mDNS name when we have one (it may be the
 // box-qualified collision fallback), else the reconstructed primary
 // `<slug>.local`. Mirrors the fallback chain in install + reassertRouting so the
@@ -1197,7 +1197,7 @@ func (m *Manager) routeHost(inst store.Instance) string {
 // Start so Caddy, Avahi, and the stored MDNSName never disagree.
 func (m *Manager) publishHost(ctx context.Context, inst store.Instance) (string, bool) {
 	// Hosted has no LAN and no Avahi (host-agent is the slim build): the route
-	// host is the public "<slug>.<box-id>.onmoose.network" and nothing is
+	// host is the public "<slug>.<box-id>.onmoose.io" and nothing is
 	// multicast. Report avahiOK=true — there is no mDNS leg that could fail.
 	if m.hosted() {
 		return profile.HostedAppHost(m.boxID, inst.Slug), true
@@ -1815,7 +1815,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 func (m *Manager) writeEnv(id, slug string, iso isolation) error {
 	dataDir, _ := filepath.Abs(filepath.Join(m.instanceDir(id), "data"))
 	// MOOSE_APP_URL is the app's own public URL (apps that build absolute links
-	// read it). Hosted is HTTPS at "<slug>.<box-id>.onmoose.network"; appliance is
+	// read it). Hosted is HTTPS at "<slug>.<box-id>.onmoose.io"; appliance is
 	// plain-HTTP "<slug>.local".
 	appURL := "http://" + slug + protocol.AppHostSuffix
 	if m.hosted() {

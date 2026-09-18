@@ -107,7 +107,7 @@ The full `manifest.yml` schema is **deliberately deferred** until we understand 
 - Each installed app is reachable at its own single-label `.local` name: `photos.local`, `grocery.local`, etc. (Single-label, not `photos.moose.local` — the `.moose` infix made the name multi-label, which Linux resolvers reject; see `DISCOVERY.md` # Per-app A records and `DECISIONS.md` 2026-05-31.)
 - App authors **suggest preferred slugs** in priority order in their manifest; the OS picks the first one that's free.
 - The OS publishes each app's hostname via mDNS (Avahi) at install time.
-- LAN traffic is plain HTTP; HTTPS is available on the same apps via the opt-in `<box-id>.onmoose.network` subdomain (see `MOOSE_NETWORK.md`).
+- LAN traffic is plain HTTP; HTTPS is available on the same apps via the opt-in `<box-id>.onmoose.io` subdomain (see `MOOSE_NETWORK.md`).
 
 #### Why subdomain — and why we explicitly rejected path-based routing
 
@@ -134,7 +134,7 @@ We considered path-based routing (`moose.local/photos`, `moose.local/grocery`) a
 **Subdomain wins on both axes:**
 - Each app gets its own origin → real browser-enforced isolation. Cookies, localStorage, CORS all properly scoped without per-app effort.
 - Apps work as upstream authors designed them — they assume root path of their own domain. Far less per-app patching.
-- Maps cleanly to remote access (`photos.cindy.zx9.onmoose.network`) — same pattern everywhere.
+- Maps cleanly to remote access (`photos.cindy.zx9.onmoose.io`) — same pattern everywhere.
 - Industry-standard for multi-tenant hosting (Vercel, Netlify, Heroku, Railway).
 
 **Subdomain costs we accept:**
@@ -151,7 +151,7 @@ We considered path-based routing (`moose.local/photos`, `moose.local/grocery`) a
 
 ### TLS and remote access — see `MOOSE_NETWORK.md`
 
-Networking concerns beyond the LAN — TLS, the onmoose.network apex, cloud DNS, cert issuance, the mesh, device pairing, sharing — live in `MOOSE_NETWORK.md`. The MVP slice is the **hybrid access model**: every app is reachable both at `<slug>.local` (HTTP, mDNS, no cloud) and at `<slug>.<box-id>.onmoose.network` (HTTPS, real Let's Encrypt cert via opt-in cloud enrollment). Mesh / identity-based remote access is captured in the same doc but deferred from v1.
+Networking concerns beyond the LAN — TLS, the onmoose.io apex, cloud DNS, cert issuance, the mesh, device pairing, sharing — live in `MOOSE_NETWORK.md`. The MVP slice is the **hybrid access model**: every app is reachable both at `<slug>.local` (HTTP, mDNS, no cloud) and at `<slug>.<box-id>.onmoose.io` (HTTPS, real Let's Encrypt cert via opt-in cloud enrollment). Mesh / identity-based remote access is captured in the same doc but deferred from v1.
 
 ## OS update model
 

@@ -110,7 +110,7 @@ func testConfig() Config {
 		ProxyContainerName: "moose-docker-proxy",
 		ControlPlaneDir:    "/var/lib/moose/control-plane",
 		UIUpstream:         "moose-ui:80",
-		CatalogURL:         "https://onmoose.network",
+		CatalogURL:         "https://catalog.onmoose.io",
 		CatalogCacheDir:    "/var/lib/moose/catalog-cache",
 	}
 }
@@ -191,8 +191,8 @@ func TestLaunchRunSpec(t *testing.T) {
 	// The control-plane catalog origin + asset cache dir (icons and screenshots
 	// only — the snapshot is never written to disk). The cache is under DataDir, so
 	// it rides the data-dir mount (no separate Mount entry).
-	if v := envVal(s.Env, "MOOSE_CATALOG_URL"); v != "https://onmoose.network" {
-		t.Errorf("MOOSE_CATALOG_URL = %q, want https://onmoose.network", v)
+	if v := envVal(s.Env, "MOOSE_CATALOG_URL"); v != "https://catalog.onmoose.io" {
+		t.Errorf("MOOSE_CATALOG_URL = %q, want https://catalog.onmoose.io", v)
 	}
 	if v := envVal(s.Env, "MOOSE_CATALOG_CACHE_DIR"); v != "/var/lib/moose/catalog-cache" {
 		t.Errorf("MOOSE_CATALOG_CACHE_DIR = %q, want /var/lib/moose/catalog-cache", v)

@@ -211,7 +211,7 @@ Three options:
 
 - Native package, native systemd unit, native logs.
 - apt is how host-agent updates until we move to A/B images. When we do, the `.deb` gets baked into the immutable image and the apt path retires. Cheap migration.
-- Our apt repo (`apt.onmoose.network` or similar) hosts this one package for v1. Adding more later is mechanical.
+- Our apt repo (`apt.onmoose.io` or similar) hosts this one package for v1. Adding more later is mechanical.
 
 The repo is signed; the ISO build trusts our key. Key management is a release-infra concern, deferred to the release-infra doc.
 
@@ -229,21 +229,21 @@ Per `CONTROL_PLANE.md`: brain runs as a container, supervised by host-agent.
 ### Distribution — three options
 
 - **A — Public registry (`ghcr.io/moose/brain` or Docker Hub).** Pull at first boot. Simple, no infra to run beyond a registry account. Requires internet at first boot.
-- **B — Self-hosted registry (`registry.onmoose.network`).** Same as A but we own the namespace and don't depend on GitHub/Docker policies. Modest VPS cost.
+- **B — Self-hosted registry (`registry.onmoose.io`).** Same as A but we own the namespace and don't depend on GitHub/Docker policies. Modest VPS cost.
 - **C — Bundle the image in the ISO.** Image is loaded into Docker at install time via `docker load`. Works offline at first boot. ISO grows by the image size (~256 MB for the slim-with-CLI brain image, measured in M0 #163 — see the Build section above — still small against the multi-GB app images the box pulls).
 
 ### Recommendation: B + C combined
 
 - **Bundle a pinned brain image in the ISO** so the box boots and is functional with zero internet.
-- **Self-hosted registry for ongoing updates.** host-agent (or the brain itself) pulls newer tags from `registry.onmoose.network` when online.
-- Self-hosted over public-registry-only because: (1) a `moose` namespace on Docker Hub is not guaranteed; (2) we already need `onmoose.network` infra for the mesh, adding a registry is incremental; (3) avoids dependency on a third party's pull-rate-limit policy.
+- **Self-hosted registry for ongoing updates.** host-agent (or the brain itself) pulls newer tags from `registry.onmoose.io` when online.
+- Self-hosted over public-registry-only because: (1) a `moose` namespace on Docker Hub is not guaranteed; (2) we already need `onmoose.io` infra for the mesh, adding a registry is incremental; (3) avoids dependency on a third party's pull-rate-limit policy.
 - We can mirror to a public registry as a redundancy story, but it's not the source of truth.
 
 ### First-boot brain bootstrap
 
 1. host-agent starts (systemd, after Docker).
 2. host-agent checks `/var/lib/moose/brain-image.tar` (bundled in ISO) — if Docker doesn't already have the image, `docker load` it.
-3. host-agent pulls the latest tag from `registry.onmoose.network` if online and a newer version exists. (Behavior on offline: keep the bundled version. Behavior on update failure: keep current. Never break boot.)
+3. host-agent pulls the latest tag from `registry.onmoose.io` if online and a newer version exists. (Behavior on offline: keep the bundled version. Behavior on update failure: keep current. Never break boot.)
 4. host-agent starts the brain container with the configured pin.
 5. Brain takes over from there — Caddy, `moose-ui`, sidecars, etc. (`CONTROL_PLANE.md`).
 
@@ -260,7 +260,7 @@ The dashboard ships as a **second OCI image**, built and distributed the same wa
 
 ### Distribution
 
-Same as the brain (# 5 Distribution): **bundled in the ISO for offline first-boot** (`docker load` from a pinned tarball) **and** pulled from `registry.onmoose.network` for ongoing updates. Both images appear together in the release manifest (`RELEASE_MANIFEST.md`); the updater recreates only what changed (`WEB_UI.md` # deploy + update flow).
+Same as the brain (# 5 Distribution): **bundled in the ISO for offline first-boot** (`docker load` from a pinned tarball) **and** pulled from `registry.onmoose.io` for ongoing updates. Both images appear together in the release manifest (`RELEASE_MANIFEST.md`); the updater recreates only what changed (`WEB_UI.md` # deploy + update flow).
 
 ### Launch
 
@@ -302,10 +302,10 @@ All artifacts of a release share the **one** `vX.Y.Z` from the repo `VERSION` fi
 
 - `moose-vX.Y.Z-amd64.qcow2` — the **cloud VM image** (priority target; the hosted product provisions tenants from it — `ENVIRONMENT.md` # Provisioning). Emitted by mkosi `Format=disk`.
 - `moose-vX.Y.Z-amd64.raw` — the **bare-metal install medium**, `dd`'d / flashed to a USB stick (the "old laptop in the pantry" path). Same mkosi `Format=disk` rootfs; not optical media (no `.iso` — see # 2's 2026-06-17 resolution and `DECISIONS.md`).
-- `moose-host-agent_X.Y.Z_amd64.deb` — published to `apt.onmoose.network`.
-- `registry.onmoose.network/moose/brain:vX.Y.Z` — the brain image. `latest` tag advances on stable channel.
-- `registry.onmoose.network/moose/ui:vX.Y.Z` — the dashboard image. Same `vX.Y.Z` as the brain (one repo version); both bundled in the ISO for offline first-boot.
-- **The control-plane images are published publicly**, and `registry.onmoose.network` is a name we can point wherever later (the first realization is `ghcr.io/onmoose/…`, which costs nothing and has no egress bill for public packages). Public rather than private+credential because there is nothing to protect: the brain and UI are built from this public repo, and every secret a box holds is per-box and seeded at provision time (`ENVIRONMENT.md` # Provisioning), never baked into an image. A private registry would buy no confidentiality and would put a pull credential on every box — one more thing to seed, rotate, and fail at 03:00 on a machine nobody can SSH into. Boxes pull **by digest**, not by tag, using the same pinning the app installer already uses (`APP_LIFECYCLE.md`), so a public registry does not mean a mutable one.
+- `moose-host-agent_X.Y.Z_amd64.deb` — published to `apt.onmoose.io`.
+- `registry.onmoose.io/moose/brain:vX.Y.Z` — the brain image. `latest` tag advances on stable channel.
+- `registry.onmoose.io/moose/ui:vX.Y.Z` — the dashboard image. Same `vX.Y.Z` as the brain (one repo version); both bundled in the ISO for offline first-boot.
+- **The control-plane images are published publicly**, and `registry.onmoose.io` is a name we can point wherever later (the first realization is `ghcr.io/onmoose/…`, which costs nothing and has no egress bill for public packages). Public rather than private+credential because there is nothing to protect: the brain and UI are built from this public repo, and every secret a box holds is per-box and seeded at provision time (`ENVIRONMENT.md` # Provisioning), never baked into an image. A private registry would buy no confidentiality and would put a pull credential on every box — one more thing to seed, rotate, and fail at 03:00 on a machine nobody can SSH into. Boxes pull **by digest**, not by tag, using the same pinning the app installer already uses (`APP_LIFECYCLE.md`), so a public registry does not mean a mutable one.
 - **As-built:** `CI / Cloud image` (`.github/workflows/ci-cloud-image.yml`) additionally attaches `moose-vX.Y.Z-amd64.raw.xz` + `moose-vX.Y.Z-amd64.raw.xz.sha256` to the tagged GitHub Release, gated on the same `SHOULD_PUBLISH` condition that used to gate the provider-snapshot upload. That Release asset is the only published **disk-image** artifact: #352 removed the provider-snapshot upload, so the lane holds no hosting-provider credential and a release publishes to no hosting provider. **As of #370 the same lane also pushes the two control-plane images to ghcr** (`ghcr.io/onmoose/brain` and `ghcr.io/onmoose/ui`, tagged `vX.Y.Z` + `latest`), gated on the same `SHOULD_PUBLISH` condition and running *after* the seeded-boot proof — so the images published are the exact local images baked into the disk image that just booted, not a rebuild of them. The push uses the job's own `GITHUB_TOKEN` (`packages: write` — granted at the `cloud-image` job in `release.yml` too, since a called reusable workflow can only narrow its caller's permissions, never widen them). The lane still holds no long-lived registry credential. Pushed digests are written to the job summary. The step runs **after** the Release-asset attach, so a registry failure cannot leave a release without its disk image. **The packages are public now.** ghcr makes a package private on first push. Turning the two packages public needed a one-time change in the package settings by an org admin, which the workflow cannot do. That change is done. `ghcr.io/onmoose/brain` and `ghcr.io/onmoose/ui` both answer an **anonymous** pull, and each carries `latest` plus every released tag from `v0.6.0` on. So the "published publicly" decision above is now real: a box with no registry login can pull the pair its update target names (`UPDATES.md` # 8.4). `.raw.xz` names the actual shipped format — this lane's mkosi build produces `.raw` directly (xz-compressed for the upload), not a qcow2 conversion.
 
 ### Channels
@@ -337,9 +337,9 @@ Not locking specifics, but the rough shape:
             ▼
        CI (build, test)
             │
-            ├──► host-agent .deb ──► apt.onmoose.network
-            ├──► brain image ─────► registry.onmoose.network
-            └──► ui image ────────► registry.onmoose.network  (caddy:alpine + bundle, see WEB_UI.md)
+            ├──► host-agent .deb ──► apt.onmoose.io
+            ├──► brain image ─────► registry.onmoose.io
+            └──► ui image ────────► registry.onmoose.io  (caddy:alpine + bundle, see WEB_UI.md)
                                      │
                                      ▼
                           mkosi image assembly (Format=disk)
@@ -349,7 +349,7 @@ Not locking specifics, but the rough shape:
                   moose-vX.Y.Z-amd64.raw   (bare-metal USB)
                                      │
                                      ▼
-                              releases.onmoose.network
+                              releases.onmoose.io
                                      │
                                      ▼
                         stable.json (+ minisig) — see RELEASE_MANIFEST.md

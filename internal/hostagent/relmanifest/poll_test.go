@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// cdn is a stand-in for releases.onmoose.network: it serves whatever bytes the
+// cdn is a stand-in for releases.onmoose.io: it serves whatever bytes the
 // test puts in it, and can be made to fail the way a real host does.
 type cdn struct {
 	mu       sync.Mutex

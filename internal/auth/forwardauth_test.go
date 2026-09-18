@@ -15,7 +15,7 @@ import (
 // resolves to the same session, but through a distinct column so it can never be
 // replayed as a dashboard session, and validating it never bumps last_seen_at.
 
-const testFADomain = "cindy-fox.onmoose.network"
+const testFADomain = "cindy-fox.onmoose.io"
 
 func TestIssueForwardAuthPersistsAndValidates(t *testing.T) {
 	m, _, u, _ := fixture(t)

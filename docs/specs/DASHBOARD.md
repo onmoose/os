@@ -117,15 +117,15 @@ There is **no** in-product editor for an *installed* custom app in v1. The **Edi
 
 ## Locked: instance naming / routing — first-come bare slug, `--<user>` on collision
 
-Every instance needs a stable, unique, routable name — it's the LAN `.local` record (`DISCOVERY.md` # Per-app A records), the `.onmoose.network` subdomain (`MOOSE_NETWORK.md`), and the Caddy site block, all keyed on the instance slug.
+Every instance needs a stable, unique, routable name — it's the LAN `.local` record (`DISCOVERY.md` # Per-app A records), the `.onmoose.io` subdomain (`MOOSE_NETWORK.md`), and the Caddy site block, all keyed on the instance slug.
 
 **The scheme:**
 
 | Scenario | Slug | LAN | Public |
 |---|---|---|---|
-| First install of any scope (no conflict) | `<slug>` | `immich.local` | `immich.<box-id>.onmoose.network` |
-| Personal install when bare slug is taken | `<slug>--<user>` | `immich--alex.local` | `immich--alex.<box-id>.onmoose.network` |
-| Household install when bare slug is taken | `<slug>-2` | `immich-2.local` | `immich-2.<box-id>.onmoose.network` |
+| First install of any scope (no conflict) | `<slug>` | `immich.local` | `immich.<box-id>.onmoose.io` |
+| Personal install when bare slug is taken | `<slug>--<user>` | `immich--alex.local` | `immich--alex.<box-id>.onmoose.io` |
+| Household install when bare slug is taken | `<slug>-2` | `immich-2.local` | `immich-2.<box-id>.onmoose.io` |
 
 - **The bare slug is first-come, any scope.** The first instance of any app installed — whether household or personal — wins the clean name. On a collision, a personal instance appends the owner (`--<user>`); a household instance without an owner to name gets a numeric suffix (`-2`, `-3`). Scope is an attribute shown in the dashboard (Household / Yours grouping, owner label on the tile), not encoded in the hostname.
 - **Double dash (`--`) as the separator.** App slugs are kebab-case and can contain single hyphens (`home-assistant`), so a single `-` is ambiguous — `home-assistant-alex` can't be parsed into slug + user, but `home-assistant--alex` can.
@@ -133,10 +133,10 @@ Every instance needs a stable, unique, routable name — it's the LAN `.local` r
 
 ### Why this shape, and not the prettier dotted one
 
-The obvious alternative — `<user>.<slug>.<box-id>.onmoose.network` (`alex.immich.…`) — reads better but **breaks the cert architecture**, which is the decisive constraint:
+The obvious alternative — `<user>.<slug>.<box-id>.onmoose.io` (`alex.immich.…`) — reads better but **breaks the cert architecture**, which is the decisive constraint:
 
-- `MOOSE_NETWORK.md` (lines 27, 138–139) locks **one** wildcard DNS record `*.<box-id>.onmoose.network` and **one** wildcard Let's Encrypt cert `*.<box-id>.onmoose.network`, renewed quietly every ~60 days via ACME DNS-01.
-- **A TLS wildcard spans exactly one label — it does not cross dots.** `immich--alex.<box-id>.onmoose.network` is one label → covered. `alex.immich.<box-id>.onmoose.network` is *two* labels → **not** covered by `*.<box-id>…`. The dotted form would force a *separate* wildcard cert (`*.immich.<box-id>…`) issued per app, a new ACME round and DNS record on every install — destroying the "one cert, renew quietly" model.
+- `MOOSE_NETWORK.md` (lines 27, 138–139) locks **one** wildcard DNS record `*.<box-id>.onmoose.io` and **one** wildcard Let's Encrypt cert `*.<box-id>.onmoose.io`, renewed quietly every ~60 days via ACME DNS-01.
+- **A TLS wildcard spans exactly one label — it does not cross dots.** `immich--alex.<box-id>.onmoose.io` is one label → covered. `alex.immich.<box-id>.onmoose.io` is *two* labels → **not** covered by `*.<box-id>…`. The dotted form would force a *separate* wildcard cert (`*.immich.<box-id>…`) issued per app, a new ACME round and DNS record on every install — destroying the "one cert, renew quietly" model.
 - The LAN side agrees: Avahi publishes each instance as a flat, single-label A record `<slug>.local` (`DISCOVERY.md`). A single-label name resolves on every mDNS client; a multi-label `.local` name (the dotted `alex.immich.local`, or the old `<slug>.moose.local` infix shape) is **rejected outright by Linux's `nss-mdns`** and handled inconsistently by Android/Windows mDNS stacks. This — not just the cert architecture — is why both dimensions (app and user) collapse into one `--`-joined label. See `DISCOVERY.md` # Per-app A records.
 
 So both transports independently force **flat, single-label**. The dotted form was rejected not on taste but on the cert and mDNS constraints. The aesthetic cost is small in practice: these hostnames are clicked from dashboard tiles, rarely typed or read raw.
@@ -183,7 +183,7 @@ The menu button beside the name opens a small popup — a lighter-weight surface
 
 ### Open-app interaction
 
-Clicking a **running** tile's **logo opens the app in a new browser tab** at its own host (`<slug>.local` or `<slug>--<user>.local` depending on whether disambiguation was needed, or the `.onmoose.network` host when the remote toggle is on). The app runs on its own origin — that's the whole point of subdomain routing (`SPEC.md`: browser same-origin isolation). The dashboard is the launcher, not a frame/proxy around apps. A stopped or failed tile's logo does nothing — starting the service is a quick-menu action (see # Tile above).
+Clicking a **running** tile's **logo opens the app in a new browser tab** at its own host (`<slug>.local` or `<slug>--<user>.local` depending on whether disambiguation was needed, or the `.onmoose.io` host when the remote toggle is on). The app runs on its own origin — that's the whole point of subdomain routing (`SPEC.md`: browser same-origin isolation). The dashboard is the launcher, not a frame/proxy around apps. A stopped or failed tile's logo does nothing — starting the service is a quick-menu action (see # Tile above).
 
 ### First arrival / empty state
 

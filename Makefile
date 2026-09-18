@@ -446,7 +446,7 @@ seed-catalog:
 # The inert catalog URL and the seed file are target-specific, exported
 # variables, so they are in effect for the `dev` prerequisite's recipe too — the
 # brain reads both from the env, and cmd/brain defaults MOOSE_CATALOG_URL to the
-# real apex (https://onmoose.network). Without the override the first background
+# real catalog origin (https://catalog.onmoose.io). Without the override the first
 # sync would succeed and replace the seed with the published catalog, silently
 # dropping the app(s) under test. Port 1 has nothing listening, so the sync fails
 # fast (same inert-URL trick as dev/test-health.sh). seed-catalog runs first and

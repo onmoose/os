@@ -7,7 +7,7 @@
 moose's product pitch is "own your data and apps on hardware you control." Telemetry is the part of the product where we ask the user to send us *something*. Two principles fall out:
 
 1. **Off by default.** No toggle is friendly enough to justify defaulting on for a product whose whole pitch is data sovereignty. We accept the resulting low opt-in rate (peer projects land in the 5–15% range) as the price of the principle.
-2. **One endpoint we control.** Every byte the box sends goes to `telemetry.onmoose.network`, terminated on infrastructure moose operates. No third-party SaaS endpoints. The backend behind that endpoint is an infra implementation detail (see "Backend choice" below) — but the box never knows the difference.
+2. **One endpoint we control.** Every byte the box sends goes to `telemetry.onmoose.io`, terminated on infrastructure moose operates. No third-party SaaS endpoints. The backend behind that endpoint is an infra implementation detail (see "Backend choice" below) — but the box never knows the difference.
 
 Telemetry is a **signal that accelerates our reaction time**, not a gate (`UPDATES.md` # Telemetry and rollout health). Boxes with telemetry off get the same updates, the same kill-switch protection, the same release timeline. They just don't contribute fleet signal.
 
@@ -70,7 +70,7 @@ Consequences:
 
 ## Transport
 
-- Box POSTs JSON to `https://telemetry.onmoose.network/v1/events` and `https://telemetry.onmoose.network/v1/crashes`.
+- Box POSTs JSON to `https://telemetry.onmoose.io/v1/events` and `https://telemetry.onmoose.io/v1/crashes`.
 - Batched: usage events buffer up to 1 hour or 64 KB, whichever comes first. Crashes post immediately (or queue if offline; retry on next boot).
 - Payload is plain JSON, gzipped. No additional encryption layer beyond TLS.
 - **Strict allowlist on the receiver.** Unknown event types or unknown fields are dropped at the edge with a `telemetry_schema_drift` counter — protects against accidental over-sharing if a future client ships a new field before this spec is updated.
@@ -78,7 +78,7 @@ Consequences:
 
 ## Backend choice
 
-The endpoint is fixed (`telemetry.onmoose.network`). The box always POSTs there; the backend is an implementation detail behind it.
+The endpoint is fixed (`telemetry.onmoose.io`). The box always POSTs there; the backend is an implementation detail behind it.
 
 **v1: PostHog Cloud.** Chosen for time-to-ship over self-hosted ops cost. This must be disclosed in the first-run expandable disclosure — the wording cannot say "stays with moose" because it doesn't:
 
@@ -109,7 +109,7 @@ A single page under Settings → Privacy — an admin-only Box panel, since the 
 - `UPDATES.md` # Telemetry and rollout health — telemetry as halt-fast signal, not gate.
 - `RELEASE_MANIFEST.md` # Kill switch — works regardless of telemetry state; telemetry just speeds detection.
 - `LOCAL_ANALYTICS.md` — the user-facing analytics that *never leave the box*. Distinct concern, distinct doc.
-- `MOOSE_NETWORK.md` — `telemetry.onmoose.network` lives in the cloud surface alongside `releases.`, `store.`, and DNS.
+- `MOOSE_NETWORK.md` — `telemetry.onmoose.io` lives in the cloud surface alongside `releases.`, `store.`, and DNS.
 
 ## Open
 

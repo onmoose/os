@@ -56,7 +56,7 @@ SEED=/var/lib/moose/seed.json
 # Host the dashboard + /api + /setup are served under, resolved per scenario below
 # (just before step 7, once json_str is defined). An UNPROVISIONED hosted box has no
 # box-id yet, so the brain installs the route under the appliance-style "moose.local"
-# apex; a SEEDED/FROZEN box installs it under "<box-id>.onmoose.network" — the apex of
+# apex; a SEEDED/FROZEN box installs it under "<box-id>.onmoose.io" — the apex of
 # the box's wildcard cert (C3b, #207). The assertion is a Host-header route match over
 # localhost — no DNS/mDNS involved. Default is the unprovisioned host.
 DASH_HOST=moose.local
@@ -458,17 +458,17 @@ wait_brain_log() { # pattern [timeout_s]
 
 # Resolve the Host the brain actually serves the dashboard under for this scenario
 # (see DASH_HOST above). A provisioned box (seeded/frozen) serves at its wildcard apex
-# "<box-id>.onmoose.network", not "moose.local" — so steps 7–9 must probe that host or
+# "<box-id>.onmoose.io", not "moose.local" — so steps 7–9 must probe that host or
 # Caddy's catch-all answers 404. Seeded
 # reads the box-id from the just-materialized seed; frozen uses the persisted identity
 # carried in MODE (the brain ignores this boot's re-delivered seed, so the route stays
 # under the original box-id).
 case "$MODE" in
-seeded)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.network" ;;
-frozen:*) DASH_HOST="${MODE#frozen:}.onmoose.network" ;;
-access)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.network" ;;
-update)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.network" ;;
-ssh)      DASH_HOST="$(json_str "$SEED" box_id).onmoose.network" ;;
+seeded)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+frozen:*) DASH_HOST="${MODE#frozen:}.onmoose.io" ;;
+access)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+update)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+ssh)      DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 esac
 echo "cloud-assertions: probing control plane at Host=$DASH_HOST (mode=$MODE)"
 
@@ -557,7 +557,7 @@ seeded)
 
     # The synchronous seed ingestion ran before the brain served — in fact it ran
     # before steps 7-8 above could pass: the dashboard + /api answered under
-    # DASH_HOST=<box_id>.onmoose.network, and the brain only installs that box-id route
+    # DASH_HOST=<box_id>.onmoose.io, and the brain only installs that box-id route
     # AFTER reading the seed and learning its box-id (cmd/brain loadHostedEnvironment).
     # So the milestone has causally already been logged by now; this confirms the
     # exact line was emitted. Use the flush-lag-tolerant waiter — a single-shot grep
@@ -568,7 +568,7 @@ seeded)
 
     # The seed's complete acme-dns enrollment drives the brain's wildcard-TLS pass
     # (cmd/brain EnsureWildcardTLS): it configures Caddy's acme-dns DNS-01 issuer for
-    # the apex + "*.$box_id.onmoose.network" and adds the :443 listener. Real issuance
+    # the apex + "*.$box_id.onmoose.io" and adds the :443 listener. Real issuance
     # can't run here — air-gapped (restrict=on), no reach to acme-dns or Let's Encrypt
     # — so no cert is obtained; what this asserts is that the brain REACHES and APPLIES
     # the config and :443 actually binds. That application is the exact step a booted
@@ -600,14 +600,14 @@ seeded)
     # single-shot grep can still lose the race to the docker json-log flush.
     wait_brain_log 'caddy: wildcard TLS configured' || \
         fail "brain did not configure wildcard TLS on the seeded boot (#278 — EnsureWildcardTLS not reached/applied)"
-    echo "cloud-assertions: wildcard TLS configured (acme-dns DNS-01 issuer + :443 set for *.$box_id.onmoose.network)"
+    echo "cloud-assertions: wildcard TLS configured (acme-dns DNS-01 issuer + :443 set for *.$box_id.onmoose.io)"
 
     # (c) Caddy's certificate store survives a container recreate (#433). The cert
     # this box would obtain lands in /data; on the writable layer it dies with the
     # container and the box has to place a NEW Let's Encrypt order — not a renewal,
     # so no ARI exemption, and against a "50 new certificates per 7 days" budget
     # that every hosted box shares because they are all under one registered domain
-    # (onmoose.network). This lane is air-gapped, so it cannot watch for the absence
+    # (onmoose.io). This lane is air-gapped, so it cannot watch for the absence
     # of an issuance; what it CAN prove is the property that absence rests on — the
     # store is on a named volume with a life of its own, not in the container.
     mount_name="$(docker inspect moose-caddy \
@@ -638,7 +638,7 @@ frozen:*)
     # A DIFFERENT seed was delivered this boot, but the brain's identity is frozen in
     # SQLite: it loads the persisted box-id and ignores the new seed. Two proofs that
     # need no admin session:
-    #   1. The dashboard + /api checks above ran against DASH_HOST=<expect>.onmoose.network
+    #   1. The dashboard + /api checks above ran against DASH_HOST=<expect>.onmoose.io
     #      (the ORIGINAL box-id) and passed — if a re-delivered seed had re-keyed the
     #      box, Caddy's dashboard route would be under this boot's box-id and those
     #      probes would have 404'd. So serving under <expect> *is* the frozen-identity
@@ -677,7 +677,7 @@ access)
     [ -f "$SEED" ] || fail "access mode but $SEED absent (seed materializer did not run?)"
     box_id="$(json_str "$SEED" box_id)"
     [ -n "$box_id" ] || fail "access mode: could not read box_id from $SEED"
-    apex="${box_id}.onmoose.network"
+    apex="${box_id}.onmoose.io"
     app_host="whoami.${apex}"
 
     # The signed owner assertion the harness minted with the test-portal private key,
@@ -712,7 +712,7 @@ access)
     #         alone. A Domain here would send the ADMIN session to every app subdomain,
     #         where a third-party app could replay it as the owner. This is the single
     #         most dangerous regression in the whole epic and it is one attribute wide.
-    #       - moose_forward_auth carries Domain=<box-id>.onmoose.network ⇒ deliberately
+    #       - moose_forward_auth carries Domain=<box-id>.onmoose.io ⇒ deliberately
     #         domain-wide, which is what lets the browser present it to an app subdomain
     #         (and is why the app route must strip it — probed below).
     sess_line="$(cookie_line "$sso_resp" moose_session)"
@@ -758,7 +758,7 @@ access)
     # 3a. RESTRICTED, NO session ⇒ 302 to the box login. Now that the app has
     #     converged, an unauthenticated GET exercises the forward_auth gate's closed
     #     path: the brain verify 401s and Caddy turns it into a redirect to the box
-    #     dashboard (https://<box-id>.onmoose.network/, the login).
+    #     dashboard (https://<box-id>.onmoose.io/, the login).
     n_resp="$(full_get / "$app_host" 2>/dev/null || true)"
     n_status="$(status_of "$n_resp")"
     grep -q ' 302' <<<"$n_status" \
@@ -969,7 +969,7 @@ ssh)
     [ -f "$SEED" ] || fail "ssh mode but $SEED absent (seed materializer did not run?)"
     box_id="$(json_str "$SEED" box_id)"
     [ -n "$box_id" ] || fail "ssh mode: could not read box_id from $SEED"
-    apex="${box_id}.onmoose.network"
+    apex="${box_id}.onmoose.io"
 
     DROPIN=/etc/ssh/sshd_config.d/moose-allowed.conf
     KEYSDIR=/etc/ssh/moose-authorized-keys
@@ -1279,7 +1279,7 @@ update)
     [ -f "$SEED" ] || fail "update mode but $SEED absent (seed materializer did not run?)"
     box_id="$(json_str "$SEED" box_id)"
     [ -n "$box_id" ] || fail "update mode: could not read box_id from $SEED"
-    apex="${box_id}.onmoose.network"
+    apex="${box_id}.onmoose.io"
 
     # 1. owner session. The trigger is admin-only, so this boot is seeded with the
     #    test-portal key and given a signed owner assertion, exactly as the access

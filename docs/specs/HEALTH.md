@@ -130,7 +130,7 @@ Issues that exist to be visible without blocking anything. Same shape; all block
 |---|---|---|---|
 | `update-available` | info | 2 | A brain/UI, app, or OS update is ready to apply. See `UPDATES.md`. |
 | `backup-overdue` | warning | 2 | No successful backup within the configured window. See `STORAGE.md` (backup architecture, deferred). |
-| `tls-cert-near-expiry` | warning | 1/2 | A `.onmoose.network` certificate is within its renewal-failure window. See `MOOSE_NETWORK.md`. |
+| `tls-cert-near-expiry` | warning | 1/2 | A `.onmoose.io` certificate is within its renewal-failure window. See `MOOSE_NETWORK.md`. |
 | `reboot-required` | info | 2 | A kernel or security update was applied that needs a reboot to take effect. Tier-2 action: reboot now / schedule. See `UPDATES.md`. |
 | `ram-pressure` | warning | 1 | The box is under sustained memory pressure (swap thrashing). Informational — points the user at the per-container monitor to see what's heavy. See `LOCAL_ANALYTICS.md`. |
 | `journal-disk-pressure` | warning | 2 | The persistent journal is near its size cap and competing for OS-drive space. Tier-2 action: vacuum the journal. See `LOGGING.md`. |
@@ -187,7 +187,7 @@ These defaults apply to **every** detector unless its row overrides them. `HEALT
 | `schema-migration-failed` | migration runner result | boot | migration aborted |
 | `bootstrap-state-mismatch` | bootstrap marker present but DB absent | boot | mismatch |
 | `version-mismatch` | host-agent's reported `agent_version` vs the brain's `minimumAgentVersion` floor, on handshake | each handshake | agent version older than the minimum *(built)* |
-| `tls-cert-near-expiry` | NotAfter of the served `.onmoose.network` cert | daily | within renewal-failure window |
+| `tls-cert-near-expiry` | NotAfter of the served `.onmoose.io` cert | daily | within renewal-failure window |
 | `update-available` | release/catalog manifest vs installed | per refresh | newer version present |
 | `backup-overdue` | last successful backup timestamp | hourly | older than window *(deferred with backup)* |
 | `store-write-failed` | store write error (reactive, not timed) | on error | any persistent write failure *(built)* |
@@ -220,11 +220,11 @@ These defaults apply to **every** detector unless its row overrides them. `HEALT
 
 ### What we deliberately do not check
 
-moose is **closed-by-default, single-node, no email, no public DNS** except the opt-in `.onmoose.network` path. Several checks that a public-facing neighbor (Yunohost's `diagnosis`) treats as core are **non-goals** — written down so a future "parity" PR doesn't sleepwalk them in:
+moose is **closed-by-default, single-node, no email, no public DNS** except the opt-in `.onmoose.io` path. Several checks that a public-facing neighbor (Yunohost's `diagnosis`) treats as core are **non-goals** — written down so a future "parity" PR doesn't sleepwalk them in:
 
 - **Email deliverability** — reverse-DNS, DNS blocklists, SMTP port reachability. We ship no mail stack (`NOTIFICATIONS.md` v1 is dashboard-only).
 - **Public port exposure / open-port scans.** Closed-by-default means nothing is meant to be reachable from the internet; we don't probe for it.
-- **Public DNS-record correctness / IPv6 reachability.** The `.onmoose.network` path owns its own cert/DNS health (`tls-cert-near-expiry`); there's no user-managed public DNS to validate.
+- **Public DNS-record correctness / IPv6 reachability.** The `.onmoose.io` path owns its own cert/DNS health (`tls-cert-near-expiry`); there's no user-managed public DNS to validate.
 - **fail2ban / intrusion-detection status.** Brute-force throttling on the login endpoint is its own item (`NEXT.md` Tier 4, `AUTH.md`), not a diagnosis check.
 - **Kernel-panic / coredump capture.** Tracked as a `LOGGING.md`/`TELEMETRY.md` concern (`NEXT.md` Tier 4), not a health detector — by the time it'd raise, the box rebooted.
 

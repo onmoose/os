@@ -60,7 +60,7 @@ func fakeUpdateTarget() protocol.UpdateTarget {
 		out.Detail = "updatetarget: image reference is not pinned to a digest: brain image \"ghcr.io/onmoose/brain:v0.8.0\""
 	case protocol.UpdateTargetUnreachable:
 		out.State = protocol.UpdateTargetUnreachable
-		out.Detail = "updatetarget: fetch https://onmoose.network/api/updates/target: dial tcp: connection refused"
+		out.Detail = "updatetarget: fetch https://api.onmoose.io/api/updates/target: dial tcp: connection refused"
 	case protocol.UpdateTargetDisabled:
 		// No loop ever started, so nothing was checked and no URL was
 		// resolved — both fields stay empty, as they do on a real box.

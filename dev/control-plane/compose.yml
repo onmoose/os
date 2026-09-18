@@ -25,7 +25,7 @@ services:
     # Appliance rides stock caddy:2-alpine (it does no ACME — plain-HTTP .local).
     # The hosted profile sets MOOSE_CADDY_IMAGE (in the brain's environment, which
     # `docker compose` inherits) to a custom build with the caddy-dns/acmedns
-    # module compiled in, needed for the "*.<box-id>.onmoose.network" wildcard cert
+    # module compiled in, needed for the "*.<box-id>.onmoose.io" wildcard cert
     # via ACME DNS-01 (ENVIRONMENT.md # Networking & discovery; os #207 / C3b).
     # The recipe is ./caddy-acmedns/Dockerfile; one env var selects the image so
     # the future appliance secure-URLs toggle can reuse the same build.
@@ -36,11 +36,11 @@ services:
     volumes:
       - ./caddy.json:/etc/caddy/caddy.json:ro
       # Caddy's certificate store. On hosted this holds the ACME account key and
-      # the issued "*.<box-id>.onmoose.network" wildcard; without a volume it lives
+      # the issued "*.<box-id>.onmoose.io" wildcard; without a volume it lives
       # in the container's writable layer and a recreate throws it away, so the
       # box has to place a fresh Let's Encrypt order (#433). That order is not a
       # renewal, so it gets no ARI rate-limit exemption, and every hosted box is
-      # a subdomain of ONE registered domain (onmoose.network) whose "50 new
+      # a subdomain of ONE registered domain (onmoose.io) whose "50 new
       # certificates per 7 days" budget the whole fleet shares. Losing the store
       # is therefore a fleet-wide cost from a per-box event. Named so the volume
       # is stable whatever the compose project is called, like the network below.

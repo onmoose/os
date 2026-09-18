@@ -161,8 +161,8 @@ const (
 // the browser sees one origin there too (web-ui/vite.config.ts). So answering
 // a preflight buys no caller anything, and answering one with a reflected
 // Origin plus Access-Control-Allow-Credentials would cost a great deal: on
-// hosted, apps are `<slug>.<box-id>.onmoose.network` and the dashboard is
-// `<box-id>.onmoose.network`, which are same-site under a registrable domain
+// hosted, apps are `<slug>.<box-id>.onmoose.io` and the dashboard is
+// `<box-id>.onmoose.io`, which are same-site under a registrable domain
 // that is not on the Public Suffix List (ENVIRONMENT.md # Public DNS). The
 // owner's SameSite=Lax session cookie therefore rides a fetch from any app to
 // the dashboard API, and a reflected header would let the app read the reply.
@@ -385,7 +385,7 @@ type InstanceDTO struct {
 
 func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
 	// On hosted, the app's sole URL is public HTTPS at
-	// "<slug>.<box-id>.onmoose.network" (ENVIRONMENT.md # Networking & discovery) —
+	// "<slug>.<box-id>.onmoose.io" (ENVIRONMENT.md # Networking & discovery) —
 	// no mDNS, no ".local" fallback. On appliance, prefer the name actually
 	// announced over Avahi (MDNSName), which may be the box-qualified collision
 	// fallback "<slug>-<box>.local"; fall back to the reconstructed primary

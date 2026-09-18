@@ -120,9 +120,9 @@ func TestEnsureWildcardTLS(t *testing.T) {
 	defer srv.Close()
 	c := New(srv.URL)
 
-	subjects := []string{"cindy-fox.onmoose.network", "*.cindy-fox.onmoose.network"}
+	subjects := []string{"cindy-fox.onmoose.io", "*.cindy-fox.onmoose.io"}
 	enr := EnrollmentCredentials{Subdomain: "abc-123", Username: "u", Password: "p"}
-	if err := c.EnsureWildcardTLS(context.Background(), subjects, "https://auth.onmoose.network", enr); err != nil {
+	if err := c.EnsureWildcardTLS(context.Background(), subjects, "https://auth.onmoose.io", enr); err != nil {
 		t.Fatalf("EnsureWildcardTLS: %v", err)
 	}
 
@@ -140,8 +140,8 @@ func TestEnsureWildcardTLS(t *testing.T) {
 	// policy alone only says *how* to manage a matching name; without an automate
 	// entry Caddy never places the wildcard order (the live #278 symptom).
 	automate := put.body["certificates"].(map[string]any)["automate"].([]any)
-	if len(automate) != 1 || automate[0] != "*.cindy-fox.onmoose.network" {
-		t.Errorf("certificates.automate = %v, want [*.cindy-fox.onmoose.network]", automate)
+	if len(automate) != 1 || automate[0] != "*.cindy-fox.onmoose.io" {
+		t.Errorf("certificates.automate = %v, want [*.cindy-fox.onmoose.io]", automate)
 	}
 
 	// Exactly one automation policy — the wildcard, pinned to the acme-dns issuer.
@@ -151,10 +151,10 @@ func TestEnsureWildcardTLS(t *testing.T) {
 	}
 	policy := policies[0].(map[string]any)
 	gotSubjects := policy["subjects"].([]any)
-	if len(gotSubjects) != 1 || gotSubjects[0] != "*.cindy-fox.onmoose.network" {
-		t.Errorf("policy subjects = %v, want [*.cindy-fox.onmoose.network]", gotSubjects)
+	if len(gotSubjects) != 1 || gotSubjects[0] != "*.cindy-fox.onmoose.io" {
+		t.Errorf("policy subjects = %v, want [*.cindy-fox.onmoose.io]", gotSubjects)
 	}
-	assertACMEIssuer(t, policy, "https://auth.onmoose.network", "u", "p", "abc-123")
+	assertACMEIssuer(t, policy, "https://auth.onmoose.io", "u", "p", "abc-123")
 
 	// The :443 listener is added alongside :80.
 	if admin.find("PATCH", "/servers/moose/listen") == nil {
@@ -279,7 +279,7 @@ func TestAddRoute_ForwardAuthGate(t *testing.T) {
 			Upstream:    "moose-brain:8080",
 			VerifyPath:  "/_moose/forward-auth/verify",
 			CopyHeaders: []string{"X-Moose-User", "X-Moose-User-Id"},
-			LoginURL:    "https://cindy-fox.onmoose.network/",
+			LoginURL:    "https://cindy-fox.onmoose.io/",
 		},
 	})
 	if len(handle) != 2 {
@@ -339,7 +339,7 @@ func TestAddRoute_ForwardAuthGate(t *testing.T) {
 	if redir["handler"] != "static_response" || redir["status_code"].(float64) != 302 {
 		t.Errorf("redirect = %v, want static_response 302", redir)
 	}
-	if loc := redir["headers"].(map[string]any)["Location"].([]any); len(loc) != 1 || loc[0] != "https://cindy-fox.onmoose.network/" {
+	if loc := redir["headers"].(map[string]any)["Location"].([]any); len(loc) != 1 || loc[0] != "https://cindy-fox.onmoose.io/" {
 		t.Errorf("redirect Location = %v", loc)
 	}
 
@@ -364,7 +364,7 @@ func TestAddRoute_PublicPathsCarveOutOfTheGate(t *testing.T) {
 		ForwardAuth: &ForwardAuthConfig{
 			Upstream: "moose-brain:8080", VerifyPath: "/_moose/forward-auth/verify",
 			CopyHeaders: []string{"X-Moose-User", "X-Moose-User-Id"},
-			LoginURL:    "https://cindy-fox.onmoose.network/",
+			LoginURL:    "https://cindy-fox.onmoose.io/",
 		},
 	})
 	if len(handle) != 2 {
@@ -587,24 +587,24 @@ func TestSplitCertSubjects(t *testing.T) {
 	}{
 		{
 			name:         "base then wildcard",
-			subjects:     []string{"cindy-fox.onmoose.network", "*.cindy-fox.onmoose.network"},
-			wantWildcard: "*.cindy-fox.onmoose.network",
-			wantBase:     "cindy-fox.onmoose.network",
+			subjects:     []string{"cindy-fox.onmoose.io", "*.cindy-fox.onmoose.io"},
+			wantWildcard: "*.cindy-fox.onmoose.io",
+			wantBase:     "cindy-fox.onmoose.io",
 		},
 		{
 			name:         "wildcard then base",
-			subjects:     []string{"*.cindy-fox.onmoose.network", "cindy-fox.onmoose.network"},
-			wantWildcard: "*.cindy-fox.onmoose.network",
-			wantBase:     "cindy-fox.onmoose.network",
+			subjects:     []string{"*.cindy-fox.onmoose.io", "cindy-fox.onmoose.io"},
+			wantWildcard: "*.cindy-fox.onmoose.io",
+			wantBase:     "cindy-fox.onmoose.io",
 		},
 		{
 			name:     "no wildcard",
-			subjects: []string{"cindy-fox.onmoose.network"},
+			subjects: []string{"cindy-fox.onmoose.io"},
 			wantErr:  true,
 		},
 		{
 			name:     "no base",
-			subjects: []string{"*.cindy-fox.onmoose.network"},
+			subjects: []string{"*.cindy-fox.onmoose.io"},
 			wantErr:  true,
 		},
 		{

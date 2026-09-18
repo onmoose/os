@@ -76,7 +76,7 @@ EOF
 # /etc/hosts. That is invisible until something must resolve a public name: the
 # box reaches the metadata service and its own :80 by IP, so it boots and serves,
 # but the brain's Caddy cannot resolve acme-v02.api.letsencrypt.org or
-# auth.onmoose.network, so the wildcard-cert ACME flow never starts (#207 / C3b)
+# auth.onmoose.io, so the wildcard-cert ACME flow never starts (#207 / C3b)
 # and :443 stays certless. Docker also derives a bridge container's resolver from
 # the host's /etc/resolv.conf; with the file absent, moose-caddy (a moose-ingress
 # container) inherits no usable resolver — the same Docker-DNS gap the cloud

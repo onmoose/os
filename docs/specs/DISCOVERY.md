@@ -2,7 +2,7 @@
 
 > Working spec for how moose boxes and their apps are *found* on the local network — hostname resolution, service advertisement, and the publisher daemon. Touches `MOOSE_NETWORK.md` (URL schemes, "Use secure URLs" toggle), `APP_LIFECYCLE.md` (reconciler owns Avahi state alongside Caddy), `STORAGE.md` (Samba/SMB advertisement), `FIRST_RUN.md` (Android-household nudge toward secure URLs), `BOOT.md` (Avahi unit ordering).
 
-> **Environment profiles.** This entire doc is `appliance`-only. The **hosted** profile (cloud VM) has no LAN, no Avahi, and no mDNS — apps resolve through public DNS at `<slug>.<box-id>.onmoose.network`. See `ENVIRONMENT.md` # Networking & discovery (hosted v1).
+> **Environment profiles.** This entire doc is `appliance`-only. The **hosted** profile (cloud VM) has no LAN, no Avahi, and no mDNS — apps resolve through public DNS at `<slug>.<box-id>.onmoose.io`. See `ENVIRONMENT.md` # Networking & discovery (hosted v1).
 
 ## Stance
 
@@ -10,7 +10,7 @@ Discovery is the bridge between "the box is on the LAN" and "the user can type a
 
 moose's posture is **Avahi as the LAN nameserver, per-app records published by the reconciler, no client-side magic required.** Discoverability is owned by the brain in the same lifecycle as Caddy site config — install an app, two things get published; uninstall, two things get torn down.
 
-We also accept up-front that **`.local` is a desktop story.** Android browsers do not resolve `.local` at the OS level (see below). The `<box-id>.onmoose.network` HTTPS path in `MOOSE_NETWORK.md` exists primarily to serve that audience; it is the compatibility path, not a premium feature.
+We also accept up-front that **`.local` is a desktop story.** Android browsers do not resolve `.local` at the OS level (see below). The `<box-id>.onmoose.io` HTTPS path in `MOOSE_NETWORK.md` exists primarily to serve that audience; it is the compatibility path, not a premium feature.
 
 ## Locked: Avahi as the publisher
 
@@ -35,7 +35,7 @@ Three categories of records:
 
 For each installed app instance with slug `<slug>`: `<slug>.local A <lan-ip>`. The slug is the *instance* slug: the bare `<base>` is first-come for any scope — so the first Immich installed, household or personal, gets `immich.local`. A personal instance that collides with an existing bare name trails the owner (`<base>--<user>`, e.g. `immich--alex.local`); a colliding household instance gets a numeric suffix (`immich-2.local`). See `DASHBOARD.md` # instance naming and `APP_LIFECYCLE.md` # slug derivation.
 
-**Single-label, on purpose.** The name is `<slug>.local`, *not* `<slug>.moose.local`. The `--` in the slug keeps the user dimension within one label; there is no `.moose` infix. This is load-bearing: a name with a dot before `.local` is *multi-label*, and `nss-mdns` (the Linux mDNS resolver) rejects multi-label `.local` names outright — it never queries the network, so `getaddrinfo` (and therefore `curl`, browsers, every normal client) returns NXDOMAIN. `systemd-resolved`'s mDNS behaves the same way. The earlier `<slug>.moose.local` shape was multi-label and so never resolved on Linux at all. The `.moose` infix also bought nothing: mDNS (RFC 6762) has no zones, delegation, or wildcards (see # Why subdomains can't be wildcarded), so `<slug>.moose.local` was never a *subdomain* of `moose.local` — just a flat name that happened to contain dots, published individually like any other. Single-label `<slug>.local` resolves on every mDNS client (verified: a single-label name published by Avahi resolves through the same Linux `getaddrinfo` path that rejects the multi-label form). The box's own name stays `moose.local`; the `.onmoose.network` HTTPS scheme keeps its hierarchical `<slug>.<box-id>.onmoose.network` shape with its wildcard cert — the two namespaces are resolved by entirely different mechanisms and need not match. See `DECISIONS.md` (2026-05-31).
+**Single-label, on purpose.** The name is `<slug>.local`, *not* `<slug>.moose.local`. The `--` in the slug keeps the user dimension within one label; there is no `.moose` infix. This is load-bearing: a name with a dot before `.local` is *multi-label*, and `nss-mdns` (the Linux mDNS resolver) rejects multi-label `.local` names outright — it never queries the network, so `getaddrinfo` (and therefore `curl`, browsers, every normal client) returns NXDOMAIN. `systemd-resolved`'s mDNS behaves the same way. The earlier `<slug>.moose.local` shape was multi-label and so never resolved on Linux at all. The `.moose` infix also bought nothing: mDNS (RFC 6762) has no zones, delegation, or wildcards (see # Why subdomains can't be wildcarded), so `<slug>.moose.local` was never a *subdomain* of `moose.local` — just a flat name that happened to contain dots, published individually like any other. Single-label `<slug>.local` resolves on every mDNS client (verified: a single-label name published by Avahi resolves through the same Linux `getaddrinfo` path that rejects the multi-label form). The box's own name stays `moose.local`; the `.onmoose.io` HTTPS scheme keeps its hierarchical `<slug>.<box-id>.onmoose.io` shape with its wildcard cert — the two namespaces are resolved by entirely different mechanisms and need not match. See `DECISIONS.md` (2026-05-31).
 
 **Collision fallback.** Single-label names share the flat `.local` namespace with every other device on the LAN, so `photos.local` could clash with, say, a printer. On an Avahi name collision the publisher retries once with a box-qualified name `<slug>-<box>.local` (e.g. `photos-moose.local`, where `<box>` is the box's hostname label). The publish call returns the name that actually won; the reconciler uses *that* returned name for both the Caddy route and the URL shown in the dashboard, so the route and the announcement never disagree. If both the primary and the fallback collide, publish fails and the install surfaces the error (rare; same class as the box `hostname-conflict` issue below).
 
@@ -121,7 +121,7 @@ Three options were considered:
 
 Android does not wire mDNS into `getaddrinfo`. A browser query for `photos.local` is sent to the configured unicast DNS server (the router), which returns NXDOMAIN. There is no fallback. This is by design — Google has battery, multicast-on-WiFi-cost, and security reasons, and their preferred discovery model is cloud-mediated (Cast, Nearby).
 
-Implication for moose: **households with Android users need `<box-id>.onmoose.network` HTTPS URLs** (`MOOSE_NETWORK.md`), where resolution goes through public DNS. The "Use secure URLs" toggle is, in practical user-facing terms, the *"my household has Android devices"* toggle.
+Implication for moose: **households with Android users need `<box-id>.onmoose.io` HTTPS URLs** (`MOOSE_NETWORK.md`), where resolution goes through public DNS. The "Use secure URLs" toggle is, in practical user-facing terms, the *"my household has Android devices"* toggle.
 
 Two follow-ups:
 
@@ -142,7 +142,7 @@ These are not bugs we can fix in moose's code, but support-load realities to ant
 ## What we explicitly don't do
 
 - **No wildcard records.** Doesn't exist in mDNS; not worth trying to fake.
-- **No private CA for `.local` HTTPS.** `.local` + Let's Encrypt is impossible (no public DNS). Installing a private CA on every client device is a non-starter for our audience. `.local` is HTTP-only by definition; HTTPS goes via `<box-id>.onmoose.network`. Stated here to forestall the "just ship a private CA" suggestion.
+- **No private CA for `.local` HTTPS.** `.local` + Let's Encrypt is impossible (no public DNS). Installing a private CA on every client device is a non-starter for our audience. `.local` is HTTP-only by definition; HTTPS goes via `<box-id>.onmoose.io`. Stated here to forestall the "just ship a private CA" suggestion.
 - **No DNS-SD service catalog for apps.** Dashboard is the browse surface, not Finder's "Network" sidebar. We may revisit if a use case emerges.
 - **No LLMNR.** Microsoft's old multicast-name protocol. Modern Windows leans on mDNS-with-Bonjour; LLMNR doesn't carry service records and is being phased out for security reasons. Not worth supporting.
 

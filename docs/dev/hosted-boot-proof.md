@@ -1,6 +1,6 @@
 # Hosted HTTPS bring-up & the cloud boot-proof — how it works, how to debug
 
-The hosted box gets its `*.<box-id>.onmoose.network` wildcard HTTPS with **no toggle**: it happens on every boot, driven by the brain. This page is the "where we are now" view for that path and its air-gapped test lane — read it before chasing a red cloud boot-proof or a "`:443` doesn't bind" report. **As of the entry that added this doc, the path works and the lane is green**; the notes below are the map for when it isn't.
+The hosted box gets its `*.<box-id>.onmoose.io` wildcard HTTPS with **no toggle**: it happens on every boot, driven by the brain. This page is the "where we are now" view for that path and its air-gapped test lane — read it before chasing a red cloud boot-proof or a "`:443` doesn't bind" report. **As of the entry that added this doc, the path works and the lane is green**; the notes below are the map for when it isn't.
 
 The design source of truth is `../specs/ENVIRONMENT.md` # Networking & discovery and # Provisioning & first-boot; the lane's shape is `../specs/TESTING.md` # Hosted cloud variant. This doc is the operational companion — the flow, the log lines, and the failure-mode → where-to-look table.
 
@@ -9,12 +9,12 @@ The design source of truth is `../specs/ENVIRONMENT.md` # Networking & discovery
 1. **Seed lands.** `moose-seed.service` materializes `/var/lib/moose/seed.json` (delivered by the provider's cloud-init on a real box, or by an SMBIOS credential in the QEMU lane) *before* host-agent launches the brain. The seed is `{box_id, assertion_verification_key, enrollment, update_target_url}`; `assertion_verification_key` is the portal's Ed25519 public key (base64) the box verifies owner sign-in assertions against, `enrollment` is the per-box acme-dns account `{subdomain, username, password}`, and `update_target_url` is optional and read by host-agent only.
 2. **Brain ingests it.** On the first hosted boot `cmd/brain`'s `loadHostedEnvironment` reads the seed, persists the assertion key + enrollment + box-id (box-id last, as the commit marker), and logs **`hosted: provisioning seed ingested`**. On every later boot it loads the *persisted* identity and ignores any re-delivered seed (the identity is frozen in SQLite). An absent/unreadable seed logs `hosted box has no provisioning seed …` and the box stays pre-provisioned (no box-id, no wildcard pass) rather than crashing.
 3. **Wildcard TLS is applied.** If `profile == hosted` **and** `enrollment.Complete()`, the brain calls `caddy.EnsureWildcardTLS`, which:
-   - PUTs Caddy's `tls` app: the wildcard `*.<box-id>.onmoose.network` in **`certificates.automate`** (the "what to obtain") plus an automation policy pinning it to the acme-dns **DNS-01** issuer (the "how"). Both are required — a policy without an automate entry never places the order (this was the #278/#301 bug; see `../progress/hosted-wildcard-cert-automate.md`).
+   - PUTs Caddy's `tls` app: the wildcard `*.<box-id>.onmoose.io` in **`certificates.automate`** (the "what to obtain") plus an automation policy pinning it to the acme-dns **DNS-01** issuer (the "how"). Both are required — a policy without an automate entry never places the order (this was the #278/#301 bug; see `../progress/hosted-wildcard-cert-automate.md`).
    - PATCHes the server's `listen` to `[":80", ":443"]`, binding `:443`.
    - Logs **`caddy: wildcard TLS configured`**. This is synchronous config only — Caddy obtains the cert in the background on its own schedule, so a slow/unreachable ACME never blocks startup and `:443` binds regardless of whether a cert exists yet.
-4. **Two-path cert model.** The **wildcard** `*.<box-id>` is obtained via acme-dns DNS-01 (challenge at the delegated `_acme-challenge.<box-id>`). The **apex** `<box-id>.onmoose.network` (the dashboard host) is *not* routed through acme-dns — Caddy's default issuer gets it over tls-alpn-01/http-01 once the dashboard route names it. So exactly one name touches acme-dns; there is no order-vs-order race to manage.
+4. **Two-path cert model.** The **wildcard** `*.<box-id>` is obtained via acme-dns DNS-01 (challenge at the delegated `_acme-challenge.<box-id>`). The **apex** `<box-id>.onmoose.io` (the dashboard host) is *not* routed through acme-dns — Caddy's default issuer gets it over tls-alpn-01/http-01 once the dashboard route names it. So exactly one name touches acme-dns; there is no order-vs-order race to manage.
 
-Net: a provisioned box logs both milestones, binds `:443`, and serves every `<slug>.<box-id>.onmoose.network` from the one wildcard cert.
+Net: a provisioned box logs both milestones, binds `:443`, and serves every `<slug>.<box-id>.onmoose.io` from the one wildcard cert.
 
 ## The boot-proof lane
 

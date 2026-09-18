@@ -215,7 +215,7 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ACCEL=kvm; fi
 #     path runs.
 #   - enrollment: a COMPLETE acme-dns credential block, so the brain runs its
 #     wildcard-TLS pass (cmd/brain EnsureWildcardTLS) — configures Caddy's acme-dns
-#     DNS-01 issuer for "*.<box-id>.onmoose.network" and binds :443. The values are
+#     DNS-01 issuer for "*.<box-id>.onmoose.io" and binds :443. The values are
 #     inert here: air-gapped (restrict=on) the box never reaches acme-dns/Let's
 #     Encrypt, so no real cert issues — the lane asserts the brain APPLIES the
 #     config and :443 comes up (the #278 regression class), not that a cert exists.

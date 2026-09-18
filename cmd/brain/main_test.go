@@ -1227,7 +1227,7 @@ func TestAppProbe_MDNSFallback(t *testing.T) {
 }
 
 // On hosted the probe must address the public wildcard route host
-// "<slug>.<box-id>.onmoose.network" — not "<slug>.local", which has no Caddy route
+// "<slug>.<box-id>.onmoose.io" — not "<slug>.local", which has no Caddy route
 // and would 404 into a perpetual app-unresponsive flap. MDNSName is empty on
 // hosted (no LAN to multicast on), so the appliance fallback would otherwise win.
 func TestAppProbe_HostedWildcardHost(t *testing.T) {
@@ -1241,7 +1241,7 @@ func TestAppProbe_HostedWildcardHost(t *testing.T) {
 	reader := &fakeContainerReader{containers: []lifecycle.ManagedContainer{
 		{InstanceID: "app", Service: "web", Running: true, StartedAt: clk.now().Add(-5 * time.Minute)},
 	}}
-	rt := &stubRoundTripper{status: map[string]int{"myapp.cindy-fox.onmoose.network": 200}}
+	rt := &stubRoundTripper{status: map[string]int{"myapp.cindy-fox.onmoose.io": 200}}
 	d, _, _, _ := newTestProbeDetector(lister, loader, reader, rt, clk)
 	d.SetEnvironment(profile.Hosted, "cindy-fox")
 
@@ -1249,7 +1249,7 @@ func TestAppProbe_HostedWildcardHost(t *testing.T) {
 	if rt.last == nil {
 		t.Fatal("expected a probe request")
 	}
-	if want := "myapp.cindy-fox.onmoose.network"; rt.last.Host != want {
+	if want := "myapp.cindy-fox.onmoose.io"; rt.last.Host != want {
 		t.Errorf("probe Host = %q, want %q (hosted wildcard route host)", rt.last.Host, want)
 	}
 }

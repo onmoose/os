@@ -1,6 +1,6 @@
 # App lifecycle
 
-> How the brain actually controls apps — install, run, update, uninstall — on top of Docker. Companion to `CONTROL_PLANE.md` (architecture context), `APP_MANIFEST.md` (the contract being installed), `APP_ISOLATION.md` (the runtime enforcement of permissions), `BRAIN_HOST_PROTOCOL.md` (the reconciler pattern's host-side surface), and `MOOSE_NETWORK.md` (Caddy route registration for `.onmoose.network`).
+> How the brain actually controls apps — install, run, update, uninstall — on top of Docker. Companion to `CONTROL_PLANE.md` (architecture context), `APP_MANIFEST.md` (the contract being installed), `APP_ISOLATION.md` (the runtime enforcement of permissions), `BRAIN_HOST_PROTOCOL.md` (the reconciler pattern's host-side surface), and `MOOSE_NETWORK.md` (Caddy route registration for `.onmoose.io`).
 
 ## Locked: an app instance is a Docker Compose project
 
@@ -10,7 +10,7 @@ The brain's unit of management is a **compose project**, not an individual conta
 - Every container the brain manages carries labels: `moose.managed=true`, `moose.instance_id=<id>`, `moose.manifest_id=<id>`.
 - `main_service` (from the manifest) is the service the brain routes to and watches for health. Other services in the compose are siblings managed by the same lifecycle ops.
 - Tier-3 per-user apps are N independent compose projects pointing at the same manifest+compose. Each has its own instance id, data dir, and slug.
-- **Slug derivation (locked, see `DASHBOARD.md` # instance naming):** the bare manifest slug `<slug>` is first-come for any scope — the first instance installed wins the clean name. On a collision, a personal instance appends the owner (`<slug>--<user>`, double-dash separator); a household instance (no owner to name) gets a numeric suffix (`<slug>-2`, `<slug>-3`). Flat and single-label so it fits the one wildcard cert `*.<box-id>.onmoose.network` and resolves cleanly over mDNS. Slugs and usernames may not contain `--` or produce an `xn--` label prefix.
+- **Slug derivation (locked, see `DASHBOARD.md` # instance naming):** the bare manifest slug `<slug>` is first-come for any scope — the first instance installed wins the clean name. On a collision, a personal instance appends the owner (`<slug>--<user>`, double-dash separator); a household instance (no owner to name) gets a numeric suffix (`<slug>-2`, `<slug>-3`). Flat and single-label so it fits the one wildcard cert `*.<box-id>.onmoose.io` and resolves cleanly over mDNS. Slugs and usernames may not contain `--` or produce an `xn--` label prefix.
 
 Door-1 (store) and Door-2 (custom compose) converge here: both produce a manifest+compose pair that the brain installs identically. The Door-2 path just synthesizes the manifest first.
 
@@ -262,7 +262,7 @@ The same splash machinery serves three user-visible states with consistent vocab
 
 Mechanically: the brain owns two route variants in Caddy's config per instance and swaps between them on state transitions. mDNS publish happens at the same moment as the splash registration — both make the hostname reachable.
 
-If the box is enrolled with onmoose.network, the brain registers **two hostnames** per app (a `.local` HTTP route and a `<slug>.<box-id>.onmoose.network` HTTPS route). Both go through the same splash → real-upstream flip. Dashboard tile-clicks default to the `.local` URL; apps with `requires_https: true` in the manifest open the `.onmoose.network` URL instead. See `MOOSE_NETWORK.md` for why `.local` is the canonical user-facing URL.
+If the box is enrolled with onmoose.io, the brain registers **two hostnames** per app (a `.local` HTTP route and a `<slug>.<box-id>.onmoose.io` HTTPS route). Both go through the same splash → real-upstream flip. Dashboard tile-clicks default to the `.local` URL; apps with `requires_https: true` in the manifest open the `.onmoose.io` URL instead. See `MOOSE_NETWORK.md` for why `.local` is the canonical user-facing URL.
 
 ## Locked: concurrency
 

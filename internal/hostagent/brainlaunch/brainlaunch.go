@@ -144,7 +144,7 @@ type Config struct {
 	// up` runs, passed through as MOOSE_CADDY_IMAGE (the compose substitutes
 	// ${MOOSE_CADDY_IMAGE:-caddy:2-alpine}; ControlPlaneUp inherits the brain's
 	// env). The hosted profile sets it to the caddy-dns/acmedns build, which the
-	// "*.<box-id>.onmoose.network" wildcard cert needs (ACME DNS-01 — os #207/C3b).
+	// "*.<box-id>.onmoose.io" wildcard cert needs (ACME DNS-01 — os #207/C3b).
 	// Empty leaves compose on stock caddy:2-alpine — the appliance, which does no
 	// ACME — so the var is only emitted when set.
 	CaddyImage string

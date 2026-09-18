@@ -31,7 +31,7 @@ Two NTS-authenticated sources (Cloudflare primary, NETNOD as backup) and two Deb
 
 **Why NTS matters.** An attacker who can MITM your NTP can step the clock backwards and break Let's Encrypt validity windows (presenting an "old" valid certificate), invalidate TOTP (future), or weaken signed-manifest replay protection. NTS authenticates the time-server response. Free to enable, eliminates the attack class.
 
-**Why no `time.onmoose.network` in v1.** Adds infra cost without obvious user need; the captive-network case (ISP blocks public NTP) usually blocks our endpoint too. Revisit if the case turns up.
+**Why no `time.onmoose.io` in v1.** Adds infra cost without obvious user need; the captive-network case (ISP blocks public NTP) usually blocks our endpoint too. Revisit if the case turns up.
 
 **User override** lives in Settings → Advanced → Time. Editing the source list writes a fragment to `/etc/chrony/conf.d/`, then `systemctl reload chrony`. Most users will never touch it.
 
@@ -150,6 +150,6 @@ Member view (Settings → System for non-admins) shows the first three (TZ, curr
 
 Tracked in `NEXT.md`. The notable ones:
 
-- **Captive-network NTP fallback.** If user reports surface, reconsider `time.onmoose.network`.
+- **Captive-network NTP fallback.** If user reports surface, reconsider `time.onmoose.io`.
 - **Per-user display TZ.** Browser-side rendering covers the traveler case in v1; revisit if box-time-regardless requests appear.
 - **`last-known-time` rollback prevention.** Persisting last-shutdown time so first-boot-no-network doesn't show 1970 in logs — polish, not v1.
