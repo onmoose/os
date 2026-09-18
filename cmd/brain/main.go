@@ -99,12 +99,12 @@ func main() {
 		}
 	}
 
-	// Catalog source (CATALOG step 3, cloud #62). Every box — appliance and hosted
-	// alike — is a thin client of the control plane's public-read catalog API: it
+	// Catalog source (APP_STORE.md # What we run, #62). Every box, appliance and
+	// hosted alike, is a thin client of the catalog service's public-read API: it
 	// fetches the GET /catalog browse payload for its own environment, holds it in
 	// memory, and projects the six-method surface locally; each app's manifest and
-	// compose are fetched only when that app is installed (cloud specs/CATALOG.md #
-	// Consume). The box keeps no copy of the catalog on disk, so it always renders
+	// compose are fetched only when that app is installed. The box keeps no copy of
+	// the catalog on disk, so it always renders
 	// what the endpoint serves now; before the first sync lands the store is empty
 	// (the documented, accepted behavior — the catalog API is public-read precisely
 	// so an appliance with no portal account can use it, and installing an app needs
@@ -118,7 +118,7 @@ func main() {
 		SnapshotFile:    cfg.catalogSnapshotFile,
 		RefreshInterval: cfg.catalogRefresh,
 	})
-	slog.Info("catalog: remote control-plane source",
+	slog.Info("catalog: remote source",
 		"profile", string(prof), "base_url", cfg.catalogBaseURL, "cache_dir", cfg.catalogAssetCacheDir,
 		"src", cfg.catalogSnapshotFile)
 	host := hostclient.New(cfg.agentSock)
@@ -560,7 +560,7 @@ func loadConfig() config {
 		// re-fetches (APP_STORE.md # Failure modes).
 		//
 		// MOOSE_CATALOG_FILE is a dev/test seam, not a box setting: a local snapshot to
-		// start from when there is no reachable control plane (make dev-app, the QEMU
+		// start from when there is no reachable catalog service (make dev-app, the QEMU
 		// boot proofs). The brain reads it and never writes it. Production leaves it
 		// unset.
 		catalogBaseURL:       env("MOOSE_CATALOG_URL", "https://catalog.onmoose.io"),

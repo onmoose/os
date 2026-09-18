@@ -15,8 +15,8 @@ import (
 
 // diskSource reads app manifests from a directory tree:
 // <root>/<manifest_id>/{manifest.yml, <compose_file>} (APP_STORE.md). Production
-// no longer uses it — every box syncs the catalog from the control plane
-// (remote.go) and no catalog is baked into the image (cloud #62) — but it is
+// no longer uses it: every box syncs the catalog from the catalog service
+// (remote.go) and no catalog is baked into the image (#62). It is
 // retained as the backing internal/api and internal/lifecycle tests construct via
 // catalog.New off a temp directory.
 type diskSource struct{ root string }

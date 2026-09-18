@@ -98,7 +98,7 @@ make dev          # the whole inner-loop stack in one terminal:
                   # Caddy (container) + fake host-agent + brain + Vite
 ```
 
-Then open <http://localhost:5173> and install **Whoami** from the catalog. (The catalog is not in this repo — the brain syncs it from the control plane at run time. To work against a specific store app instead, use `make dev-app APP=<id>` with a `onmoose/store` checkout.) `make dev` also publishes each app's `<slug>.local` name over real Avahi, so installed apps are reachable by their portless `.local` URL from this box and other LAN devices (Android browsers don't resolve `.local`). Ctrl-C stops everything.
+Then open <http://localhost:5173> and install **Whoami** from the catalog. (The catalog is not in this repo. The brain syncs it from the moose catalog service at run time. To work against a specific store app instead, use `make dev-app APP=<id>` with a `onmoose/store` checkout.) `make dev` also publishes each app's `<slug>.local` name over real Avahi, so installed apps are reachable by their portless `.local` URL from this box and other LAN devices (Android browsers don't resolve `.local`). Ctrl-C stops everything.
 
 Prefer separate terminals? Run the pieces individually:
 

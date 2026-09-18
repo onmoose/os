@@ -29,7 +29,7 @@ main_port: 80
 }
 
 // testApps is the fixture browse payload: one app with artwork, one without, both
-// pointing at the two document routes the control plane serves per app.
+// pointing at the two document routes the catalog serves per app.
 func testApps() []wireApp {
 	return []wireApp{
 		{
@@ -56,7 +56,7 @@ func testApps() []wireApp {
 }
 
 // makeSnapshot marshals apps into a served GET /catalog body and returns the body
-// plus the ETag the control plane serves it with.
+// plus the ETag the catalog serves it with.
 func makeSnapshot(t *testing.T, apps []wireApp) (body []byte, etag string) {
 	t.Helper()
 	version, err := contentToken(apps)
@@ -523,6 +523,58 @@ func TestRemoteAssetProxyAndCache(t *testing.T) {
 	}
 	if _, err := r.ScreenshotPath("alpha", 0); err != nil {
 		t.Fatalf("ScreenshotPath(alpha, 0): %v", err)
+	}
+}
+
+// TestRemoteAssetFollowsAbsoluteURL is the artwork half of
+// TestRemoteLoadFollowsAbsoluteDocumentURL, and it is the production path: the
+// catalog publishes icons and screenshots on an object-storage origin, not on its
+// own host. The box must follow the URL it is given and cache the bytes the same
+// way, without the catalog origin serving a single asset byte.
+func TestRemoteAssetFollowsAbsoluteURL(t *testing.T) {
+	var bucketHits int
+	bucket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bucketHits++
+		w.Header().Set("Content-Type", "image/png")
+		fmt.Fprint(w, "PNG-"+r.URL.Path)
+	}))
+	defer bucket.Close()
+
+	apps := testApps()
+	apps[0].IconURL = bucket.URL + "/moose-catalog-assets/alpha/icon.png"
+	apps[0].ScreenshotURLs = []string{bucket.URL + "/moose-catalog-assets/alpha/screenshots/0.png"}
+
+	cp := newFakeCP(t, apps)
+	srv := cp.server()
+	defer srv.Close()
+
+	r := newRemote(srv.URL, "appliance", t.TempDir())
+	if err := r.syncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	icon, err := r.IconPath("alpha")
+	if err != nil {
+		t.Fatalf("IconPath must follow an absolute asset URL: %v", err)
+	}
+	if got, err := os.ReadFile(icon); err != nil || !strings.HasPrefix(string(got), "PNG-") {
+		t.Fatalf("cached icon = %q, %v; want the bucket's bytes", got, err)
+	}
+	if filepath.Ext(icon) != ".png" {
+		t.Errorf("cached icon %q lost its extension", icon)
+	}
+	if _, err := r.ScreenshotPath("alpha", 0); err != nil {
+		t.Fatalf("ScreenshotPath must follow an absolute asset URL: %v", err)
+	}
+
+	if bucketHits != 2 {
+		t.Errorf("bucket served %d assets, want 2 (the icon and the screenshot)", bucketHits)
+	}
+	cp.mu.Lock()
+	hits := cp.assetHits
+	cp.mu.Unlock()
+	if hits != 0 {
+		t.Errorf("catalog origin served %d assets, want 0 (they live elsewhere)", hits)
 	}
 }
 

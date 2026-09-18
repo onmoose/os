@@ -581,7 +581,7 @@ func (r *remoteSource) fetchDocument(ctx context.Context, ref, id, kind string) 
 }
 
 // IconPath returns a local file path to the app's icon, proxying it from the
-// control plane on first request and caching it under AssetCacheDir/assets so
+// published URL on first request and caching it under AssetCacheDir/assets so
 // later requests (and offline browsing) are served locally. ErrNotFound when the
 // app is unknown or declares no icon.
 func (r *remoteSource) IconPath(id string) (string, error) {

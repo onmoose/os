@@ -4,7 +4,7 @@ A reusable agent prompt that turns an upstream `docker-compose.yml` (or a GitHub
 
 ## Which repo does what
 
-The catalog cutover (cloud #62, `DECISIONS.md` 2026-07-02) removed the repo-root `catalog/` directory: the box no longer bakes a catalog, it's a thin client of the control plane's catalog API. That split the authoring run across two checkouts, and the prompt below assumes both:
+The catalog cutover (#62, `DECISIONS.md` 2026-07-02) removed the repo-root `catalog/` directory: the box no longer bakes a catalog, it's a thin client of the catalog service's API. That split the authoring run across two checkouts, and the prompt below assumes both:
 
 - **`os` (this repo) — the knowledge and the tools.** The manifest schema (`internal/manifest`), the admission policy (`internal/admission`), the `moose manifest check` / `resolve` CLI, the specs, the platform-gap ledger, and the `make dev-app` boot seam.
 - **`store` (`onmoose/store`, private, checked out at `../store`) — the artifacts and the verdict.** Every app is an `apps/<id>/` directory holding `manifest.yml` + `compose.yml` + `icon.*` + `screenshots/`, next to `status.yml` (the curation verdict) and `test.md` (the playbook).

@@ -67,7 +67,7 @@ The inner dev loop is all native, no VM — see [`running-locally.md`](running-l
 
 Every behavioral change ships with tests. Which layer depends on what you touched — see [`testing-brain.md`](testing-brain.md) for the brain pyramid (unit → store → lifecycle-with-fakes → API → integration → e2e) and [`../specs/TESTING.md`](../specs/TESTING.md) for the boot-level lanes (nspawn fast / QEMU medium / soak).
 
-**Test data is synthetic and self-contained.** Write fixtures with fake data in the shape you need; don't check in a copy of a payload a moose endpoint serves. This matters most for the app catalog: the artifacts are authored in `onmoose/store` and reach a box only through the published snapshot, so `internal/catalog/testdata/snapshot.json` is hand-written fake apps in the published wire shape. Keep it hand-written — regenerating it from the Go types it is checked against would make `TestNoUnmodeledFields` agree with itself and test nothing. `go test ./internal/catalog -run TestVerifyFixtureSnapshot -update` re-stamps its digest after you edit the shape.
+**Test data is synthetic and self-contained.** Write fixtures with fake data in the shape you need; don't check in a copy of a payload a moose endpoint serves. This matters most for the app catalog: the artifacts are authored in `onmoose/store` and reach a box only through the published snapshot, so `internal/catalog/testdata/snapshot.json` is hand-written fake apps in the published wire shape. Keep it hand-written — regenerating it from the Go types it is checked against would make `TestNoUnmodeledFields` agree with itself and test nothing. The full procedure for editing it is [# Changing the published catalog shape](#changing-the-published-catalog-shape) below.
 
 Before you push, run the gate:
 
@@ -132,6 +132,23 @@ A finished self-review has **two halves**, and the PR is not ready for the maint
 **An empty comment list means "not posted yet", never "nothing found."** If it has not landed, wait and check again rather than reporting a clean review it might contradict. This is not hypothetical: on #435 the agent review returned no findings and Greptile then caught a real bug in the same diff.
 
 Address every **Block** finding from either half before the PR merges, with **fixup commits on the same branch** — never a second PR (see Step 2). If you disagree with a finding, note it in the progress entry's "Known gaps" section — never silently ignore it.
+
+## Changing the published catalog shape
+
+The catalog is published and served from `onmoose/store`. The box is a thin client of it. The two sides meet at one wire shape, and that seam has a property worth stating in full, because it is quiet:
+
+**A field the box does not model is dropped with no error and no log line.** `encoding/json` ignores any key it has no field for, so a new published field reaches the box and vanishes there. Green tests on the publishing side do not mean the field arrived. **A field is delivered when the box models it, not when the catalog starts serving it** (`../specs/APP_STORE.md` # What the box models).
+
+Nothing automated catches this. Do the box-side half deliberately, in this order:
+
+1. **Model the field** in `internal/catalog/wire.go`, and project it wherever the box should surface it (`Entry`, `Detail`, `Home`). If the box genuinely does not need it, add the key to `ignoredTopLevelKeys` in `internal/catalog/wire_test.go` with a reason. That is an explicit "we looked and decided no", which silence is not.
+2. **Edit the pinned fixture by hand**: `internal/catalog/testdata/snapshot.json`. Set the new field on `alpha-notes`, the record that carries every optional field at once. This is what arms `TestNoUnmodeledFields`, and it is the only thing that would catch the field going missing.
+
+   **Write it by hand. Do not generate it.** The fixture is synthetic on purpose: fake apps in the published wire shape, never a copy of a catalog any endpoint serves. Generating it from the Go types it is checked against would make the test agree with itself and prove nothing. There is no digest to re-stamp: `version` is an opaque token the box never recomputes (#434).
+3. **Restate the box-facing half of the contract** in `../specs/APP_STORE.md`. That spec is self-contained by design, so describe the field in box terms rather than pointing at the publishing side.
+4. **Bump `wireSchemaVersion` only for a format the box cannot half-read.** The check is exact equality, so a bump that runs ahead of the change rejects every payload on every deployed box at once. Adding a field is not that case.
+
+If the box-side half is not happening now, open an issue here describing it in box-facing terms. An unmodelled field is invisible on both sides until somebody goes looking for it.
 
 ## Release model
 
