@@ -1,4 +1,4 @@
-# malmo Decisions Log
+# moose Decisions Log
 
 > Reverse-chronological log of decisions we made, decisions we *changed*, and the reasoning behind each. Not a changelog of code (there is no code). Not a list of locked decisions (those live at the bottom of each doc). This file captures the **evolution of thinking** — what we used to believe, what we believe now, and why we changed our mind.
 >
@@ -36,7 +36,7 @@ Three calls sit inside the rename.
 
 **Why:** a rename is worth doing once and completely. A box carries the name in places that are hard to change later: a group in `/etc/group`, a service account prefix in `/etc/passwd`, a PAM service file, a LUKS-era systemd unit graph, a cookie the browser already holds. Keeping the old names on disk to spare a handful of boxes would leave two vocabularies in the tree forever, which is the cost every later reader pays. The fleet is small enough today that re-provisioning is cheaper than a compatibility layer, and that will never be true again. Emitting both env prefixes for a while has the same shape: it trades one lockstep merge for a cleanup nobody is scheduled to do.
 
-The old name stays in the frozen history. `docs/progress/` entries and the entries above this one in this file are snapshots of what was true when they were written, so they keep saying malmo.
+The old name stays in the frozen history. `docs/progress/` entries and the older entries below this one are snapshots of what was true when they were written, so they keep saying malmo.
 
 **Affected docs:** every file in `docs/specs/` except the older entries here, `MALMO_NETWORK.md` renamed to `MOOSE_NETWORK.md` (`docs/README.md` updated), `docs/architecture.md`, all of `docs/dev/`, `README.md`, `CLAUDE.md`, the GitHub issue and PR templates, and the workflows.
 
