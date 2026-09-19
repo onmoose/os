@@ -6,7 +6,7 @@
 //
 // Two data sources: GET /apps/{id} for the live instance (state, scope, url),
 // and GET /catalog/{manifest_id} for the logo + description. The catalog lookup
-// is best-effort — a Door-2 (custom) app has no catalog entry, so it falls back
+// is best-effort: a Door-2 (custom) app has no catalog entry, so it falls back
 // to the generic glyph and no description.
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter, RouterLink } from "vue-router";
@@ -77,7 +77,7 @@ function invalidate() {
 }
 
 // awaitJob polls to terminal and throws on a failed job, so a job-level failure
-// (e.g. compose up never goes healthy) surfaces via useMutation's isError —
+// (e.g. compose up never goes healthy) surfaces via useMutation's isError.
 // api.post only throws on the synchronous 4xx, not on a job that fails later.
 async function awaitJob(job: Job): Promise<Job> {
   const done = await waitForJob(job.job_id);
@@ -99,7 +99,7 @@ const start = useMutation({
 // button. On success we leave the now-dead detail page for the list.
 const confirmingUninstall = ref(false);
 
-// Logs start collapsed — they're a drill-down, not the first thing on the page.
+// Logs start collapsed. They're a drill-down, not the first thing on the page.
 const logsOpen = ref(false);
 const uninstall = useMutation({
   mutationFn: async () => awaitJob(await api.del<Job>(`/apps/${id.value}`)),
@@ -114,11 +114,11 @@ const busy = computed(
 );
 
 // ── Access mode (#306/#307, ENVIRONMENT.md # Per-app owner-only access) ───────
-// Hosted-only per-app toggle between "Only me" (restricted — the box login gates
+// Hosted-only per-app toggle between "Only me" (restricted: the box login gates
 // the app) and "Public" (anyone with the link). Gated to the hosted profile
 // (the endpoint 404s on the appliance, which has no public app subdomains) and to
 // canControl (owner-or-admin, the same gate the brain re-checks). The PUT echoes
-// the updated instance — invalidate refreshes the detail + list without a job.
+// the updated instance, so invalidate refreshes the detail + list without a job.
 const exposure = computed<Exposure>(() => app.value?.exposure ?? "public");
 const exposureOptions: { value: Exposure; label: string }[] = [
   { value: "restricted", label: "Only me" },
@@ -171,7 +171,7 @@ const boundProvider = computed(() => mailProviders.value.find((p) => p.id === ap
 // landed. The trigger must not fill that window with "None": it is a definite
 // claim, and acting on it costs a rebind and an app restart.
 //
-// The picker opens only once that list has actually arrived — isSuccess, not
+// The picker opens only once that list has actually arrived: isSuccess, not
 // "not loading". A failed request leaves the same empty list as a pending one,
 // and an enabled picker over an empty list offers exactly one action: unbind.
 const mailListReady = computed(() => mailOptions.isSuccess.value);
@@ -183,7 +183,7 @@ const mailLabel = computed(() => {
 });
 
 // ── Setup secrets (#152, SERVICE_PROVISIONING.md # Env-var injection) ─────────
-// Owner-visible per-instance secrets a self-auth app declared `show: true` — the
+// Owner-visible per-instance secrets a self-auth app declared `show: true`: the
 // bootstrap credential the user reads to finish first sign-in. Gated to the same
 // owner-or-admin rule as the controls (canControl); the brain re-checks. The
 // section hides itself when the app declares none (the list comes back empty).
@@ -194,7 +194,7 @@ const secretsQuery = useQuery({
 });
 const secrets = computed(() => secretsQuery.data.value?.secrets ?? []);
 
-// Masked by default — revealed per-secret on demand so the value isn't shoulder-
+// Masked by default. Revealed per-secret on demand so the value isn't shoulder-
 // surfaced just by opening the page. A reassigned Set keeps the template reactive.
 const revealed = ref(new Set<string>());
 function toggleReveal(name: string) {
@@ -215,15 +215,15 @@ async function copySecret(s: AppSecret) {
       if (copied.value === s.name) copied.value = null;
     }, 1500);
   } catch {
-    // No clipboard on an insecure context — the value is on screen to copy by hand.
+    // No clipboard on an insecure context. The value is on screen to copy by hand.
   }
 }
 
-// ── Settings — user-supplied config (APP_MANIFEST.md # D4) ───────────────────
+// ── Settings: user-supplied config (APP_MANIFEST.md # D4) ───────────────────
 // Fields the app declared a `config:` block for (an API token, a model picker).
 // GET never returns a secret's value (only `set`), so secrets show as set/not-set
 // with a Replace affordance; non-secret values are editable inline. Save sends a
-// PARTIAL update — only the fields the user actually changed — so an untouched
+// PARTIAL update (only the fields the user actually changed), so an untouched
 // secret is never resent (we don't have it) and never accidentally cleared. The
 // PUT restarts the app as a job. Gated to canControl; the brain re-checks.
 const configQuery = useQuery({
@@ -265,7 +265,7 @@ function cancelReplace(appEnv: string) {
 
 // changedFields is the partial-update payload: a non-secret field whose buffer
 // differs from its stored value, and a secret only when the user typed a new,
-// non-empty value (a blank Replace box is ignored — we never blank a secret here).
+// non-empty value (a blank Replace box is ignored; we never blank a secret here).
 function changedFields(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const f of configFields.value) {
@@ -280,7 +280,7 @@ function changedFields(): Record<string, string> {
 }
 const dirty = computed(() => Object.keys(changedFields()).length > 0);
 
-// Block Save if a required NON-secret field has been cleared — the brain would
+// Block Save if a required NON-secret field has been cleared, because the brain would
 // 422 it. A required secret is already set (install enforced it) and can only be
 // replaced, never blanked from here, so it never gates Save.
 const configValid = computed(() =>
@@ -410,7 +410,7 @@ const saveConfig = useMutation({
         Couldn't uninstall: {{ (uninstall.error.value as Error)?.message }}
       </p>
 
-      <!-- Access mode — hosted-only Only-me / Public toggle. Hidden on the
+      <!-- Access mode: hosted-only Only-me / Public toggle. Hidden on the
            appliance (no public app subdomains) and for viewers who can't control
            the app. Switching re-writes the app's Caddy route via the brain. -->
       <section v-if="isHosted() && canControl" class="space-y-2">
@@ -439,7 +439,7 @@ const saveConfig = useMutation({
                read as a limit that isn't there. The summary line above says THAT
                some paths are open; this says which. Badge shape ported from
                Tailwind Plus (elements/badges 13-small-with-border) with the palette
-               mapped to malmo's tokens, and set in mono because a path is a literal
+               mapped to moose's tokens, and set in mono because a path is a literal
                string someone types, like the secrets and env fields below. -->
           <div
             v-if="exposure === 'restricted' && publicPaths.length > 0"
@@ -462,7 +462,7 @@ const saveConfig = useMutation({
         </p>
       </section>
 
-      <!-- Outgoing email — provider binding for mail-capable apps. -->
+      <!-- Outgoing email: provider binding for mail-capable apps. -->
       <section v-if="app.mail_supported && canControl" class="space-y-2">
         <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Outgoing email</h2>
         <div class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
@@ -476,7 +476,7 @@ const saveConfig = useMutation({
                "which of my accounts", and an account is recognised by its
                provider's logo faster than by a name someone typed. Shape ported
                from Tailwind Plus (forms/select-menus 05-custom-with-avatar) with
-               the palette on malmo's tokens and the Headless UI primitives mapped
+               the palette on moose's tokens and the Headless UI primitives mapped
                to reka-ui, which is what this project already ships. -->
           <SelectRoot
             :model-value="app.mail_provider_id || NO_PROVIDER"
@@ -537,7 +537,7 @@ const saveConfig = useMutation({
         </p>
       </section>
 
-      <!-- Setup secrets — owner-visible bootstrap credentials for self-auth apps.
+      <!-- Setup secrets: owner-visible bootstrap credentials for self-auth apps.
            Shown only when the app declared one (`show: true`); masked until the
            owner reveals it. -->
       <p v-if="secretsQuery.isError.value" class="text-sm text-destructive">
@@ -570,7 +570,7 @@ const saveConfig = useMutation({
         </ul>
       </section>
 
-      <!-- Settings — user-supplied config (APP_MANIFEST.md # D4). Hidden when the
+      <!-- Settings: user-supplied config (APP_MANIFEST.md # D4). Hidden when the
            app declares no config: block. Non-secret values edit inline; secrets
            show set/not-set with a Replace box. Save sends only what changed and
            restarts the app. -->
@@ -664,7 +664,7 @@ const saveConfig = useMutation({
         </p>
       </section>
 
-      <!-- Logs — collapsed by default; a full-width accordion row (styled like
+      <!-- Logs: collapsed by default; a full-width accordion row (styled like
            the Installed apps list rows) that expands the log panel on click. The
            chevron at the end rotates to signal expansion. -->
       <section v-if="canControl" class="flex flex-col gap-2">
@@ -680,7 +680,7 @@ const saveConfig = useMutation({
         <!-- Bounded scroll box (not a viewport-fill): at least 400px so there is
              always readable output, capped at 70vh so it stays in normal page
              flow. The page scrolls around it and the AppShell spacer clears the
-             dock — a flex-1 fill would instead pin it to the viewport and, on a
+             dock. A flex-1 fill would instead pin it to the viewport and, on a
              short screen, overflow its last rows behind the dock. -->
         <AppLogs v-if="logsOpen" :id="app.id" fill class="min-h-[400px] max-h-[70vh]" />
       </section>

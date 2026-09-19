@@ -26,7 +26,7 @@ func mint(t *testing.T, priv ed25519.PrivateKey, c Claims) string {
 func validClaims() Claims {
 	now := time.Now()
 	return Claims{
-		Iss: "malmo.network", Sub: "acct_1", Email: "a@b.com", Box: "cindy-fox",
+		Iss: "onmoose.io", Sub: "acct_1", Email: "a@b.com", Box: "cindy-fox",
 		Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), JTI: "nonce", KID: "v1",
 	}
 }

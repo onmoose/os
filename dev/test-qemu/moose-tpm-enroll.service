@@ -1,0 +1,32 @@
+[Unit]
+Description=moose first-boot LUKS TPM2 enrollment (PCR 7)
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/STORAGE.md
+# Run once. The script writes the marker only on a successful enroll; a
+# failed enroll leaves the marker absent so this re-runs next boot.
+ConditionPathExists=!/var/lib/moose/.luks-tpm-enrolled
+# Needs the root unlocked + mounted (the recovery keyfile and the marker
+# both live on it) and the LUKS backing partition coldplugged —
+# local-fs.target covers both. Ordered before the storage milestone so
+# enrollment is settled by the time storage state is inspected.
+#
+# "Not a gate" here means *success*: it's pulled by Wants= (the [Install]
+# WantedBy=), so a *failed* enroll degrades, it does not fail the boot.
+# But Before= IS an ordering gate — the target's start job blocks on this
+# oneshot finishing, so a *hung* enroll stalls moose-storage-ready.target
+# (and everything after it) for up to TimeoutStartSec below. Acceptable
+# for the test lane; when the real host-agent first-run caller lands
+# (0023 known-gaps #3), keep it OFF the boot-critical ordering chain —
+# run it async / after the milestone, not Before= it.
+After=local-fs.target
+Before=moose-storage-ready.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/moose/first-boot-tpm-enroll.sh
+# Enrollment unlocks the recovery keyslot (Argon2id) to authorize the new
+# TPM2 keyslot; allow headroom for the memory-hard KDF on a slow guest.
+TimeoutStartSec=120s
+
+[Install]
+WantedBy=moose-storage-ready.target

@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
@@ -230,7 +230,7 @@ func TestReconcileAppliesChangedResourceLimits(t *testing.T) {
 	if dep == nil || dep.Resources.Limits.Memory != 256<<20 {
 		t.Fatalf("override deploy = %+v, want memory %d", dep, 256<<20)
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("changed policy must recreate the app: %v", e.docker.methods())
 	}
 }
@@ -245,7 +245,7 @@ func TestReconcileUnchangedResourceLimitsDoesNotRecreate(t *testing.T) {
 	if err := e.m.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("unchanged policy must not recreate the app: %v", e.docker.methods())
 	}
 }
@@ -266,7 +266,7 @@ func TestReconcileDriftedInstanceAppliesPolicyBeforeUp(t *testing.T) {
 	if dep == nil || dep.Resources.Limits.Memory != 128<<20 {
 		t.Fatalf("drifted instance came up without its cap: deploy = %+v", dep)
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("drifted instance must be brought up: %v", e.docker.methods())
 	}
 }
@@ -297,7 +297,7 @@ func TestReconcileClearingResourceLimitsRemovesStanza(t *testing.T) {
 	if dep := readDeploy(t, e, inst.ID, "whoami"); dep != nil {
 		t.Fatalf("stanza must be removed after clearing, got %+v", dep)
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("clearing a cap must recreate the app: %v", e.docker.methods())
 	}
 }
@@ -320,7 +320,7 @@ func TestReconcileFailedRecreateRewindsAndRetries(t *testing.T) {
 	if err := e.m.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile (failing up): %v", err)
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("a changed policy must attempt a recreate: %v", e.docker.methods())
 	}
 	if dep := readDeploy(t, e, inst.ID, "whoami"); dep != nil {
@@ -338,7 +338,7 @@ func TestReconcileFailedRecreateRewindsAndRetries(t *testing.T) {
 	if dep == nil || dep.Resources.Limits.Memory != 256<<20 {
 		t.Fatalf("retry must apply the cap, override deploy = %+v", dep)
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("retry must recreate the app: %v", e.docker.methods())
 	}
 }

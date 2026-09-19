@@ -32,7 +32,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // systemUpdateMaxDuration bounds one control-plane update run

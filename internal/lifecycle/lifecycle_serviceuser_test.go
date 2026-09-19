@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/admission"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/admission"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/store"
 	"gopkg.in/yaml.v3"
 )
 

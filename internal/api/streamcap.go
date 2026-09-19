@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/malmoos/malmo/internal/auth"
+	"github.com/onmoose/os/internal/auth"
 )
 
 // maxStreamsPerSession caps concurrent SSE streams per session

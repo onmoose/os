@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/systemlive"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/systemlive"
 )
 
 // constSampler is the canned host-resources source the api harness wires into
@@ -40,7 +40,7 @@ func (s *constSampler) SystemResources(context.Context) (protocol.SystemResource
 
 // The stream is not on the public allowlist, so the auth middleware rejects an
 // unauthenticated request before the handler runs (BRAIN_UI_PROTOCOL.md: the
-// malmo_session cookie carries the SSE handshake).
+// moose_session cookie carries the SSE handshake).
 func TestSystemLive_RequiresAuth(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do("GET", "/api/v1/system/live", nil)

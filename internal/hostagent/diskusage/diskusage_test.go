@@ -25,7 +25,7 @@ func TestDataDiskRealStatfs(t *testing.T) {
 // nonexistent path returns (0, 0), which the brain reads as "not measured"
 // rather than an error or a scary empty disk.
 func TestDataDiskMissingPathFailsOpen(t *testing.T) {
-	r := &Reporter{dataPath: "/nonexistent/malmo/data-drive-xyz"}
+	r := &Reporter{dataPath: "/nonexistent/moose/data-drive-xyz"}
 	free, total := r.DataDisk()
 	if free != 0 || total != 0 {
 		t.Fatalf("want (0, 0) on statfs error, got (%d, %d)", free, total)
@@ -67,7 +67,7 @@ func TestDisksBothPresent(t *testing.T) {
 	}
 }
 
-// TestDisksLevel0OnlySystem: when /srv/malmo shares the OS drive's device (a
+// TestDisksLevel0OnlySystem: when /srv/moose shares the OS drive's device (a
 // Level-0 box: a directory on the OS drive, not a real data drive), only the
 // System bar appears — no duplicate Data bar.
 func TestDisksLevel0OnlySystem(t *testing.T) {
@@ -89,7 +89,7 @@ func TestDisksDataPathMissing(t *testing.T) {
 	osDir := t.TempDir()
 	r := &Reporter{
 		osPath:   osDir,
-		dataPath: "/nonexistent/malmo/data-drive-xyz",
+		dataPath: "/nonexistent/moose/data-drive-xyz",
 		deviceID: fakeDevices(map[string]uint64{osDir: 1}), // data path errors
 	}
 	disks := r.Disks()
@@ -118,7 +118,7 @@ func TestDisksOSDeviceMissing(t *testing.T) {
 // rather than reported as a zero-byte disk.
 func TestDisksDataStatfsFailsAfterPresent(t *testing.T) {
 	osDir := t.TempDir()
-	const ghost = "/nonexistent/malmo/ghost-data"
+	const ghost = "/nonexistent/moose/ghost-data"
 	r := &Reporter{
 		osPath:   osDir,
 		dataPath: ghost,
@@ -134,7 +134,7 @@ func TestDisksDataStatfsFailsAfterPresent(t *testing.T) {
 // zero-filled — even the OS drive.
 func TestDisksOSStatfsFailsOmitsSystem(t *testing.T) {
 	dataDir := t.TempDir()
-	const ghostOS = "/nonexistent/malmo/ghost-os"
+	const ghostOS = "/nonexistent/moose/ghost-os"
 	r := &Reporter{
 		osPath:   ghostOS,
 		dataPath: dataDir,
@@ -147,7 +147,7 @@ func TestDisksOSStatfsFailsOmitsSystem(t *testing.T) {
 }
 
 // TestDisksRealDeviceID exercises the default statDeviceID seam via New(): on a
-// typical test box /srv/malmo is absent, so its device lookup errors and only
+// typical test box /srv/moose is absent, so its device lookup errors and only
 // the real System (/) bar comes back with a coherent reading. This covers the
 // real stat(2) path (success for /, error for the missing data mount).
 func TestDisksRealDeviceID(t *testing.T) {

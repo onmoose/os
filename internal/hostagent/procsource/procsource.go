@@ -39,7 +39,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // Sampler reads one protocol.SystemResources from the kernel files under root.
@@ -247,7 +247,7 @@ func parseNetDev(netdev string) ([]protocol.NetCounters, error) {
 	return out, nil
 }
 
-// wholeDisk matches the whole-disk block-device names malmo boxes carry (BYO
+// wholeDisk matches the whole-disk block-device names moose boxes carry (BYO
 // x86: SATA/USB sd*, virtio vd*, Xen xvd*, legacy IDE hd*, NVMe, eMMC/SD).
 // Partition names (sda1, nvme0n1p2, mmcblk0p1) and loop/dm/md/zram/sr views
 // deliberately don't match.

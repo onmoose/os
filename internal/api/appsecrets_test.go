@@ -18,11 +18,11 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/lifecycle"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/lifecycle"
+	"github.com/onmoose/os/internal/store"
 )
 
 const revealManifestYAML = `
@@ -47,7 +47,7 @@ secrets:
 func secretServer(t *testing.T, ownerID, scope string) (*Server, string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.Open(filepath.Join(dir, "malmo.db"))
+	st, err := store.Open(filepath.Join(dir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

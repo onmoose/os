@@ -1,9 +1,9 @@
 package lifecycle
 
 // Shared folder-source preparation (#156): the household shared tree is
-// root:malmo-shared, mode 02770 setgid (STORAGE.md # user content), so the
+// root:moose-shared, mode 02770 setgid (STORAGE.md # user content), so the
 // brain creates an elected shared <Folder>[/<subfolder>] owning each NEW level
-// to the malmo-shared group with the setgid bit — never chowning to a runtime
+// to the moose-shared group with the setgid bit — never chowning to a runtime
 // UID, never re-owning a pre-existing parent. Writing the shared tree needs
 // root, so the install loop runs it only under euid 0 and skips it (warn) under
 // the unprivileged dev brain; the creation logic itself is exercised here
@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 func statDir(t *testing.T, dir string) (os.FileInfo, *syscall.Stat_t) {
@@ -42,7 +42,7 @@ func TestPrepareSharedSource_CreatesSetgidGroupOwnedLevels(t *testing.T) {
 	}
 
 	// Both the elected folder and its subfolder are created, each with the
-	// shared-tree mode (group rwx + setgid) and the malmo-shared group.
+	// shared-tree mode (group rwx + setgid) and the moose-shared group.
 	for _, d := range []string{filepath.Join(root, "Documents"), src} {
 		fi, st := statDir(t, d)
 		if fi.Mode().Perm() != 0o770 {
@@ -52,7 +52,7 @@ func TestPrepareSharedSource_CreatesSetgidGroupOwnedLevels(t *testing.T) {
 			t.Errorf("%q missing setgid bit (mode %v)", d, fi.Mode())
 		}
 		if int(st.Gid) != gid {
-			t.Errorf("%q gid = %d, want malmo-shared %d", d, st.Gid, gid)
+			t.Errorf("%q gid = %d, want moose-shared %d", d, st.Gid, gid)
 		}
 	}
 }
@@ -98,7 +98,7 @@ func TestPrepareSharedSource_Rejects(t *testing.T) {
 	gid := os.Getegid()
 
 	// src outside the shared root — a programming error, never silently created.
-	if err := prepareSharedSource(t.TempDir(), "/etc/malmo-bogus", gid); err == nil {
+	if err := prepareSharedSource(t.TempDir(), "/etc/moose-bogus", gid); err == nil {
 		t.Error("want error for a source outside the shared root")
 	}
 	// shared root itself absent — a storage-setup fault, not ours to create.
@@ -138,7 +138,7 @@ func TestPrepareSharedSource_Rejects(t *testing.T) {
 		t.Error("want mkdir error under a read-only parent")
 	}
 	// chown failure: group 0 (root), which an unprivileged process is not a
-	// member of, so the chgrp to the malmo-shared GID is rejected.
+	// member of, so the chgrp to the moose-shared GID is rejected.
 	cgRoot := t.TempDir()
 	if err := prepareSharedSource(cgRoot, filepath.Join(cgRoot, "Notes"), 0); err == nil {
 		t.Error("want chown error for a non-member gid")
@@ -163,7 +163,7 @@ func TestInstallFolders_SharedSkippedUnderUnprivilegedBrain(t *testing.T) {
 
 	// Install succeeded (installFolders fatals otherwise) and the override still
 	// binds the shared source the root brain would have prepared...
-	wantVol := filepath.Join(e.m.sharedRoot, "Documents", "Shared") + ":/malmo/documents:rw"
+	wantVol := filepath.Join(e.m.sharedRoot, "Documents", "Shared") + ":/moose/documents:rw"
 	if !hasString(app["volumes"], wantVol) {
 		t.Errorf("volumes: want %q, got %v", wantVol, app["volumes"])
 	}

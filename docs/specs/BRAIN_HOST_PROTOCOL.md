@@ -1,6 +1,6 @@
 # Brain ↔ host-agent protocol
 
-> The wire-level contract between the malmo brain (in a container) and `host-agent` (running on the host with root). Companion to `CONTROL_PLANE.md`, `AUTH.md`, `SERVICE_PROVISIONING.md`.
+> The wire-level contract between the moose brain (in a container) and `host-agent` (running on the host with root). Companion to `CONTROL_PLANE.md`, `AUTH.md`, `SERVICE_PROVISIONING.md`.
 >
 > Covers transport, wire format, patterns, auth, versioning, and failure semantics. The reconciler pattern (desired-vs-actual state) that goes with this protocol is in `APP_LIFECYCLE.md` # "same reconciler pattern extends to all host-managed state."
 
@@ -28,13 +28,13 @@ If a host capability isn't in the list above, it doesn't live behind host-agent.
 
 host-agent listens on a UNIX socket:
 
-| Path        | `/var/run/malmo/agent.sock`          |
+| Path        | `/var/run/moose/agent.sock`          |
 |-------------|--------------------------------------|
 | Owner       | `root`                               |
-| Group       | `malmo`                              |
+| Group       | `moose`                              |
 | Mode        | `0660`                               |
 
-The brain's container UID is a member of the `malmo` group. The socket is mounted into the brain's container; nothing else on the host can connect. The `malmo` group is **unrelated to `malmo-shared`** (the household-content group) — see `USERS_AND_GROUPS.md` # Group reference.
+The brain's container UID is a member of the `moose` group. The socket is mounted into the brain's container; nothing else on the host can connect. The `moose` group is **unrelated to `moose-shared`** (the household-content group) — see `USERS_AND_GROUPS.md` # Group reference.
 
 **Why UNIX socket over loopback TCP:**
 - File-permission access control is kernel-enforced and stronger than any app-level token.
@@ -49,8 +49,8 @@ Plain HTTP over the socket, with JSON request and response bodies. Versioned URL
 
 - **Debuggability is a first-class goal.** From any shell on the host:
   ```
-  curl --unix-socket /var/run/malmo/agent.sock http://localhost/v1/system/status
-  curl --unix-socket /var/run/malmo/agent.sock -X POST http://localhost/v1/system/reboot
+  curl --unix-socket /var/run/moose/agent.sock http://localhost/v1/system/status
+  curl --unix-socket /var/run/moose/agent.sock -X POST http://localhost/v1/system/reboot
   ```
   This is invaluable during spec/early-implementation iteration, for incident response, and for any future tinkerer-facing tooling.
 - Brain already runs an HTTP server (for the dashboard); reusing the HTTP client stack on the brain side is trivial.
@@ -82,7 +82,7 @@ GET /v1/system/status
     "disks": [ { "label": "System", "free_bytes": 19327352832, "total_bytes": 68719476736 },
                { "label": "Data",   "free_bytes": 442381180928, "total_bytes": 1099511627776 } ], ... }
   # disks is the per-volume fullness view for the resources panel's Storage bars
-  # (LOCAL_ANALYTICS.md): the OS drive (/) always, the data drive (/srv/malmo)
+  # (LOCAL_ANALYTICS.md): the OS drive (/) always, the data drive (/srv/moose)
   # only when it's a distinct mount (a Level-0 box has no data drive, so it's
   # omitted, not zero-filled). data_disk_* are kept for the install-plan
   # footprint (DECISIONS.md 2026-06-13). The brain re-serves disks to the UI at
@@ -109,7 +109,7 @@ GET /v1/system/resources
 GET /v1/system/update-target
 → 200 OK
   { "state": "available",
-    "running": { "brain": "ghcr.io/malmoos/brain@sha256:…", "ui": "ghcr.io/malmoos/ui@sha256:…" },
+    "running": { "brain": "ghcr.io/onmoose/brain@sha256:…", "ui": "ghcr.io/onmoose/ui@sha256:…" },
     "target":  { "version": "v0.8.0", "brain_image": "…@sha256:…", "ui_image": "…@sha256:…",
                  "published_at": "2026-09-01T10:00:00Z" },
     "checked_at": "2026-09-07T02:45:00Z",
@@ -135,7 +135,7 @@ Three things about the payload:
 
 **200 always**, like `/v1/health/system`. Every way this can go wrong is a state in the payload, so an HTTP error would tell the brain "ask again later" about facts that are not going to change on their own. The brain re-serves it at `GET /api/v1/system/update-target`, admin-only.
 
-**Health findings report (`GET /v1/health/system`).** The brain can't read host hardware directly (it's containerized behind the socket-proxy), so all *physical* health detection — SMART, `statfs`, mount flags, `systemctl is-active`, memory pressure, the pending-reboot flag (`/var/run/reboot-required`) — is host-agent's job. host-agent samples on its own cadence and the brain polls this one report on the 60s heartbeat, reconciling findings into typed health issues (`HEALTH.md` # Detector catalog, locus B). It returns findings across domains (storage, drives, services, resources, time, system) in one payload — **not** a proliferation of per-domain endpoints — so the brain's `ApplyFindings(category, …)` reconcile can clear-absent / raise-present per category atomically. This supersedes the slice-1 single-purpose storage report (`/run/malmo/health/storage.json` boot reporter stays; the polled endpoint generalizes). See `DECISIONS.md` 2026-05-29.
+**Health findings report (`GET /v1/health/system`).** The brain can't read host hardware directly (it's containerized behind the socket-proxy), so all *physical* health detection — SMART, `statfs`, mount flags, `systemctl is-active`, memory pressure, the pending-reboot flag (`/var/run/reboot-required`) — is host-agent's job. host-agent samples on its own cadence and the brain polls this one report on the 60s heartbeat, reconciling findings into typed health issues (`HEALTH.md` # Detector catalog, locus B). It returns findings across domains (storage, drives, services, resources, time, system) in one payload — **not** a proliferation of per-domain endpoints — so the brain's `ApplyFindings(category, …)` reconcile can clear-absent / raise-present per category atomically. This supersedes the slice-1 single-purpose storage report (`/run/moose/health/storage.json` boot reporter stays; the polled endpoint generalizes). See `DECISIONS.md` 2026-05-29.
 
 ```
 POST /v1/auth/verify-password
@@ -181,16 +181,16 @@ GET /v1/users/{username}/home
 
 The brain maps `unknown-user` to an installation error (not a 500 retry) — the user was deleted between the install-plan call and the install commit. The fake host-agent returns a deterministic result derived from the username (UID in [3000, 3999]) so the dev loop is coherent without a real `/etc/passwd`. See `APP_ISOLATION.md` # User content for the personal-scope bind-mount contract this feeds.
 
-For a **household-scope** app the owner's UID doesn't apply — the instance runs as a shared service identity (`malmo-app`) and any folder electing a shared source is added to the `malmo-shared` group. The brain learns those fixed identities through a companion Pattern A endpoint:
+For a **household-scope** app the owner's UID doesn't apply — the instance runs as a shared service identity (`moose-app`) and any folder electing a shared source is added to the `moose-shared` group. The brain learns those fixed identities through a companion Pattern A endpoint:
 
 ```
 GET /v1/identity/well-known
-→ 200 OK  { "malmo_app_uid": 2000, "malmo_app_gid": 2000, "malmo_shared_gid": 2001 }
+→ 200 OK  { "moose_app_uid": 2000, "moose_app_gid": 2000, "moose_shared_gid": 2001 }
 ```
 
-`malmo_app_uid`/`malmo_app_gid` is the shared service identity stamped as the compose `user:` for household instances; `malmo_shared_gid` is the GID added via `group_add` whenever any folder elects the shared source (`/srv/malmo/shared/<Folder>/`), in either scope. The real host-agent resolves these from `/etc/passwd` and `/etc/group` (`os/user.Lookup("malmo-app")`, `os/user.LookupGroup("malmo-shared")`); these accounts are provisioned by the box build, not by host-agent. The fake host-agent returns fixed dev constants (`2000`/`2000`/`2001`) that sit below the per-user `[3000, 3999]` range so service identities never collide with hashed user UIDs. See `APP_ISOLATION.md` # User content and `USERS_AND_GROUPS.md` # Group reference.
+`moose_app_uid`/`moose_app_gid` is the shared service identity stamped as the compose `user:` for household instances; `moose_shared_gid` is the GID added via `group_add` whenever any folder elects the shared source (`/srv/moose/shared/<Folder>/`), in either scope. The real host-agent resolves these from `/etc/passwd` and `/etc/group` (`os/user.Lookup("moose-app")`, `os/user.LookupGroup("moose-shared")`); these accounts are provisioned by the box build, not by host-agent. The fake host-agent returns fixed dev constants (`2000`/`2000`/`2001`) that sit below the per-user `[3000, 3999]` range so service identities never collide with hashed user UIDs. See `APP_ISOLATION.md` # User content and `USERS_AND_GROUPS.md` # Group reference.
 
-**App-service identity allocation.** A folderless app declaring `service_user: true` runs as a dedicated, malmo-allocated non-root identity (`APP_ISOLATION.md` # Runtime identity & data ownership). host-agent owns the reserved **app-service band [2100, 2999]** — below the malmo user floor (`UID_MIN` 3000), above the fixed 2000/2001 well-knowns, with 2002–2099 left as headroom for future fixed identities — and exposes allocation as a sibling of the well-known endpoint:
+**App-service identity allocation.** A folderless app declaring `service_user: true` runs as a dedicated, moose-allocated non-root identity (`APP_ISOLATION.md` # Runtime identity & data ownership). host-agent owns the reserved **app-service band [2100, 2999]** — below the moose user floor (`UID_MIN` 3000), above the fixed 2000/2001 well-knowns, with 2002–2099 left as headroom for future fixed identities — and exposes allocation as a sibling of the well-known endpoint:
 
 ```
 POST /v1/identity/app-service
@@ -202,7 +202,7 @@ POST /v1/identity/app-service/release
   → 200 OK
 ```
 
-The brain calls allocate once during install, persists the pair on the instance row, and never re-requests it — the identity is stable for the life of the instance. Release runs at uninstall (and on install rollback); it is idempotent, and a UID outside the band is a 400 — the endpoint must never be usable to delete an arbitrary account. The real host-agent reserves the number by creating a real system account + group named `malmo-svc-<uid>` (`useradd --system`, nologin shell, no home; the instance ID goes in the GECOS comment), so the `/etc/passwd` entry is the durable reservation and the band's state survives restarts with no side state; allocation is idempotent per instance via the GECOS label. The fake host-agent allocates from an in-memory map (not persisted — the brain stores the pair, and the unprivileged dev brain can't chown to it anyway).
+The brain calls allocate once during install, persists the pair on the instance row, and never re-requests it — the identity is stable for the life of the instance. Release runs at uninstall (and on install rollback); it is idempotent, and a UID outside the band is a 400 — the endpoint must never be usable to delete an arbitrary account. The real host-agent reserves the number by creating a real system account + group named `moose-svc-<uid>` (`useradd --system`, nologin shell, no home; the instance ID goes in the GECOS comment), so the `/etc/passwd` entry is the durable reservation and the band's state survives restarts with no side state; allocation is idempotent per instance via the GECOS label. The fake host-agent allocates from an in-memory map (not persisted — the brain stores the pair, and the unprivileged dev brain can't chown to it anyway).
 
 **GPU capability query (`GET /v1/system/gpu`).** When a manifest declares `permissions.gpu: true`, the brain needs two host facts before it can install: *is there a usable GPU* (the capacity gate — no GPU is a hard install refusal, `APP_ISOLATION.md` # GPU) and *which render group grants access to it* (so it can `group_add` the container onto `/dev/dri`). One Pattern A probe answers both:
 
@@ -216,7 +216,7 @@ GET /v1/system/gpu
 - `vendor` — `"intel"` in v1, the only supported runtime (`APP_ISOLATION.md` # GPU scopes the first slice to the Intel iGPU / VA-API path). `"amd"` and `"nvidia"` are reserved for the follow-on runtimes and not emitted yet. Empty when `present` is false.
 - `render_gid` — the GID of the host `render` group, which owns the `/dev/dri/renderD*` nodes. The brain `group_add`s it onto the main service so a `cap_drop: [ALL]` container (which lacks `CAP_DAC_OVERRIDE`) can still open the render node. Only meaningful when `present`.
 
-The real host-agent detects the GPU by scanning `/dev/dri/renderD*` and reading each node's PCI vendor (`/sys/class/drm/renderD*/device/vendor`; `0x8086` → `intel`), and resolves the render GID via `os/user.LookupGroup("render")` — the same way `/v1/identity/well-known` resolves `malmo-shared`. The `render` group and the udev rules binding the DRI nodes to it are provisioned by the box build's media stack, not by host-agent (the OS-image half is tracked separately — see issue #125). The fake host-agent returns a synthetic Intel iGPU (`present: true, vendor: "intel"`, a fixed dev `render_gid`) so the override path is exercisable under `make dev`, with a toggle to report `present: false` so the capacity-refusal path is testable without real hardware. This is the brain's only GPU host query — vendor→runtime selection is entirely the brain's job; the manifest stays vendor-agnostic `gpu: true` (`APP_MANIFEST.md` # E).
+The real host-agent detects the GPU by scanning `/dev/dri/renderD*` and reading each node's PCI vendor (`/sys/class/drm/renderD*/device/vendor`; `0x8086` → `intel`), and resolves the render GID via `os/user.LookupGroup("render")` — the same way `/v1/identity/well-known` resolves `moose-shared`. The `render` group and the udev rules binding the DRI nodes to it are provisioned by the box build's media stack, not by host-agent (the OS-image half is tracked separately — see issue #125). The fake host-agent returns a synthetic Intel iGPU (`present: true, vendor: "intel"`, a fixed dev `render_gid`) so the override path is exercisable under `make dev`, with a toggle to report `present: false` so the capacity-refusal path is testable without real hardware. This is the brain's only GPU host query — vendor→runtime selection is entirely the brain's job; the manifest stays vendor-agnostic `gpu: true` (`APP_MANIFEST.md` # E).
 
 **System time zone (`POST /v1/system/set-timezone`).** The only write in the "misc host state" group. It is the host op behind the first-run wizard's time-zone step (`FIRST_RUN.md`) and behind Settings → System → Time (`SETTINGS.md`). Pattern A, no response body:
 
@@ -243,9 +243,9 @@ GET  /v1/ssh/state
 ```
 
 - **The write carries one account's full desired state, not a delta.** `authorized_keys` replaces that account's file; an empty list with `enabled: false` is how an account is removed. Full-state means a retry after a partial failure converges instead of compounding, which matters because the brain commits first and calls host second.
-- **host-agent renders the whole drop-in, never line-edits it.** `sshd_config.d/malmo-allowed.conf` is regenerated from the enabled set on every call: a global `AllowUsers`, then one `Match User` block per account carrying that account's `AuthenticationMethods`. Validation happens twice, because the two checks catch different things: the candidate is tested on its own **before** it is installed, and the combined config is tested **after**, since our fragment can only be seen alongside the box's own `sshd_config` once it is in place. A failure in the second check restores the previous file, so a rejected render is never left on disk to fail the next start.
+- **host-agent renders the whole drop-in, never line-edits it.** `sshd_config.d/moose-allowed.conf` is regenerated from the enabled set on every call: a global `AllowUsers`, then one `Match User` block per account carrying that account's `AuthenticationMethods`. Validation happens twice, because the two checks catch different things: the candidate is tested on its own **before** it is installed, and the combined config is tested **after**, since our fragment can only be seen alongside the box's own `sshd_config` once it is in place. A failure in the second check restores the previous file, so a rejected render is never left on disk to fail the next start.
 - **Every failure undoes its own writes, including the daemon step.** The call writes in a fixed order — key file, then drop-in, then the systemd call — and each step can fail after the ones before it have committed. All three now put the host back: a rejected render restores the previous drop-in and the previous key file, and a failed `enable`, `disable` or `reload` restores both files and then brings the daemon to the state those restored files describe. The daemon half of that undo is not optional, because a failed call can still have changed the run state, which would leave sshd serving a set that no longer exists on disk. This is what the brain's rollback depends on: the brain rolls its own row back on any error from here, so a host that kept half a change would leave the two sides disagreeing about who has a shell — and since the drop-in is what host-agent reads as truth on the next call, a stale entry would merge back in rather than be overwritten. The two file restores are independent and both are attempted, so one failing does not leave the other's write live; the daemon reconcile then splits by direction. **Stopping is unconditional**, because `systemctl disable --now` reads neither file and stopping is what closes `:22` — skipping it would leave the port open after a failed call whose previous state had nobody enabled, which on hosted is the only port control there is. **Starting or reloading is gated on both files being back**, because those read what is on disk: if either restore failed, what they would read is still this call's, so starting against it puts the failed change into effect. The key file counts as much as the drop-in there, since a restored drop-in points at the very path a failed key restore has left holding the new key set. If the undo itself fails, the error says so and a human has to look (issue #479).
-- **The account's keys live in a root-owned file outside the home**, `/etc/ssh/malmo-authorized-keys/<user>`, and the account's `Match` block names it alongside `.ssh/authorized_keys`. host-agent runs as root and `~/.ssh` is user-controlled, so writing keys there as root is a privilege-escalation path — a symlink swapped in between check and use redirects the write, or the `chown`. Owning the file removes the user from the path, and leaves keys they added from their own shell working and untouched.
+- **The account's keys live in a root-owned file outside the home**, `/etc/ssh/moose-authorized-keys/<user>`, and the account's `Match` block names it alongside `.ssh/authorized_keys`. host-agent runs as root and `~/.ssh` is user-controlled, so writing keys there as root is a privilege-escalation path — a symlink swapped in between check and use redirects the write, or the `chown`. Owning the file removes the user from the path, and leaves keys they added from their own shell working and untouched.
 - **Calls are serialised on the host.** Every write re-renders one drop-in holding the whole enabled set, so two concurrent calls read-modify-writing it would drop whichever account lost the race — silently revoking access, or stopping sshd while someone still has it on.
 - **`require_password` adds a factor, it never substitutes for one.** True renders both methods for that account, so sshd demands both. Which method is mandatory is the **brain's** decision and depends on the profile — a key on hosted, the password on the appliance — and the brain refuses a hosted enable with no key before it ever calls here. host-agent does not know the profile and does not second-guess the brain, the same division as `set-timezone`, where the brain validates the zone.
 - **The daemon follows the enabled set.** host-agent starts sshd when the call leaves at least one account enabled and stops it when none is left, so :22 is closed on a box nobody uses SSH on (`BUILD.md` # SSH). On hosted this is the only control over that port.
@@ -286,16 +286,16 @@ POST /v1/discovery/unpublish
   → 200 OK
 
 GET  /v1/discovery/state
-  → { "publisher": "avahi", "host_name": "malmo", "renamed_to": null,
+  → { "publisher": "avahi", "host_name": "moose", "renamed_to": null,
       "published": [{ "slug": "photos", "name": "photos.local", "state": "established" }, ...],
       "interfaces": ["eth0", "wlan0"] }
 ```
 
-Implementation: `publish` creates an Avahi DBus entry group and calls `EntryGroup.AddAddress` once per LAN interface — each call scoped to that interface's index with that interface's own IPv4, the set computed from NetworkManager (static service files were verified not to work for bare A records; see `DISCOVERY.md` # Per-app A records). `unpublish` frees the entry group. Both ops are idempotent — duplicate publish is a no-op, unpublish on an unknown slug returns 200. Avahi's RFC 6762 §9 conflict-resolution (host rename to `malmo-2.local`) surfaces in `state.renamed_to` and the brain raises `hostname-conflict` (`HEALTH.md`). The Avahi interface allow-list (`allow-interfaces=` in `/etc/avahi/avahi-daemon.conf`) is computed by host-agent from NetworkManager state at boot and on interface change — eth/wlan in, `tailscale0` / `docker0` / `br-*` out — and host-agent re-publishes every entry group after any network change (committed groups hold literal addresses; an allowlist change additionally restarts avahi-daemon, which destroys them). See `DISCOVERY.md` for the full record model and gotchas.
+Implementation: `publish` creates an Avahi DBus entry group and calls `EntryGroup.AddAddress` once per LAN interface — each call scoped to that interface's index with that interface's own IPv4, the set computed from NetworkManager (static service files were verified not to work for bare A records; see `DISCOVERY.md` # Per-app A records). `unpublish` frees the entry group. Both ops are idempotent — duplicate publish is a no-op, unpublish on an unknown slug returns 200. Avahi's RFC 6762 §9 conflict-resolution (host rename to `moose-2.local`) surfaces in `state.renamed_to` and the brain raises `hostname-conflict` (`HEALTH.md`). The Avahi interface allow-list (`allow-interfaces=` in `/etc/avahi/avahi-daemon.conf`) is computed by host-agent from NetworkManager state at boot and on interface change — eth/wlan in, `tailscale0` / `docker0` / `br-*` out — and host-agent re-publishes every entry group after any network change (committed groups hold literal addresses; an allowlist change additionally restarts avahi-daemon, which destroys them). See `DISCOVERY.md` for the full record model and gotchas.
 
-**`enroll-drive` and `eject-drive` carry credentials inline** because host-agent verifies them via PAM as the first step of the job and uses them to authorize reading `/etc/malmo/secrets/luks-recovery.key`. The brain does not cache or forward the password beyond the single request. On invalid credentials the job fails immediately with `error.code = "auth-failed"`; otherwise host-agent proceeds with format → LUKS → TPM enrollment → mount → mergerfs add (enroll) or stop apps → unmount → marker removal (eject). Declared attributes: `Dangerous: true`, `ResourceClass: "disk"`, `MaxDuration: 10m`. See `STORAGE.md` # Adding a data drive and # Ejecting a data drive for the user-facing flow; `AUTH.md` # Roles for the fresh-password requirement.
+**`enroll-drive` and `eject-drive` carry credentials inline** because host-agent verifies them via PAM as the first step of the job and uses them to authorize reading `/etc/moose/secrets/luks-recovery.key`. The brain does not cache or forward the password beyond the single request. On invalid credentials the job fails immediately with `error.code = "auth-failed"`; otherwise host-agent proceeds with format → LUKS → TPM enrollment → mount → mergerfs add (enroll) or stop apps → unmount → marker removal (eject). Declared attributes: `Dangerous: true`, `ResourceClass: "disk"`, `MaxDuration: 10m`. See `STORAGE.md` # Adding a data drive and # Ejecting a data drive for the user-facing flow; `AUTH.md` # Roles for the fresh-password requirement.
 
-**Files endpoints (`/v1/files/*`).** Back the in-dashboard file manager (`FILES.md`). The brain is containerized and cannot touch `/home` or `/srv/malmo`, so every file operation runs here, **with host-agent dropping to the requesting user's Linux UID/GID for the duration of the op** (`setresuid`/`setresgid` to the malmo 3000+ UID, or a forked child). This makes POSIX `0750`/`02770` the kernel-enforced backstop — a member's op cannot read another user's `0750` home even past a brain-side bug — and gives created files correct ownership natively, the same contract the compose `user:` directive gives app instances (`APP_ISOLATION.md` # User content). host-agent owns logical-root resolution: `root` is `home` (→ the user's home, resolved as in `/v1/users/{username}/home`) or `shared` (→ `/srv/malmo/shared/`); it re-validates path containment before acting. The brain passes `user` on every call; there is no "act as a different user" parameter.
+**Files endpoints (`/v1/files/*`).** Back the in-dashboard file manager (`FILES.md`). The brain is containerized and cannot touch `/home` or `/srv/moose`, so every file operation runs here, **with host-agent dropping to the requesting user's Linux UID/GID for the duration of the op** (`setresuid`/`setresgid` to the moose 3000+ UID, or a forked child). This makes POSIX `0750`/`02770` the kernel-enforced backstop — a member's op cannot read another user's `0750` home even past a brain-side bug — and gives created files correct ownership natively, the same contract the compose `user:` directive gives app instances (`APP_ISOLATION.md` # User content). host-agent owns logical-root resolution: `root` is `home` (→ the user's home, resolved as in `/v1/users/{username}/home`) or `shared` (→ `/srv/moose/shared/`); it re-validates path containment before acting. The brain passes `user` on every call; there is no "act as a different user" parameter.
 
 Metadata ops are Pattern A:
 
@@ -398,7 +398,7 @@ Browsers speak SSE natively. When the dashboard surfaces these streams, the brow
 
 **Reconnect resilience.** Each emitted event has a monotonic `id`. host-agent keeps a rolling per-job buffer of the last ~256 KB of log output. On reconnect, the client sends `Last-Event-ID: <n>`; host-agent replays from the buffer starting at `n+1`. If the gap exceeds the buffer, host-agent emits a single `data: {"lost": true}` event and resumes from current. This is standard SSE reconnect — uses spec-defined mechanisms only.
 
-**`journal_follow` (`GET /v1/journal/follow?container=<name>`).** The first of the three journal operations `LOGGING.md` # Mechanisms calls for (`journal_query`, `journal_follow`, `journal_export_range`) — the live tail of one app container's stdout/stderr, surfaced as the dashboard's per-app Logs tab (`LOGGING.md` # Per-app logs, realized by the brain's `GET /api/v1/apps/{id}/log`). host-agent runs `journalctl CONTAINER_NAME=<name> -f -o json -n 100` (relying on Docker's daemon-wide `journald` log driver, `LOGGING.md` # Operational logs) and re-serialises each entry into a `JournalLine` frame — `{"ts","stream","line"}`, with `stream` derived from journald `PRIORITY` (≤3 → `stderr`, else `stdout`). `501` if host-agent has no log source wired, `400` if `container` is missing, otherwise `200` + `text/event-stream`. The brain passes the **main service's container name** (`malmo-<id>-<main_service>`); only that container's logs are exposed, never an arbitrary unit. The operation is read-only — there is no journal write path over the socket.
+**`journal_follow` (`GET /v1/journal/follow?container=<name>`).** The first of the three journal operations `LOGGING.md` # Mechanisms calls for (`journal_query`, `journal_follow`, `journal_export_range`) — the live tail of one app container's stdout/stderr, surfaced as the dashboard's per-app Logs tab (`LOGGING.md` # Per-app logs, realized by the brain's `GET /api/v1/apps/{id}/log`). host-agent runs `journalctl CONTAINER_NAME=<name> -f -o json -n 100` (relying on Docker's daemon-wide `journald` log driver, `LOGGING.md` # Operational logs) and re-serialises each entry into a `JournalLine` frame — `{"ts","stream","line"}`, with `stream` derived from journald `PRIORITY` (≤3 → `stderr`, else `stdout`). `501` if host-agent has no log source wired, `400` if `container` is missing, otherwise `200` + `text/event-stream`. The brain passes the **main service's container name** (`moose-<id>-<main_service>`); only that container's logs are exposed, never an arbitrary unit. The operation is read-only — there is no journal write path over the socket.
 
 **Two-tier replay split (deviation from the generic per-job buffer above).** For `journal_follow` the authoritative ~256 KB ring buffer, `Last-Event-ID` replay, and `{"lost":true}`-on-gap live in the **brain's** per-instance log hub, not in host-agent. host-agent is a thin **per-connection streamer**: it stamps its own monotonic `id` per connection and, if a reconnect arrives carrying `Last-Event-ID`, emits one `{"lost":true}` frame and resumes live (it has no cross-connection buffer to replay from). The brain re-stamps every frame with its own monotonic counter, owns the ring shared across all dashboard subscribers of one app, and is the side the browser's `EventSource` reconnects against. A host-side shared-follower buffer (so two brain consumers share one `journalctl`) is deferred until a second consumer exists. The sibling `journal_query` (paginated historical search) and `journal_export_range` (range dump for the diagnostic bundle) are likewise deferred — v1 is live-tail only.
 
@@ -427,15 +427,15 @@ A web terminal has independent security implications (root PTY = root on the hos
 
 **Authentication = socket file permissions. There is no application-layer token.**
 
-The kernel enforces it: anything not in the `malmo` group can't connect. Anything in the `malmo` group can do everything host-agent exposes. There's no per-caller authorization because the only caller is the brain.
+The kernel enforces it: anything not in the `moose` group can't connect. Anything in the `moose` group can do everything host-agent exposes. There's no per-caller authorization because the only caller is the brain.
 
 **Test invariant (CI must assert):**
 
-> The `malmo` group on the running system contains exactly one member: the brain's container runtime UID. Any additional member is a configuration error and fails the test.
+> The `moose` group on the running system contains exactly one member: the brain's container runtime UID. Any additional member is a configuration error and fails the test.
 
 This is the entire authn/authz model for this boundary. If group membership is wrong, the security boundary is broken; the test is the safety net.
 
-If a future tool ever needs host-agent access (a debug CLI, a recovery tool), we either add it explicitly to the test allowlist *and* the `malmo` group, or it talks through the brain.
+If a future tool ever needs host-agent access (a debug CLI, a recovery tool), we either add it explicitly to the test allowlist *and* the `moose` group, or it talks through the brain.
 
 ## Versioning: lockstep with OS release
 
@@ -493,7 +493,7 @@ Covered in Pattern C above. Self-contained: monotonic event IDs, ~256 KB per-job
 
 Protocol-shaped rules about *when and how* the protocol is exercised. Not new protocol surface.
 
-**host-agent self-update.** When the OS updater installs a new `malmo-host-agent` package:
+**host-agent self-update.** When the OS updater installs a new `moose-host-agent` package:
 
 1. Brain stops accepting new jobs.
 2. Brain waits for running jobs to drain. Hard cap (5 minutes): if a job is still running, the OS update fails with "an operation is still running, retry later."
@@ -508,7 +508,7 @@ Brain treats "host-agent unreachable" during this window as expected, not as an 
 
 ## Test invariants (CI)
 
-Beyond the malmo-group membership assertion (above), CI asserts:
+Beyond the moose-group membership assertion (above), CI asserts:
 
 - Every registered `JobKind` has non-zero `MaxDuration` and an explicit `Dangerous` value (no defaults).
 - A round-trip test for SSE reconnect: kill the brain mid-stream, restart, verify resume with the same `Last-Event-ID` recovers continuity (or emits `lost: true` if the buffer was overrun).
@@ -516,10 +516,10 @@ Beyond the malmo-group membership assertion (above), CI asserts:
 
 ## Locked decisions
 
-- **Transport:** UNIX socket at `/var/run/malmo/agent.sock`, owner `root:malmo`, mode `0660`.
+- **Transport:** UNIX socket at `/var/run/moose/agent.sock`, owner `root:moose`, mode `0660`.
 - **Wire format:** HTTP/1.1 + JSON, versioned URL prefix (`/v1/...`).
 - **API patterns:** sync request/response (Pattern A) for <5s ops; explicit `Job` objects (Pattern B) for anything that can exceed ~5s or needs progress/cancel; SSE (Pattern C) for one-way streams; WebSocket (Pattern D) reserved for future bidirectional needs (web terminal).
-- **Authentication:** socket file permissions only; no app-layer token. CI test asserts `malmo` group has exactly one member (brain's container UID).
+- **Authentication:** socket file permissions only; no app-layer token. CI test asserts `moose` group has exactly one member (brain's container UID).
 - **Versioning:** lockstep with OS release. No protocol-version negotiation.
 - **Out of scope for host-agent:** Docker daemon (brain talks to Docker via docker-socket-proxy), Caddy (managed container), Tier-1 app-facing services.
 - **Debuggability is a first-class design constraint.** Choices that would make the protocol harder to debug from `curl` need an explicit justification.
@@ -537,7 +537,7 @@ Beyond the malmo-group membership assertion (above), CI asserts:
 ## Knock-ons to other docs
 
 - `CONTROL_PLANE.md` — points to this doc as the authoritative spec for the brain↔host-agent boundary.
-- `AUTH.md` — the "Brain ↔ host-agent in the auth path" section is consistent with this protocol (private channel, no app-layer token); the malmo-group test invariant is now documented here.
+- `AUTH.md` — the "Brain ↔ host-agent in the auth path" section is consistent with this protocol (private channel, no app-layer token); the moose-group test invariant is now documented here.
 - `SERVICE_PROVISIONING.md` — Tier-2 ops (systemctl, config edits) flow through host-agent via this protocol's Pattern A and Pattern B.
 - `UPDATES.md` — apt operations are Pattern B (jobs with SSE log streams). The "brain ↔ host-agent protocol versioning" open item is resolved (lockstep).
 - `NEXT.md` — carries the future web-terminal and app-facing-background-jobs items (failure semantics is now closed).

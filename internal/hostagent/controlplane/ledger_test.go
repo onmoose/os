@@ -12,8 +12,8 @@ func TestLedgerRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	applied := time.Now().UTC().Truncate(time.Second)
 	want := Ledger{
-		Current:  Pair{Brain: "ghcr.io/malmoos/malmo-brain@sha256:new", UI: "ghcr.io/malmoos/malmo-ui@sha256:new", AppliedAt: applied},
-		Previous: &Pair{Brain: "malmo-brain:latest", UI: "malmo-ui:dev", AppliedAt: applied.Add(-24 * time.Hour)},
+		Current:  Pair{Brain: "ghcr.io/onmoose/os-brain@sha256:new", UI: "ghcr.io/onmoose/os-ui@sha256:new", AppliedAt: applied},
+		Previous: &Pair{Brain: "moose-brain:latest", UI: "moose-ui:dev", AppliedAt: applied.Add(-24 * time.Hour)},
 	}
 	if err := WriteLedger(dir, want); err != nil {
 		t.Fatalf("WriteLedger: %v", err)
@@ -68,15 +68,15 @@ func TestReadLedgerDistinguishesAbsentFromCorrupt(t *testing.T) {
 // definition, so the ledger has to win — otherwise a box that loses its brain
 // container silently rolls back to the baked image.
 func TestResolveBrainImage(t *testing.T) {
-	const env = "malmo-brain:latest"
+	const env = "moose-brain:latest"
 
 	t.Run("ledger wins when it names a brain", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := WriteLedger(dir, Ledger{Current: Pair{Brain: "ghcr.io/malmoos/malmo-brain@sha256:new", UI: "ui"}}); err != nil {
+		if err := WriteLedger(dir, Ledger{Current: Pair{Brain: "ghcr.io/onmoose/os-brain@sha256:new", UI: "ui"}}); err != nil {
 			t.Fatalf("WriteLedger: %v", err)
 		}
 		ref, fromLedger := ResolveBrainImage(dir, env)
-		if ref != "ghcr.io/malmoos/malmo-brain@sha256:new" || !fromLedger {
+		if ref != "ghcr.io/onmoose/os-brain@sha256:new" || !fromLedger {
 			t.Errorf("ref=%q fromLedger=%v, want the ledger's ref", ref, fromLedger)
 		}
 	})

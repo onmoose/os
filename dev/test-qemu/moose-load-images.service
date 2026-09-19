@@ -1,0 +1,18 @@
+# First-boot oneshot: load the bundled control-plane image tarballs into Docker
+# (#163; TESTING.md # Full-stack control-plane integration — baked-in images).
+# The medium-lane VM has no network, so the images the brain's compose
+# references must already be local. Run-once: the load script writes a marker
+# and the unit's ConditionPathExists short-circuits subsequent boots.
+[Unit]
+Description=Load bundled moose control-plane images into Docker (first boot)
+After=docker.service
+Requires=docker.service
+ConditionPathExists=!/var/lib/moose/.control-plane-images-loaded
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/moose/load-control-plane-images.sh
+
+[Install]
+WantedBy=multi-user.target

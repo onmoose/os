@@ -3,12 +3,12 @@ package api
 import (
 	"testing"
 
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // toDTO surfaces the per-app URL by profile: hosted is public HTTPS at
-// "<slug>.<box-id>.malmo.network" (the sole scheme), appliance is plain-HTTP
+// "<slug>.<box-id>.onmoose.io" (the sole scheme), appliance is plain-HTTP
 // ".local" (the published mDNS name when present).
 func TestToDTO_URLByProfile(t *testing.T) {
 	tests := []struct {
@@ -35,7 +35,7 @@ func TestToDTO_URLByProfile(t *testing.T) {
 			profile: profile.Hosted,
 			boxID:   "cindy-fox",
 			inst:    store.Instance{ID: "1", Slug: "photos", MDNSName: "ignored.local"},
-			wantURL: "https://photos.cindy-fox.malmo.network",
+			wantURL: "https://photos.cindy-fox.onmoose.io",
 		},
 		{
 			name:    "hosted without box-id falls back to appliance scheme",

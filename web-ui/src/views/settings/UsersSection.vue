@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Settings → Users — admin-only user management (USERS_AND_GROUPS.md, issue #10).
+// Settings → Users: admin-only user management (USERS_AND_GROUPS.md, issue #10).
 // Lives as a section of the Settings left-nav shell (SettingsLayout.vue, which
 // hides this nav item from members); this view also redirects members away as
 // defence in depth.
@@ -21,7 +21,7 @@ const router = useRouter();
 const qc = useQueryClient();
 const { currentUser, refreshCurrentUser } = useAuth();
 
-// Admin-only — redirect members immediately (mirrors CustomInstallView pattern).
+// Admin-only: redirect members immediately (mirrors CustomInstallView pattern).
 watch(
   currentUser,
   (u) => {
@@ -69,7 +69,7 @@ const create = useMutation({
 const resetFor = ref<string | null>(null);
 const resetPasswordValue = ref("");
 
-// id of the user pending delete confirmation (destructive op — confirm before
+// id of the user pending delete confirmation (destructive op, so confirm before
 // the elevation prompt; USERS_AND_GROUPS.md # Elevation in the UI).
 const confirmDeleteFor = ref<string | null>(null);
 
@@ -102,7 +102,7 @@ const changeRole = useMutation({
     refreshCurrentUser();
   },
   // On failure (guard rejection, cancelled elevation) the <select> is showing
-  // the value the user picked, which the server rejected — refetch so it snaps
+  // the value the user picked, which the server rejected, so refetch so it snaps
   // back to the real role.
   onError: (e, { id }) => {
     setRowError(id, e);
@@ -222,7 +222,7 @@ const doResetPassword = useMutation({
             </Button>
           </div>
 
-          <!-- Delete confirmation (irreversible — confirm before mutating) -->
+          <!-- Delete confirmation (irreversible, so confirm before mutating) -->
           <div
             v-if="confirmDeleteFor === u.id"
             class="flex flex-wrap items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2"

@@ -13,14 +13,14 @@ import (
 
 // DefaultURL is where a hosted box asks what it should be running. The control
 // plane serves it publicly and unauthenticated, because "what is the newest
-// malmo" is not a secret — which is also why this can ship before the box↔cloud
+// moose" is not a secret — which is also why this can ship before the box↔cloud
 // credential exists (UPDATES.md # 8.1 parks that in NEXT.md).
 //
 // It is a **default, not a constant**: the URL is configuration so a box can be
 // pointed at an alternative source to prove a release before the fleet gets it.
 // Keeping it configurable also keeps the seam honest — the box knows there is an
 // update-target source, not who operates it.
-const DefaultURL = "https://malmo.network/api/updates/target"
+const DefaultURL = "https://api.onmoose.io/api/updates/target"
 
 // fetchTimeout bounds one read. The answer is a few hundred bytes off a cached
 // endpoint; anything slower than this is a source that is effectively down, and
@@ -38,7 +38,7 @@ const maxBodyBytes = 64 << 10
 // **both** places a secret can hide.
 //
 // The update-target URL is operator-settable (a seed field, or
-// MALMO_UPDATE_TARGET_URL), so nothing stops a box being pointed at
+// MOOSE_UPDATE_TARGET_URL), so nothing stops a box being pointed at
 // `https://user:secret@host/target` or at `https://host/target?token=secret`.
 // The errors below name the URL they failed on, which is what makes a broken
 // source fixable — and, unredacted, is what would carry that secret into an API

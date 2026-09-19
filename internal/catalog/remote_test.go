@@ -29,7 +29,7 @@ main_port: 80
 }
 
 // testApps is the fixture browse payload: one app with artwork, one without, both
-// pointing at the two document routes the control plane serves per app.
+// pointing at the two document routes the catalog serves per app.
 func testApps() []wireApp {
 	return []wireApp{
 		{
@@ -56,7 +56,7 @@ func testApps() []wireApp {
 }
 
 // makeSnapshot marshals apps into a served GET /catalog body and returns the body
-// plus the ETag the control plane serves it with.
+// plus the ETag the catalog serves it with.
 func makeSnapshot(t *testing.T, apps []wireApp) (body []byte, etag string) {
 	t.Helper()
 	version, err := contentToken(apps)
@@ -72,7 +72,7 @@ func makeSnapshot(t *testing.T, apps []wireApp) (body []byte, etag string) {
 }
 
 // seedApps returns testApps with each app's install payload inlined, the shape a
-// staged local seed file carries (MALMO_CATALOG_FILE) because it has no control
+// staged local seed file carries (MOOSE_CATALOG_FILE) because it has no control
 // plane behind it to serve the document routes.
 func seedApps() []wireApp {
 	apps := testApps()
@@ -83,7 +83,7 @@ func seedApps() []wireApp {
 	return apps
 }
 
-// fakeCP is a controllable control-plane catalog fake. It serves the browse
+// fakeCP is a controllable catalog-service fake. It serves the browse
 // payload (honouring If-None-Match), the two per-app document routes, and per-app
 // assets, and counts hits so tests can assert what is fetched and when.
 type fakeCP struct {
@@ -164,7 +164,7 @@ func newRemote(baseURL, env, cacheDir string) *remoteSource {
 }
 
 // newRemoteFromFile builds a remoteSource seeded from a local snapshot file, the
-// dev/test seam (MALMO_CATALOG_FILE).
+// dev/test seam (MOOSE_CATALOG_FILE).
 func newRemoteFromFile(baseURL, env, cacheDir, snapshotFile string) *remoteSource {
 	c := NewRemote(RemoteOptions{
 		BaseURL: baseURL, Environment: env,
@@ -184,7 +184,7 @@ func TestRemoteSyncAndProject(t *testing.T) {
 	}
 
 	// The box asks for its own surface and shows exactly what it gets back: the
-	// visibility filter is the control plane's now, not a second box-side pass.
+	// visibility filter is the catalog service's now, not a second box-side pass.
 	cp.mu.Lock()
 	env := cp.lastEnv
 	cp.mu.Unlock()
@@ -351,7 +351,7 @@ func TestRemoteKeepsNoSnapshotOnDisk(t *testing.T) {
 	if l, _ := r.List(); len(l) != 2 {
 		t.Fatalf("List after sync = %d apps, want 2", len(l))
 	}
-	srv.Close() // control plane now unreachable
+	srv.Close() // catalog now unreachable
 
 	// A failed sync leaves the payload this source already holds untouched.
 	if err := r.syncOnce(context.Background()); err == nil {
@@ -378,7 +378,7 @@ func TestRemoteKeepsNoSnapshotOnDisk(t *testing.T) {
 	}
 }
 
-// TestRemoteSnapshotFileSeed covers the dev/test seam (MALMO_CATALOG_FILE): a
+// TestRemoteSnapshotFileSeed covers the dev/test seam (MOOSE_CATALOG_FILE): a
 // local file seeds the store at construction, the brain never writes to it, and
 // its inlined install payload lets an air-gapped lane install with no control
 // plane to fetch documents from.
@@ -394,7 +394,7 @@ func TestRemoteSnapshotFileSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No control plane at all: the seed is the whole store.
+	// No catalog service at all: the seed is the whole store.
 	r := newRemoteFromFile("http://127.0.0.1:1", "hosted", t.TempDir(), path)
 	if l, _ := r.List(); len(l) != 2 {
 		t.Fatalf("seeded List = %d apps, want 2", len(l))
@@ -409,7 +409,7 @@ func TestRemoteSnapshotFileSeed(t *testing.T) {
 		t.Fatalf("seeded Load wrong: id=%q compose=%q", man.ID, compose)
 	}
 	if err := r.syncOnce(context.Background()); err == nil {
-		t.Fatal("syncOnce against no control plane should error")
+		t.Fatal("syncOnce against no catalog service should error")
 	}
 	if l, _ := r.List(); len(l) != 2 {
 		t.Fatalf("List after failed sync = %d apps, want the seeded 2", len(l))
@@ -449,7 +449,7 @@ func TestRemoteNeverSyncedIsEmpty(t *testing.T) {
 
 	r := newRemote(srv.URL, "appliance", t.TempDir())
 	if err := r.syncOnce(context.Background()); err == nil {
-		t.Fatal("want sync error from failing control plane")
+		t.Fatal("want sync error from failing catalog service")
 	}
 	if l, _ := r.List(); len(l) != 0 {
 		t.Fatalf("never-synced store must be empty, got %d", len(l))
@@ -523,6 +523,58 @@ func TestRemoteAssetProxyAndCache(t *testing.T) {
 	}
 	if _, err := r.ScreenshotPath("alpha", 0); err != nil {
 		t.Fatalf("ScreenshotPath(alpha, 0): %v", err)
+	}
+}
+
+// TestRemoteAssetFollowsAbsoluteURL is the artwork half of
+// TestRemoteLoadFollowsAbsoluteDocumentURL, and it is the production path: the
+// catalog publishes icons and screenshots on an object-storage origin, not on its
+// own host. The box must follow the URL it is given and cache the bytes the same
+// way, without the catalog origin serving a single asset byte.
+func TestRemoteAssetFollowsAbsoluteURL(t *testing.T) {
+	var bucketHits int
+	bucket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bucketHits++
+		w.Header().Set("Content-Type", "image/png")
+		fmt.Fprint(w, "PNG-"+r.URL.Path)
+	}))
+	defer bucket.Close()
+
+	apps := testApps()
+	apps[0].IconURL = bucket.URL + "/moose-catalog-assets/alpha/icon.png"
+	apps[0].ScreenshotURLs = []string{bucket.URL + "/moose-catalog-assets/alpha/screenshots/0.png"}
+
+	cp := newFakeCP(t, apps)
+	srv := cp.server()
+	defer srv.Close()
+
+	r := newRemote(srv.URL, "appliance", t.TempDir())
+	if err := r.syncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	icon, err := r.IconPath("alpha")
+	if err != nil {
+		t.Fatalf("IconPath must follow an absolute asset URL: %v", err)
+	}
+	if got, err := os.ReadFile(icon); err != nil || !strings.HasPrefix(string(got), "PNG-") {
+		t.Fatalf("cached icon = %q, %v; want the bucket's bytes", got, err)
+	}
+	if filepath.Ext(icon) != ".png" {
+		t.Errorf("cached icon %q lost its extension", icon)
+	}
+	if _, err := r.ScreenshotPath("alpha", 0); err != nil {
+		t.Fatalf("ScreenshotPath must follow an absolute asset URL: %v", err)
+	}
+
+	if bucketHits != 2 {
+		t.Errorf("bucket served %d assets, want 2 (the icon and the screenshot)", bucketHits)
+	}
+	cp.mu.Lock()
+	hits := cp.assetHits
+	cp.mu.Unlock()
+	if hits != 0 {
+		t.Errorf("catalog origin served %d assets, want 0 (they live elsewhere)", hits)
 	}
 }
 
@@ -640,7 +692,7 @@ func TestRemoteAssetExpires(t *testing.T) {
 }
 
 // TestRemoteExpiredAssetSurvivesFailedRefresh: once an asset is expired but the
-// control plane is unreachable, the box serves the stale file rather than a
+// catalog is unreachable, the box serves the stale file rather than a
 // broken image. The browse payload has no such fallback; artwork does.
 func TestRemoteExpiredAssetSurvivesFailedRefresh(t *testing.T) {
 	cp := newFakeCP(t, testApps())
@@ -701,7 +753,7 @@ func TestRemoteAssetFetchCollapsesConcurrent(t *testing.T) {
 	}
 
 	// Fire many concurrent first-time icon requests: the per-asset lock must
-	// collapse them into a single control-plane fetch.
+	// collapse them into a single upstream fetch.
 	const n = 20
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -769,14 +821,14 @@ func TestRemote304KeepsSnapshot(t *testing.T) {
 	hits := cp.syncHits
 	cp.mu.Unlock()
 	if hits != 2 {
-		t.Fatalf("sync hit control plane %d times, want 2", hits)
+		t.Fatalf("sync hit the catalog %d times, want 2", hits)
 	}
 }
 
 // TestBrowseURLEscapesEnv: the environment goes on the query string, so a value
 // with URL syntax in it can't rewrite the request path.
 func TestBrowseURLEscapesEnv(t *testing.T) {
-	r := newRemote("https://malmo.invalid", "hosted&x=1 /../y", t.TempDir())
+	r := newRemote("https://moose.invalid", "hosted&x=1 /../y", t.TempDir())
 	got := r.browseURL()
 	u, err := url.Parse(got)
 	if err != nil {

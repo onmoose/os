@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 
 	"gopkg.in/yaml.v3"
 )

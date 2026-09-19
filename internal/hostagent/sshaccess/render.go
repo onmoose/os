@@ -12,12 +12,12 @@ import (
 
 // managedHeader marks the file as generated. It is also what the parser keys on
 // to know it is reading its own output rather than something a person wrote.
-const managedHeader = "# Managed by malmo. Generated from the per-account SSH opt-in; edits are not preserved."
+const managedHeader = "# Managed by moose. Generated from the per-account SSH opt-in; edits are not preserved."
 
 // keyCountPrefix carries the number of keys an account has through the file, so
 // GET /v1/ssh/state can report it without reading every home directory. sshd
 // ignores comments, so this is inert configuration-wise.
-const keyCountPrefix = "#   malmo-keys: "
+const keyCountPrefix = "#   moose-keys: "
 
 // render produces the whole drop-in from the enabled set.
 //
@@ -68,9 +68,9 @@ func render(accounts []account, keysDir string) string {
 		b.WriteString(keyCountPrefix + a.Username + " " + strconv.Itoa(a.KeyCount) + "\n")
 		b.WriteString("Match User " + a.Username + "\n")
 		b.WriteString("    AuthenticationMethods " + methods(a) + "\n")
-		// Two paths, in this order. The first is malmo's root-owned file, which the
+		// Two paths, in this order. The first is moose's root-owned file, which the
 		// account cannot write. The second is the user's own, so keys they added
-		// from their shell keep working and malmo never touches that file.
+		// from their shell keep working and moose never touches that file.
 		b.WriteString("    AuthorizedKeysFile " + filepath.Join(keysDir, a.Username) + " .ssh/authorized_keys\n")
 	}
 	return b.String()
@@ -145,7 +145,7 @@ func (m *Manager) readDropIn() ([]account, error) {
 		return nil, fmt.Errorf("sshaccess: read %s: %w", path, err)
 	}
 	if !managed {
-		return nil, fmt.Errorf("sshaccess: %s exists but is not malmo-managed; refusing to overwrite it", path)
+		return nil, fmt.Errorf("sshaccess: %s exists but is not moose-managed; refusing to overwrite it", path)
 	}
 	for i := range accounts {
 		accounts[i].KeyCount = keyCount[accounts[i].Username]
@@ -153,7 +153,7 @@ func (m *Manager) readDropIn() ([]account, error) {
 	return accounts, nil
 }
 
-// parseKeyCount reads back a "#   malmo-keys: <user> <n>" line.
+// parseKeyCount reads back a "#   moose-keys: <user> <n>" line.
 func parseKeyCount(line string) (string, int, bool) {
 	fields := strings.Fields(strings.TrimPrefix(line, keyCountPrefix))
 	if len(fields) != 2 {

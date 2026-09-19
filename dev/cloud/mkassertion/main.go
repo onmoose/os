@@ -18,7 +18,7 @@
 //	          random-key seeds already use, which the brain ingests today)
 //	<line 2>  the signed assertion token — base64url(claims) "." base64url(ed25519-sig),
 //	          the shape internal/assertion expects — delivered to the VM over SMBIOS and
-//	          replayed as GET /_malmo/sso?token=<token>
+//	          replayed as GET /_moose/sso?token=<token>
 //
 // With -tokens N it prints N token lines after the key instead of one, each with its
 // own jti. A scenario needs more than one because the box spends a jti on first use:
@@ -43,8 +43,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/malmoos/malmo/internal/assertion"
-	"github.com/malmoos/malmo/internal/profile"
+	"github.com/onmoose/os/internal/assertion"
+	"github.com/onmoose/os/internal/profile"
 )
 
 func main() {

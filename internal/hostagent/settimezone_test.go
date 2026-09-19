@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // stubTZSetter records the last zone and returns a canned error, standing in

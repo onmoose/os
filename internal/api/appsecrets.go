@@ -23,7 +23,7 @@ func (s *Server) registerAppSecrets(api huma.API) {
 }
 
 // AppSecretDTO is one revealed secret: the manifest's snake_case name and the
-// generated value. The injected env var is MALMO_SECRET_<NAME> (uppercased).
+// generated value. The injected env var is MOOSE_SECRET_<NAME> (uppercased).
 type AppSecretDTO struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`

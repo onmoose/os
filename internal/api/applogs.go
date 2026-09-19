@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/malmoos/malmo/internal/applog"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/applog"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/store"
 )
 
 // appLog is the per-app log tail (BRAIN_UI_PROTOCOL.md Pattern C; LOGGING.md

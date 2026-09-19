@@ -3,16 +3,16 @@
 package protocol
 
 // SocketPath is the production socket location. In dev the brain and the
-// fake host-agent agree on a path via MALMO_AGENT_SOCK.
-const SocketPath = "/var/run/malmo/agent.sock"
+// fake host-agent agree on a path via MOOSE_AGENT_SOCK.
+const SocketPath = "/var/run/moose/agent.sock"
 
 // AppHostSuffix is the LAN hostname suffix for app instances: an app with slug
 // <slug> is reachable at "<slug>" + AppHostSuffix, e.g. "photos.local".
 //
-// It is single-label on purpose. The earlier "<slug>.malmo.local" shape was
+// It is single-label on purpose. The earlier "<slug>.moose.local" shape was
 // multi-label relative to .local and is rejected outright by nss-mdns on Linux
 // (and is unreliable on other resolvers), so the no-cloud LAN URL never
-// resolved there. The ".malmo" infix bought nothing in mDNS (no zones, no
+// resolved there. The ".moose" infix bought nothing in mDNS (no zones, no
 // delegation, no wildcards — each name is published individually regardless),
 // so it was dropped. See DECISIONS.md (2026-05-31) and DISCOVERY.md.
 //
@@ -36,9 +36,9 @@ const Major = 1
 
 // ImageProtocolMajorLabel is the OCI image label under which the brain image
 // declares the wire-protocol major it implements (set in cmd/brain/Dockerfile).
-// host-agent reads it at launch and compares against Major. The dotted `malmo.`
-// prefix matches the runtime label convention (e.g. malmo.instance_id).
-const ImageProtocolMajorLabel = "malmo.protocol.major"
+// host-agent reads it at launch and compares against Major. The dotted `moose.`
+// prefix matches the runtime label convention (e.g. moose.instance_id).
+const ImageProtocolMajorLabel = "moose.protocol.major"
 
 // PublishRequest registers a per-app .local name (POST /v1/discovery/publish).
 type PublishRequest struct {
@@ -58,7 +58,7 @@ type UnpublishRequest struct {
 // SystemStatus is GET /v1/system/status.
 //
 // DataDiskFreeBytes / DataDiskTotalBytes are a statfs snapshot of the data
-// drive's mount (/srv/malmo): free = available blocks × block size (Bavail ×
+// drive's mount (/srv/moose): free = available blocks × block size (Bavail ×
 // Bsize, the space an unprivileged writer can actually use, already excluding
 // the root reserve), total = Blocks × Bsize. They back the install-plan's
 // free_bytes figure (BRAIN_UI_PROTOCOL.md # install-plan) so the install dialog
@@ -85,10 +85,10 @@ type SystemStatus struct {
 
 // DiskSpace is one mounted volume's fullness for the system-resources Storage
 // bars: a human Label ("System" for the OS drive at /, "Data" for the data
-// drive at /srv/malmo — STORAGE.md mount layout), plus the same statfs figures
+// drive at /srv/moose — STORAGE.md mount layout), plus the same statfs figures
 // as DataDisk* (FreeBytes = Bavail × Bsize, TotalBytes = Blocks × Bsize). Used
 // is derived UI-side as Total − Free. host-agent omits a volume that isn't a
-// distinct mount (a Level-0 box has no data drive: /srv/malmo is just a
+// distinct mount (a Level-0 box has no data drive: /srv/moose is just a
 // directory on the OS drive), so the slice carries only real volumes.
 type DiskSpace struct {
 	Label      string `json:"label"`
@@ -208,7 +208,7 @@ type DeleteUserRequest struct {
 }
 
 // SetRoleRequest is POST /v1/auth/set-role. Updates the user's Linux group
-// membership (malmo-admin) to match the new role. Role must be "admin" or "member".
+// membership (moose-admin) to match the new role. Role must be "admin" or "member".
 type SetRoleRequest struct {
 	User string `json:"user"`
 	Role string `json:"role"`
@@ -220,7 +220,7 @@ type SetRoleRequest struct {
 // partial failure converges instead of compounding. Disabling is Enabled=false;
 // host-agent then drops the account's Match block and its keys.
 //
-// RequirePassword adds the malmo password as a second required method for this
+// RequirePassword adds the moose password as a second required method for this
 // account, rendering "AuthenticationMethods publickey,password". It never
 // substitutes for the mandatory factor. Which factor is mandatory is the brain's
 // call and depends on the environment profile — a key on hosted, the password on
@@ -303,7 +303,7 @@ type SystemHealth struct {
 }
 
 // StorageHealth is the on-disk storage findings file
-// (/run/malmo/health/storage.json) written by malmo-storage-verify (BOOT.md
+// (/run/moose/health/storage.json) written by moose-storage-verify (BOOT.md
 // # The storage-ready target) and read by host-agent's storage source, which
 // folds the findings into SystemHealth's storage category. It is also the
 // boot reporter's wire shape.
@@ -347,18 +347,18 @@ type ResolveHomeResponse struct {
 // service-account identities the brain needs to emit correct user:/group_add
 // directives in compose overrides for household-scope app instances.
 //
-// MalmoAppUID/GID is the shared service identity (compose user:).
-// MalmoSharedGID is the GID of the malmo-shared group (apps electing a shared
+// MooseAppUID/GID is the shared service identity (compose user:).
+// MooseSharedGID is the GID of the moose-shared group (apps electing a shared
 // folder source are added to it via group_add).
 type WellKnownIdentityResponse struct {
-	MalmoAppUID    int `json:"malmo_app_uid"`
-	MalmoAppGID    int `json:"malmo_app_gid"`
-	MalmoSharedGID int `json:"malmo_shared_gid"`
+	MooseAppUID    int `json:"moose_app_uid"`
+	MooseAppGID    int `json:"moose_app_gid"`
+	MooseSharedGID int `json:"moose_shared_gid"`
 }
 
 // AppServiceUIDMin/Max bound the reserved app-service identity band host-agent
 // allocates `service_user: true` instances from (APP_ISOLATION.md # Runtime
-// identity & data ownership): below the malmo user floor (UID_MIN 3000,
+// identity & data ownership): below the moose user floor (UID_MIN 3000,
 // FIRST_RUN.md # Identity), above the fixed well-known identities (2000/2001),
 // with 2002–2099 left unallocated as headroom for future fixed identities.
 // Both sides of the socket validate against the band — host-agent never

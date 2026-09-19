@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // The pair the fake box "runs", and the pair a fake target offers. Both are
@@ -14,17 +14,17 @@ import (
 // payload that carried tags would let a dashboard be built against a shape no
 // real box will ever send.
 const (
-	fakeRunningBrain = "ghcr.io/malmoos/brain@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	fakeRunningUI    = "ghcr.io/malmoos/ui@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-	fakeTargetBrain  = "ghcr.io/malmoos/brain@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-	fakeTargetUI     = "ghcr.io/malmoos/ui@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	fakeRunningBrain = "ghcr.io/onmoose/brain@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	fakeRunningUI    = "ghcr.io/onmoose/ui@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	fakeTargetBrain  = "ghcr.io/onmoose/brain@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	fakeTargetUI     = "ghcr.io/onmoose/ui@sha256:4444444444444444444444444444444444444444444444444444444444444444"
 )
 
 // fakeUpdateTarget builds the canned GET /v1/system/update-target report.
 //
 // The default is "the source has nothing to offer", which is the honest answer
 // for a dev box: there is no control plane behind the inner loop to move to.
-// MALMO_FAKE_UPDATE_TARGET picks another state, because the point of this read
+// MOOSE_FAKE_UPDATE_TARGET picks another state, because the point of this read
 // is a dashboard surface and that surface has to be built against every state —
 // including the three nobody would think to design for (refused, unreachable,
 // disabled).
@@ -45,7 +45,7 @@ func fakeUpdateTarget() protocol.UpdateTarget {
 		PublishedAt: "2026-09-01T10:00:00Z",
 	}
 
-	want := os.Getenv("MALMO_FAKE_UPDATE_TARGET")
+	want := os.Getenv("MOOSE_FAKE_UPDATE_TARGET")
 	switch want {
 	case "", protocol.UpdateTargetNone:
 		return out
@@ -56,18 +56,18 @@ func fakeUpdateTarget() protocol.UpdateTarget {
 		out.Running = protocol.ControlPlanePair{Brain: fakeTargetBrain, UI: fakeTargetUI}
 	case protocol.UpdateTargetRefused:
 		out.State, out.Target = protocol.UpdateTargetRefused, offer
-		out.Target.BrainImage, out.Target.UIImage = "ghcr.io/malmoos/brain:v0.8.0", "ghcr.io/malmoos/ui:v0.8.0"
-		out.Detail = "updatetarget: image reference is not pinned to a digest: brain image \"ghcr.io/malmoos/brain:v0.8.0\""
+		out.Target.BrainImage, out.Target.UIImage = "ghcr.io/onmoose/brain:v0.8.0", "ghcr.io/onmoose/ui:v0.8.0"
+		out.Detail = "updatetarget: image reference is not pinned to a digest: brain image \"ghcr.io/onmoose/brain:v0.8.0\""
 	case protocol.UpdateTargetUnreachable:
 		out.State = protocol.UpdateTargetUnreachable
-		out.Detail = "updatetarget: fetch https://malmo.network/api/updates/target: dial tcp: connection refused"
+		out.Detail = "updatetarget: fetch https://api.onmoose.io/api/updates/target: dial tcp: connection refused"
 	case protocol.UpdateTargetDisabled:
 		// No loop ever started, so nothing was checked and no URL was
 		// resolved — both fields stay empty, as they do on a real box.
 		out.State, out.CheckedAt, out.From = protocol.UpdateTargetDisabled, "", ""
-		out.Detail = "seed update_target_url must be an http or https URL, got \"malmo.example\""
+		out.Detail = "seed update_target_url must be an http or https URL, got \"moose.example\""
 	default:
-		slog.Warn("host-agent (fake): unknown MALMO_FAKE_UPDATE_TARGET; reporting none", "state", want)
+		slog.Warn("host-agent (fake): unknown MOOSE_FAKE_UPDATE_TARGET; reporting none", "state", want)
 	}
 	return out
 }

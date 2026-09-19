@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/store"
 )
 
 // The hosted confirm step (issue #469): a hosted owner has no box password, so
@@ -23,7 +23,7 @@ import (
 // shape the portal produces once it forwards the dashboard's return path.
 func (h *harness) ssoReturn(token, ret string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet,
-		"/_malmo/sso?token="+token+"&return="+url.QueryEscape(ret), nil)
+		"/_moose/sso?token="+token+"&return="+url.QueryEscape(ret), nil)
 	rec := httptest.NewRecorder()
 	h.apiSrv.ssoLanding(rec, req)
 	return rec

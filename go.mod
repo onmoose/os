@@ -1,4 +1,4 @@
-module github.com/malmoos/malmo
+module github.com/onmoose/os
 
 go 1.25.0
 

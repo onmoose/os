@@ -20,20 +20,20 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
-	"github.com/malmoos/malmo/internal/admission"
-	"github.com/malmoos/malmo/internal/applog"
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/health"
-	"github.com/malmoos/malmo/internal/hostclient"
-	"github.com/malmoos/malmo/internal/lifecycle"
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/store"
-	"github.com/malmoos/malmo/internal/systemlive"
+	"github.com/onmoose/os/internal/admission"
+	"github.com/onmoose/os/internal/applog"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/health"
+	"github.com/onmoose/os/internal/hostclient"
+	"github.com/onmoose/os/internal/lifecycle"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/store"
+	"github.com/onmoose/os/internal/systemlive"
 )
 
 type Server struct {
@@ -67,13 +67,13 @@ type Server struct {
 	// startup via SetEnvironment (ENVIRONMENT.md # Provisioning). On appliance
 	// these stay zero-valued and every hosted seam is a no-op. boxID is surfaced
 	// on /me; assertionKey is the portal's Ed25519 verification key the SSO
-	// handler verifies ownership assertions against (GET /_malmo/sso). A nil
+	// handler verifies ownership assertions against (GET /_moose/sso). A nil
 	// assertionKey on a hosted box means "no seed yet" — SSO returns 503.
 	profile      profile.Profile
 	boxID        string
 	assertionKey ed25519.PublicKey
 
-	// Staged control-plane compose dir (MALMO_CONTROL_PLANE_DIR), set once at
+	// Staged control-plane compose dir (MOOSE_CONTROL_PLANE_DIR), set once at
 	// startup via SetControlPlaneDir. Read by GET /api/v1/system/version to
 	// report the UI image the box is pinned to. Empty in dev, where the UI is
 	// Vite and no compose exists — the version read then omits the UI field
@@ -110,7 +110,7 @@ func NewServer(
 }
 
 // SetControlPlaneDir records where the staged control-plane compose lives
-// (MALMO_CONTROL_PLANE_DIR), so GET /api/v1/system/version can report the UI
+// (MOOSE_CONTROL_PLANE_DIR), so GET /api/v1/system/version can report the UI
 // image the box is pinned to. cmd/brain passes the same value it hands
 // lifecycle.EnsureControlPlane, which is what makes the reported UI image the
 // one the box actually reconciles to. Empty in dev — the version read then omits
@@ -144,7 +144,7 @@ func (s *Server) SetEnvironment(prof profile.Profile, boxID string, assertionKey
 // OpenAPI document identity. Shared by Handler (live serving) and
 // OpenAPIDocument (build-time emission) so both describe the same surface.
 const (
-	openAPITitle   = "malmo brain"
+	openAPITitle   = "moose brain"
 	openAPIVersion = "0.0.1"
 )
 
@@ -161,8 +161,8 @@ const (
 // the browser sees one origin there too (web-ui/vite.config.ts). So answering
 // a preflight buys no caller anything, and answering one with a reflected
 // Origin plus Access-Control-Allow-Credentials would cost a great deal: on
-// hosted, apps are `<slug>.<box-id>.malmo.network` and the dashboard is
-// `<box-id>.malmo.network`, which are same-site under a registrable domain
+// hosted, apps are `<slug>.<box-id>.onmoose.io` and the dashboard is
+// `<box-id>.onmoose.io`, which are same-site under a registrable domain
 // that is not on the Public Suffix List (ENVIRONMENT.md # Public DNS). The
 // owner's SameSite=Lax session cookie therefore rides a fetch from any app to
 // the dashboard API, and a reflected header would let the app read the reply.
@@ -196,7 +196,7 @@ func (s *Server) Handler() http.Handler {
 	// the dashboard. A redirect-and-Set-Cookie endpoint, not JSON — registered raw
 	// and outside the OpenAPI surface (sso.go; cloud specs/AUTH_AND_ACCESS.md #
 	// Portal-to-box SSO). Public (the assertion is the credential).
-	mux.HandleFunc("GET /_malmo/sso", s.ssoLanding)
+	mux.HandleFunc("GET /_moose/sso", s.ssoLanding)
 
 	// Hosted per-app forward-auth verify (issue #305; wired into per-app Caddy
 	// routes by #306). The box Caddy's forward_auth handler calls this per request
@@ -385,7 +385,7 @@ type InstanceDTO struct {
 
 func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
 	// On hosted, the app's sole URL is public HTTPS at
-	// "<slug>.<box-id>.malmo.network" (ENVIRONMENT.md # Networking & discovery) —
+	// "<slug>.<box-id>.onmoose.io" (ENVIRONMENT.md # Networking & discovery) —
 	// no mDNS, no ".local" fallback. On appliance, prefer the name actually
 	// announced over Avahi (MDNSName), which may be the box-qualified collision
 	// fallback "<slug>-<box>.local"; fall back to the reconstructed primary

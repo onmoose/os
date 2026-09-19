@@ -19,7 +19,7 @@
 #   3. Stage this lane's assertions (cloud-assertions.sh + its unit) into
 #      dev/cloud/test/mkosi.extra/; the test postinst enables the unit.
 #   4. Stage Docker's apt repo (trixie) so docker-ce resolves at build time.
-#   5. `mkosi build` from dev/cloud/test/ → .dev/cloud-boot/malmo-cloud.raw.
+#   5. `mkosi build` from dev/cloud/test/ → .dev/cloud-boot/moose-cloud.raw.
 #
 # Idempotent via .dev/cloud-boot/.cloud-boot-ready (versioned content gate).
 set -euo pipefail
@@ -34,7 +34,7 @@ PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
 CANARY_VERSION="v22"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
-IMAGE_OUT="${WORK}/malmo-cloud.raw"
+IMAGE_OUT="${WORK}/moose-cloud.raw"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     echo "must run as root (mkosi escalates; QEMU+KVM later)" >&2
@@ -122,7 +122,7 @@ rm -rf "$EXTRA"
 mkdir -p "$EXTRA/usr/local/bin" "$EXTRA/etc/systemd/system"
 cp "${CLOUD_DIR}/cloud-assertions.sh" "$EXTRA/usr/local/bin/cloud-assertions.sh"
 chmod 0755 "$EXTRA/usr/local/bin/cloud-assertions.sh"
-cp "${TEST_DIR}/malmo-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
+cp "${TEST_DIR}/moose-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
 
 # --- 3b. app-install fixtures for the access-mode e2e (#308) — TEST-LANE ONLY. The
 # access boot installs whoami air-gapped and drives the per-app forward-auth access
@@ -132,8 +132,8 @@ cp "${TEST_DIR}/malmo-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
 # whoami tar sits alongside the control-plane bundle and the first-boot loader (which
 # globs *.tar) docker-loads it too.
 echo "baking whoami app image + catalog snapshot for the access-mode e2e (#308)..."
-mkdir -p "$EXTRA/var/lib/malmo/control-plane-images" \
-         "$EXTRA/var/lib/malmo" \
+mkdir -p "$EXTRA/var/lib/moose/control-plane-images" \
+         "$EXTRA/var/lib/moose" \
          "$EXTRA/etc/systemd/system/host-agent.service.d"
 
 # whoami image: pull by DIGEST (not the mutable tag), re-tag to the v1.10.3 the
@@ -142,11 +142,11 @@ mkdir -p "$EXTRA/var/lib/malmo/control-plane-images" \
 WHOAMI_REF="traefik/whoami@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c"
 docker pull "$WHOAMI_REF"
 docker tag "$WHOAMI_REF" traefik/whoami:v1.10.3
-docker save traefik/whoami:v1.10.3 -o "$EXTRA/var/lib/malmo/control-plane-images/whoami.tar"
+docker save traefik/whoami:v1.10.3 -o "$EXTRA/var/lib/moose/control-plane-images/whoami.tar"
 
 # Stage a local catalog snapshot with a whoami app: the lane is air-gapped, so there
 # is no control plane to sync from, and the brain reads this file once at boot to
-# seed its store (internal/catalog/remote.go # loadSnapshotFile, MALMO_CATALOG_FILE).
+# seed its store (internal/catalog/remote.go # loadSnapshotFile, MOOSE_CATALOG_FILE).
 # It is an input the brain never writes back — a box keeps no catalog on disk.
 # mkcatalog generates it from the minimal hosted whoami package (pure routing, no
 # folder grant — the access proof is the gate + strip, not bind mounts) and stamps
@@ -156,7 +156,7 @@ MKCATALOG_BIN="${WORK}/mkcatalog"
 stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
 "$MKCATALOG_BIN" \
     -pkg "${TEST_DIR}/catalog/whoami" \
-    -out "$EXTRA/var/lib/malmo/catalog-seed.json"
+    -out "$EXTRA/var/lib/moose/catalog-seed.json"
 
 # Offline-install env, layered over the shared 10-cloud-brain.conf drop-in (20- sorts
 # after, so these win). host-agent-real forwards them into the brain container
@@ -164,9 +164,9 @@ stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
 # loaded image's catalog-promised digest instead of pulling, and the inert catalog
 # URL makes the background sync fail fast so the staged snapshot stands. A real
 # tenant box keeps the production default (pulls from the control plane, and sets no
-# MALMO_CATALOG_FILE at all) — these overrides exist only in the boot-proof image.
+# MOOSE_CATALOG_FILE at all) — these overrides exist only in the boot-proof image.
 #
-# MALMO_UPDATE_TARGET_URL is inert here for a sharper reason (os#401): a hosted box
+# MOOSE_UPDATE_TARGET_URL is inert here for a sharper reason (os#401): a hosted box
 # applies its control-plane target WITHOUT a prompt, so a boot proof left pointing at
 # the real control plane would, if the boot happened to land inside the 03:00-04:00
 # window, pull the live fleet images and update the box under test mid-assertion.
@@ -176,10 +176,10 @@ stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
 # channel a real box has for a per-box fact, and it outranks this variable.
 cat > "$EXTRA/etc/systemd/system/host-agent.service.d/20-cloud-test-catalog.conf" <<'EOF'
 [Service]
-Environment=MALMO_CATALOG_URL=http://127.0.0.1:9
-Environment=MALMO_CATALOG_FILE=/var/lib/malmo/catalog-seed.json
-Environment=MALMO_OFFLINE_INSTALL=1
-Environment=MALMO_UPDATE_TARGET_URL=http://127.0.0.1:9
+Environment=MOOSE_CATALOG_URL=http://127.0.0.1:9
+Environment=MOOSE_CATALOG_FILE=/var/lib/moose/catalog-seed.json
+Environment=MOOSE_OFFLINE_INSTALL=1
+Environment=MOOSE_UPDATE_TARGET_URL=http://127.0.0.1:9
 EOF
 
 # --- 3c. registry image for the control-plane update proof (#382) — TEST-LANE ONLY.
@@ -190,7 +190,7 @@ EOF
 # target images into it, drops them from the local image store, and lets the updater
 # pull them back by digest.
 #
-# It lands in a TEST-ONLY path, not /var/lib/malmo/control-plane-images/: the first-boot
+# It lands in a TEST-ONLY path, not /var/lib/moose/control-plane-images/: the first-boot
 # loader globs that dir and would then load the registry on every boot of every
 # scenario. The update assertion docker-loads this tar itself, so the other four boots
 # never touch it. It is in the test ExtraTree, so the published production image does
@@ -198,11 +198,11 @@ EOF
 #
 # Pinned by digest for the same reason whoami is: `registry:2` is a moving tag.
 echo "baking the registry image for the control-plane update proof (#382)..."
-mkdir -p "$EXTRA/var/lib/malmo/test-images"
+mkdir -p "$EXTRA/var/lib/moose/test-images"
 REGISTRY_REF="registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 docker pull "$REGISTRY_REF"
 docker tag "$REGISTRY_REF" registry:2
-docker save registry:2 -o "$EXTRA/var/lib/malmo/test-images/registry.tar"
+docker save registry:2 -o "$EXTRA/var/lib/moose/test-images/registry.tar"
 
 # --- 4. Docker apt repo for the build's package manager (trixie pocket — the
 # cloud image is Release=trixie). Build-host network only; the VM never apt-installs.
@@ -249,7 +249,7 @@ fi
 
 # mkosi writes to OutputDirectory=.dev/cloud-boot. Confirm the raw exists.
 if [ ! -f "$IMAGE_OUT" ]; then
-    for cand in "${WORK}/malmo-cloud.raw" "${WORK}/malmo-cloud"; do
+    for cand in "${WORK}/moose-cloud.raw" "${WORK}/moose-cloud"; do
         [ -f "$cand" ] && { ln -sf "$(basename "$cand")" "$IMAGE_OUT" 2>/dev/null || cp "$cand" "$IMAGE_OUT"; break; }
     done
 fi

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/catalog"
+	"github.com/onmoose/os/internal/catalog"
 )
 
 // toolsManifestYML is a second listed app in a distinct category, so the segmented

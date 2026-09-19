@@ -69,7 +69,7 @@ func Synthesize(name string, composeBytes []byte, mainService string, mainPort i
 // ComposeServiceNames returns the service names declared under `services:` in a
 // compose document, erroring if the bytes aren't valid YAML or declare no
 // services. Two consumers: Synthesize (Door-2 main-service inference) and the
-// `malmo manifest lint` CLI (confirming a manifest's main_service exists in its
+// `moose manifest lint` CLI (confirming a manifest's main_service exists in its
 // sibling compose).
 func ComposeServiceNames(composeBytes []byte) ([]string, error) {
 	var doc struct {
@@ -89,7 +89,7 @@ func ComposeServiceNames(composeBytes []byte) ([]string, error) {
 }
 
 // ComposeImages returns the distinct `image:` references declared under
-// `services:`, sorted, for the `malmo manifest resolve` size resolver. A
+// `services:`, sorted, for the `moose manifest resolve` size resolver. A
 // service without an `image:` is an error (admission rejects `build:`, so a
 // curated compose always declares one). Distinct because services can share an
 // image (a gateway + dashboard on the same binary) and it's sized once.
@@ -129,7 +129,7 @@ func ComposeImages(composeBytes []byte) ([]string, error) {
 // rejection (Caddy fronts every app; we read the container side for the prefill,
 // we don't honor the host binding). Returns 0 when the compose is silent,
 // declares several ports (ambiguous), or the value isn't a plain 1..65535 port —
-// the form then asks. `main_port` stays required and editable regardless: malmo
+// the form then asks. `main_port` stays required and editable regardless: moose
 // can't read the image's real EXPOSE without pulling it, so this is
 // prefill-and-confirm only.
 func InferMainPort(composeBytes []byte, mainService string) int {

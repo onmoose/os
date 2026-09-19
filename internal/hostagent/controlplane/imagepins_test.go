@@ -159,13 +159,13 @@ func TestPinnedTagsMatchTheirConsumers(t *testing.T) {
 		want     func(tag string) string
 	}{
 		{"CADDY_IMAGE", []string{"dev", "control-plane", "compose.yml"},
-			func(tag string) string { return "image: ${MALMO_CADDY_IMAGE:-" + tag + "}" }},
+			func(tag string) string { return "image: ${MOOSE_CADDY_IMAGE:-" + tag + "}" }},
 		{"PROXY_IMAGE", []string{"dev", "cloud", "stage-control-plane.sh"},
-			func(tag string) string { return "Environment=MALMO_PROXY_IMAGE=" + tag }},
+			func(tag string) string { return "Environment=MOOSE_PROXY_IMAGE=" + tag }},
 		{"PROXY_IMAGE", []string{"dev", "test-qemu", "bootstrap.sh"},
-			func(tag string) string { return "Environment=MALMO_PROXY_IMAGE=" + tag }},
+			func(tag string) string { return "Environment=MOOSE_PROXY_IMAGE=" + tag }},
 		{"PROXY_IMAGE", []string{"cmd", "host-agent-real", "main.go"},
-			func(tag string) string { return `env("MALMO_PROXY_IMAGE", "` + tag + `")` }},
+			func(tag string) string { return `env("MOOSE_PROXY_IMAGE", "` + tag + `")` }},
 	}
 	for _, tc := range cases {
 		src := repoPath(tc.consumer...)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/malmoos/malmo/internal/hostagent/relmanifest"
+	"github.com/onmoose/os/internal/hostagent/relmanifest"
 )
 
 // ManifestSource is the **appliance** implementation of Source: the target comes

@@ -5,13 +5,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 func TestUseraddArgs_Defaults(t *testing.T) {
 	m := &LinuxUserManager{}
 	got := m.useraddArgs("cindy")
-	want := []string{"--create-home", "--shell", "/bin/bash", "--gid", "malmo", "cindy"}
+	want := []string{"--create-home", "--shell", "/bin/bash", "--gid", "moose", "cindy"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("useraddArgs default: got %v, want %v", got, want)
 	}
@@ -58,7 +58,7 @@ func TestParseGroupMembership(t *testing.T) {
 	const content = `# comment line ignored
 root:x:0:
 sudo:x:27:alice,bob,cindy
-malmo:x:3000:
+moose:x:3000:
 nogroup:x:65534:
 `
 	cases := []struct {
@@ -69,7 +69,7 @@ nogroup:x:65534:
 		{"bob", "sudo", true},
 		{"cindy", "sudo", true},
 		{"dave", "sudo", false},         // not listed
-		{"alice", "malmo", false},       // listed in sudo, not malmo
+		{"alice", "moose", false},       // listed in sudo, not moose
 		{"alice", "nonexistent", false}, // group not present
 		{"", "sudo", false},
 	}
@@ -90,14 +90,14 @@ func TestFirstFreeAppServiceID(t *testing.T) {
 		}
 	})
 	t.Run("UIDs outside the band are ignored", func(t *testing.T) {
-		passwd := []byte("root:x:0:0:root:/root:/bin/bash\nmalmo-app:x:2000:2000::/nonexistent:/usr/sbin/nologin\nalice:x:3000:3000::/home/alice:/bin/bash\n")
+		passwd := []byte("root:x:0:0:root:/root:/bin/bash\nmoose-app:x:2000:2000::/nonexistent:/usr/sbin/nologin\nalice:x:3000:3000::/home/alice:/bin/bash\n")
 		n, err := firstFreeAppServiceID(passwd, nil)
 		if err != nil || n != min {
 			t.Fatalf("got %d, %v; want %d, nil", n, err, min)
 		}
 	})
 	t.Run("taken UIDs are skipped", func(t *testing.T) {
-		passwd := []byte("malmo-svc-2100:x:2100:2100:gecos:/nonexistent:/usr/sbin/nologin\nmalmo-svc-2101:x:2101:2101:gecos:/nonexistent:/usr/sbin/nologin\n")
+		passwd := []byte("moose-svc-2100:x:2100:2100:gecos:/nonexistent:/usr/sbin/nologin\nmoose-svc-2101:x:2101:2101:gecos:/nonexistent:/usr/sbin/nologin\n")
 		n, err := firstFreeAppServiceID(passwd, nil)
 		if err != nil || n != min+2 {
 			t.Fatalf("got %d, %v; want %d, nil", n, err, min+2)
@@ -115,7 +115,7 @@ func TestFirstFreeAppServiceID(t *testing.T) {
 	t.Run("exhausted band errors", func(t *testing.T) {
 		var passwd []byte
 		for n := protocol.AppServiceUIDMin; n <= protocol.AppServiceUIDMax; n++ {
-			passwd = append(passwd, []byte(fmt.Sprintf("malmo-svc-%d:x:%d:%d:g:/nonexistent:/usr/sbin/nologin\n", n, n, n))...)
+			passwd = append(passwd, []byte(fmt.Sprintf("moose-svc-%d:x:%d:%d:g:/nonexistent:/usr/sbin/nologin\n", n, n, n))...)
 		}
 		if _, err := firstFreeAppServiceID(passwd, nil); err == nil {
 			t.Fatal("want exhaustion error, got nil")
@@ -125,9 +125,9 @@ func TestFirstFreeAppServiceID(t *testing.T) {
 
 func TestFindAppServiceByGecos(t *testing.T) {
 	passwd := []byte(`root:x:0:0:root:/root:/bin/bash
-malmo-svc-2100:x:2100:2100:malmo app-service for inst_aaa:/nonexistent:/usr/sbin/nologin
-malmo-svc-2101:x:2101:2101:malmo app-service for inst_bbb:/nonexistent:/usr/sbin/nologin
-imposter:x:2102:2102:malmo app-service for inst_ccc:/home/imposter:/bin/bash
+moose-svc-2100:x:2100:2100:moose app-service for inst_aaa:/nonexistent:/usr/sbin/nologin
+moose-svc-2101:x:2101:2101:moose app-service for inst_bbb:/nonexistent:/usr/sbin/nologin
+imposter:x:2102:2102:moose app-service for inst_ccc:/home/imposter:/bin/bash
 `)
 	if got := findAppServiceByGecos(passwd, svcGecos("inst_aaa")); got != 2100 {
 		t.Errorf("inst_aaa: got %d, want 2100", got)
@@ -138,14 +138,14 @@ imposter:x:2102:2102:malmo app-service for inst_ccc:/home/imposter:/bin/bash
 	if got := findAppServiceByGecos(passwd, svcGecos("inst_unknown")); got != 0 {
 		t.Errorf("unknown instance: got %d, want 0", got)
 	}
-	// A matching GECOS on a non-malmo-svc account must not count: only
+	// A matching GECOS on a non-moose-svc account must not count: only
 	// accounts we created are reservations.
 	if got := findAppServiceByGecos(passwd, svcGecos("inst_ccc")); got != 0 {
 		t.Errorf("imposter account matched: got %d, want 0", got)
 	}
 	// A colon in the instance ID must still match — the GECOS field is
 	// reassembled across multiple split fields.
-	passwdColon := []byte("malmo-svc-2103:x:2103:2103:malmo app-service for inst:colon:/nonexistent:/usr/sbin/nologin\n")
+	passwdColon := []byte("moose-svc-2103:x:2103:2103:moose app-service for inst:colon:/nonexistent:/usr/sbin/nologin\n")
 	if got := findAppServiceByGecos(passwdColon, svcGecos("inst:colon")); got != 2103 {
 		t.Errorf("colon in instance id: got %d, want 2103", got)
 	}

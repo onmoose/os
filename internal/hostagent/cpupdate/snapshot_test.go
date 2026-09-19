@@ -8,29 +8,29 @@ import (
 
 // The WAL sidecar is the whole reason this is not a one-file copy: the brain
 // opens SQLite with journal_mode=WAL, so recent commits can live in -wal and
-// not yet be in malmo.db. A snapshot that took only the main file would restore
+// not yet be in moose.db. A snapshot that took only the main file would restore
 // a database missing its newest writes — and would look fine, because what it
 // produced is a valid older database.
 func TestSnapshotAndRestoreCarryTheWAL(t *testing.T) {
 	stateDir, snapDir := t.TempDir(), filepath.Join(t.TempDir(), "snap")
-	write(t, stateDir, "malmo.db", "DB-v1")
-	write(t, stateDir, "malmo.db-wal", "WAL-v1")
+	write(t, stateDir, "moose.db", "DB-v1")
+	write(t, stateDir, "moose.db-wal", "WAL-v1")
 
 	if err := snapshotBrainDB(stateDir, snapDir); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	// The new brain migrates and checkpoints: the main file changes and the WAL
 	// is replaced.
-	write(t, stateDir, "malmo.db", "DB-v2-migrated")
-	write(t, stateDir, "malmo.db-wal", "WAL-v2")
+	write(t, stateDir, "moose.db", "DB-v2-migrated")
+	write(t, stateDir, "moose.db-wal", "WAL-v2")
 
 	if err := restoreBrainDB(snapDir, stateDir); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if got := read(t, stateDir, "malmo.db"); got != "DB-v1" {
+	if got := read(t, stateDir, "moose.db"); got != "DB-v1" {
 		t.Errorf("database = %q, want DB-v1", got)
 	}
-	if got := read(t, stateDir, "malmo.db-wal"); got != "WAL-v1" {
+	if got := read(t, stateDir, "moose.db-wal"); got != "WAL-v1" {
 		t.Errorf("wal = %q, want WAL-v1", got)
 	}
 }
@@ -40,17 +40,17 @@ func TestSnapshotAndRestoreCarryTheWAL(t *testing.T) {
 // database never saw.
 func TestRestoreRemovesASidecarTheSnapshotDidNotHave(t *testing.T) {
 	stateDir, snapDir := t.TempDir(), filepath.Join(t.TempDir(), "snap")
-	write(t, stateDir, "malmo.db", "DB-v1")
+	write(t, stateDir, "moose.db", "DB-v1")
 
 	if err := snapshotBrainDB(stateDir, snapDir); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	write(t, stateDir, "malmo.db-wal", "WAL-WRITTEN-BY-THE-NEW-BRAIN")
+	write(t, stateDir, "moose.db-wal", "WAL-WRITTEN-BY-THE-NEW-BRAIN")
 
 	if err := restoreBrainDB(snapDir, stateDir); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "malmo.db-wal")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(stateDir, "moose.db-wal")); !os.IsNotExist(err) {
 		t.Error("a WAL the snapshot never captured survived the restore")
 	}
 }
@@ -90,26 +90,26 @@ func read(t *testing.T, dir, name string) string {
 // restoreBrainDB refuses to do.
 func TestSnapshotClearsAnEarlierAttemptsFiles(t *testing.T) {
 	stateDir, snapDir := t.TempDir(), filepath.Join(t.TempDir(), "snap")
-	write(t, stateDir, "malmo.db", "DB-v1")
-	write(t, stateDir, "malmo.db-wal", "WAL-FROM-THE-FIRST-ATTEMPT")
+	write(t, stateDir, "moose.db", "DB-v1")
+	write(t, stateDir, "moose.db-wal", "WAL-FROM-THE-FIRST-ATTEMPT")
 	if err := snapshotBrainDB(stateDir, snapDir); err != nil {
 		t.Fatalf("first snapshot: %v", err)
 	}
 
 	// The update failed and reverted; the brain ran on, checkpointed, and no
 	// longer has a WAL. The admin retries.
-	if err := os.Remove(filepath.Join(stateDir, "malmo.db-wal")); err != nil {
+	if err := os.Remove(filepath.Join(stateDir, "moose.db-wal")); err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
-	write(t, stateDir, "malmo.db", "DB-v1-plus-more-writes")
+	write(t, stateDir, "moose.db", "DB-v1-plus-more-writes")
 	if err := snapshotBrainDB(stateDir, snapDir); err != nil {
 		t.Fatalf("second snapshot: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(snapDir, "malmo.db-wal")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(snapDir, "moose.db-wal")); !os.IsNotExist(err) {
 		t.Error("a WAL from the earlier attempt survived into the new snapshot")
 	}
-	if got := read(t, snapDir, "malmo.db"); got != "DB-v1-plus-more-writes" {
+	if got := read(t, snapDir, "moose.db"); got != "DB-v1-plus-more-writes" {
 		t.Errorf("snapshot database = %q, want the current one", got)
 	}
 }

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/updatetarget"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // The report is the whole point of #443: the loop's decision, readable by
@@ -20,10 +20,10 @@ import (
 // The four references these tests move between, in the shape a real answer
 // carries: a repository, then a full 64-hex digest.
 var (
-	runningBrain = "ghcr.io/malmoos/brain@" + digest("a")
-	runningUI    = "ghcr.io/malmoos/ui@" + digest("b")
-	targetBrain  = "ghcr.io/malmoos/brain@" + digest("c")
-	targetUI     = "ghcr.io/malmoos/ui@" + digest("d")
+	runningBrain = "ghcr.io/onmoose/brain@" + digest("a")
+	runningUI    = "ghcr.io/onmoose/ui@" + digest("b")
+	targetBrain  = "ghcr.io/onmoose/brain@" + digest("c")
+	targetUI     = "ghcr.io/onmoose/ui@" + digest("d")
 )
 
 func digest(hexDigit string) string { return "sha256:" + strings.Repeat(hexDigit, 64) }
@@ -61,7 +61,7 @@ func goodOffer() updatetarget.Target {
 
 func TestReport_NoLoopIsDisabled(t *testing.T) {
 	r := updateTargetReport{
-		disabledErr: `seed update_target_url has no host: "malmo.example"`,
+		disabledErr: `seed update_target_url has no host: "moose.example"`,
 		running:     stubRunning{brain: runningBrain, ui: runningUI},
 		window:      updatetarget.DefaultWindow,
 		windowFrom:  "default",
@@ -96,7 +96,7 @@ func TestReport_LoopWithNoTickYetIsUnknown(t *testing.T) {
 
 func TestReport_States(t *testing.T) {
 	unpinned := goodOffer()
-	unpinned.BrainImage = "ghcr.io/malmoos/brain:v0.8.0"
+	unpinned.BrainImage = "ghcr.io/onmoose/brain:v0.8.0"
 
 	cases := []struct {
 		name    string
@@ -257,7 +257,7 @@ func TestReport_TheTwoFromsStayApart(t *testing.T) {
 // a permanent fault behind one that looks transient. The second is not dropped.
 func TestReport_DisabledOutranksAnUnreadablePair(t *testing.T) {
 	got := updateTargetReport{
-		disabledErr: `seed update_target_url has no host: "malmo.example"`,
+		disabledErr: `seed update_target_url has no host: "moose.example"`,
 		running:     stubRunning{err: errors.New("read control-plane compose: no such file")},
 	}.Read()
 
@@ -276,7 +276,7 @@ func TestReport_DisabledOutranksAnUnreadablePair(t *testing.T) {
 // way to get refused. State is what says whether a target is applicable.
 func TestReport_RefusedTargetIsNotApplicable(t *testing.T) {
 	unpinned := goodOffer()
-	unpinned.BrainImage = "ghcr.io/malmoos/brain:v0.8.0"
+	unpinned.BrainImage = "ghcr.io/onmoose/brain:v0.8.0"
 	running := stubRunning{brain: runningBrain, ui: runningUI}
 	got := updateTargetReport{loop: tickedLoop(t, stubSource{target: unpinned}, running), running: running}.Read()
 

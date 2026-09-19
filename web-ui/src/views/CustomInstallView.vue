@@ -477,7 +477,7 @@ const submitLabel = computed(() => (install.isPending.value ? "Installing…" : 
           :class="[fieldClass, 'font-mono text-xs']"
         />
         <p class="text-xs text-muted-foreground">
-          The manifest overlay malmo wraps around your compose. Edit fields the form doesn't show (like
+          The manifest overlay moose wraps around your compose. Edit fields the form doesn't show (like
           <code>devices</code>); the compose above is untouched. Admission still runs on install.
         </p>
       </template>
@@ -487,7 +487,7 @@ const submitLabel = computed(() => (install.isPending.value ? "Installing…" : 
     <p class="flex gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
       <TriangleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <span>
-        malmo pins the <strong>exact image it pulls now</strong> and won't change it underneath you — a custom app
+        moose pins the <strong>exact image it pulls now</strong> and won't change it underneath you — a custom app
         <strong>does not auto-update</strong>. To move to a newer image, uninstall and paste again.
       </span>
     </p>

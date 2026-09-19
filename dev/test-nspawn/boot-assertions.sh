@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Boot-chain assertions, run *inside* systemd-nspawn --boot.
 #
-# Driven by malmo-boot-test.service (staged by run-boot-chain-tests.sh)
+# Driven by moose-boot-test.service (staged by run-boot-chain-tests.sh)
 # after multi-user.target is reached. Writes PASS or FAIL: <detail> to
-# /var/lib/malmo-boot-result, which is bind-mounted from the host so the
+# /var/lib/moose-boot-result, which is bind-mounted from the host so the
 # driver can read the verdict after `systemctl poweroff` exits the
 # container.
 #
@@ -15,7 +15,7 @@
 # generic FAIL if anything falls through without ok/fail.
 set -uo pipefail
 
-RESULT=/var/lib/malmo-boot-result
+RESULT=/var/lib/moose-boot-result
 # Sentinel for "service entered ExecStart but didn't reach ok/fail" —
 # the trap below upgrades this to a proper FAIL: line on abort.
 # The host driver polls for ^(PASS|FAIL:) and skips this sentinel so it
@@ -61,9 +61,9 @@ trap '
 # so this catches malformed dist/systemd/dropins/<svc>.service.d/
 # regressions that would otherwise only surface at boot.
 verify_out="$(systemd-analyze verify \
-    /etc/systemd/system/malmo-storage-ready.target \
-    /etc/systemd/system/malmo-storage-verify.service \
-    /etc/systemd/system/malmo-recovery.target \
+    /etc/systemd/system/moose-storage-ready.target \
+    /etc/systemd/system/moose-storage-verify.service \
+    /etc/systemd/system/moose-recovery.target \
     /etc/systemd/system/host-agent.service \
     /etc/systemd/system/docker.service \
     /etc/systemd/system/smbd.service \
@@ -78,30 +78,30 @@ verify_out="$(systemd-analyze verify \
 for svc in docker smbd avahi-daemon; do
     out="$(systemctl cat "${svc}.service" 2>&1)" \
         || fail "systemctl cat ${svc}.service failed: $out"
-    grep -q 'malmo-storage-ready.target' <<<"$out" \
-        || fail "drop-in for ${svc}.service does not reference malmo-storage-ready.target"
+    grep -q 'moose-storage-ready.target' <<<"$out" \
+        || fail "drop-in for ${svc}.service does not reference moose-storage-ready.target"
 done
 
 # --- 3. synthetic target pulls in the verifier
-deps="$(systemctl list-dependencies malmo-storage-ready.target 2>&1)"
-grep -q 'malmo-storage-verify.service' <<<"$deps" \
-    || fail "malmo-storage-ready.target does not list malmo-storage-verify.service in its deps tree"
+deps="$(systemctl list-dependencies moose-storage-ready.target 2>&1)"
+grep -q 'moose-storage-verify.service' <<<"$deps" \
+    || fail "moose-storage-ready.target does not list moose-storage-verify.service in its deps tree"
 
 # --- 4. verifier is ordered Before= the ready target
-before="$(systemctl show malmo-storage-verify.service -p Before --value 2>&1)"
-grep -q 'malmo-storage-ready.target' <<<"$before" \
-    || fail "malmo-storage-verify.service has Before='$before' (expected malmo-storage-ready.target)"
+before="$(systemctl show moose-storage-verify.service -p Before --value 2>&1)"
+grep -q 'moose-storage-ready.target' <<<"$before" \
+    || fail "moose-storage-verify.service has Before='$before' (expected moose-storage-ready.target)"
 
 # --- 5. host-agent ordering + OnFailure routing
 after="$(systemctl show host-agent.service -p After --value 2>&1)"
-grep -q 'malmo-storage-ready.target' <<<"$after" \
-    || fail "host-agent.service After='$after' missing malmo-storage-ready.target"
+grep -q 'moose-storage-ready.target' <<<"$after" \
+    || fail "host-agent.service After='$after' missing moose-storage-ready.target"
 grep -q 'docker.service' <<<"$after" \
     || fail "host-agent.service After='$after' missing docker.service"
 
 onfail="$(systemctl show host-agent.service -p OnFailure --value 2>&1)"
-grep -q 'malmo-recovery.target' <<<"$onfail" \
-    || fail "host-agent.service OnFailure='$onfail' (expected malmo-recovery.target)"
+grep -q 'moose-recovery.target' <<<"$onfail" \
+    || fail "host-agent.service OnFailure='$onfail' (expected moose-recovery.target)"
 
 # StartLimitBurst lives in [Unit]; systemd surfaces it under the unit name.
 slburst="$(systemctl show host-agent.service -p StartLimitBurst --value 2>&1)"
@@ -111,25 +111,25 @@ slburst="$(systemctl show host-agent.service -p StartLimitBurst --value 2>&1)"
 # --- 6. reporter actually runs end-to-end
 # Start the verifier directly (not the target) so a transient docker.service
 # / smbd.service stub failure can't mask the reporter result.
-systemctl start malmo-storage-verify.service \
-    || fail "systemctl start malmo-storage-verify.service failed: $(systemctl status --no-pager malmo-storage-verify.service 2>&1 | tail -20)"
+systemctl start moose-storage-verify.service \
+    || fail "systemctl start moose-storage-verify.service failed: $(systemctl status --no-pager moose-storage-verify.service 2>&1 | tail -20)"
 
 # Reporter exits 0 unconditionally per BOOT.md; check the artifact.
-test -s /run/malmo/health/storage.json \
-    || fail "/run/malmo/health/storage.json missing or empty after verifier ran"
+test -s /run/moose/health/storage.json \
+    || fail "/run/moose/health/storage.json missing or empty after verifier ran"
 
 # Payload shape: top-level object with checked_at + findings.
 # Minimal bookworm rootfs has no python/jq, so we grep for the keys
 # and the absence of findings entries on a Level-0 boot. The reporter
 # emits pretty-printed JSON, so collapse whitespace before matching.
-payload="$(cat /run/malmo/health/storage.json)"
+payload="$(cat /run/moose/health/storage.json)"
 compact="$(tr -d ' \n\t' <<<"$payload")"
 grep -q '"checked_at"' <<<"$compact" \
     || fail "storage.json missing checked_at: $payload"
 grep -q '"findings"' <<<"$compact" \
     || fail "storage.json missing findings: $payload"
 
-# Level-0 boot (no /etc/malmo/data-drive.enrolled in the rootfs): expect
+# Level-0 boot (no /etc/moose/data-drive.enrolled in the rootfs): expect
 # either `"findings":null` (Go nil slice) or `"findings":[]` (empty
 # slice). Anything containing `"id":` would be a spurious finding.
 case "$compact" in

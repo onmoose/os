@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/malmoos/malmo/internal/caddy"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/caddy"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // call records one driver invocation across any fake. We keep it as a flat
@@ -419,7 +419,7 @@ func (h *fakeHost) WellKnownIdentity(_ context.Context) (protocol.WellKnownIdent
 	h.mu.Lock()
 	h.calls = append(h.calls, call{method: "WellKnownIdentity"})
 	h.mu.Unlock()
-	return protocol.WellKnownIdentityResponse{MalmoAppUID: 2000, MalmoAppGID: 2000, MalmoSharedGID: 2001}, nil
+	return protocol.WellKnownIdentityResponse{MooseAppUID: 2000, MooseAppGID: 2000, MooseSharedGID: 2001}, nil
 }
 
 func (h *fakeHost) SystemStatus(_ context.Context) (protocol.SystemStatus, error) {

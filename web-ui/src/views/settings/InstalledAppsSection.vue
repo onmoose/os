@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Settings → Installed apps — the per-app management index. Each row links to
+// Settings → Installed apps: the per-app management index. Each row links to
 // that instance's detail page (InstalledAppDetailSection), where stop/start,
 // uninstall, and logs live. The list itself is just navigation now; it used to
 // carry inline Logs/Uninstall buttons before the detail page existed.

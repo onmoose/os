@@ -9,13 +9,13 @@ import (
 )
 
 // brainDBFile is the brain's SQLite database inside its state directory
-// (cmd/brain: store.Open(filepath.Join(stateDir, "malmo.db"))).
-const brainDBFile = "malmo.db"
+// (cmd/brain: store.Open(filepath.Join(stateDir, "moose.db"))).
+const brainDBFile = "moose.db"
 
 // sqliteSidecars are SQLite's write-ahead-log companions. The brain opens its
 // database with `PRAGMA journal_mode=WAL` (internal/store), which means recent
 // commits can live in `-wal` and not yet be in the main file. Copying only
-// `malmo.db` would therefore snapshot a database missing its newest writes —
+// `moose.db` would therefore snapshot a database missing its newest writes —
 // and would look completely fine, because the file it produced is a valid older
 // database. They are copied when present and skipped when absent.
 var sqliteSidecars = []string{"-wal", "-shm"}
@@ -101,7 +101,7 @@ func restoreBrainDB(srcDir, stateDir string) error {
 // syncDir fsyncs a directory so the entries created in it survive a power cut.
 // copyFile syncs each file's contents, but a directory entry is its own write —
 // without this a snapshot can come back empty, and restoreBrainDB reads a
-// missing malmo.db as "nothing to put back" rather than as a lost backup. The
+// missing moose.db as "nothing to put back" rather than as a lost backup. The
 // same reasoning as controlplane.writeFileAtomic.
 func syncDir(dir string) error {
 	d, err := os.Open(dir)

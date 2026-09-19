@@ -1,4 +1,4 @@
-# malmo App Isolation
+# moose App Isolation
 
 > Working spec for how the brain enforces what apps can do at runtime. Companion to `SPEC.md`, `CONTROL_PLANE.md`, `APP_MANIFEST.md`, `SERVICE_PROVISIONING.md`, `STORAGE.md`, `FIRST_RUN.md`.
 
@@ -7,7 +7,7 @@ The manifest declares *intent* (`internet: true`, `lan: false`, `folders: [{fold
 ## Principles
 
 - **The user owns the box.** Defaults are conservative, and an admin who genuinely needs an unsandboxable container has SSH (`AUTH.md` # SSH is rescue) — `docker run` over SSH is the escape hatch. We don't lock the user out of their own machine; we just don't put host-rooting one paste away in the UI.
-- **Store apps carry a meaningful trust claim.** Things that can root the host are not allowed in the catalog. **Door-2 custom compose runs under the identical sandbox** — host-rooting primitives are refused for *both* doors. The reason is multi-user: malmo's threat model names "a compromised app" as a top adversary, and a Door-2 app that roots the host doesn't just affect the (admin) installer — it exposes every other household member's data, none of whom consented. "The user owns the consequences" holds for a single-user box; on a multi-user box the consequences land on other principals, so the bright lines stay up in the UI path. (See `DECISIONS.md` 2026-06-02.)
+- **Store apps carry a meaningful trust claim.** Things that can root the host are not allowed in the catalog. **Door-2 custom compose runs under the identical sandbox** — host-rooting primitives are refused for *both* doors. The reason is multi-user: moose's threat model names "a compromised app" as a top adversary, and a Door-2 app that roots the host doesn't just affect the (admin) installer — it exposes every other household member's data, none of whom consented. "The user owns the consequences" holds for a single-user box; on a multi-user box the consequences land on other principals, so the bright lines stay up in the UI path. (See `DECISIONS.md` 2026-06-02.)
 - **Manifest declares intent. Brain enforces it.** Apps that lie about their permissions either fail (silently blocked at the kernel/Docker layer) or get pulled from the catalog.
 - **Same enforcement everywhere.** Store apps and custom apps share the same runtime. Only the *defaults* and *catalog rules* differ.
 
@@ -28,17 +28,17 @@ The manifest declares *intent* (`internet: true`, `lan: false`, `folders: [{fold
 
 ## Multi-user runtime
 
-malmo is multi-user (`FIRST_RUN.md`). Every user has private data; admins manage the box but cannot read other users' files through normal paths. App execution reflects this: **every app instance has an owner**, and a personal instance is scoped to its owner's data (`DASHBOARD.md` # instances are owner-scoped, `DECISIONS.md` 2026-05-29).
+moose is multi-user (`FIRST_RUN.md`). Every user has private data; admins manage the box but cannot read other users' files through normal paths. App execution reflects this: **every app instance has an owner**, and a personal instance is scoped to its owner's data (`DASHBOARD.md` # instances are owner-scoped, `DECISIONS.md` 2026-05-29).
 
 ### Owner-scoped instances
 
 Whether an instance is **household** (admin-owned, shared — one instance, the app's own internal multi-user separates people inside it) or **personal** (owned by one user, its own data, folders, and route) is **elected by the installing user**, not derived from a tier or declared in the manifest (`APP_MANIFEST.md` # G). Admins choose household or personal; members install personal only.
 
-A personal instance is the per-owner compose-project shape locked in `APP_LIFECYCLE.md` # an app instance is a Docker Compose project: an independent project named `malmo-<instance-id>`, with its own instance id, data dir, and slug (bare `<slug>` if it wins first-come, `<slug>--<user>` on collision — `DASHBOARD.md` # instance naming). If two users each install the same app personally, two independent instances run.
+A personal instance is the per-owner compose-project shape locked in `APP_LIFECYCLE.md` # an app instance is a Docker Compose project: an independent project named `moose-<instance-id>`, with its own instance id, data dir, and slug (bare `<slug>` if it wins first-come, `<slug>--<user>` on collision — `DASHBOARD.md` # instance naming). If two users each install the same app personally, two independent instances run.
 
-- A personal instance's main process runs as the **owner's Linux UID/GID** (assigned at user creation, in the malmo-reserved 3000+ range). The brain enforces this via the compose `user:` field; we do not rely on `PUID`/`PGID` env-var conventions. (A household instance runs as a shared service identity, not a single member's UID.)
-- The container sees only the bind-mounted use-case folders declared in the manifest (the owner's `/home/<user>/Photos/`, `Documents/`, etc., or a household `/srv/malmo/shared/<Folder>/` when the installer elected the shared source — see `APP_MANIFEST.md` # `folders`), mounted at the fixed `/malmo/<folder>` paths. Other users' homes are not bind-mounted; they're not even on the filesystem the container can reach.
-- App authors write a single-user app. They do not need to know about users, sessions, or identity — malmo runs one instance per owner.
+- A personal instance's main process runs as the **owner's Linux UID/GID** (assigned at user creation, in the moose-reserved 3000+ range). The brain enforces this via the compose `user:` field; we do not rely on `PUID`/`PGID` env-var conventions. (A household instance runs as a shared service identity, not a single member's UID.)
+- The container sees only the bind-mounted use-case folders declared in the manifest (the owner's `/home/<user>/Photos/`, `Documents/`, etc., or a household `/srv/moose/shared/<Folder>/` when the installer elected the shared source — see `APP_MANIFEST.md` # `folders`), mounted at the fixed `/moose/<folder>` paths. Other users' homes are not bind-mounted; they're not even on the filesystem the container can reach.
+- App authors write a single-user app. They do not need to know about users, sessions, or identity — moose runs one instance per owner.
 
 ### Tier-2 apps (always shared)
 
@@ -46,7 +46,7 @@ Tier-2 apps (Tailscale, SMB, DLNA, future entries — `SERVICE_PROVISIONING.md`)
 
 ### No `multi_user` field
 
-Household-vs-personal is an install-time election, not a static property of the app, so **no manifest field expresses it** (an earlier draft's `multi_user.mode` was removed — `DECISIONS.md` 2026-05-29). Cross-user *awareness* inside a single instance (e.g., a future malmo-built Photos app with its own sharing UI) is a separate, deferred concern, not a v1 manifest field.
+Household-vs-personal is an install-time election, not a static property of the app, so **no manifest field expresses it** (an earlier draft's `multi_user.mode` was removed — `DECISIONS.md` 2026-05-29). Cross-user *awareness* inside a single instance (e.g., a future moose-built Photos app with its own sharing UI) is a separate, deferred concern, not a v1 manifest field.
 
 ### Routing per instance
 
@@ -62,7 +62,7 @@ Consequence: a personal instance's URL is owner-specific — `immich--alex.local
 
 ### Privacy ceiling at v1
 
-Per-user data lives at `/home/<user>/` with `0750` perms owned by the user (`STORAGE.md` # Permissions). Other malmo users cannot read it through the filesystem. **The admin (or anyone with shell as root) can read everything**, because v1 only encrypts at the disk level (LUKS), not per user. Admin-resistant per-user encryption (fscrypt) is on the roadmap; see `STORAGE.md` "Future: per-user encryption" for the planned upgrade. v1 features that touch user data are designed as if that upgrade were already in place — backup is per-user-keyed, etc. — so the upgrade is data-only, not feature-redesign.
+Per-user data lives at `/home/<user>/` with `0750` perms owned by the user (`STORAGE.md` # Permissions). Other moose users cannot read it through the filesystem. **The admin (or anyone with shell as root) can read everything**, because v1 only encrypts at the disk level (LUKS), not per user. Admin-resistant per-user encryption (fscrypt) is on the roadmap; see `STORAGE.md` "Future: per-user encryption" for the planned upgrade. v1 features that touch user data are designed as if that upgrade were already in place — backup is per-user-keyed, etc. — so the upgrade is data-only, not feature-redesign.
 
 ---
 
@@ -99,7 +99,7 @@ Cost: each `lan: true` app burns one IP on the user's LAN. Tolerable — single-
 
 Denied. Apps that need to share data go through:
 - Managed services (`services: [postgres]`)
-- A shared use-case folder (`folders: [...]` — two of the same user's apps pointed at the same source see the same `~/Photos/`, or the same `/srv/malmo/shared/` tree)
+- A shared use-case folder (`folders: [...]` — two of the same user's apps pointed at the same source see the same `~/Photos/`, or the same `/srv/moose/shared/` tree)
 
 A user who genuinely wants two apps wired directly together puts them in one Door-2 compose. Cross-app networking is not a v1 feature.
 
@@ -117,13 +117,13 @@ The writable layer resets on container *recreation* (image update, uninstall/rei
 
 ### Volumes
 
-App state (indexes, configs, the app's own DB) lives under the instance dir at `/var/lib/malmo/state/instances/<id>/data/`, via bind mounts only — no Docker named volumes (`APP_LIFECYCLE.md` # on-disk layout per instance). The author writes the bind mount against `${MALMO_DATA_DIR}/foo:/foo` (or the relative `./data/foo:/foo`); the brain injects `MALMO_DATA_DIR`, so authors reference a stable variable rather than a hardcoded host path.
+App state (indexes, configs, the app's own DB) lives under the instance dir at `/var/lib/moose/state/instances/<id>/data/`, via bind mounts only — no Docker named volumes (`APP_LIFECYCLE.md` # on-disk layout per instance). The author writes the bind mount against `${MOOSE_DATA_DIR}/foo:/foo` (or the relative `./data/foo:/foo`); the brain injects `MOOSE_DATA_DIR`, so authors reference a stable variable rather than a hardcoded host path.
 
 `/tmp` is a size-capped tmpfs.
 
 **Bind mounts to arbitrary host paths are forbidden for both doors.** Only relative bind mounts under the instance's `data/` dir are allowed; an absolute host source is an admission rejection (store or custom alike).
 
-**Every instance runs as a resolved `user:`, and every private bind dir it declares is owned by that same UID.** A Tier-3 container has `cap_drop: [ALL]`, which removes `CAP_DAC_OVERRIDE` — so even a root-UID container can only write a bind dir when it is that dir's actual owner. The brain therefore pins `user:` on every instance and, before `compose up`, creates **and** chowns *every* declared relative (`./…`) bind source — not just the top-level `data/`, but each `./data/media`, `./config`, … the compose declares — to match. This is load-bearing: the docker daemon creates a missing bind source as **root:root** regardless of its parent's owner, so any private bind dir the brain doesn't pre-create is unwritable to the non-root runtime UID and crash-loops the app (the failure mode #147 fixed). Identity by app shape: a **folder app** runs as the owner's UID (personal) or the malmo-app identity (household); a **folderless app** runs as the brain's own effective UID/GID, which is the creator and owner of the freshly-made bind dirs (root under the production brain, the operator's user under the native dev brain), or — when it declares `service_user: true` — a dedicated allocated non-root identity. Beyond the relative private bind dirs, the brain also prepares each elected **personal** use-case folder source (an absolute bind the override injects, e.g. a `pick-subfolder` subdir like `~/Documents/Notebooks`): it `MkdirAll`s + chowns it to the owner UID before `compose up`, for the same reason — an unprepared source would be docker-created root-owned and unwritable. This is safe because a personal source's runtime identity *is* the owner, so a pre-existing `~/Documents` chown is a no-op and only the new leaf is created. **Shared** sources (`/srv/malmo/shared/…`) are prepared by a *different* rule, because that tree is group-owned, not UID-owned: the brain creates the elected `<Folder>[/<subfolder>]` beneath the shared root, owning each **newly created** level `root:malmo-shared`, mode `02770` (setgid, so descendants inherit the group; `STORAGE.md` # user content) — it **never** chowns a shared dir to a runtime UID and **never** re-owns a pre-existing parent (a shared dir belongs to the storage setup, not to one install). The household `malmo-app` container reaches it through its `malmo-shared` `group_add`, so no per-UID ownership is needed. Because writing under `/srv/malmo` needs root, this preparation runs **only under the production brain** (euid 0); the unprivileged native dev brain can't create the shared tree, so household shared-folder apps are out of the inner loop (#156 — a dev-rooted shared base via the host seam, mirroring the dev-rooted personal home, is the follow-up if dev parity is wanted). The full source-of-identity table and the `service_user` rule are in # Runtime identity & data ownership. This is why a folderless app does not "just run as root by default" — relying on the image's default user breaks the moment the brain is not itself root (the native inner loop) or the image's default user is non-root.
+**Every instance runs as a resolved `user:`, and every private bind dir it declares is owned by that same UID.** A Tier-3 container has `cap_drop: [ALL]`, which removes `CAP_DAC_OVERRIDE` — so even a root-UID container can only write a bind dir when it is that dir's actual owner. The brain therefore pins `user:` on every instance and, before `compose up`, creates **and** chowns *every* declared relative (`./…`) bind source — not just the top-level `data/`, but each `./data/media`, `./config`, … the compose declares — to match. This is load-bearing: the docker daemon creates a missing bind source as **root:root** regardless of its parent's owner, so any private bind dir the brain doesn't pre-create is unwritable to the non-root runtime UID and crash-loops the app (the failure mode #147 fixed). Identity by app shape: a **folder app** runs as the owner's UID (personal) or the moose-app identity (household); a **folderless app** runs as the brain's own effective UID/GID, which is the creator and owner of the freshly-made bind dirs (root under the production brain, the operator's user under the native dev brain), or — when it declares `service_user: true` — a dedicated allocated non-root identity. Beyond the relative private bind dirs, the brain also prepares each elected **personal** use-case folder source (an absolute bind the override injects, e.g. a `pick-subfolder` subdir like `~/Documents/Notebooks`): it `MkdirAll`s + chowns it to the owner UID before `compose up`, for the same reason — an unprepared source would be docker-created root-owned and unwritable. This is safe because a personal source's runtime identity *is* the owner, so a pre-existing `~/Documents` chown is a no-op and only the new leaf is created. **Shared** sources (`/srv/moose/shared/…`) are prepared by a *different* rule, because that tree is group-owned, not UID-owned: the brain creates the elected `<Folder>[/<subfolder>]` beneath the shared root, owning each **newly created** level `root:moose-shared`, mode `02770` (setgid, so descendants inherit the group; `STORAGE.md` # user content) — it **never** chowns a shared dir to a runtime UID and **never** re-owns a pre-existing parent (a shared dir belongs to the storage setup, not to one install). The household `moose-app` container reaches it through its `moose-shared` `group_add`, so no per-UID ownership is needed. Because writing under `/srv/moose` needs root, this preparation runs **only under the production brain** (euid 0); the unprivileged native dev brain can't create the shared tree, so household shared-folder apps are out of the inner loop (#156 — a dev-rooted shared base via the host seam, mirroring the dev-rooted personal home, is the follow-up if dev parity is wanted). The full source-of-identity table and the `service_user` rule are in # Runtime identity & data ownership. This is why a folderless app does not "just run as root by default" — relying on the image's default user breaks the moment the brain is not itself root (the native inner loop) or the image's default user is non-root.
 
 ### User content (use-case folders)
 
@@ -136,14 +136,14 @@ permissions:
     - { folder: documents, mode: read }
 ```
 
-Each declared folder is bind-mounted at a fixed in-container path `/malmo/<folder>` and the absolute path injected as `MALMO_FOLDER_<NAME>`; the app's compose maps that variable to its own library path (`APP_MANIFEST.md` # `folders`). `mode` defaults to `read` if unspecified — least privilege, and `write` is a deliberate choice the catalog reviewer notices.
+Each declared folder is bind-mounted at a fixed in-container path `/moose/<folder>` and the absolute path injected as `MOOSE_FOLDER_<NAME>`; the app's compose maps that variable to its own library path (`APP_MANIFEST.md` # `folders`). `mode` defaults to `read` if unspecified — least privilege, and `write` is a deliberate choice the catalog reviewer notices.
 
 Use-case folder taxonomy v1 (fixed): `photos`, `documents`, `movies`, `music`, `notes`, `downloads` — mapped to capitalized directories (`Photos/`, `Documents/`, etc., per `STORAGE.md`). User-defined folders deferred.
 
 **The host source is the installer's per-folder election, not the manifest's.** A declared folder binds one of two sources, chosen at install:
 
-- **Personal source** — the owner's `/home/<user>/<Folder>/`, owned by that user (UID in the malmo 3000+ range), with `/home/<user>/` mode `0750` (`STORAGE.md` # Permissions). The container runs as the owner's UID and reaches no other user's home. This is the default offered for a personal instance.
-- **Shared source** — `/srv/malmo/shared/<Folder>/`, the household tree every member can already reach via the `malmo-shared` group (`STORAGE.md`, `USERS_AND_GROUPS.md`). The brain adds the container to `malmo-shared` (compose `group_add`) so it has exactly that group's access — no new privilege. When the elected `<Folder>[/<subfolder>]` doesn't pre-exist, the brain creates it `root:malmo-shared` mode `02770` (setgid) before `compose up` — see the bind-source preparation rule under # Runtime identity & data ownership. Always used by a household instance; offered to a personal instance when the installer elects it.
+- **Personal source** — the owner's `/home/<user>/<Folder>/`, owned by that user (UID in the moose 3000+ range), with `/home/<user>/` mode `0750` (`STORAGE.md` # Permissions). The container runs as the owner's UID and reaches no other user's home. This is the default offered for a personal instance.
+- **Shared source** — `/srv/moose/shared/<Folder>/`, the household tree every member can already reach via the `moose-shared` group (`STORAGE.md`, `USERS_AND_GROUPS.md`). The brain adds the container to `moose-shared` (compose `group_add`) so it has exactly that group's access — no new privilege. When the elected `<Folder>[/<subfolder>]` doesn't pre-exist, the brain creates it `root:moose-shared` mode `02770` (setgid) before `compose up` — see the bind-source preparation rule under # Runtime identity & data ownership. Always used by a household instance; offered to a personal instance when the installer elects it.
 
 A personal instance reading the shared tree (the "my own Jellyfin on the family library" case) is now a supported election — **this supersedes the earlier MVP carve-out** that forbade Tier-3 per-user apps from crossing the per-user/shared boundary (`DECISIONS.md` 2026-05-30). The boundary still holds in the one direction that matters: a household (shared) instance never binds a single member's private `~/`, because there is no one owner to scope it to.
 
@@ -183,14 +183,14 @@ The OS-image media stack (`/dev/dri` + mesa + `intel-media-va-driver`, the `rend
 
 ## Runtime identity & data ownership
 
-Every Tier-3 instance runs as a **resolved, malmo-managed UID/GID** (the compose `user:` field), and every private bind dir it declares is created + chowned to match — the invariant that lets a `cap_drop: [ALL]` container, which has no `CAP_DAC_OVERRIDE`, write its own state (# Volumes). The identity is never the image's choice; it is one of four malmo-owned sources:
+Every Tier-3 instance runs as a **resolved, moose-managed UID/GID** (the compose `user:` field), and every private bind dir it declares is created + chowned to match — the invariant that lets a `cap_drop: [ALL]` container, which has no `CAP_DAC_OVERRIDE`, write its own state (# Volumes). The identity is never the image's choice; it is one of four moose-owned sources:
 
 | App shape | Runtime identity | Drawn from |
 |---|---|---|
-| Folder app, personal source | the **owner's** UID/GID | the malmo user range (≥ 3000, `STORAGE.md` # Permissions) |
-| Folder app, shared source | the **malmo-app** shared service identity (+ `malmo-shared` group) | fixed well-known (`/v1/identity/well-known`: 2000/2001) |
+| Folder app, personal source | the **owner's** UID/GID | the moose user range (≥ 3000, `STORAGE.md` # Permissions) |
+| Folder app, shared source | the **moose-app** shared service identity (+ `moose-shared` group) | fixed well-known (`/v1/identity/well-known`: 2000/2001) |
 | Folderless app (default) | the **brain's own euid/gid** — root in production, the operator's user in the native dev brain | n/a (it is the creator of the bind dirs) |
-| Folderless app, `service_user: true` | a **dedicated per-instance service identity** | the malmo-reserved app-service band (below 3000, distinct from the fixed 2000/2001) |
+| Folderless app, `service_user: true` | a **dedicated per-instance service identity** | the moose-reserved app-service band (below 3000, distinct from the fixed 2000/2001) |
 
 ### `service_user` — a dedicated non-root identity for folderless apps
 
@@ -200,17 +200,17 @@ The default folderless identity is the brain's euid, which is **root** in produc
 - **persists it on the instance row and reuses it across container recreations** — the identity is *stable for the life of the instance*, never re-rolled on update or restart (a transient UID would orphan the data it owns),
 - **pins the container `user:` to it and chowns every declared private bind dir to it**, exactly as the folder cases already do.
 
-**The app declares intent, never a UID.** There is deliberately **no manifest field naming a numeric UID/GID.** A manifest-named UID would be interpreted in the *host* namespace — malmo runs no user-namespace remap (# Not in v1) — so it could alias a real host principal: a system service account, or a malmo user in the 3000+ range. That would hand a compromised app that principal's filesystem identity, and `THREAT_MODEL.md` names a compromised app as a top adversary. malmo owns the number; the manifest owns the *intent*. A numeric `user:`/UID in a submitted manifest is an admission rejection for both doors.
+**The app declares intent, never a UID.** There is deliberately **no manifest field naming a numeric UID/GID.** A manifest-named UID would be interpreted in the *host* namespace — moose runs no user-namespace remap (# Not in v1) — so it could alias a real host principal: a system service account, or a moose user in the 3000+ range. That would hand a compromised app that principal's filesystem identity, and `THREAT_MODEL.md` names a compromised app as a top adversary. moose owns the number; the manifest owns the *intent*. A numeric `user:`/UID in a submitted manifest is an admission rejection for both doors.
 
-**`service_user` is meaningful only for folderless apps.** A folder app's identity is already a managed non-root UID (the owner, or the malmo-app identity), so the field is redundant there; admission rejects `service_user: true` combined with a `folders` grant.
+**`service_user` is meaningful only for folderless apps.** A folder app's identity is already a managed non-root UID (the owner, or the moose-app identity), so the field is redundant there; admission rejects `service_user: true` combined with a `folders` grant.
 
 ### What this does *not* cover
 
-`service_user` works for images that **adopt the runtime `user:`** malmo assigns. It does **not** rescue an image that **hardcodes a different internal UID** for its data writes and ignores the runtime user — e.g. a php-fpm pool pinned to `user = www-data` in baked config, or an entrypoint that runs as root and `setuid`-drops to a fixed service user (which additionally needs the stripped `CAP_SETUID`/`CAP_SETGID`). For those, malmo cannot align ownership without either naming the image's host UID (refused, above) or user-namespace remapping (# Not in v1). Such images stay **curation-rejects** until userns-remap lands; the catalog-import ledger tracks the specific apps (`docs/dev/catalog-import-gaps.md` # nonroot-data-ownership) to revisit when it does. This also absorbs the **conflicting per-service-UID** shape (#193) — one app whose services appear to want *different* non-root identities: a sidecar needing merely *a* non-root UID is already served by `service_user`, so the only service that truly needs a *specific* identity is again a hardcoded-internal-UID image. A per-service distinct-UID mechanism wouldn't rescue it (and malmo treats an app's services as one trust unit), so it folds into the same deferral rather than being a separate v1 mechanism.
+`service_user` works for images that **adopt the runtime `user:`** moose assigns. It does **not** rescue an image that **hardcodes a different internal UID** for its data writes and ignores the runtime user — e.g. a php-fpm pool pinned to `user = www-data` in baked config, or an entrypoint that runs as root and `setuid`-drops to a fixed service user (which additionally needs the stripped `CAP_SETUID`/`CAP_SETGID`). For those, moose cannot align ownership without either naming the image's host UID (refused, above) or user-namespace remapping (# Not in v1). Such images stay **curation-rejects** until userns-remap lands; the catalog-import ledger tracks the specific apps (`docs/dev/catalog-import-gaps.md` # nonroot-data-ownership) to revisit when it does. This also absorbs the **conflicting per-service-UID** shape (#193) — one app whose services appear to want *different* non-root identities: a sidecar needing merely *a* non-root UID is already served by `service_user`, so the only service that truly needs a *specific* identity is again a hardcoded-internal-UID image. A per-service distinct-UID mechanism wouldn't rescue it (and moose treats an app's services as one trust unit), so it folds into the same deferral rather than being a separate v1 mechanism.
 
 ### Foundation for future cross-app data grants
 
-Keeping every runtime identity a **stable, malmo-managed** principal (rather than a free-form or transient host UID) is also what keeps a future *"app A may read app B's data"* grant expressible: such a grant would be a bind mount of B's `data/` into A plus a group/ACL grant *referencing A's runtime UID* — the same shape as a `malmo-shared` folder grant today. A free-form or re-rolled identity would make that grant point at an unmanaged principal. Whether cross-app data reads are ever sanctioned at all is a separate, open product question — today inter-app data sharing goes only through shared use-case folders and managed services (# Inter-app traffic, `THREAT_MODEL.md`).
+Keeping every runtime identity a **stable, moose-managed** principal (rather than a free-form or transient host UID) is also what keeps a future *"app A may read app B's data"* grant expressible: such a grant would be a bind mount of B's `data/` into A plus a group/ACL grant *referencing A's runtime UID* — the same shape as a `moose-shared` folder grant today. A free-form or re-rolled identity would make that grant point at an unmanaged principal. Whether cross-app data reads are ever sanctioned at all is a separate, open product question — today inter-app data sharing goes only through shared use-case folders and managed services (# Inter-app traffic, `THREAT_MODEL.md`).
 
 ---
 
@@ -230,8 +230,8 @@ The common case is expressed through high-level fields in the manifest, not raw 
 | `lan: true` | macvlan attachment + multicast |
 | `devices: [...]` | device cgroup entries |
 | `gpu: true` | platform-appropriate GPU runtime |
-| `folders: [...]` (personal source) | bind mount of `/home/<user>/<Folder>/` at `/malmo/<folder>` + injected `MALMO_FOLDER_<NAME>` |
-| `folders: [...]` (shared source) | bind mount of `/srv/malmo/shared/<Folder>/` at `/malmo/<folder>` + `malmo-shared` group membership (`group_add`) + injected `MALMO_FOLDER_<NAME>` |
+| `folders: [...]` (personal source) | bind mount of `/home/<user>/<Folder>/` at `/moose/<folder>` + injected `MOOSE_FOLDER_<NAME>` |
+| `folders: [...]` (shared source) | bind mount of `/srv/moose/shared/<Folder>/` at `/moose/<folder>` + `moose-shared` group membership (`group_add`) + injected `MOOSE_FOLDER_<NAME>` |
 
 App authors think "I need to control the network," not "I need `NET_ADMIN`." The brain does the translation.
 
@@ -302,7 +302,7 @@ When the user sets a cap, the brain applies the corresponding cgroup `mem_limit`
 
 ## Secrets & credentials
 
-Injected as **environment variables** at container start. Managed-service credentials, API keys for malmo-provided integrations, etc.
+Injected as **environment variables** at container start. Managed-service credentials, API keys for moose-provided integrations, etc.
 
 ```
 DATABASE_URL=postgres://app_xyz:...@managed-postgres:5432/app_xyz
@@ -320,7 +320,7 @@ Mounted-file secrets (Docker secrets style) deferred — only ~half of images su
 When a per-user app declares `services: [postgres]`, the brain runs a Postgres container **co-located on that (user, app)'s per-app network**. Only that specific instance — Andrei's Photos, not Maria's — can reach it.
 
 - Lifecycle tied to the (user, app) tuple. Uninstall Andrei's Photos → Andrei's Postgres goes away; data backed up first per `SERVICE_PROVISIONING.md`. Maria's Photos is untouched.
-- Postgres data lives under the per-(user, app) instance dir (`/var/lib/malmo/state/instances/<id>/managed/postgres/...`), owned by the user's UID with restrictive perms. Cross-user filesystem access is blocked the same way every other app-state dir is — POSIX ownership + the brain controlling the bind-mount surface. **Open:** when fscrypt lands for `/home/<user>/`, does it extend to `/var/lib/malmo/state/instances/` for per-user app state? Tracked in `NEXT.md`.
+- Postgres data lives under the per-(user, app) instance dir (`/var/lib/moose/state/instances/<id>/managed/postgres/...`), owned by the user's UID with restrictive perms. Cross-user filesystem access is blocked the same way every other app-state dir is — POSIX ownership + the brain controlling the bind-mount surface. **Open:** when fscrypt lands for `/home/<user>/`, does it extend to `/var/lib/moose/state/instances/` for per-user app state? Tracked in `NEXT.md`.
 - Network-layer isolation: cross-user, cross-app database access is impossible by construction.
 - Cost: in the worst case, N users × M apps requesting Postgres = N×M Postgres instances. Realistic case (1–2 users, one heavy account running most apps) keeps this well within home-server budgets.
 
@@ -333,7 +333,7 @@ When a per-user app declares `services: [postgres]`, the brain runs a Postgres c
 When an app violates its declared permissions at runtime — tries to reach the LAN with `lan: false`, opens a raw socket without `NET_RAW`, writes to a `read`-mode folder — the action **silently fails at the kernel/Docker layer** and is **logged to the app's log stream** with a clear reason:
 
 ```
-[malmo-isolation] blocked outbound connection to 192.168.1.50:80 — app declares lan: false
+[moose-isolation] blocked outbound connection to 192.168.1.50:80 — app declares lan: false
 ```
 
 No popup, no kill. The app sees a normal "connection refused" or "permission denied" and handles it (or doesn't). The brain sees the violation in the log stream and surfaces it in the app's troubleshooting view.

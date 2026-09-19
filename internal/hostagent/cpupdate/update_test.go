@@ -11,16 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/brainlaunch"
-	"github.com/malmoos/malmo/internal/hostagent/controlplane"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent/brainlaunch"
+	"github.com/onmoose/os/internal/hostagent/controlplane"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 const (
-	oldBrain = "malmo-brain:latest"
-	oldUI    = "malmo-ui:dev"
-	newBrain = "ghcr.io/malmoos/malmo-brain@sha256:new"
-	newUI    = "ghcr.io/malmoos/malmo-ui@sha256:new"
+	oldBrain = "moose-brain:latest"
+	oldUI    = "moose-ui:dev"
+	newBrain = "ghcr.io/onmoose/os-brain@sha256:new"
+	newUI    = "ghcr.io/onmoose/os-ui@sha256:new"
 )
 
 // fakeDocker records every call in order. The order is the point: this
@@ -167,8 +167,8 @@ func setup(t *testing.T) Options {
 		t.Fatalf("mkdir state: %v", err)
 	}
 	for name, content := range map[string]string{
-		"malmo.db":     "OLD-DATABASE",
-		"malmo.db-wal": "OLD-WAL",
+		"moose.db":     "OLD-DATABASE",
+		"moose.db-wal": "OLD-WAL",
 	} {
 		if err := os.WriteFile(filepath.Join(stateDir, name), []byte(content), 0o600); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
@@ -179,13 +179,13 @@ func setup(t *testing.T) Options {
 		SnapshotRoot:    filepath.Join(t.TempDir(), "brain-snapshots"),
 		BrainCfg: brainlaunch.Config{
 			Image:         oldBrain,
-			ContainerName: "malmo-brain",
+			ContainerName: "moose-brain",
 			StateDir:      stateDir,
 			DataDir:       filepath.Dir(stateDir),
-			SocketPath:    "/run/malmo/agent.sock",
-			Network:       "malmo-ingress",
+			SocketPath:    "/run/moose/agent.sock",
+			Network:       "moose-ingress",
 		},
-		UIContainerName: "malmo-ui",
+		UIContainerName: "moose-ui",
 		HealthTimeout:   time.Second,
 	}
 }
@@ -322,7 +322,7 @@ func TestApplyUIOnlyLeavesTheBrainAlone(t *testing.T) {
 	if res.BrainChanged {
 		t.Error("BrainChanged = true for a UI-only target")
 	}
-	for _, call := range []string{"pull:" + oldBrain, "rm:malmo-brain", "run:" + oldBrain} {
+	for _, call := range []string{"pull:" + oldBrain, "rm:moose-brain", "run:" + oldBrain} {
 		if d.has(call) {
 			t.Errorf("UI-only update made brain call %q; calls were %v", call, d.calls)
 		}
@@ -376,7 +376,7 @@ func TestApplyRevertsBothWhenTheBrainIsUnhealthy(t *testing.T) {
 	// The new brain migrates the database as it boots — the exact case that
 	// makes an image-only rollback insufficient, since reverting the image
 	// would leave old code reading data the new code rewrote.
-	dbPath := filepath.Join(o.BrainCfg.StateDir, "malmo.db")
+	dbPath := filepath.Join(o.BrainCfg.StateDir, "moose.db")
 	d.onRun = func(image string) {
 		if image == newBrain {
 			if err := os.WriteFile(dbPath, []byte("MIGRATED-BY-NEW-BRAIN"), 0o600); err != nil {
@@ -469,7 +469,7 @@ func TestGCDropsOnlyTheExpiredGeneration(t *testing.T) {
 	// ancient one behind it.
 	if err := controlplane.WriteLedger(o.ControlPlaneDir, controlplane.Ledger{
 		Current:  controlplane.Pair{Brain: oldBrain, UI: oldUI, AppliedAt: now.Add(-9 * 24 * time.Hour)},
-		Previous: &controlplane.Pair{Brain: "malmo-brain:ancient", UI: "malmo-ui:ancient", AppliedAt: now.Add(-9 * 24 * time.Hour)},
+		Previous: &controlplane.Pair{Brain: "moose-brain:ancient", UI: "moose-ui:ancient", AppliedAt: now.Add(-9 * 24 * time.Hour)},
 	}); err != nil {
 		t.Fatalf("seed ledger: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestGCDropsOnlyTheExpiredGeneration(t *testing.T) {
 	if _, err := Apply(context.Background(), d, &fakeProber{failURLs: map[string]error{}}, o); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	for _, ref := range []string{"malmo-brain:ancient", "malmo-ui:ancient"} {
+	for _, ref := range []string{"moose-brain:ancient", "moose-ui:ancient"} {
 		if !d.has("rmi:" + ref) {
 			t.Errorf("expired image %s was not collected; calls were %v", ref, d.calls)
 		}
@@ -490,7 +490,7 @@ func TestGCDropsOnlyTheExpiredGeneration(t *testing.T) {
 	}
 }
 
-// A generation still inside the window is kept — "malmo broke since last night"
+// A generation still inside the window is kept — "moose broke since last night"
 // is the realistic complaint, and a rollback whose target was already deleted
 // is not a rollback.
 func TestGCKeepsAGenerationInsideTheWindow(t *testing.T) {
@@ -500,7 +500,7 @@ func TestGCKeepsAGenerationInsideTheWindow(t *testing.T) {
 	o.Now = func() time.Time { return now }
 	if err := controlplane.WriteLedger(o.ControlPlaneDir, controlplane.Ledger{
 		Current:  controlplane.Pair{Brain: oldBrain, UI: oldUI, AppliedAt: now.Add(-2 * 24 * time.Hour)},
-		Previous: &controlplane.Pair{Brain: "malmo-brain:recent", UI: "malmo-ui:recent", AppliedAt: now.Add(-2 * 24 * time.Hour)},
+		Previous: &controlplane.Pair{Brain: "moose-brain:recent", UI: "moose-ui:recent", AppliedAt: now.Add(-2 * 24 * time.Hour)},
 	}); err != nil {
 		t.Fatalf("seed ledger: %v", err)
 	}
@@ -613,7 +613,7 @@ func TestApplyDoesNotProbeAComponentThatDidNotMove(t *testing.T) {
 	o.BrainRef = newBrain // brain-only
 	d := newFakeDocker()
 	// The UI has been down since before this update started.
-	d.failOn["ip:malmo-ui"] = errors.New("no such container")
+	d.failOn["ip:moose-ui"] = errors.New("no such container")
 
 	res, err := Apply(context.Background(), d, &fakeProber{failURLs: map[string]error{}}, o)
 	if err != nil {
@@ -622,7 +622,7 @@ func TestApplyDoesNotProbeAComponentThatDidNotMove(t *testing.T) {
 	if res.Reverted {
 		t.Error("a brain-only update was reverted because of the UI")
 	}
-	if d.has("ip:malmo-ui") {
+	if d.has("ip:moose-ui") {
 		t.Error("the UI was probed although it did not move")
 	}
 }
@@ -640,7 +640,7 @@ func TestGCKeepsTheSnapshotTheRollbackTargetNeeds(t *testing.T) {
 	// Last update moved only the UI, so both generations name the same brain.
 	if err := controlplane.WriteLedger(o.ControlPlaneDir, controlplane.Ledger{
 		Current:  controlplane.Pair{Brain: oldBrain, UI: oldUI, AppliedAt: now.Add(-9 * 24 * time.Hour)},
-		Previous: &controlplane.Pair{Brain: oldBrain, UI: "malmo-ui:ancient", AppliedAt: now.Add(-9 * 24 * time.Hour)},
+		Previous: &controlplane.Pair{Brain: oldBrain, UI: "moose-ui:ancient", AppliedAt: now.Add(-9 * 24 * time.Hour)},
 	}); err != nil {
 		t.Fatalf("seed ledger: %v", err)
 	}
@@ -649,7 +649,7 @@ func TestGCKeepsTheSnapshotTheRollbackTargetNeeds(t *testing.T) {
 	if _, err := Apply(context.Background(), d, &fakeProber{failURLs: map[string]error{}}, o); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	snap := filepath.Join(snapshotDirFor(o.SnapshotRoot, oldBrain), "malmo.db")
+	snap := filepath.Join(snapshotDirFor(o.SnapshotRoot, oldBrain), "moose.db")
 	if _, err := os.Stat(snap); err != nil {
 		t.Errorf("the retained pair's snapshot was collected: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestGCKeepsTheSnapshotTheRollbackTargetNeeds(t *testing.T) {
 // (lifecycle.EnsureControlPlane). Started first, it boots straight into the
 // compose run host-agent is in the middle of; the two interleave the rename
 // dance compose does to recreate a service, collide on the backup name, and
-// leave the box with **no container named malmo-ui at all**. The health check
+// leave the box with **no container named moose-ui at all**. The health check
 // then cannot resolve the UI's address and reverts a perfectly good update.
 //
 // UPDATES.md # 3 step 3c used to specify the racing order ("brain first, then

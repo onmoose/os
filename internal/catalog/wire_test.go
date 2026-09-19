@@ -9,17 +9,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // fixturePath is the pinned browse payload this file's fixture-reading tests use.
 var fixturePath = filepath.Join("testdata", "snapshot.json")
 
 // TestParseFixtureSnapshot reads the pinned browse payload the way a box reads
-// one served by the control plane, and checks the fields the box projects from.
+// one served by the catalog service, and checks the fields the box projects from.
 //
 // testdata/snapshot.json is a SYNTHETIC payload: fake apps, written here, in the
-// published wire shape. It is not a copy of any catalog the control plane serves
+// published wire shape. It is not a copy of any catalog the service serves
 // — app manifests and compose files are authored in the store, and this repo
 // holds none of them (CLAUDE.md # Catalog apps). What the fixture pins is the
 // SHAPE, which is all these tests need.
@@ -82,7 +82,7 @@ func TestVerifyRejectsSchemaVersion(t *testing.T) {
 
 // TestUnknownFieldsAreIgnored is the behaviour change #434 bought. An unknown
 // key — top-level OR inside an app — is now dropped the way encoding/json drops
-// one everywhere else, so the control plane can add a display field and publish
+// one everywhere else, so the catalog service can add a display field and publish
 // it before the fleet has updated.
 //
 // It used to be asymmetric: a per-app unknown key rejected the whole payload,
@@ -112,7 +112,7 @@ func TestUnknownFieldsAreIgnored(t *testing.T) {
 // TestVersionIsOpaque pins that the box treats the version token as bytes. It
 // stores whatever the payload carries and hands it straight back as the
 // If-None-Match validator, with no recomputation and no shape requirement — the
-// control plane may mint it any way it likes.
+// catalog service may mint it any way it likes.
 func TestVersionIsOpaque(t *testing.T) {
 	raw := []byte(`{"schema_version":` + strconv.Itoa(wireSchemaVersion) +
 		`,"version":"2026-09-04T10:00:00Z/17","apps":[]}`)
@@ -152,7 +152,7 @@ func jsonKeys(t reflect.Type) map[string]bool {
 // is a decision on record, not a silent bypass of TestNoUnmodeledFields.
 var ignoredTopLevelKeys = map[string]string{
 	// os_capabilities_version is a publish-side provenance stamp: which
-	// capability set the control plane admitted apps against when it built this
+	// capability set the publisher admitted apps against when it built this
 	// payload. It has no box-side meaning — the box enforces admission against
 	// its own manifest.Version each time it parses one, not against a
 	// catalog-wide stamp — so there is nothing for the box to do with it.
@@ -171,10 +171,21 @@ var ignoredTopLevelKeys = map[string]string{
 // box believes in stays reviewable as one readable file, and that a json tag
 // renamed in wire.go without the fixture following is caught here.
 //
-// The fixture is hand-authored; keep it that way. Never regenerate it from the
-// Go types in this package — a fixture generated from the very structs it is
-// checked against agrees with them always, and this test becomes a test of
-// nothing.
+// **Never regenerate the fixture from the Go types in THIS package.** A fixture
+// generated from the very structs it is checked against agrees with them always,
+// and this test becomes a test of nothing. That rule is why the fixture was
+// hand-authored for a while.
+//
+// It is now written by the publisher that builds the published catalog, from the
+// publisher's OWN wire types. That is not circular: those types are the other
+// side of this contract, so the comparison this test makes is exactly the one it
+// is for — their shape against the shape modelled here. A json tag renamed on
+// either side and not followed on the other still fails here.
+//
+// The apps in it stay SYNTHETIC — three invented records covering the shape, not
+// the real catalog. This repo is public and the catalog is private, so a fixture
+// carrying real records would publish it. That is not hypothetical: it is what
+// the older copies of this file did.
 func TestNoUnmodeledFields(t *testing.T) {
 	data, err := os.ReadFile(fixturePath)
 	if err != nil {
@@ -295,7 +306,7 @@ func TestExternalCostsProjectOntoDetail(t *testing.T) {
 
 // TestBuildSnapshotRoundTrips covers the seed-building seam (dev/mkcatalog): what
 // BuildSnapshot writes, parseSnapshot must read back, including the inlined
-// install payload a staged file carries because it has no control plane behind it.
+// install payload a staged file carries because it has no catalog behind it.
 func TestBuildSnapshotRoundTrips(t *testing.T) {
 	apps := []SnapshotApp{{
 		ID: "alpha", Name: "Alpha", Version: "1.0",

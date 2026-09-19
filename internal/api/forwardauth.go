@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // forwardAuthVerifyPath is the internal endpoint the box Caddy's per-app
@@ -32,7 +32,7 @@ const forwardAuthVerifyPath = profile.ForwardAuthVerifyPath
 // owner's session validates — box users the owner may later create are a
 // follow-up. Hosted-only: on the appliance there is no portal, no app
 // subdomains, and no forward-auth cookie, so the route 404s exactly like
-// /_malmo/sso. This is a pure session probe, so it never audits (CLAUDE.md #
+// /_moose/sso. This is a pure session probe, so it never audits (CLAUDE.md #
 // Elevation-class — pure reads don't audit).
 func (s *Server) forwardAuthVerify(w http.ResponseWriter, r *http.Request) {
 	if s.profile != profile.Hosted {
@@ -66,8 +66,8 @@ func (s *Server) forwardAuthVerify(w http.ResponseWriter, r *http.Request) {
 	// Identity for the app upstream. #306 decides which of these it forwards (and
 	// strips the forward-auth cookie before proxying); #305 only makes the identity
 	// available on the allow response.
-	w.Header().Set("X-Malmo-User", id.User.Username)
-	w.Header().Set("X-Malmo-User-Id", id.User.ID)
+	w.Header().Set("X-Moose-User", id.User.Username)
+	w.Header().Set("X-Moose-User-Id", id.User.ID)
 	w.WriteHeader(http.StatusOK)
 }
 

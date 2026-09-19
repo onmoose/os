@@ -1,11 +1,11 @@
 # Pinned third-party build inputs for the control plane (os #432; BUILD.md # 5c).
 #
-# Four upstream images the control plane ships, three base images the two malmo
+# Four upstream images the control plane ships, three base images the two moose
 # images are built from, and the one Go module compiled into the hosted Caddy.
 #
 # The bytes of every third-party image the control plane ships are decided here,
 # by digest. A tag is not a lookup key: `caddy:2-alpine` is rebuilt upstream
-# whenever its base is patched, so two builds of the same malmo commit weeks
+# whenever its base is patched, so two builds of the same moose commit weeks
 # apart would otherwise contain different Caddy bytes with nothing recording
 # which. This is the same rule the catalog already applies to every app image
 # (APP_LIFECYCLE.md # Locked: image digest pinning).
@@ -40,14 +40,14 @@ PROXY_IMAGE=tecnativa/docker-socket-proxy:v0.4.2@sha256:1f3a6f303320723d199d2316
 CADDY_ACMEDNS_BUILDER_IMAGE=caddy:2.10.0-builder@sha256:fe8d0d6cdbfd382197c4d715ffd5b41210165e2f64a81ce546ae63eeef35873a
 CADDY_ACMEDNS_BASE_IMAGE=caddy:2.10.0-alpine@sha256:ae4458638da8e1a91aafffb231c5f8778e964bca650c8a8cb23a7e8ac557aa3c
 
-# ---- Bases the two malmo control-plane images are built from ----------------
+# ---- Bases the two moose control-plane images are built from ----------------
 # Pinning these fixes the base bytes, not the build: cmd/brain/Dockerfile still
 # apt-gets docker-ce-cli from a live index, so the image is pinned, not
 # reproducible. web-ui's npm ci is locked by package-lock.json.
 BRAIN_BUILDER_IMAGE=golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
 BRAIN_RUNTIME_IMAGE=debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 UI_BUILDER_IMAGE=node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
-# malmo-ui's runtime base is CADDY_IMAGE above — the same pin, not a second copy,
+# moose-ui's runtime base is CADDY_IMAGE above — the same pin, not a second copy,
 # so the UI and the proxy always run the same Caddy bytes.
 
 # ---- The one module compiled into the hosted Caddy --------------------------

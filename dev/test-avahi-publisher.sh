@@ -18,7 +18,7 @@
 # Usage:
 #   dev/test-avahi-publisher.sh [slug]
 #
-# Default slug is "malmotest". Tests against ${slug}.local.
+# Default slug is "moosetest". Tests against ${slug}.local.
 #
 # Cleanup: kills host-agent-real and removes the socket on exit, even on
 # failure. Avahi withdraws the name automatically when the DBus connection
@@ -26,9 +26,9 @@
 
 set -euo pipefail
 
-SLUG="${1:-malmotest}"
+SLUG="${1:-moosetest}"
 NAME="${SLUG}.local"
-SOCK="/tmp/malmo-agent-test.sock"
+SOCK="/tmp/moose-agent-test.sock"
 BIN=".dev/host-agent-real"
 
 cleanup() {
@@ -60,7 +60,7 @@ make host-agent-real
 
 echo "==> Starting host-agent-real on $SOCK..."
 rm -f "$SOCK"
-MALMO_AGENT_SOCK="$SOCK" "./$BIN" &
+MOOSE_AGENT_SOCK="$SOCK" "./$BIN" &
 PID=$!
 
 # Wait for socket

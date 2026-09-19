@@ -6,9 +6,9 @@
 # smoke test (no folders) — this lives here so the lane's needs don't bend it.
 #
 # Same image + catalog-promised digest as catalog/whoami: the lane bakes that one
-# image into the offline bundle and installs air-gapped (MALMO_OFFLINE_INSTALL),
+# image into the offline bundle and installs air-gapped (MOOSE_OFFLINE_INSTALL),
 # so the promised digest is the trust anchor (APP_LIFECYCLE.md # image digest
-# pinning). whoami never reads /malmo/documents — the bind just has to exist.
+# pinning). whoami never reads /moose/documents — the bind just has to exist.
 id: whoami
 manifest_version: 1
 name: Whoami

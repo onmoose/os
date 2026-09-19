@@ -1,18 +1,32 @@
 {
   "schema_version": 2,
+  "version": "86497d88d178000af9bad645f6620fbf3ace301a7515ca8ac04ad116276aceab",
   "generated_at": "2026-08-17T09:00:00Z",
   "store_ref": "0000000000000000000000000000000000000000",
-  "os_capabilities_version": 1,
-  "version": "b024dbc254dac94e1ed8719cbad2e2bab8069a351f30c1799798eb9ddf2aba20",
   "apps": [
     {
       "id": "alpha-notes",
       "name": "Alpha Notes",
       "version": "1.4.0",
       "short_description": "A synthetic note-taking app used to pin the published catalog shape.",
-      "long_description": "## Overview\nAlpha Notes is not a real app. It exists so this fixture carries every\nfield the published catalog can put on an app, including the ones only a\nfew real apps use.\n\n## Features\n- Every optional display field set at once\n- A screenshot list with more than one entry\n- A third-party cost record",
-      "categories": ["notes", "productivity"],
+      "categories": [
+        "notes",
+        "productivity"
+      ],
+      "icon_url": "https://assets.example.invalid/alpha-notes/icon.png",
       "icon_glyph": "notebook",
+      "footprint": {
+        "image_download_bytes": 12345678,
+        "image_disk_bytes": 23456789,
+        "estimated_state": "50 MB"
+      },
+      "featured": true,
+      "rank": 1,
+      "long_description": "## Overview\nAlpha Notes is not a real app. It exists so this fixture carries every\nfield the published catalog can put on an app, including the ones only a\nfew real apps use.\n\n## Features\n- Every optional display field set at once\n- A screenshot list with more than one entry\n- A third-party cost record",
+      "screenshot_urls": [
+        "https://assets.example.invalid/alpha-notes/screenshots/0.png",
+        "https://assets.example.invalid/alpha-notes/screenshots/1.png"
+      ],
       "author": {
         "name": "Alpha Project",
         "url": "https://example.invalid/alpha"
@@ -24,11 +38,6 @@
         "support": "https://example.invalid/alpha/help"
       },
       "changelog_url": "https://example.invalid/alpha/changelog",
-      "footprint": {
-        "image_download_bytes": 12345678,
-        "image_disk_bytes": 23456789,
-        "estimated_state": "50 MB"
-      },
       "external_costs": [
         {
           "id": "model-access",
@@ -39,32 +48,27 @@
           "estimate_checked": "2026-08-17"
         }
       ],
-      "icon_url": "/catalog/assets/alpha-notes/icon.png",
-      "screenshot_urls": [
-        "/catalog/assets/alpha-notes/screenshots/0.png",
-        "/catalog/assets/alpha-notes/screenshots/1.png"
-      ],
       "manifest_url": "/catalog/apps/alpha-notes/manifest",
-      "compose_url": "/catalog/apps/alpha-notes/compose",
-      "featured": true,
-      "rank": 1
+      "compose_url": "/catalog/apps/alpha-notes/compose"
     },
     {
       "id": "beta-media",
       "name": "Beta Media",
       "version": "0.9.1",
-      "short_description": "A synthetic media app whose assets are served from another origin.",
-      "categories": ["media"],
+      "short_description": "A synthetic media app with an icon and no gallery.",
+      "categories": [
+        "media"
+      ],
+      "icon_url": "https://assets.example.invalid/beta-media/icon.svg",
       "icon_glyph": "film",
       "footprint": {
         "image_download_bytes": 2222222,
         "image_disk_bytes": 3333333
       },
-      "icon_url": "https://assets.example.invalid/beta-media/icon.svg",
-      "manifest_url": "/catalog/apps/beta-media/manifest",
-      "compose_url": "/catalog/apps/beta-media/compose",
       "featured": true,
-      "rank": 2
+      "rank": 2,
+      "manifest_url": "/catalog/apps/beta-media/manifest",
+      "compose_url": "/catalog/apps/beta-media/compose"
     },
     {
       "id": "gamma-demo",
@@ -83,11 +87,16 @@
     "groups": [
       {
         "category": "notes",
-        "apps": ["alpha-notes"]
+        "apps": [
+          "alpha-notes"
+        ]
       },
       {
         "category": "media",
-        "apps": ["beta-media", "gamma-demo"]
+        "apps": [
+          "beta-media",
+          "gamma-demo"
+        ]
       }
     ]
   },

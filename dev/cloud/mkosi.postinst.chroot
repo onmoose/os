@@ -8,7 +8,7 @@
 #   - enable docker + containerd, systemd-networkd, host-agent, the first-boot
 #     image loader, and the provisioning-seed materializer (.wants symlinks —
 #     `systemctl enable` can't run in the chroot);
-#   - provision the malmo / malmo-app / malmo-shared identities host-agent +
+#   - provision the moose / moose-app / moose-shared identities host-agent +
 #     the brain resolve by name (FIRST_RUN.md, APP_ISOLATION.md # Runtime identity);
 #   - bring the single virtio NIC up via systemd-networkd DHCP — the minimal
 #     cloud-native path, NO NetworkManager (ENVIRONMENT.md # Networking, # Boot);
@@ -76,15 +76,15 @@ EOF
 # /etc/hosts. That is invisible until something must resolve a public name: the
 # box reaches the metadata service and its own :80 by IP, so it boots and serves,
 # but the brain's Caddy cannot resolve acme-v02.api.letsencrypt.org or
-# auth.malmo.network, so the wildcard-cert ACME flow never starts (#207 / C3b)
+# auth.onmoose.io, so the wildcard-cert ACME flow never starts (#207 / C3b)
 # and :443 stays certless. Docker also derives a bridge container's resolver from
-# the host's /etc/resolv.conf; with the file absent, malmo-caddy (a malmo-ingress
+# the host's /etc/resolv.conf; with the file absent, moose-caddy (a moose-ingress
 # container) inherits no usable resolver — the same Docker-DNS gap the cloud
 # control-plane deploy had to patch. A static file with public resolvers is the
 # no-extra-package fix (resolved would change the lean manifest); the box only
 # ever resolves public names (control-plane images are baked, no registry pulls).
 cat > /etc/resolv.conf <<'EOF'
-# malmo hosted cloud image — static resolver (no systemd-resolved in the lean set).
+# moose hosted cloud image — static resolver (no systemd-resolved in the lean set).
 nameserver 1.1.1.1
 nameserver 8.8.8.8
 nameserver 9.9.9.9
@@ -97,17 +97,17 @@ chmod 0644 /etc/resolv.conf
 enable_unit /etc/systemd/system/host-agent.service host-agent.service
 
 # First-boot control-plane image loader (reused verbatim from the medium lane).
-enable_unit /etc/systemd/system/malmo-load-images.service malmo-load-images.service
+enable_unit /etc/systemd/system/moose-load-images.service moose-load-images.service
 
 # First-boot provisioning-seed materializer (C3a cloud-lane, #220). Lands the
-# delivered seed at /var/lib/malmo/seed.json before host-agent launches the brain;
+# delivered seed at /var/lib/moose/seed.json before host-agent launches the brain;
 # no-ops on an un-seeded boot.
-enable_unit /etc/systemd/system/malmo-seed.service malmo-seed.service
+enable_unit /etc/systemd/system/moose-seed.service moose-seed.service
 
 # sshd installed, NOT started at boot (#467; BUILD.md # SSH). Debian's
 # openssh-server postinst enables ssh.service, which would leave every hosted box
 # answering on :22 for its whole life. On this profile that is the entire port
-# control: there is no malmo firewall and the provider attaches none, so a running
+# control: there is no moose firewall and the provider attaches none, so a running
 # daemon IS an open port (ENVIRONMENT.md # Access & files). The brain starts the
 # unit through host-agent when the first account turns SSH on and stops it when the
 # last one turns it off, so a box nobody uses SSH on presents no port at all.
@@ -127,20 +127,20 @@ systemctl --root=/ disable ssh.service >/dev/null 2>&1 || true
 # Debian's sshd-keygen.service cannot regenerate them here — it is
 # ConditionFirstBoot=yes and only pulled in by ssh.service, and on this profile
 # sshd usually first starts long after the first boot, when that condition is
-# false. malmo-sshd-keygen.service is the same job without the condition, pulled
+# false. moose-sshd-keygen.service is the same job without the condition, pulled
 # in at BOOT rather than with the daemon: host-agent runs `sshd -t` to validate the
 # rendered config before it ever starts the unit, and that exits "no hostkeys
 # available" when there are none, so keys arriving with the daemon arrive too late
 # for the first enable to succeed. Keys on disk open nothing; the port is still the
 # daemon's run state.
 rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
-enable_unit /etc/systemd/system/malmo-sshd-keygen.service malmo-sshd-keygen.service
+enable_unit /etc/systemd/system/moose-sshd-keygen.service moose-sshd-keygen.service
 mkdir -p /etc/systemd/system/ssh.service.wants
-ln -sf /etc/systemd/system/malmo-sshd-keygen.service \
-    /etc/systemd/system/ssh.service.wants/malmo-sshd-keygen.service
+ln -sf /etc/systemd/system/moose-sshd-keygen.service \
+    /etc/systemd/system/ssh.service.wants/moose-sshd-keygen.service
 mkdir -p /usr/lib/systemd/system-preset
-cat > /usr/lib/systemd/system-preset/99-malmo-ssh.preset <<'EOF'
-# malmo owns sshd's run state (BUILD.md # SSH). Installed, off until an account
+cat > /usr/lib/systemd/system-preset/99-moose-ssh.preset <<'EOF'
+# moose owns sshd's run state (BUILD.md # SSH). Installed, off until an account
 # opts in; host-agent starts and stops the unit.
 disable ssh.service
 disable ssh.socket
@@ -151,34 +151,34 @@ EOF
 # cloud-metadata SSRF (#251, ENVIRONMENT.md # Provisioning & first-boot). A standing
 # forward-hook nft DROP applied every boot before docker/host-agent start any
 # container; the host-root seed fetch (OUTPUT path) is untouched. The unit + ruleset
-# are committed static files under mkosi.extra/ (etc/malmo/metadata-firewall.nft).
-enable_unit /etc/systemd/system/malmo-metadata-firewall.service malmo-metadata-firewall.service
+# are committed static files under mkosi.extra/ (etc/moose/metadata-firewall.nft).
+enable_unit /etc/systemd/system/moose-metadata-firewall.service moose-metadata-firewall.service
 
 # Grow the root partition + ext4 to fill the provider disk on boot (systemd-repart
-# against /usr/lib/repart.d/50-malmo-grow-root.conf). The image bakes a fixed 8 GiB
+# against /usr/lib/repart.d/50-moose-grow-root.conf). The image bakes a fixed 8 GiB
 # root (mkosi.repart/) so the shipped raw stays small; a provider VM's disk is much
 # larger, and without this the box would run on 8 GiB — docker image storage + the
 # brain's SQLite store share the volume, so one app install could fill it and 500
 # login. Ordered Before=docker/host-agent (in the unit) so the disk is full before
 # anything writes to it. Static unit under mkosi.extra/; systemd-repart ships in the
 # systemd-repart package (added to the lean set in mkosi.conf). ENVIRONMENT.md # Storage.
-enable_unit /etc/systemd/system/malmo-grow-root.service malmo-grow-root.service
+enable_unit /etc/systemd/system/moose-grow-root.service moose-grow-root.service
 
-# malmo primary group (GID 3000, FIRST_RUN.md # Identity) — new users are created
-# with `useradd --gid malmo`; the brain's /setup needs it present. malmo-app /
-# malmo-shared (2000/2001, APP_ISOLATION.md # Runtime identity) are the well-known
+# moose primary group (GID 3000, FIRST_RUN.md # Identity) — new users are created
+# with `useradd --gid moose`; the brain's /setup needs it present. moose-app /
+# moose-shared (2000/2001, APP_ISOLATION.md # Runtime identity) are the well-known
 # app-runtime identities host-agent resolves by name. Idempotent.
-getent group malmo        >/dev/null || groupadd -g 3000 malmo
-getent group malmo-app    >/dev/null || groupadd -g 2000 malmo-app
-getent group malmo-shared >/dev/null || groupadd -g 2001 malmo-shared
-getent passwd malmo-app   >/dev/null || useradd -r -u 2000 -g malmo-app \
-    -M -d /nonexistent -s /usr/sbin/nologin malmo-app
+getent group moose        >/dev/null || groupadd -g 3000 moose
+getent group moose-app    >/dev/null || groupadd -g 2000 moose-app
+getent group moose-shared >/dev/null || groupadd -g 2001 moose-shared
+getent passwd moose-app   >/dev/null || useradd -r -u 2000 -g moose-app \
+    -M -d /nonexistent -s /usr/sbin/nologin moose-app
 
 # Make the staged binaries/scripts executable (ExtraTrees preserves mode, but be
 # defensive — a clobbered mode would otherwise fail silently at boot).
-chmod 0755 /usr/lib/malmo/host-agent-real 2>/dev/null || true
-chmod 0755 /usr/lib/malmo/load-control-plane-images.sh 2>/dev/null || true
-chmod 0755 /usr/local/bin/malmo-seed-materialize.sh 2>/dev/null || true
+chmod 0755 /usr/lib/moose/host-agent-real 2>/dev/null || true
+chmod 0755 /usr/lib/moose/load-control-plane-images.sh 2>/dev/null || true
+chmod 0755 /usr/local/bin/moose-seed-materialize.sh 2>/dev/null || true
 
 # Leave machine-id empty (zero bytes, file present) so systemd generates a unique
 # one on each VM's first real boot. Pre-committing it here would bake the build

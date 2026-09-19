@@ -10,16 +10,16 @@ import (
 )
 
 // ComposeFile is the staged control-plane compose's name inside
-// MALMO_CONTROL_PLANE_DIR. Fixed by the image build, which stages it there; the
+// MOOSE_CONTROL_PLANE_DIR. Fixed by the image build, which stages it there; the
 // brain reconciles the stack from this exact file
 // (lifecycle.EnsureControlPlane).
 const ComposeFile = "compose.yml"
 
 // UIServiceName is the compose service running the dashboard bundle
 // (CONTROL_PLANE.md # the dashboard UI is a brain-launched container).
-const UIServiceName = "malmo-ui"
+const UIServiceName = "moose-ui"
 
-// RewriteUIImage points the malmo-ui service at ref, in place, and returns the
+// RewriteUIImage points the moose-ui service at ref, in place, and returns the
 // ref it replaced so a caller can record it as the previous generation.
 //
 // This is the # 8.3 handoff in one function: host-agent writes the new ref here
@@ -88,16 +88,16 @@ func ReadUIImage(dir string) (string, error) {
 	return ref, err
 }
 
-// uiImageLine finds the index of the malmo-ui service's `image:` line and the
+// uiImageLine finds the index of the moose-ui service's `image:` line and the
 // ref it currently pins.
 //
 // The scan is indentation-based because that is what distinguishes the service
-// named malmo-ui from any other line that happens to contain the string: a
+// named moose-ui from any other line that happens to contain the string: a
 // service key sits at one indent under `services:`, and its `image:` sits at
 // the next indent in, before the following key at the service's own level.
 func uiImageLine(lines []string, path string) (idx int, ref string, err error) {
 	inServices := false
-	serviceIndent := -1 // indent of the malmo-ui key, once found
+	serviceIndent := -1 // indent of the moose-ui key, once found
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -106,7 +106,7 @@ func uiImageLine(lines []string, path string) (idx int, ref string, err error) {
 		indent := len(line) - len(strings.TrimLeft(line, " "))
 
 		if serviceIndent >= 0 {
-			// Inside malmo-ui: a key back at or above its own indent ends it.
+			// Inside moose-ui: a key back at or above its own indent ends it.
 			if indent <= serviceIndent {
 				break
 			}
@@ -130,7 +130,7 @@ func uiImageLine(lines []string, path string) (idx int, ref string, err error) {
 }
 
 // stripInlineComment removes a trailing YAML comment from a scalar value, so
-// `malmo-ui:dev # baked at build` reads as the ref and not as the whole line.
+// `moose-ui:dev # baked at build` reads as the ref and not as the whole line.
 //
 // This matters more than the tidiness suggests: the ref returned by
 // uiImageLine is the one a caller records as the **previous** generation, which

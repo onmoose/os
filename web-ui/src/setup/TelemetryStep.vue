@@ -31,22 +31,22 @@ async function submit() {
 
 <template>
   <form @submit.prevent="submit">
-    <h2>Help improve malmo</h2>
+    <h2>Help improve moose</h2>
     <label class="check">
       <input v-model="enabled" type="checkbox" />
-      Send anonymous usage statistics and crash reports to help improve malmo.
+      Send anonymous usage statistics and crash reports to help improve moose.
     </label>
     <button type="button" class="link" @click="showDetails = !showDetails">
       {{ showDetails ? "Hide details" : "What does this collect?" }}
     </button>
     <div v-if="showDetails" class="hint details">
       <p>
-        Anonymous usage data and crash reports are sent to malmo, processed via
+        Anonymous usage data and crash reports are sent to moose, processed via
         PostHog (a third-party analytics provider). No identifying information
         is included:
       </p>
       <ul>
-        <li>malmo version and basic hardware class (CPU, memory and disk size ranges)</li>
+        <li>moose version and basic hardware class (CPU, memory and disk size ranges)</li>
         <li>App installs and updates for store apps, and health issues</li>
         <li>Crash reports (with file paths and personal data scrubbed)</li>
       </ul>

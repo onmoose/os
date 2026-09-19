@@ -5,7 +5,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/malmoos/malmo/internal/health"
+	"github.com/onmoose/os/internal/health"
 )
 
 // registerHealth wires GET /api/v1/health (HEALTH.md # Display). Admin-only

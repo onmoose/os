@@ -2,7 +2,7 @@ package lifecycle
 
 // User-supplied config (APP_MANIFEST.md # D4): the brain stamps each declared
 // value verbatim under its own app_env into the target service's compose-override
-// environment (not the .env the MALMO_* family uses), at install and on edit.
+// environment (not the .env the MOOSE_* family uses), at install and on edit.
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
@@ -132,7 +132,7 @@ func TestInstallStampsConfigIntoOverride(t *testing.T) {
 }
 
 // TestConfigDoesNotLeakIntoEnv: config values land in the override, never the
-// .env the MALMO_* family uses (APP_MANIFEST.md # D4 — no MALMO_ indirection).
+// .env the MOOSE_* family uses (APP_MANIFEST.md # D4 — no MOOSE_ indirection).
 func TestConfigDoesNotLeakIntoEnv(t *testing.T) {
 	e := newTestEnv(t)
 	inst := installConfigApp(t, e)
@@ -171,7 +171,7 @@ func TestSetConfigRestampsAndRestarts(t *testing.T) {
 		t.Errorf("cleared WORKER_TOKEN still present in override")
 	}
 	// A running instance is recreated to pick up the new env.
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Errorf("SetConfig did not recreate containers")
 	}
 	// The store reflects the new set.

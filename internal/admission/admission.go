@@ -15,7 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/malmoos/malmo/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // Error is a rejection with a stable, user-facing message naming the field.
@@ -109,7 +109,7 @@ func sortStrings(s []string) {
 func checkService(name string, svc rawService) error {
 	switch {
 	case len(svc.Ports) > 0:
-		return reject("service %q declares host ports (ports:) — malmo routes apps via Caddy on internal networks; remove the ports mapping", name)
+		return reject("service %q declares host ports (ports:) — moose routes apps via Caddy on internal networks; remove the ports mapping", name)
 	case svc.Privileged:
 		return reject("service %q sets privileged: true — Tier-3 apps run unprivileged; capability-needing apps belong in Tier 2", name)
 	case len(svc.CapAdd) > 0:
@@ -119,16 +119,16 @@ func checkService(name string, svc rawService) error {
 	case svc.Extends != nil:
 		return reject("service %q uses extends: — apps must be self-contained in one compose file", name)
 	case svc.Deploy.Replicas != nil && *svc.Deploy.Replicas > 1:
-		// malmo is a single-node appliance: a second replica buys no
+		// moose is a single-node appliance: a second replica buys no
 		// availability and Caddy routes to one upstream alias per instance.
 		// The main service additionally has its container_name pinned for the
 		// per-app Logs tail (APP_LIFECYCLE.md # Locked: override file contents),
 		// which compose refuses to scale — so reject the unsupported config at
 		// admission, naming the field, instead of failing opaquely at `up`.
-		return reject("service %q sets deploy.replicas: %d — malmo is a single-node appliance and runs one replica per service; remove deploy.replicas", name, *svc.Deploy.Replicas)
+		return reject("service %q sets deploy.replicas: %d — moose is a single-node appliance and runs one replica per service; remove deploy.replicas", name, *svc.Deploy.Replicas)
 	}
 	if m := svc.NetworkMode; m == "host" || m == "none" || strings.HasPrefix(m, "container:") {
-		return reject("service %q sets network_mode: %s — not allowed; malmo manages app networking", name, m)
+		return reject("service %q sets network_mode: %s — not allowed; moose manages app networking", name, m)
 	}
 	for _, ns := range []struct{ field, val string }{
 		{"pid", svc.Pid}, {"ipc", svc.Ipc}, {"userns_mode", svc.UsernsMode},
@@ -149,10 +149,10 @@ func checkService(name string, svc rawService) error {
 }
 
 // checkUser rejects a numeric `user:` (any numeric UID or GID component).
-// A compose-named number is read in the HOST user namespace — malmo runs no
+// A compose-named number is read in the HOST user namespace — moose runs no
 // userns remap — so it could alias a real host principal: a system account,
-// or a malmo user in the 3000+ range (APP_ISOLATION.md # Runtime identity &
-// data ownership). malmo owns the runtime UID; the brain's override pins
+// or a moose user in the 3000+ range (APP_ISOLATION.md # Runtime identity &
+// data ownership). moose owns the runtime UID; the brain's override pins
 // `user:` on every service regardless. A non-numeric name (`user: postgres`)
 // is left alone — it resolves in the container's own /etc/passwd and the
 // override wins anyway.
@@ -164,14 +164,14 @@ func checkUser(name string, u any) error {
 		}
 		// Bare YAML scalar like `user: 1000` (or 1000.5; any non-string is
 		// numeric as far as compose's uid syntax is concerned).
-		return reject("service %q sets a numeric user: (%v) — malmo assigns every app's runtime UID; remove it (a folderless app that needs a non-root identity declares service_user: true in its manifest)", name, u)
+		return reject("service %q sets a numeric user: (%v) — moose assigns every app's runtime UID; remove it (a folderless app that needs a non-root identity declares service_user: true in its manifest)", name, u)
 	}
 	for _, part := range strings.SplitN(val, ":", 2) {
 		if part == "" {
 			continue
 		}
 		if _, err := strconv.Atoi(part); err == nil {
-			return reject("service %q sets a numeric user: (%q) — malmo assigns every app's runtime UID; remove it (a folderless app that needs a non-root identity declares service_user: true in its manifest)", name, val)
+			return reject("service %q sets a numeric user: (%q) — moose assigns every app's runtime UID; remove it (a folderless app that needs a non-root identity declares service_user: true in its manifest)", name, val)
 		}
 	}
 	return nil
@@ -223,7 +223,7 @@ func isPath(src string) bool {
 // validateSyntax shells out to `docker compose config -q`, which parses and
 // validates the file (catching malformed compose before we write any state).
 func validateSyntax(ctx context.Context, composeBytes []byte) error {
-	dir, err := os.MkdirTemp("", "malmo-admit-")
+	dir, err := os.MkdirTemp("", "moose-admit-")
 	if err != nil {
 		return fmt.Errorf("admission tempdir: %w", err)
 	}

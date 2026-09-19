@@ -7,9 +7,9 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/lifecycle"
-	"github.com/malmoos/malmo/internal/version"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/lifecycle"
+	"github.com/onmoose/os/internal/version"
 )
 
 // registerSystem registers the box-level system routes. Only the one-time

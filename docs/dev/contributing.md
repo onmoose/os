@@ -1,4 +1,4 @@
-# Working on malmo
+# Working on moose
 
 The end-to-end loop for contributing an implementation slice: get oriented, pick a task, branch, build, test, document, open a PR, review it. Read this once; it links out to the docs that own each step rather than repeating them.
 
@@ -8,7 +8,7 @@ This guide is written so a contributor **and their coding agent** can both follo
 
 Read in this order. Don't skip [`../../CLAUDE.md`](../../CLAUDE.md) — it holds the load-bearing conventions and overrides default agent behavior.
 
-1. **[`../../CLAUDE.md`](../../CLAUDE.md)** — what malmo is, the audience, the locked decisions, and the code/doc discipline you're held to. The annotated map of every spec lives in [`../README.md`](../README.md) # Specs.
+1. **[`../../CLAUDE.md`](../../CLAUDE.md)** — what moose is, the audience, the locked decisions, and the code/doc discipline you're held to. The annotated map of every spec lives in [`../README.md`](../README.md) # Specs.
 2. **[`../specs/SPEC.md`](../specs/SPEC.md)** and **[`../specs/CONTROL_PLANE.md`](../specs/CONTROL_PLANE.md)** — the vision and the control-plane architecture (brain + host-agent + Caddy).
 3. **[`../README.md`](../README.md)** — the doc map. You don't read every spec now; you read the one(s) your task touches, end-to-end, when you pick it up.
 4. **[`running-locally.md`](running-locally.md)** — get the stack running natively (no VM) before you write a line.
@@ -18,7 +18,7 @@ The spec docs are the source of truth and cross-reference each other heavily. Wh
 
 ## Step 1 — Pick a task
 
-Actionable implementation work lives in **[GitHub Issues](https://github.com/malmoos/malmo/issues)** — the parallel-work board. Find work and claim it:
+Actionable implementation work lives in **[GitHub Issues](https://github.com/onmoose/os/issues)** — the parallel-work board. Find work and claim it:
 
 ```bash
 gh issue list --label accepted --label P1           # accepted + highest priority; also P2, P3
@@ -67,7 +67,7 @@ The inner dev loop is all native, no VM — see [`running-locally.md`](running-l
 
 Every behavioral change ships with tests. Which layer depends on what you touched — see [`testing-brain.md`](testing-brain.md) for the brain pyramid (unit → store → lifecycle-with-fakes → API → integration → e2e) and [`../specs/TESTING.md`](../specs/TESTING.md) for the boot-level lanes (nspawn fast / QEMU medium / soak).
 
-**Test data is synthetic and self-contained.** Write fixtures with fake data in the shape you need; don't check in a copy of a payload a malmo endpoint serves. This matters most for the app catalog: the artifacts are authored in `malmoos/store` and reach a box only through the published snapshot, so `internal/catalog/testdata/snapshot.json` is hand-written fake apps in the published wire shape. Keep it hand-written — regenerating it from the Go types it is checked against would make `TestNoUnmodeledFields` agree with itself and test nothing. `go test ./internal/catalog -run TestVerifyFixtureSnapshot -update` re-stamps its digest after you edit the shape.
+**Test data is synthetic and self-contained.** Write fixtures with fake data in the shape you need; don't check in a copy of a payload a moose endpoint serves. This matters most for the app catalog: the artifacts are authored in `onmoose/store` and reach a box only through the published snapshot, so `internal/catalog/testdata/snapshot.json` is three fake apps in the published wire shape. The apps in it must stay fake: this repo is public and the catalog is not. **Never regenerate it from the Go types in `internal/catalog`**, because a fixture built from the structs it is checked against would make `TestNoUnmodeledFields` agree with itself and test nothing. The publisher writes it, from its own wire types, which are the other side of the contract. The full procedure for editing it is [# Changing the published catalog shape](#changing-the-published-catalog-shape) below.
 
 Before you push, run the gate:
 
@@ -133,6 +133,25 @@ A finished self-review has **two halves**, and the PR is not ready for the maint
 
 Address every **Block** finding from either half before the PR merges, with **fixup commits on the same branch** — never a second PR (see Step 2). If you disagree with a finding, note it in the progress entry's "Known gaps" section — never silently ignore it.
 
+## Changing the published catalog shape
+
+The catalog is published and served from `onmoose/store`. The box is a thin client of it. The two sides meet at one wire shape, and that seam has a property worth stating in full, because it is quiet:
+
+**A field the box does not model is dropped with no error and no log line.** `encoding/json` ignores any key it has no field for, so a new published field reaches the box and vanishes there. Green tests on the publishing side do not mean the field arrived. **A field is delivered when the box models it, not when the catalog starts serving it** (`../specs/APP_STORE.md` # What the box models).
+
+Nothing automated catches this. Do the box-side half deliberately, in this order:
+
+1. **Model the field** in `internal/catalog/wire.go`, and project it wherever the box should surface it (`Entry`, `Detail`, `Home`). If the box genuinely does not need it, add the key to `ignoredTopLevelKeys` in `internal/catalog/wire_test.go` with a reason. That is an explicit "we looked and decided no", which silence is not.
+2. **Refresh the pinned fixture**: `internal/catalog/testdata/snapshot.json`. The new field has to appear on `alpha-notes`, the record that carries every optional field at once. This is what arms `TestNoUnmodeledFields`, and it is the only thing that would catch the field going missing.
+
+   **The publisher writes this file, from its own wire types.** Take its output. Do not hand-edit it, and do not generate it from the Go types in `internal/catalog`. A fixture built from the structs it is checked against agrees with them always and proves nothing. The publisher's types are the other side of this contract, so a json tag renamed on one side and not followed on the other still fails here.
+
+   The apps in it stay synthetic: three invented records covering the shape, never the real catalog. This repo is public and the catalog is not. There is no digest to re-stamp: `version` is an opaque token the box never recomputes (#434).
+3. **Restate the box-facing half of the contract** in `../specs/APP_STORE.md`. That spec is self-contained by design, so describe the field in box terms rather than pointing at the publishing side.
+4. **Bump `wireSchemaVersion` only for a format the box cannot half-read.** The check is exact equality, so a bump that runs ahead of the change rejects every payload on every deployed box at once. Adding a field is not that case.
+
+If the box-side half is not happening now, open an issue here describing it in box-facing terms. An unmodelled field is invisible on both sides until somebody goes looking for it.
+
 ## Release model
 
 Feature work always branches off `dev` and PRs into `dev` — that's covered above. Releases are a separate, maintainer-only step layered on top, and **the `VERSION` bump is what makes a merge a release** — everything past that point is automatic:
@@ -143,7 +162,7 @@ Feature work always branches off `dev` and PRs into `dev` — that's covered abo
   - **If the tag already exists** (this merge didn't bump `VERSION`), the run is a clean no-op — no tag, no release, no image build. This is the common case for most `main` pushes and is expected to stay green.
   - **If the tag doesn't exist** (this merge bumped `VERSION`), the workflow tags the merge commit `vX.Y.Z`, creates a GitHub Release for it, and then triggers the hosted cloud-image build+publish (`ci-cloud-image.yml`) for that same commit with publishing enabled. The Release notes are the **release PR's own body**, with the generated commit list appended under it; if that body is missing or too short to be a summary, the notes fall back to the generated list alone. So the summary you write in the release PR is what people read on the Release page — write it for someone deciding whether to upgrade, not for someone reading commits.
 - The cloud-image build is invoked directly as a reusable workflow (`workflow_call`), not via `ci-cloud-image.yml`'s `push: tags` trigger — a tag pushed with the default `GITHUB_TOKEN` (as `release.yml` does) does not fire another workflow's tag-push trigger, so relying on that event would silently tag a release and never build or publish it. `ci-cloud-image.yml`'s `push: tags: v*` trigger still exists as a manual escape hatch for a human pushing a tag by hand; see that workflow's header comment for the full reasoning.
-- A tagged release always ships an image stamped with that same version, runs the full seeded-boot gate, and attaches the image to the GitHub Release as `malmo-vX.Y.Z-amd64.raw.xz` + a `.sha256` sidecar. That Release asset is the only published artifact — the provider-snapshot upload was removed in #352, so a release no longer pushes to any hosting provider. `workflow_dispatch` on `ci-cloud-image.yml` remains available for manual build-only or build+publish runs outside the release flow (see the workflow's header comment).
+- A tagged release always ships an image stamped with that same version, runs the full seeded-boot gate, and attaches the image to the GitHub Release as `moose-vX.Y.Z-amd64.raw.xz` + a `.sha256` sidecar. That Release asset is the only published artifact — the provider-snapshot upload was removed in #352, so a release no longer pushes to any hosting provider. `workflow_dispatch` on `ci-cloud-image.yml` remains available for manual build-only or build+publish runs outside the release flow (see the workflow's header comment).
 
 Contributors never push directly to `main`; the tag and the GitHub Release are created automatically by `release.yml`, not by hand.
 

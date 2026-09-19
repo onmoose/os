@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 type Client struct {
@@ -79,7 +79,7 @@ func (c *Client) SetTimezone(ctx context.Context, zone string) error {
 }
 
 // SetSSHAccess applies one account's full desired SSH state on the host: the
-// authorized keys it may use, whether the malmo password is required as a second
+// authorized keys it may use, whether the moose password is required as a second
 // method, and whether the account is enabled at all. host-agent re-renders the
 // sshd drop-in from the enabled set and starts or stops the daemon to match, so
 // this is also what opens and closes :22 (BRAIN_HOST_PROTOCOL.md # SSH access).
@@ -151,8 +151,8 @@ func (c *Client) ResolveHome(ctx context.Context, username string) (protocol.Res
 	return out, nil
 }
 
-// WellKnownIdentity returns the fixed service-account UIDs/GIDs for malmo-app
-// and malmo-shared from the host. The brain calls this during install to build
+// WellKnownIdentity returns the fixed service-account UIDs/GIDs for moose-app
+// and moose-shared from the host. The brain calls this during install to build
 // user: and group_add directives for household-scope app instances.
 //
 // All non-200 responses are generic host errors (there is no unknown-user case

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/malmoos/malmo/internal/notify"
+	"github.com/onmoose/os/internal/notify"
 )
 
 const (

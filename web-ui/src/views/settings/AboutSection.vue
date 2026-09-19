@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Settings → About — what this box is, and what it is running. Reads
+// Settings → About: what this box is, and what it is running. Reads
 // GET /api/v1/system/version (#375): the brain's version + commit, the
 // host-agent version, and the UI image the box was launched with.
 //
@@ -10,7 +10,7 @@
 // calm.
 //
 // The endpoint answers 200 with parts missing when a source can't be read (a
-// version report missing one of three parts is still useful — internal/api/
+// version report missing one of three parts is still useful; see internal/api/
 // system.go). So each part degrades to "Unknown" on its own; one unreadable
 // source never blanks the card.
 import { computed } from "vue";
@@ -25,7 +25,7 @@ const version = useQuery({
 const v = computed<SystemVersion | undefined>(() => version.data.value);
 
 // The brain's own version is the box's version (one version for the whole
-// monorepo — BUILD.md # Versioning).
+// monorepo, see BUILD.md # Versioning).
 const boxVersion = computed(() => v.value?.version || "");
 
 // A dev build stamps "dev" rather than a SemVer; show it as-is, it is the truth.
@@ -44,13 +44,13 @@ const uiImage = computed(() => v.value?.ui_image ?? "");
     <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">About</h2>
     <div class="space-y-2 rounded-xl border border-border bg-card px-4 py-4">
       <div class="flex items-baseline gap-2">
-        <span class="text-base font-medium">malmo</span>
+        <span class="text-base font-medium">moose</span>
         <span v-if="version.isLoading.value" class="text-sm text-muted-foreground">Checking…</span>
         <span v-else-if="boxVersion" class="text-sm text-muted-foreground">{{ boxVersion }}</span>
         <span v-else class="text-sm text-muted-foreground">Version unknown</span>
       </div>
       <p class="text-sm text-muted-foreground">
-        A home-server OS for people who want to own their data — not become sysadmins.
+        A home-server OS for people who want to own their data without becoming sysadmins.
       </p>
 
       <p v-if="version.isError.value" class="text-sm text-destructive">
@@ -78,7 +78,7 @@ const uiImage = computed(() => v.value?.ui_image ?? "");
       </details>
 
       <a
-        href="https://github.com/malmoos/malmo"
+        href="https://github.com/onmoose/os"
         target="_blank"
         rel="noopener noreferrer"
         class="inline-block text-sm text-accent hover:underline"

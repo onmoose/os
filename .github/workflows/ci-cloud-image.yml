@@ -70,7 +70,7 @@
 # baked old" skew cannot recur.
 #
 # Manual runs: trigger from the Actions tab or `gh workflow run "CI / Cloud
-# image"`. A publish run attaches `malmo-vX.Y.Z-amd64.raw.xz` + a `.sha256`
+# image"`. A publish run attaches `moose-vX.Y.Z-amd64.raw.xz` + a `.sha256`
 # to the tagged Release; a downstream consumer fetches and deploys it.
 #
 # No provider secret: publishing means attaching the built image to the
@@ -172,7 +172,7 @@ jobs:
     # floating ubuntu-latest.
     runs-on: ubuntu-24.04
     # Two mkosi builds (production image + QEMU test image), the QEMU boots (six
-    # on a push/dispatch, just `update` on a PR — see MALMO_CLOUD_BOOTS below), and
+    # on a push/dispatch, just `update` on a PR — see MOOSE_CLOUD_BOOTS below), and
     # the compress-and-attach publish run ~10 min in practice; the 120 cap is a
     # generous ceiling so a one-off slow runner is never killed mid-build.
     timeout-minutes: 120
@@ -333,7 +333,7 @@ jobs:
       #
       #   - ssh (#467): the ONLY proof that :22 is closed on a box nobody uses SSH on.
       #     On hosted the daemon's run state is the whole of the port control — no
-      #     malmo firewall, and the provider attaches none — so an image that boots
+      #     moose firewall, and the provider attaches none — so an image that boots
       #     with sshd running has no control over the port at all, and one that
       #     cannot stop it again can never close it. It also proves the mandatory
       #     factor on a real sshd: a key gets in, a password alone does not.
@@ -341,7 +341,7 @@ jobs:
       # The frozen-identity boot stays out: it is orthogonal (it checks a re-delivered
       # seed is ignored on a later boot) and has shown a flaky false "re-ingested"
       # verdict whose root cause is still open, so it is left to the full local run
-      # (MALMO_CLOUD_BOOTS default = all) rather than blocking publish.
+      # (MOOSE_CLOUD_BOOTS default = all) rather than blocking publish.
       #
       # ON A PULL REQUEST the list narrows to `update` alone (#389). That boot is
       # standalone — its own fresh overlay and its own box-id — so it needs none
@@ -358,21 +358,21 @@ jobs:
       # honours ${GO:-}, and -E preserves it).
       - name: Boot test (${{ github.event_name == 'pull_request' && 'control-plane update only' || 'seed schema + BIOS/UEFI + access modes + control-plane update + SSH' }})
         env:
-          MALMO_CLOUD_BOOTS: ${{ github.event_name == 'pull_request' && 'update' || 'unseeded seeded bios access update ssh' }}
+          MOOSE_CLOUD_BOOTS: ${{ github.event_name == 'pull_request' && 'update' || 'unseeded seeded bios access update ssh' }}
           GO: ${{ steps.go.outputs.go-bin }}
         run: make test-cloud-qemu
 
       # ---- attach the image to the tagged GitHub Release (only when requested) ----
 
       # Every release should carry its own built artifact, not just source —
-      # a downstream deployer fetches `malmo-vX.Y.Z-amd64.raw.xz` straight off
+      # a downstream deployer fetches `moose-vX.Y.Z-amd64.raw.xz` straight off
       # the Release page and verifies it against the accompanying `.sha256`,
       # with no dependency on any one hosting provider. This is the ONLY thing
       # a publish emits: the `.raw` built in step 1 lives under `.dev/cloud/`;
       # we xz it here and attach it plus a checksum to the Release.
       #
       # Naming follows BUILD.md # 6's existing per-release artifact scheme
-      # (`malmo-vX.Y.Z-amd64.<ext>`, one `vX.Y.Z` from the repo `VERSION`
+      # (`moose-vX.Y.Z-amd64.<ext>`, one `vX.Y.Z` from the repo `VERSION`
       # file) — `.raw.xz` names the actual shipped format (raw disk image,
       # xz-compressed) rather than the `.qcow2` that section's cloud-image
       # bullet names, since this lane's build produces `.raw` (mkosi
@@ -399,9 +399,9 @@ jobs:
           xz -T0 -c -- "$raw" > "$raw_xz"
           echo "compressed: $(du -h "$raw_xz" | cut -f1)"
 
-          malmo_version="$(cat VERSION)"
-          tag="v${malmo_version}"
-          asset="malmo-${tag}-amd64.raw.xz"
+          moose_version="$(cat VERSION)"
+          tag="v${moose_version}"
+          asset="moose-${tag}-amd64.raw.xz"
           checksum="${asset}.sha256"
 
           cp -- "$raw_xz" "$asset"
@@ -447,9 +447,9 @@ jobs:
       # ---- publish the control-plane images to ghcr (only when requested) ----
 
       # Stream B — the containers — needs somewhere to pull from (UPDATES.md
-      # # 8). Until this step existed, malmo-brain and malmo-ui lived ONLY as
+      # # 8). Until this step existed, moose-brain and moose-ui lived ONLY as
       # `docker save` tarballs baked inside the disk image, so a running box had
-      # no way to obtain a newer control plane: the only path to new malmo was
+      # no way to obtain a newer control plane: the only path to new moose was
       # reprovisioning from a fresh image.
       #
       # Why this lane and not a separate, faster workflow: the images pushed
@@ -488,8 +488,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          malmo_version="$(cat VERSION)"
-          tag="v${malmo_version}"
+          moose_version="$(cat VERSION)"
+          tag="v${moose_version}"
           registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
 
           # Same guard as the Release-asset step below, and duplicated rather
@@ -511,7 +511,7 @@ jobs:
           # by digest, not by either tag; the tags are for humans and for the
           # offline `docker load` path.
           echo "### Control-plane images" >> "$GITHUB_STEP_SUMMARY"
-          for spec in "malmo-brain:dev=brain" "malmo-ui:dev=ui"; do
+          for spec in "moose-brain:dev=brain" "moose-ui:dev=ui"; do
             local_img="${spec%%=*}"
             remote="${registry}/${spec##*=}"
 

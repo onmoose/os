@@ -14,10 +14,10 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // publicPaths lists routes the auth middleware lets through without a
@@ -33,7 +33,7 @@ var publicPaths = map[string]bool{
 	// The portal-to-box SSO landing: the assertion in the query is the
 	// credential, so the box has no session to check here — it mints one
 	// (sso.go). Hosted-only at the handler; public to the middleware.
-	"/_malmo/sso": true,
+	"/_moose/sso": true,
 	// The hosted per-app forward-auth verify endpoint (#305): the box Caddy calls
 	// it with the app request's forward-auth cookie, not a dashboard session, so
 	// the admin-session middleware must let it through — it does its own
@@ -241,7 +241,7 @@ type loginPickerUser struct {
 // model (AUTH.md # Login screen UX).
 //
 // Hosted is the opposite case and is refused. A hosted box answers on the
-// public internet at "<box-id>.malmo.network" (ENVIRONMENT.md
+// public internet at "<box-id>.onmoose.io" (ENVIRONMENT.md
 // # Networking & discovery), so the same payload is a tenant roster any scanner
 // can read — and the box-id labels it enumerates are already discoverable from
 // certificate transparency. Nothing on hosted needs it: an unauthenticated

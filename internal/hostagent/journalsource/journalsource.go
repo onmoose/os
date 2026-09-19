@@ -8,7 +8,7 @@
 // It relies on Docker's journald log driver, which tags every container line
 // with CONTAINER_NAME and encodes the std stream in PRIORITY (stdout = 6,
 // stderr = 3). The brain passes the container name it computes from the
-// compose project + main service (malmo-<id>-<service>) — the override pins
+// compose project + main service (moose-<id>-<service>) — the override pins
 // the running container to that exact name, so the exact match is reliable.
 package journalsource
 
@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // Reader implements hostagent.LogSource over real journalctl.

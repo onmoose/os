@@ -28,7 +28,7 @@ set -euo pipefail
 # Build identity (BUILD.md # Versioning: "every build stamps two fields") — the
 # same -ldflags the Makefile's LDFLAGS apply, recomputed here because they cannot
 # be inherited: bootstrap.sh is invoked as `sudo -E ./dev/cloud/bootstrap.sh`, so
-# make's MALMO_VERSION/MALMO_COMMIT are plain make variables that never reach this
+# make's MOOSE_VERSION/MOOSE_COMMIT are plain make variables that never reach this
 # script. An unstamped build is silent — it ships internal/version's "dev" default,
 # the brain's minimumAgentVersion check can't parse it as semver, an unparseable
 # core sorts before every valid version, and a correctly-built box raises
@@ -47,7 +47,7 @@ stage_version_ldflags() {
     else
         c="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     fi
-    printf -- '-X github.com/malmoos/malmo/internal/version.Version=%s -X github.com/malmoos/malmo/internal/version.Commit=%s' "$v" "$c"
+    printf -- '-X github.com/onmoose/os/internal/version.Version=%s -X github.com/onmoose/os/internal/version.Commit=%s' "$v" "$c"
 }
 
 # Build a Go binary, as the invoking user when running under sudo so the caller
@@ -70,97 +70,97 @@ stage_control_plane() {
     stage_build_go "$hostagent_bin" "${REPO_ROOT}/cmd/host-agent-real/" -tags hosted
 
     # --- control-plane image bundle. Rebuild only when absent (or forced via
-    # MALMO_REBUILD_CP=1): `make control-plane-images` re-runs the brain (Go) + UI
+    # MOOSE_REBUILD_CP=1): `make control-plane-images` re-runs the brain (Go) + UI
     # (Vue) docker builds, regenerating ~13 GB of BuildKit cache each time. The
     # images don't change while iterating on the boot wiring, so reuse the tarballs.
-    if [ "${MALMO_REBUILD_CP:-0}" = "1" ] || ! ls "$CP_BUNDLE"/malmo-brain.tar "$CP_BUNDLE"/malmo-ui.tar \
+    if [ "${MOOSE_REBUILD_CP:-0}" = "1" ] || ! ls "$CP_BUNDLE"/moose-brain.tar "$CP_BUNDLE"/moose-ui.tar \
             "$CP_BUNDLE"/caddy.tar "$CP_BUNDLE"/docker-socket-proxy.tar >/dev/null 2>&1; then
         echo "building + saving control-plane image bundle (docker)..."
         make -C "$REPO_ROOT" control-plane-images
     else
-        echo "reusing existing control-plane image bundle (set MALMO_REBUILD_CP=1 to force)"
+        echo "reusing existing control-plane image bundle (set MOOSE_REBUILD_CP=1 to force)"
     fi
 
     # --- stage mkosi.extra.wiring/ (generated; gitignored).
     rm -rf "$WIRING"
     mkdir -p "$WIRING/etc/systemd/system/host-agent.service.d" \
-             "$WIRING/usr/lib/malmo" \
+             "$WIRING/usr/lib/moose" \
              "$WIRING/usr/local/bin" \
              "$WIRING/etc/pam.d" \
-             "$WIRING/var/lib/malmo/control-plane-images" \
-             "$WIRING/var/lib/malmo/control-plane"
+             "$WIRING/var/lib/moose/control-plane-images" \
+             "$WIRING/var/lib/moose/control-plane"
 
     # Slim host-agent at the production path host-agent.service ExecStarts.
-    cp "$hostagent_bin" "$WIRING/usr/lib/malmo/host-agent-real"
-    chmod 0755 "$WIRING/usr/lib/malmo/host-agent-real"
+    cp "$hostagent_bin" "$WIRING/usr/lib/moose/host-agent-real"
+    chmod 0755 "$WIRING/usr/lib/moose/host-agent-real"
     cp "${REPO_ROOT}/dist/systemd/host-agent.service" "$WIRING/etc/systemd/system/"
 
     # host-agent bootstrap drop-in: point the brain bootstrap at the baked
     # dev-tagged images + tarballs + the staged control-plane dir, and order after
     # the first-boot image load so every image is present when the bootstrap runs.
-    # The brain reads /etc/malmo/profile (mounted from the host by host-agent —
+    # The brain reads /etc/moose/profile (mounted from the host by host-agent —
     # brainlaunch ProfileMarkerPath) to resolve profile=hosted; no env needed.
     cat > "$WIRING/etc/systemd/system/host-agent.service.d/10-cloud-brain.conf" <<'EOF'
 [Unit]
-After=malmo-load-images.service
+After=moose-load-images.service
 
 [Service]
-Environment=MALMO_BRAIN_IMAGE=malmo-brain:dev
-Environment=MALMO_BRAIN_IMAGE_TAR=/var/lib/malmo/control-plane-images/malmo-brain.tar
-Environment=MALMO_PROXY_IMAGE=tecnativa/docker-socket-proxy:v0.4.2
-Environment=MALMO_PROXY_IMAGE_TAR=/var/lib/malmo/control-plane-images/docker-socket-proxy.tar
-Environment=MALMO_CONTROL_PLANE_DIR=/var/lib/malmo/control-plane
-Environment=MALMO_DASHBOARD_UI_UPSTREAM=malmo-ui:80
-Environment=MALMO_CADDY_IMAGE=malmo-caddy-acmedns:dev
+Environment=MOOSE_BRAIN_IMAGE=moose-brain:dev
+Environment=MOOSE_BRAIN_IMAGE_TAR=/var/lib/moose/control-plane-images/moose-brain.tar
+Environment=MOOSE_PROXY_IMAGE=tecnativa/docker-socket-proxy:v0.4.2
+Environment=MOOSE_PROXY_IMAGE_TAR=/var/lib/moose/control-plane-images/docker-socket-proxy.tar
+Environment=MOOSE_CONTROL_PLANE_DIR=/var/lib/moose/control-plane
+Environment=MOOSE_DASHBOARD_UI_UPSTREAM=moose-ui:80
+Environment=MOOSE_CADDY_IMAGE=moose-caddy-acmedns:dev
 EOF
 
     # PAM stack for host-agent-real's verify-password (kept in hosted). Without it
-    # pam_start("malmo") falls back to /etc/pam.d/other (deny). The malmo group is
+    # pam_start("moose") falls back to /etc/pam.d/other (deny). The moose group is
     # provisioned by the postinst.
-    cp "${REPO_ROOT}/dev/pam/malmo" "$WIRING/etc/pam.d/malmo"
+    cp "${REPO_ROOT}/dev/pam/moose" "$WIRING/etc/pam.d/moose"
 
     # Control-plane image bundle + first-boot loader (reused verbatim from the
     # medium lane — same offline-first mechanism, TESTING.md # Full-stack control-
     # plane integration). A tenant box is air-gapped at boot, so every image is a
     # local tarball; the VM never pulls.
-    cp "$CP_BUNDLE"/*.tar "$WIRING/var/lib/malmo/control-plane-images/"
+    cp "$CP_BUNDLE"/*.tar "$WIRING/var/lib/moose/control-plane-images/"
     # Hosted-only Caddy swap: the wildcard cert needs the caddy-dns/acmedns module
     # (ACME DNS-01 — os #207/C3b), which stock caddy:2-alpine lacks. Build the
     # xcaddy recipe and docker-save it OVER the *staged* caddy.tar — not the shared
     # $CP_BUNDLE copy, which the appliance/medium lane keeps on stock caddy (it does
-    # no ACME). The drop-in above sets MALMO_CADDY_IMAGE so the brain's control-plane
+    # no ACME). The drop-in above sets MOOSE_CADDY_IMAGE so the brain's control-plane
     # compose runs this image; load-control-plane-images.sh loads it from the tar
     # regardless of filename (build-host network only; the VM never pulls).
-    local caddy_acmedns_image="malmo-caddy-acmedns:dev"
+    local caddy_acmedns_image="moose-caddy-acmedns:dev"
     echo "building hosted Caddy with the caddy-dns/acmedns module (xcaddy)..."
     # Through make, not `docker build`: the target feeds the Dockerfile its two
     # digest-pinned base images from dev/control-plane/images.lock (#432).
     make -C "$REPO_ROOT" caddy-acmedns-image CADDY_ACMEDNS_IMAGE="$caddy_acmedns_image"
-    docker save "$caddy_acmedns_image" -o "$WIRING/var/lib/malmo/control-plane-images/caddy.tar"
-    cp "${REPO_ROOT}/dev/test-qemu/load-control-plane-images.sh" "$WIRING/usr/lib/malmo/"
-    chmod 0755 "$WIRING/usr/lib/malmo/load-control-plane-images.sh"
-    cp "${REPO_ROOT}/dev/test-qemu/malmo-load-images.service" "$WIRING/etc/systemd/system/"
+    docker save "$caddy_acmedns_image" -o "$WIRING/var/lib/moose/control-plane-images/caddy.tar"
+    cp "${REPO_ROOT}/dev/test-qemu/load-control-plane-images.sh" "$WIRING/usr/lib/moose/"
+    chmod 0755 "$WIRING/usr/lib/moose/load-control-plane-images.sh"
+    cp "${REPO_ROOT}/dev/test-qemu/moose-load-images.service" "$WIRING/etc/systemd/system/"
 
     # Control-plane compose + caddy.json staged at the SAME host path the brain
     # container sees (same-path bind constraint — socket-proxy-compose-validation.md).
-    cp "${REPO_ROOT}/dev/control-plane/compose.yml" "$WIRING/var/lib/malmo/control-plane/"
-    cp "${REPO_ROOT}/dev/control-plane/caddy.json"   "$WIRING/var/lib/malmo/control-plane/"
+    cp "${REPO_ROOT}/dev/control-plane/compose.yml" "$WIRING/var/lib/moose/control-plane/"
+    cp "${REPO_ROOT}/dev/control-plane/caddy.json"   "$WIRING/var/lib/moose/control-plane/"
 
     # No catalog is baked into the image (cloud #62). The brain syncs the store from
-    # the control plane's public-read catalog API (GET /catalog, MALMO_CATALOG_URL
+    # the control plane's public-read catalog API (GET /catalog, MOOSE_CATALOG_URL
     # default the apex) and holds it in memory; only proxied icons and screenshots are
-    # cached, under /var/lib/malmo/catalog-cache. A box that cannot reach the control
+    # cached, under /var/lib/moose/catalog-cache. A box that cannot reach the control
     # plane shows an empty store (the documented, accepted behavior — installing an app
     # needs internet regardless). This lane installs no app, so an empty store is fine
     # here.
 
     # First-boot provisioning-seed materializer + its oneshot (C3a cloud-lane, #220).
-    # Lands the delivered seed at /var/lib/malmo/seed.json before host-agent launches
+    # Lands the delivered seed at /var/lib/moose/seed.json before host-agent launches
     # the brain; the postinst enables the unit. The materializer reads the SMBIOS
     # systemd-credential channel (the test lane + clouds that deliver via fw_cfg)
     # first, falling back to the real-cloud metadata/user-data endpoint when absent
     # (Hetzner — #246).
-    cp "${REPO_ROOT}/dev/cloud/malmo-seed-materialize.sh" "$WIRING/usr/local/bin/malmo-seed-materialize.sh"
-    chmod 0755 "$WIRING/usr/local/bin/malmo-seed-materialize.sh"
-    cp "${REPO_ROOT}/dev/cloud/malmo-seed.service" "$WIRING/etc/systemd/system/"
+    cp "${REPO_ROOT}/dev/cloud/moose-seed-materialize.sh" "$WIRING/usr/local/bin/moose-seed-materialize.sh"
+    chmod 0755 "$WIRING/usr/local/bin/moose-seed-materialize.sh"
+    cp "${REPO_ROOT}/dev/cloud/moose-seed.service" "$WIRING/etc/systemd/system/"
 }

@@ -9,16 +9,16 @@ import (
 func newCfg(t *testing.T) Config {
 	t.Helper()
 	root := t.TempDir()
-	for _, d := range []string{"etc/malmo", "srv/malmo", "var/lib/malmo"} {
+	for _, d := range []string{"etc/moose", "srv/moose", "var/lib/moose"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return Config{
 		Root:                root,
-		MarkerPath:          "/etc/malmo/data-drive.enrolled",
-		DataDriveCanaryPath: "/srv/malmo/.canary",
-		BindMountCanaryPath: "/var/lib/malmo/.canary",
+		MarkerPath:          "/etc/moose/data-drive.enrolled",
+		DataDriveCanaryPath: "/srv/moose/.canary",
+		BindMountCanaryPath: "/var/lib/moose/.canary",
 	}
 }
 
@@ -40,9 +40,9 @@ func TestCheck_NoMarker_LevelZeroHealthy(t *testing.T) {
 
 func TestCheck_MarkerAndCanariesMatch_Healthy(t *testing.T) {
 	cfg := newCfg(t)
-	writeFile(t, cfg, "etc/malmo/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
-	writeFile(t, cfg, "srv/malmo/.canary", "abc-123\n")
-	writeFile(t, cfg, "var/lib/malmo/.canary", "abc-123\n")
+	writeFile(t, cfg, "etc/moose/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
+	writeFile(t, cfg, "srv/moose/.canary", "abc-123\n")
+	writeFile(t, cfg, "var/lib/moose/.canary", "abc-123\n")
 
 	findings := Check(cfg)
 	if len(findings) != 0 {
@@ -52,7 +52,7 @@ func TestCheck_MarkerAndCanariesMatch_Healthy(t *testing.T) {
 
 func TestCheck_MarkerPresent_DataCanaryAbsent_DataDriveMissing(t *testing.T) {
 	cfg := newCfg(t)
-	writeFile(t, cfg, "etc/malmo/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
+	writeFile(t, cfg, "etc/moose/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
 
 	findings := Check(cfg)
 	if len(findings) != 1 || findings[0].ID != "data-drive-missing" {
@@ -62,8 +62,8 @@ func TestCheck_MarkerPresent_DataCanaryAbsent_DataDriveMissing(t *testing.T) {
 
 func TestCheck_CanaryUUIDDoesNotMatchMarker_DataDriveWrong(t *testing.T) {
 	cfg := newCfg(t)
-	writeFile(t, cfg, "etc/malmo/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
-	writeFile(t, cfg, "srv/malmo/.canary", "xyz-999\n")
+	writeFile(t, cfg, "etc/moose/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
+	writeFile(t, cfg, "srv/moose/.canary", "xyz-999\n")
 
 	findings := Check(cfg)
 	if len(findings) != 1 || findings[0].ID != "data-drive-wrong" {
@@ -73,8 +73,8 @@ func TestCheck_CanaryUUIDDoesNotMatchMarker_DataDriveWrong(t *testing.T) {
 
 func TestCheck_BindCanaryMissing_CanaryMismatch(t *testing.T) {
 	cfg := newCfg(t)
-	writeFile(t, cfg, "etc/malmo/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
-	writeFile(t, cfg, "srv/malmo/.canary", "abc-123\n")
+	writeFile(t, cfg, "etc/moose/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
+	writeFile(t, cfg, "srv/moose/.canary", "abc-123\n")
 	// no bind canary written
 
 	findings := Check(cfg)
@@ -85,9 +85,9 @@ func TestCheck_BindCanaryMissing_CanaryMismatch(t *testing.T) {
 
 func TestCheck_BindCanaryDifferentFromDataCanary_CanaryMismatch(t *testing.T) {
 	cfg := newCfg(t)
-	writeFile(t, cfg, "etc/malmo/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
-	writeFile(t, cfg, "srv/malmo/.canary", "abc-123\n")
-	writeFile(t, cfg, "var/lib/malmo/.canary", "stale-uuid\n") // bind landed on wrong fs
+	writeFile(t, cfg, "etc/moose/data-drive.enrolled", `{"uuid":"abc-123","enrolled_at":"2026-04-12T08:00:00Z"}`)
+	writeFile(t, cfg, "srv/moose/.canary", "abc-123\n")
+	writeFile(t, cfg, "var/lib/moose/.canary", "stale-uuid\n") // bind landed on wrong fs
 
 	findings := Check(cfg)
 	if len(findings) != 1 || findings[0].ID != "canary-mismatch" {
@@ -97,7 +97,7 @@ func TestCheck_BindCanaryDifferentFromDataCanary_CanaryMismatch(t *testing.T) {
 
 func TestCheck_MalformedMarker_HealthReportMalformed(t *testing.T) {
 	cfg := newCfg(t)
-	writeFile(t, cfg, "etc/malmo/data-drive.enrolled", "{not json")
+	writeFile(t, cfg, "etc/moose/data-drive.enrolled", "{not json")
 
 	findings := Check(cfg)
 	if len(findings) != 1 || findings[0].ID != "health-report-malformed" {
@@ -107,7 +107,7 @@ func TestCheck_MalformedMarker_HealthReportMalformed(t *testing.T) {
 
 func TestCheck_EmptyUUIDInMarker_HealthReportMalformed(t *testing.T) {
 	cfg := newCfg(t)
-	writeFile(t, cfg, "etc/malmo/data-drive.enrolled", `{"enrolled_at":"2026-04-12T08:00:00Z"}`)
+	writeFile(t, cfg, "etc/moose/data-drive.enrolled", `{"enrolled_at":"2026-04-12T08:00:00Z"}`)
 
 	findings := Check(cfg)
 	if len(findings) != 1 || findings[0].ID != "health-report-malformed" {

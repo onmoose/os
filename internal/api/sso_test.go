@@ -10,15 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/assertion"
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/assertion"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // Portal-to-box SSO handshake, box side (issue #275). These drive the
-// /_malmo/sso handler directly (httptest recorder) rather than over the harness's
+// /_moose/sso handler directly (httptest recorder) rather than over the harness's
 // redirect-following HTTP client, since the handler 303s to an absolute https
 // dashboard URL.
 
@@ -77,7 +77,7 @@ func mint(t *testing.T, priv ed25519.PrivateKey, c assertion.Claims) string {
 // sso drives the SSO landing handler with the given token and returns the
 // recorder. The handler never follows the redirect itself.
 func (h *harness) sso(token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/_malmo/sso?token="+token, nil)
+	req := httptest.NewRequest(http.MethodGet, "/_moose/sso?token="+token, nil)
 	rec := httptest.NewRecorder()
 	h.apiSrv.ssoLanding(rec, req)
 	return rec

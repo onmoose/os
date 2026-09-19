@@ -1,14 +1,14 @@
 // Package catalog is the box's read model of the app store. It exposes a fixed
 // six-method surface — List, Entry, Detail, IconPath, ScreenshotPath, Load — that
 // internal/api (the box UI's catalog routes) and internal/lifecycle (install) both
-// consume, and hides behind it whether the catalog is synced from the control
-// plane or read from a local directory tree.
+// consume, and hides behind it whether the catalog is synced from the catalog
+// service or read from a local directory tree.
 //
 // In production every box — appliance and hosted alike — uses the remote client
-// (NewRemote): a thin HTTP consumer of the control plane's catalog API. Browse
-// data (GET /catalog) is held in memory and never written to disk; an app's
-// install payload is fetched per app, at install time (remote.go; cloud
-// specs/CATALOG.md # Consume). No catalog is baked into the image (cloud #62). The original disk reader (New) is
+// (NewRemote): a thin HTTP consumer of the catalog service's API. Browse data
+// (GET /catalog) is held in memory and never written to disk; an app's install
+// payload is fetched per app, at install time (remote.go). No catalog is baked
+// into the image (#62). The original disk reader (New) is
 // retained only as the constructor internal/api and internal/lifecycle tests build
 // a controlled catalog with; it implements the same private source interface, so
 // the rest of the brain holds a *Catalog and is agnostic to which is wired.
@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/manifest"
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // ErrNotFound is returned by the lookup methods when no app exists for the id (on
@@ -69,12 +69,13 @@ type source interface {
 }
 
 // Catalog is the brain-facing catalog handle. It is a thin facade over a source;
-// New builds the disk-backed one, NewRemote the control-plane client.
+// New builds the disk-backed one, NewRemote the catalog-service client.
 type Catalog struct{ src source }
 
 // New builds a disk-backed catalog rooted at a directory tree of
 // <root>/<manifest_id>/{manifest.yml, <compose_file>}. Production no longer uses
-// it (every box is a control-plane thin client — NewRemote); it is retained as the
+// it (every box is a thin client of the catalog service, NewRemote); it is
+// retained as the
 // constructor internal/api and internal/lifecycle tests build a controlled catalog
 // with, off a temp directory.
 func New(root string) *Catalog { return &Catalog{src: newDiskSource(root)} }
@@ -91,18 +92,18 @@ func (c *Catalog) Load(ctx context.Context, id string) (*manifest.Manifest, []by
 }
 
 // Home / Category / Search are the segmented store views the box UI browses
-// through, mirroring the control plane's public catalog API (cloud
-// specs/CATALOG.md # Serve) so the box never pulls the whole catalog up front. They
+// through, mirroring the catalog service's public API so the box never pulls the
+// whole catalog up front. They
 // are derived from the same source the flat List reads — the box already holds the
 // whole snapshot in memory, so these stay same-origin and need no round trip,
-// rather than re-proxying each hit to the control plane. They are computed on the facade (not per-source) because every input but
+// rather than re-proxying each hit to the catalog service. They are computed on the facade (not per-source) because every input but
 // featured is a projection of List; only featured differs by backing.
 
 // Home is the store landing payload: the categories present on this box's
 // surface, the authored recommended-apps page (a spotlight app plus category
 // groups), and the flat curated top apps for a consumer that just wants the
 // top-apps row. No per-app grid — the UI drills into a category or search for
-// that. Mirror of cloud catalog.Home.
+// that. Mirror of the catalog service's Home.
 type Home struct {
 	// Categories are the categories present on this surface, each with its
 	// authored display label, in the vocabulary's authored order. Carrying the
@@ -119,7 +120,7 @@ type Home struct {
 
 // HomeGroupView is one rendered category row of the landing page. Label is the
 // row heading — the authored one, so the heading and the pill for the same id
-// always read identically. Mirror of the control plane's own HomeGroupView shape.
+// always read identically. Mirror of the catalog service's own HomeGroupView shape.
 type HomeGroupView struct {
 	Category string  `json:"category"`
 	Label    string  `json:"label"`
@@ -129,7 +130,7 @@ type HomeGroupView struct {
 // Category is one entry of the authored category vocabulary: the id apps tag
 // themselves with, and the display label the UI renders. Authored in the store
 // curation source and carried on the snapshot, never derived here. Mirror of the
-// control plane's own Category shape.
+// catalog service's own Category shape.
 type Category struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
@@ -138,13 +139,12 @@ type Category struct {
 // CategoryPage is one category's apps, its authored display label, plus the
 // curated top apps. Named CategoryPage, not Category, because Category is the
 // authored vocabulary entry above — this is the rendered page, that is the
-// datum. Featured travels on the payload for parity with the control plane's
+// datum. Featured travels on the payload for parity with the catalog service's
 // own Category shape (which this mirrors), but the box UI's category view does
 // not currently render it — only the landing does, and only as its
 // no-authored-home fallback (docs/specs/APP_STORE.md # Landing page); a
 // category view is a filtered view, and the curated row is a landing-only
-// concept, matching how the control plane's own store surface renders a
-// category.
+// concept, matching how the website's store pages render a category.
 type CategoryPage struct {
 	Category string  `json:"category"`
 	Label    string  `json:"label"`
@@ -225,8 +225,8 @@ func labelFor(vocab []Category, id string) string {
 }
 
 // readableID makes a category id presentable ("developer-tools" -> "Developer
-// tools"). Only the label fallbacks use it. The control plane holds the same
-// fallback so the two surfaces agree even when neither has a label.
+// tools"). Only the label fallbacks use it. The other store surfaces hold the
+// same fallback so they agree even when neither has a label.
 func readableID(id string) string {
 	s := strings.ReplaceAll(id, "-", " ")
 	if s == "" {
@@ -371,7 +371,7 @@ type Detail struct {
 // iconURL / screenshotURL are the brain-served asset routes the store loads
 // directly in <img> tags (APP_STORE.md # Catalog schema). Both catalog sources
 // project these same brain-origin URLs (the remote source proxies the underlying
-// control-plane asset behind them), so the UI's hard-coded route shapes never
+// published asset behind them), so the UI's hard-coded route shapes never
 // change. Kept here so the URL shape lives next to the types that carry it.
 func iconURL(id string) string { return "/api/v1/catalog/" + id + "/icon" }
 func screenshotURL(id string, i int) string {

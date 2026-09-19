@@ -5,7 +5,7 @@ package main
 // inner loop without needing journald or Docker's journald log driver.
 //
 // Docker compose v2 appends a replica number to container names (e.g.
-// malmo-<id>-<service>-1), but the brain resolves the unsuffixed stem from the
+// moose-<id>-<service>-1), but the brain resolves the unsuffixed stem from the
 // manifest. We probe the replica form first with `docker inspect` and fall back
 // to the bare stem so both standalone and compose containers work.
 
@@ -18,7 +18,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 type dockerLogSource struct{}

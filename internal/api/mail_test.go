@@ -22,10 +22,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/mailpreset"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/mailpreset"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // providerBody returns a valid create/update request body.
@@ -394,7 +394,7 @@ func TestTestMailProviderDeliversThroughSink(t *testing.T) {
 
 	resp := h.do("POST", "/api/v1/mail-providers", map[string]any{
 		"label": "sink", "host": host, "port": port,
-		"from_address": "malmo@example.com", "encryption": "none",
+		"from_address": "moose@example.com", "encryption": "none",
 	})
 	p := decodeJSON[MailProviderDTO](t, resp)
 
@@ -409,13 +409,13 @@ func TestTestMailProviderDeliversThroughSink(t *testing.T) {
 	sink.mu.Lock()
 	from, rcpt, data := sink.from, sink.rcpt, sink.data
 	sink.mu.Unlock()
-	if !strings.Contains(from, "malmo@example.com") {
-		t.Errorf("sink MAIL FROM = %q; want malmo@example.com", from)
+	if !strings.Contains(from, "moose@example.com") {
+		t.Errorf("sink MAIL FROM = %q; want moose@example.com", from)
 	}
 	if !strings.Contains(rcpt, "admin@example.com") {
 		t.Errorf("sink RCPT TO = %q; want admin@example.com", rcpt)
 	}
-	if !strings.Contains(data, "malmo test email") {
+	if !strings.Contains(data, "moose test email") {
 		t.Errorf("sink DATA missing subject: %q", data)
 	}
 	if !h.hasAuditEvent(audit.ActionMailProviderTest, p.ID, true) {
@@ -438,7 +438,7 @@ func TestTestMailProviderUnreachable502(t *testing.T) {
 
 	resp := h.do("POST", "/api/v1/mail-providers", map[string]any{
 		"label": "dead", "host": host, "port": port,
-		"from_address": "malmo@example.com", "encryption": "none",
+		"from_address": "moose@example.com", "encryption": "none",
 	})
 	p := decodeJSON[MailProviderDTO](t, resp)
 
@@ -808,7 +808,7 @@ func TestVerifyMailProviderConfigConnectsWithoutSending(t *testing.T) {
 
 	resp := h.do("POST", "/api/v1/mail-providers/verify", map[string]any{
 		"label": "sink", "host": host, "port": port,
-		"from_address": "malmo@example.com", "encryption": "none",
+		"from_address": "moose@example.com", "encryption": "none",
 	})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
@@ -848,7 +848,7 @@ func TestVerifyMailProviderConfigUnreachable502(t *testing.T) {
 
 	resp := h.do("POST", "/api/v1/mail-providers/verify", map[string]any{
 		"label": "dead", "host": host, "port": port,
-		"from_address": "malmo@example.com", "encryption": "none",
+		"from_address": "moose@example.com", "encryption": "none",
 	})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {

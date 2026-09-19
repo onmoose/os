@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/lifecycle"
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/lifecycle"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/store"
 )
 
 const configManifestYAML = `
@@ -201,7 +201,7 @@ func TestBuildInstallPlanConfig(t *testing.T) {
 func configServer(t *testing.T, ownerID, scope, state string, cfg []store.InstanceConfig) (*Server, string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.Open(filepath.Join(dir, "malmo.db"))
+	st, err := store.Open(filepath.Join(dir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -9,8 +9,8 @@
 // The picked preset is read from the route, not held in local state. That is the
 // whole point: Back from the form returns to the picker, Back from the picker
 // returns to the account list, and a half-filled form can be linked or reloaded.
-// The form fields themselves are not in the URL — a credential must never land
-// in history — so a reload re-seeds them from the preset.
+// The form fields themselves are not in the URL. A credential must never land
+// in history, so a reload re-seeds them from the preset.
 //
 // Admin-only, mirroring the list view: the redirect here is defence in depth
 // (the nav already hides the section) and the brain refuses a non-admin anyway.
@@ -51,7 +51,7 @@ const preset = computed<MailPreset | undefined>(() =>
   presetList.value.find((p) => p.id === presetID.value),
 );
 
-// A preset id that names nothing — a stale link, or a preset we withdrew —
+// A preset id that names nothing (a stale link, or a preset we withdrew)
 // falls back to the picker rather than rendering an empty form. Waits for the
 // query, since presets are empty on the first tick.
 watch([presetID, presetList], ([id, list]) => {
@@ -137,7 +137,7 @@ function fid(name: string): string {
       <div class="space-y-3 rounded-2xl border border-border bg-card p-5 sm:p-6">
         <h3 class="text-sm font-semibold text-foreground">Who sends your email?</h3>
         <p class="text-xs text-muted-foreground">
-          Pick your provider and malmo fills in the server settings for you.
+          Pick your provider and moose fills in the server settings for you.
         </p>
         <p v-if="presets.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
         <!-- The list is server-side, and "Custom SMTP server" is one of its
@@ -190,7 +190,7 @@ function fid(name: string): string {
           >Provider docs</a>
         </p>
 
-        <!-- Account name: malmo's own label for the account, not anything the
+        <!-- Account name: moose's own label for the account, not anything the
              provider knows about. -->
         <div class="space-y-1.5">
           <label class="text-sm font-medium" :for="fid('label')">Account name</label>
@@ -224,7 +224,7 @@ function fid(name: string): string {
             </option>
           </select>
           <p class="text-xs text-muted-foreground">
-            Pick the region your account is in. It decides which server malmo connects to.
+            Pick the region your account is in. It decides which server moose connects to.
           </p>
         </div>
 

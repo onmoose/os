@@ -4,7 +4,7 @@
 #
 # Since #242 promoted the first-boot runtime wiring into the production image, that
 # wiring (enable docker/networkd/host-agent/seed/load-images, the NIC DHCP config,
-# the malmo identities, the firstboot mask) is now done by dev/cloud/mkosi.postinst.
+# the moose identities, the firstboot mask) is now done by dev/cloud/mkosi.postinst.
 # chroot — which mkosi ALSO runs for this lane, because dev/cloud/test/mkosi.conf
 # does `Include=..` (mkosi chdir's into dev/cloud/ and runs its auto-detected
 # postinst too). So all this lane adds on top is the serial-driven boot self-check.
@@ -20,7 +20,7 @@ enable_unit() {
 # The serial-driven boot self-check (C2). Runs once after the stack should be up,
 # polls it, and writes its verdict to /dev/console for the QEMU harness to grep.
 # Test-lane only — the production image ships no assertions oneshot.
-enable_unit /etc/systemd/system/malmo-cloud-assertions.service malmo-cloud-assertions.service
+enable_unit /etc/systemd/system/moose-cloud-assertions.service moose-cloud-assertions.service
 
 # Make the staged self-check executable (ExtraTrees preserves mode, but be
 # defensive — a clobbered mode would otherwise fail silently at boot).

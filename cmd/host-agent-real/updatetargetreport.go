@@ -3,8 +3,8 @@ package main
 import (
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/updatetarget"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // updateTargetReport answers GET /v1/system/update-target: what the loop last
