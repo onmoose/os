@@ -137,7 +137,7 @@ function fid(name: string): string {
       <div class="space-y-3 rounded-2xl border border-border bg-card p-5 sm:p-6">
         <h3 class="text-sm font-semibold text-foreground">Who sends your email?</h3>
         <p class="text-xs text-muted-foreground">
-          Pick your provider and malmo fills in the server settings for you.
+          Pick your provider and moose fills in the server settings for you.
         </p>
         <p v-if="presets.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
         <!-- The list is server-side, and "Custom SMTP server" is one of its
@@ -190,7 +190,7 @@ function fid(name: string): string {
           >Provider docs</a>
         </p>
 
-        <!-- Account name: malmo's own label for the account, not anything the
+        <!-- Account name: moose's own label for the account, not anything the
              provider knows about. -->
         <div class="space-y-1.5">
           <label class="text-sm font-medium" :for="fid('label')">Account name</label>
@@ -224,7 +224,7 @@ function fid(name: string): string {
             </option>
           </select>
           <p class="text-xs text-muted-foreground">
-            Pick the region your account is in. It decides which server malmo connects to.
+            Pick the region your account is in. It decides which server moose connects to.
           </p>
         </div>
 

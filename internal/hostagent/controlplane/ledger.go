@@ -5,11 +5,11 @@
 // # 8.3 makes the staged control-plane compose the handoff point between
 // host-agent (which recreates containers) and the brain (which reconciles that
 // same compose on startup), so the two actors never disagree about what should
-// be running. That works for `malmo-ui`, which is a service in that compose.
+// be running. That works for `moose-ui`, which is a service in that compose.
 // It cannot work for the brain: the brain is **not** in the compose — a process
 // cannot bring itself up, so host-agent launches it with `docker run`
 // (internal/hostagent/brainlaunch, CONTROL_PLANE.md # host-agent launches the
-// brain container) from a ref that until now came only from MALMO_BRAIN_IMAGE.
+// brain container) from a ref that until now came only from MOOSE_BRAIN_IMAGE.
 //
 // So the box declares its pair across two files, both written before anything
 // is recreated:
@@ -38,14 +38,14 @@ import (
 	"time"
 )
 
-// ledgerFile is the ledger's name inside MALMO_CONTROL_PLANE_DIR, alongside the
+// ledgerFile is the ledger's name inside MOOSE_CONTROL_PLANE_DIR, alongside the
 // compose.yml it is the companion to.
 const ledgerFile = "images.json"
 
 // RetentionWindow is how long the previous image pair (and the brain SQLite
 // snapshot taken beside it) is kept before it can be garbage-collected —
 // UPDATES.md # 3: "keep the previous brain/UI image pair and SQLite snapshot
-// for 7 days, then GC". The realistic complaint is "malmo broke since last
+// for 7 days, then GC". The realistic complaint is "moose broke since last
 // night", and a rollback button that has already deleted its target is not a
 // rollback button.
 const RetentionWindow = 7 * 24 * time.Hour
@@ -111,7 +111,7 @@ func WriteLedger(dir string, l Ledger) error {
 
 // ResolveBrainImage answers the question host-agent asks on every boot: which
 // brain image should I launch? The ledger wins when it names one, because it
-// records what this box last **applied**; envDefault (MALMO_BRAIN_IMAGE, or the
+// records what this box last **applied**; envDefault (MOOSE_BRAIN_IMAGE, or the
 // baked default) is what this box last **shipped with**, which is older by
 // definition once an update has landed.
 //

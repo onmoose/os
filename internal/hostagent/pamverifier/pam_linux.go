@@ -13,10 +13,10 @@ import (
 )
 
 // PAMVerifier implements hostagent.PasswordVerifier using the system PAM stack.
-// The PAM service name selects /etc/pam.d/<Service>; use "malmo" in
-// production and "malmo-test" in the nspawn test lane.
+// The PAM service name selects /etc/pam.d/<Service>; use "moose" in
+// production and "moose-test" in the nspawn test lane.
 type PAMVerifier struct {
-	Service string // e.g. "malmo"
+	Service string // e.g. "moose"
 }
 
 // Verify calls pam_authenticate(3) via the msteinert/pam binding.

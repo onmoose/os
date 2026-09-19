@@ -3,18 +3,18 @@
   "apps": {
     "http": {
       "servers": {
-        "malmo": {
+        "moose": {
           "listen": [":80"],
           "trusted_proxies": { "source": "static", "ranges": [] },
           "routes": [
             {
-              "@id": "malmo-catchall",
+              "@id": "moose-catchall",
               "match": [{}],
               "handle": [{
                 "handler": "static_response",
                 "status_code": 404,
                 "headers": {"Content-Type": ["text/html; charset=utf-8"]},
-                "body": "<!doctype html><html><head><meta charset=\"utf-8\"><title>404 — malmo</title><style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:6rem auto;padding:0 1rem;color:#222}h1{margin:0 0 .5rem;font-size:1.5rem}p{color:#555;line-height:1.5}a{color:#06c}</style></head><body><h1>404 — No app at this hostname</h1><p>The address you tried doesn't match any installed app on this malmo box.</p><p><a href=\"http://malmo.local\">Go to the dashboard</a></p></body></html>"
+                "body": "<!doctype html><html><head><meta charset=\"utf-8\"><title>404 — moose</title><style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:6rem auto;padding:0 1rem;color:#222}h1{margin:0 0 .5rem;font-size:1.5rem}p{color:#555;line-height:1.5}a{color:#06c}</style></head><body><h1>404 — No app at this hostname</h1><p>The address you tried doesn't match any installed app on this moose box.</p><p><a href=\"http://moose.local\">Go to the dashboard</a></p></body></html>"
               }]
             }
           ]

@@ -8,8 +8,8 @@ import (
 
 // TestPAMVerifier_RealAuthentication exercises PAMVerifier against the real
 // system PAM stack. It requires:
-//   - /etc/pam.d/malmo-test installed (copy dev/pam/malmo → /etc/pam.d/malmo-test)
-//   - A test user "malmo-pamtest" with a known password, provisioned by the
+//   - /etc/pam.d/moose-test installed (copy dev/pam/moose → /etc/pam.d/moose-test)
+//   - A test user "moose-pamtest" with a known password, provisioned by the
 //     nspawn harness (useradd + chpasswd inside the container).
 //   - The binary running as root (pam_unix.so requires privilege).
 //
@@ -17,13 +17,13 @@ import (
 // include it; the nspawn lane is the intended runner (see TESTING.md # Fast lane).
 //
 // TODO (nspawn lane wiring):
-//   - Add nspawn test fixture: useradd malmo-pamtest && chpasswd <<< "malmo-pamtest:TestPass123"
-//   - Install dev/pam/malmo as /etc/pam.d/malmo-test inside the container.
+//   - Add nspawn test fixture: useradd moose-pamtest && chpasswd <<< "moose-pamtest:TestPass123"
+//   - Install dev/pam/moose as /etc/pam.d/moose-test inside the container.
 //   - Run: go test -tags pamtest -run TestPAMVerifier ./internal/hostagent/pamverifier/ as root.
 func TestPAMVerifier_RealAuthentication(t *testing.T) {
 	const (
-		service  = "malmo-test"
-		user     = "malmo-pamtest"
+		service  = "moose-test"
+		user     = "moose-pamtest"
 		password = "TestPass123"
 	)
 

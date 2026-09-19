@@ -10,7 +10,7 @@ import (
 // its own DB; modernc.org/sqlite is fast enough that this beats sharing.
 func open(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "malmo.db"))
+	s, err := Open(filepath.Join(t.TempDir(), "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestCreateRejectsInvalidScope(t *testing.T) {
 }
 
 func TestMigrateIsIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "malmo.db")
+	path := filepath.Join(t.TempDir(), "moose.db")
 	s1, err := Open(path)
 	if err != nil {
 		t.Fatalf("first open: %v", err)

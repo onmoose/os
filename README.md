@@ -1,20 +1,20 @@
 <div align="center">
 
-# malmo
+# moose
 
 **A home-server OS for people who want to own their data, not become sysadmins.**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
-[What is malmo?](#what-is-malmo) · [Principles](#principles) · [Two profiles](#two-profiles-appliance-and-hosted) · [Status](#status) · [Architecture](#architecture) · [Quickstart](#quickstart-local-dev-no-vm) · [Documentation](#documentation) · [Contributing](#contributing) · [Contributors](#contributors)
+[What is moose?](#what-is-moose) · [Principles](#principles) · [Two profiles](#two-profiles-appliance-and-hosted) · [Status](#status) · [Architecture](#architecture) · [Quickstart](#quickstart-local-dev-no-vm) · [Documentation](#documentation) · [Contributing](#contributing) · [Contributors](#contributors)
 
 </div>
 
 ---
 
-## What is malmo
+## What is moose
 
-malmo is a home-server OS in the same category as **Umbrel / ZimaOS / CasaOS**. Its north star is **simplicity for non-technical users**.
+moose is a home-server OS in the same category as **Umbrel / ZimaOS / CasaOS**. Its north star is **simplicity for non-technical users**.
 
 Install it on an old laptop or PC, leave it running in the pantry, and run the apps you use daily (photos, notes, files, a shared grocery list) on hardware you own, with data you own. Apps are Docker containers installed from a catalog or pasted in as a compose file. If the original app developer disappears, your app keeps working, and uninstalling an app never deletes your content.
 
@@ -24,19 +24,19 @@ Install it on an old laptop or PC, leave it running in the pantry, and run the a
 
 - **Files are first-class, apps are windows.** Your content lives in `~/Photos/`, not inside an app's opaque library. Uninstalling an app never deletes your photos.
 - **We are not a NAS.** Storage is plumbing in service of apps. No pools, no vdevs, no parity-as-first-class, and no NAS vocabulary in the UI.
-- **The UI is the path.** Every privileged operation has a UI path. SSH is rescue-only, never required for daily use, and one malmo password (PAM-backed) covers the dashboard, SSH, and SMB.
+- **The UI is the path.** Every privileged operation has a UI path. SSH is rescue-only, never required for daily use, and one moose password (PAM-backed) covers the dashboard, SSH, and SMB.
 - **Closed by default (on the appliance).** No public exposure for the home box in v1. Identity-based mesh only, opt-in.
-- **One control plane, two environments.** The same brain, dashboard, app model, and auth run whether malmo is the box in your pantry or a malmo-operated cloud VM. The profile only changes the boring host layer underneath.
+- **One control plane, two environments.** The same brain, dashboard, app model, and auth run whether moose is the box in your pantry or a moose-operated cloud VM. The profile only changes the boring host layer underneath.
 
 ## Two profiles: appliance and hosted
 
-malmo is built for two environments from one codebase. The split is a build-and-config **profile**, not a fork. The control plane (roughly 95% of malmo's logic) is identical across both; only the base image and the privileged host layer diverge. Full design in [`docs/specs/ENVIRONMENT.md`](docs/specs/ENVIRONMENT.md).
+moose is built for two environments from one codebase. The split is a build-and-config **profile**, not a fork. The control plane (roughly 95% of moose's logic) is identical across both; only the base image and the privileged host layer diverge. Full design in [`docs/specs/ENVIRONMENT.md`](docs/specs/ENVIRONMENT.md).
 
 | | `appliance` (default) | `hosted` |
 |---|---|---|
-| **What it is** | bring-your-own x86 box on your LAN | malmo-operated cloud VM, one per tenant |
+| **What it is** | bring-your-own x86 box on your LAN | moose-operated cloud VM, one per tenant |
 | **Audience** | households and families | small and medium businesses |
-| **Reachability** | `<slug>.local` on the LAN; `.malmo.network` HTTPS opt-in | `<slug>.<box-id>.malmo.network` public HTTPS, always on |
+| **Reachability** | `<slug>.local` on the LAN; `.onmoose.io` HTTPS opt-in | `<slug>.<box-id>.onmoose.io` public HTTPS, always on |
 | **Install** | USB installer, wipe disk | provisioned from a cloud image, cloud-init-style first boot |
 | **Storage** | physical OS + data drives, LUKS+TPM, mergerfs | virtual block volume(s), provider/KMS encryption |
 | **Network** | NetworkManager (ethernet + WiFi), Avahi/mDNS, Samba/SMB | single virtual NIC, no mDNS, no SMB |
@@ -54,18 +54,18 @@ What runs today (mostly in the native inner loop, see [Quickstart](#quickstart-l
 - **Users and auth.** First-admin setup, PAM-backed login (the host's `/etc/shadow` is the source of truth), opaque cookie sessions, roles mapped to Linux groups, a 5-minute elevation window for destructive ops, recovery-code redemption, rate-limiting and lockout, and an append-only audit log surfaced as an Activity view.
 - **Health and notifications.** A catalog of detectors (service-down, container restart-loop, app-unresponsive, clock-not-synced, RAM pressure, reboot-required, version-mismatch, DB-corrupt) feeding dashboard banners and a notification inbox with per-category mute. Plus live system-resource readouts and disk-usage bars.
 - **Real host-agent (`host-agent-real`).** PAM verify, user create / delete / role / password, real `/proc` sampling, disk and RAM reporting, journal streaming, per-LAN-interface Avahi discovery, and first-boot brain launch (Docker socket proxy + brain container). LUKS/TPM enrollment and the boot-chain units exist and are exercised in the QEMU test lane.
-- **Hosted cloud profile (coming online).** A slim, build-tagged cloud `host-agent`; a lean `mkosi` cloud image with self-bootstrapping first boot; real Let's Encrypt wildcard certs over ACME DNS-01 for `*.<box-id>.malmo.network` (the `auth.malmo.network` acme-dns face is live); an app-container egress block for the cloud metadata endpoint; and a portal-to-box SSO handshake so the owner reaches the box through their existing `malmo.network` login. The image builds, boots, and provisions on a real cloud provider; a CI lane plus a cloud QEMU lane drive the seed → first-run → served-dashboard arc, with full end-to-end acceptance still being hardened.
+- **Hosted cloud profile (coming online).** A slim, build-tagged cloud `host-agent`; a lean `mkosi` cloud image with self-bootstrapping first boot; real Let's Encrypt wildcard certs over ACME DNS-01 for `*.<box-id>.onmoose.io` (the `auth.onmoose.io` acme-dns face is live); an app-container egress block for the cloud metadata endpoint; and a portal-to-box SSO handshake so the owner reaches the box through their existing `mooseos.com` login. The image builds, boots, and provisions on a real cloud provider; a CI lane plus a cloud QEMU lane drive the seed → first-run → served-dashboard arc, with full end-to-end acceptance still being hardened.
 
-What is **not** built yet, so nobody reads this as a finished product: the appliance storage subsystem (`/srv/malmo`, mergerfs, and the LUKS unlock at boot beyond the QEMU lane), the production install medium, stream A of updates (the apt and `unattended-upgrades` half), and WiFi/NetworkManager setup in the agent. Stream B is the box updating its own brain and UI. On `hosted` that is built and proven on a booted box. On `appliance` the box can read a signed release manifest, but there is no signing key and no release host yet, so it does nothing on purpose. The authoritative as-built map is [`docs/architecture.md`](docs/architecture.md) (# What is not built yet); per-change history is in [`docs/progress/`](docs/progress/).
+What is **not** built yet, so nobody reads this as a finished product: the appliance storage subsystem (`/srv/moose`, mergerfs, and the LUKS unlock at boot beyond the QEMU lane), the production install medium, stream A of updates (the apt and `unattended-upgrades` half), and WiFi/NetworkManager setup in the agent. Stream B is the box updating its own brain and UI. On `hosted` that is built and proven on a booted box. On `appliance` the box can read a signed release manifest, but there is no signing key and no release host yet, so it does nothing on purpose. The authoritative as-built map is [`docs/architecture.md`](docs/architecture.md) (# What is not built yet); per-change history is in [`docs/progress/`](docs/progress/).
 
 ## Architecture
 
-A running malmo is five processes/artifacts. Three are Go, one is JavaScript, one is a container we don't write. [`docs/architecture.md`](docs/architecture.md) is the live, as-built map.
+A running moose is five processes/artifacts. Three are Go, one is JavaScript, one is a container we don't write. [`docs/architecture.md`](docs/architecture.md) is the live, as-built map.
 
-- **`malmo-brain`** (`cmd/brain/`, `internal/`) is the control-plane daemon: one Go binary owning SQLite state, the REST+SSE API, the app lifecycle, and the Caddy config. It drives Docker via the `docker compose` CLI.
+- **`moose-brain`** (`cmd/brain/`, `internal/`) is the control-plane daemon: one Go binary owning SQLite state, the REST+SSE API, the app lifecycle, and the Caddy config. It drives Docker via the `docker compose` CLI.
 - **`host-agent`** is the privileged side. `cmd/host-agent/` is a fake (real wire protocol, in-memory ops) used in the inner loop; `cmd/host-agent-real/` is the real binary, with a build-tagged slim `hosted` variant for the cloud image.
 - **`web-ui`** (`web-ui/`) is the Vue 3 + Vite + TanStack Query dashboard. It talks only to the brain.
-- **Caddy** (`dev/`) is the reverse proxy. It terminates `*.local` (appliance) or `*.<box-id>.malmo.network` HTTPS (hosted) and routes to app containers and the brain, configured live via Caddy's admin API. Routing is per-subdomain, never path-based (browser same-origin policy is the reason).
+- **Caddy** (`dev/`) is the reverse proxy. It terminates `*.local` (appliance) or `*.<box-id>.onmoose.io` HTTPS (hosted) and routes to app containers and the brain, configured live via Caddy's admin API. Routing is per-subdomain, never path-based (browser same-origin policy is the reason).
 - **SQLite** is the brain's only persistent store (`internal/store/`).
 
 ```
@@ -78,7 +78,7 @@ browser → web-ui → brain → docker compose (Docker daemon)
 
 | Path | What lives here |
 |---|---|
-| `cmd/` | Go entrypoints: `brain`, `host-agent` (fake), `host-agent-real`, plus small tools (`malmo`, `malmo-storage-verify`, `malmo-network-verify`, `openapi-gen`) |
+| `cmd/` | Go entrypoints: `brain`, `host-agent` (fake), `host-agent-real`, plus small tools (`moose`, `moose-storage-verify`, `moose-network-verify`, `openapi-gen`) |
 | `internal/` | brain packages: `api`, `lifecycle`, `store`, `catalog`, `manifest`, `admission`, `caddy`, `hostclient`, `protocol`, `auth`, `audit`, `events`, `profile`, `assertion`, `version`, the health/observability set (`health`, `notify`, `applog`, `systemlive`, `storageverify`), and `internal/hostagent/…` for the host side |
 | `api/` | the generated OpenAPI document (`make openapi`); `make check` fails if it is stale |
 | `web-ui/` | Vue 3 + Vite dashboard |
@@ -98,14 +98,14 @@ make dev          # the whole inner-loop stack in one terminal:
                   # Caddy (container) + fake host-agent + brain + Vite
 ```
 
-Then open <http://localhost:5173> and install **Whoami** from the catalog. (The catalog is not in this repo — the brain syncs it from the control plane at run time. To work against a specific store app instead, use `make dev-app APP=<id>` with a `malmoos/store` checkout.) `make dev` also publishes each app's `<slug>.local` name over real Avahi, so installed apps are reachable by their portless `.local` URL from this box and other LAN devices (Android browsers don't resolve `.local`). Ctrl-C stops everything.
+Then open <http://localhost:5173> and install **Whoami** from the catalog. (The catalog is not in this repo. The brain syncs it from the moose catalog service at run time. To work against a specific store app instead, use `make dev-app APP=<id>` with a `onmoose/store` checkout.) `make dev` also publishes each app's `<slug>.local` name over real Avahi, so installed apps are reachable by their portless `.local` URL from this box and other LAN devices (Android browsers don't resolve `.local`). Ctrl-C stops everything.
 
 Prefer separate terminals? Run the pieces individually:
 
 ```bash
 make caddy        # dev reverse proxy (container; apps on :80, admin :2019)
 make run-agent    # fake host-agent (UNIX socket)
-make run-brain    # malmo-brain (:8080, native Go)
+make run-brain    # moose-brain (:8080, native Go)
 make ui           # dashboard (Vite, :5173)
 ```
 
@@ -136,14 +136,14 @@ The host-integrated parts (boot ordering, LUKS/TPM, systemd, the cloud image) ar
 
 New contributor (or pointing a coding agent at the repo)? Start with [`docs/dev/contributing.md`](docs/dev/contributing.md), the end-to-end loop (orient → pick a task → branch → build → test → document → PR).
 
-- Open implementation tasks live in [GitHub Issues](https://github.com/malmoos/malmo/issues) (`gh issue list --label P1`).
+- Open implementation tasks live in [GitHub Issues](https://github.com/onmoose/os/issues) (`gh issue list --label P1`).
 - All work happens on a branch off latest `dev` and lands via a PR into `dev`. Never commit straight to `dev` or `main`. A PR from `dev` into `main` is how the maintainer cuts a release — contributors don't target `main` directly.
 - Link the issue your PR closes with `Closes #<N>`.
 - **Every change ships with documentation.** A code change is not complete until its docs are written in the same change.
 
 ## License
 
-malmo is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). By contributing, you agree to the [Contributor License Agreement](CLA.md).
+moose is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). By contributing, you agree to the [Contributor License Agreement](CLA.md).
 
 ## Contributors
 

@@ -14,9 +14,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 func installWhoami(t *testing.T, e *testEnv) store.Instance {
@@ -67,13 +67,13 @@ func TestInstall_Hosted_DefaultRestrictedStripsAndGates(t *testing.T) {
 		t.Fatal("restricted app must be forward-auth gated")
 	}
 	fa := cfg.ForwardAuth
-	if fa.Upstream != "malmo-brain:8080" {
-		t.Errorf("verify upstream = %q, want malmo-brain:8080", fa.Upstream)
+	if fa.Upstream != "moose-brain:8080" {
+		t.Errorf("verify upstream = %q, want moose-brain:8080", fa.Upstream)
 	}
 	if fa.VerifyPath != profile.ForwardAuthVerifyPath {
 		t.Errorf("verify path = %q, want %q", fa.VerifyPath, profile.ForwardAuthVerifyPath)
 	}
-	if fa.LoginURL != "https://cindy-fox.malmo.network/" {
+	if fa.LoginURL != "https://cindy-fox.onmoose.io/" {
 		t.Errorf("login URL = %q, want the box dashboard root", fa.LoginURL)
 	}
 	if len(fa.CopyHeaders) == 0 {
@@ -221,7 +221,7 @@ func TestInstall_Hosted_RestrictedCarriesPublicPaths(t *testing.T) {
 
 // Every hosted app route scrubs the vouched identity headers, in every exposure.
 // The gate scrubs only where it runs, and it does not run on a public app or on
-// a public path — so without this a caller could forge X-Malmo-User there.
+// a public path — so without this a caller could forge X-Moose-User there.
 func TestHosted_AllExposuresScrubIdentityHeaders(t *testing.T) {
 	e := newTestEnv(t)
 	e.m.SetEnvironment(profile.Hosted, "cindy-fox")
@@ -233,7 +233,7 @@ func TestHosted_AllExposuresScrubIdentityHeaders(t *testing.T) {
 		if len(cfg.ScrubHeaders) == 0 {
 			t.Fatalf("%s: route scrubs no identity headers", what)
 		}
-		for _, want := range []string{"X-Malmo-User", "X-Malmo-User-Id"} {
+		for _, want := range []string{"X-Moose-User", "X-Moose-User-Id"} {
 			found := false
 			for _, h := range cfg.ScrubHeaders {
 				if h == want {

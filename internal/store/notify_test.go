@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/notify"
+	"github.com/onmoose/os/internal/notify"
 )
 
 func newNotification(dedupKey string) notify.Notification {

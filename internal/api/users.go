@@ -9,9 +9,9 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/malmoos/malmo/internal/audit"
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/store"
 )
 
 func (s *Server) registerMeRoutes(api huma.API) {
@@ -285,7 +285,7 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 	// Revoke SSH before the account goes, if it had any. The delete cascades the
 	// brain's ssh_access and ssh_keys rows away, but the host keeps its own copy:
 	// the account stays in sshd's AllowUsers and its key file stays in
-	// /etc/ssh/malmo-authorized-keys. Creating a user with the same name later
+	// /etc/ssh/moose-authorized-keys. Creating a user with the same name later
 	// would then hand them a deleted account's key. Only accounts that were
 	// actually enabled are pushed — a disabled one was never sent to the host, and
 	// calling here on every delete would fail on a box with no sshd installed.

@@ -1,0 +1,9 @@
+[Unit]
+Description=moose recovery target (host-agent crashloop or TPM unseal failure)
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/BOOT.md
+# Placeholder unit so OnFailure routing has somewhere to land. The recovery
+# dashboard itself (static page on port 80, "Roll back host-agent" button,
+# mDNS as moose-recovery.local) is deferred to RECOVERY.md (NEXT.md).
+# Today this target activates and... does nothing. That's a known gap;
+# documented in docs/progress/0019.
+AllowIsolate=no

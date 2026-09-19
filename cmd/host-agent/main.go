@@ -6,28 +6,28 @@
 //
 // Env vars:
 //
-//	MALMO_AGENT_SOCK  — UNIX socket path (default protocol.SocketPath)
-//	MALMO_STATE_DIR   — when set, persist the fake user maps (passwords +
+//	MOOSE_AGENT_SOCK  — UNIX socket path (default protocol.SocketPath)
+//	MOOSE_STATE_DIR   — when set, persist the fake user maps (passwords +
 //	                    roles) to <dir>/fake-shadow.json so accounts survive a
 //	                    restart, standing in for /etc/shadow. When unset, the
 //	                    maps are in-memory only and a restart forgets every
 //	                    account. The dev stack exports this (same dir as the
-//	                    brain's malmo.db).
-//	MALMO_HEALTH_PATH — when set, back the storage category of GET
+//	                    brain's moose.db).
+//	MOOSE_HEALTH_PATH — when set, back the storage category of GET
 //	                    /v1/health/system from this file (read via the same
 //	                    FilesystemHealthSource the real binary uses). When
 //	                    unset, the storage category is an empty findings list
 //	                    ("storage looks healthy").
-//	MALMO_DEV_AVAHI   — when "1", publish per-app .local names via the real
+//	MOOSE_DEV_AVAHI   — when "1", publish per-app .local names via the real
 //	                    Avahi DBus publisher instead of the in-memory fake, so
 //	                    <slug>.local resolves on the LAN (and from other
 //	                    devices) in dev. Requires avahi-daemon running; runs
 //	                    unprivileged. `make dev` sets this. All other host ops
 //	                    stay fake — this only swaps the discovery publisher.
-//	MALMO_FAKE_NO_GPU — when "1", GET /v1/system/gpu reports no usable GPU
+//	MOOSE_FAKE_NO_GPU — when "1", GET /v1/system/gpu reports no usable GPU
 //	                    instead of the default synthetic Intel iGPU, so the
 //	                    `gpu: true` install refusal is exercisable in dev.
-//	MALMO_FAKE_UPDATE_TARGET — the state GET /v1/system/update-target reports:
+//	MOOSE_FAKE_UPDATE_TARGET — the state GET /v1/system/update-target reports:
 //	                    "none" (default), "available", "current", "refused",
 //	                    "unreachable" or "disabled". The dev loop has no control
 //	                    plane to update, so the honest default is "nothing to
@@ -44,12 +44,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/malmoos/malmo/internal/hostagent"
-	"github.com/malmoos/malmo/internal/hostagent/avahipublisher"
-	"github.com/malmoos/malmo/internal/hostagent/healthsource"
-	"github.com/malmoos/malmo/internal/hostagent/netstate"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/version"
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/hostagent/avahipublisher"
+	"github.com/onmoose/os/internal/hostagent/healthsource"
+	"github.com/onmoose/os/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/version"
 )
 
 func main() {
@@ -60,7 +60,7 @@ func main() {
 		return
 	}
 
-	sockPath := os.Getenv("MALMO_AGENT_SOCK")
+	sockPath := os.Getenv("MOOSE_AGENT_SOCK")
 	if sockPath == "" {
 		sockPath = protocol.SocketPath
 	}
@@ -84,7 +84,7 @@ func main() {
 	// stays fake. Default is the in-memory fake, keeping make run-agent and
 	// the hermetic test-health.sh free of any avahi-daemon dependency.
 	var pub hostagent.Publisher = hostagent.NewFakePublisher(protocol.AppHostSuffix)
-	if os.Getenv("MALMO_DEV_AVAHI") == "1" {
+	if os.Getenv("MOOSE_DEV_AVAHI") == "1" {
 		pub = &avahipublisher.DBusPublisher{HostSuffix: protocol.AppHostSuffix}
 		slog.Info("host-agent (fake) using real Avahi DBus publisher for .local names")
 	}
@@ -95,8 +95,8 @@ func main() {
 	// for free. Without a backing file, a `make dev` restart wipes every
 	// account's password while the brain's SQLite keeps the user + session
 	// rows, so a fresh login after clearing cookies fails. Persist into the
-	// same MALMO_STATE_DIR the brain uses (the dev stack exports it).
-	if dir := os.Getenv("MALMO_STATE_DIR"); dir != "" {
+	// same MOOSE_STATE_DIR the brain uses (the dev stack exports it).
+	if dir := os.Getenv("MOOSE_STATE_DIR"); dir != "" {
 		statePath := filepath.Join(dir, "fake-shadow.json")
 		if err := a.EnablePersistence(statePath); err != nil {
 			slog.Error("host-agent (fake) load persisted user state", "path", statePath, "err", err)
@@ -104,7 +104,7 @@ func main() {
 		}
 		slog.Info("host-agent (fake) persisting user state", "path", statePath)
 	}
-	if healthPath := os.Getenv("MALMO_HEALTH_PATH"); healthPath != "" {
+	if healthPath := os.Getenv("MOOSE_HEALTH_PATH"); healthPath != "" {
 		a.Health = healthsource.New(healthPath)
 		slog.Info("host-agent (fake) wired to storage health file", "path", healthPath)
 	}
@@ -131,11 +131,11 @@ func main() {
 	// No real /dev/dri in the dev loop, so GET /v1/system/gpu reports a
 	// synthetic Intel iGPU (render GID 104, Debian's usual `render` group) so
 	// a `gpu: true` install exercises the full override path natively.
-	// MALMO_FAKE_NO_GPU=1 flips it to "no usable GPU" for the refusal path.
+	// MOOSE_FAKE_NO_GPU=1 flips it to "no usable GPU" for the refusal path.
 	gpu := protocol.SystemGPU{Present: true, Vendor: "intel", RenderGID: 104}
-	if os.Getenv("MALMO_FAKE_NO_GPU") == "1" {
+	if os.Getenv("MOOSE_FAKE_NO_GPU") == "1" {
 		gpu = protocol.SystemGPU{}
-		slog.Info("host-agent (fake) reporting no GPU (MALMO_FAKE_NO_GPU=1)")
+		slog.Info("host-agent (fake) reporting no GPU (MOOSE_FAKE_NO_GPU=1)")
 	}
 	a.GPU = hostagent.NewFakeGPUReporter(gpu)
 	// No NetworkManager in the dev loop either: a fixed plausible LAN set

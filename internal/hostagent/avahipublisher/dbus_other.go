@@ -13,7 +13,7 @@ package avahipublisher
 import (
 	"errors"
 
-	"github.com/malmoos/malmo/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/hostagent/netstate"
 )
 
 // ErrCollision is the name-collision sentinel — defined here so callers can

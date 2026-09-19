@@ -1,0 +1,54 @@
+# Cloud boot-proof self-check (C2, #205; seed/gate scenarios C3a cloud-lane, #220).
+# A boot oneshot that polls the control plane up and writes its verdict to the
+# serial console, where dev/cloud/run-cloud-tests.sh greps it. Serial-driven (not
+# SSH-driven): hosted boxes do carry sshd since #467, but it is stopped until an
+# account opts in, and the ssh boot's whole job is to turn it on and off again — a
+# harness that came in over :22 would cut its own connection. The check runs
+# in-guest over localhost, the real control-plane-up proof.
+#
+# Runs on EVERY boot (no run-once marker): #220 drives a multi-boot sequence over
+# one persisted disk (un-seeded 503 → seeded gate → frozen-identity reboot), so
+# the self-check must re-run each boot. It reads which scenario to assert from the
+# moose.assert credential (ImportCredential below; default un-seeded). This unit
+# exists only in the boot-proof test image, never the lean production cut.
+[Unit]
+Description=moose cloud boot-proof self-check (C2/C3a)
+After=docker.service host-agent.service moose-load-images.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The scenario directive (un-seeded | seeded | frozen:<box-id> | access | update |
+# ssh) the harness sets per boot over SMBIOS; absent ⇒ the script defaults to the
+# un-seeded 503 check.
+ImportCredential=moose.assert
+# The access (#308), update (#382) and ssh (#467) boots additionally deliver a
+# portal-signed owner assertion here, which cloud-assertions.sh replays at
+# GET /_moose/sso to establish an owner session. Absent on every other boot — an
+# unimported credential is simply not present, so this is a no-op for the
+# un-seeded/seeded/frozen scenarios.
+ImportCredential=moose.sso_token
+# Two MORE independent owner assertions, delivered only by the access boot. The box
+# spends a jti on first use, so the hosted confirm step and its open-redirect probe
+# (os#469) cannot replay the sign-in token — each needs its own. Absent on every
+# other boot, like the first.
+ImportCredential=moose.sso_token2
+ImportCredential=moose.sso_token3
+# The script polls the control plane up (docker load + brain bootstrap + compose
+# up race this unit) and can run for minutes; the default 90s start timeout would
+# kill it mid-poll before it writes a verdict. No timeout — the QEMU harness owns
+# the outer deadline.
+TimeoutStartSec=0
+# Send the script's own output to the serial console, not only to the journal.
+# Without this ONLY the verdict and the failure diag reach the console (they are
+# written to /dev/console by hand), so a PASS told the harness that a scenario
+# held and nothing about WHICH proofs ran — a section that quietly stopped
+# asserting looked exactly like one that passed. The journal dies with the VM;
+# the serial log is the only thing the harness keeps.
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStart=/usr/local/bin/cloud-assertions.sh
+
+[Install]
+WantedBy=multi-user.target

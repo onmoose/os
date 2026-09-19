@@ -2,18 +2,18 @@
 # Boot-chain fast-lane tests — systemd-nspawn --boot edition.
 #
 # Slice 0019 shipped systemd units in dist/systemd/ + the
-# malmo-storage-verify reporter; nothing booted them in CI. This script
+# moose-storage-verify reporter; nothing booted them in CI. This script
 # closes that gap per docs/specs/TESTING.md # Fast lane.
 #
 # Sequence:
 #   1. bootstrap-if-absent the cached rootfs (.dev/nspawn/rootfs)
-#   2. build malmo-storage-verify statically
+#   2. build moose-storage-verify statically
 #   3. stage units into .dev/nspawn/boot-stage/etc/systemd/system/
 #      with stub parent units for docker/smbd/avahi-daemon (so drop-ins
 #      have something to attach to — systemd does not surface orphans)
 #   4. boot the rootfs ephemerally, bind the staging tree onto
-#      /etc/systemd/system, bind the binary at /usr/lib/malmo/...,
-#      and drop in a malmo-boot-test.service oneshot that runs
+#      /etc/systemd/system, bind the binary at /usr/lib/moose/...,
+#      and drop in a moose-boot-test.service oneshot that runs
 #      boot-assertions.sh after multi-user.target
 #   5. read the PASS|FAIL verdict from a bind-mounted result file
 #
@@ -24,8 +24,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ROOTFS="${REPO_ROOT}/.dev/nspawn/rootfs"
 WORK="${REPO_ROOT}/.dev/nspawn"
 STAGE="${WORK}/boot-stage"
-VERIFY_BIN="${WORK}/malmo-storage-verify"
-RESULT_FILE="$(mktemp -t malmo-boot-result.XXXXXX)"
+VERIFY_BIN="${WORK}/moose-storage-verify"
+RESULT_FILE="$(mktemp -t moose-boot-result.XXXXXX)"
 trap 'rm -f "$RESULT_FILE"' EXIT
 
 # Same caller-resolution dance as run-usermgr-tests.sh — under
@@ -72,24 +72,24 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
 fi
 
 # --- 1. bootstrap
-if [ ! -f "${ROOTFS}/.malmo-nspawn-ready" ] \
-   || [ "$(cat "${ROOTFS}/.malmo-nspawn-ready" 2>/dev/null || true)" != "v2" ]; then
+if [ ! -f "${ROOTFS}/.moose-nspawn-ready" ] \
+   || [ "$(cat "${ROOTFS}/.moose-nspawn-ready" 2>/dev/null || true)" != "v2" ]; then
     "${REPO_ROOT}/dev/test-nspawn/bootstrap.sh"
 fi
 
 # --- 2. build verifier statically (no Go toolchain in the rootfs)
 if [ -n "$CALLER" ]; then
     sudo -u "$CALLER" env CGO_ENABLED=0 "$GO" build -o "$VERIFY_BIN" \
-        "${REPO_ROOT}/cmd/malmo-storage-verify/"
+        "${REPO_ROOT}/cmd/moose-storage-verify/"
 else
     CGO_ENABLED=0 "$GO" build -o "$VERIFY_BIN" \
-        "${REPO_ROOT}/cmd/malmo-storage-verify/"
+        "${REPO_ROOT}/cmd/moose-storage-verify/"
 fi
 
 # --- 3. stage units
 # Layout matches dist/systemd/README.md # Layout:
 #   /etc/systemd/system/<unit>
-#   /etc/systemd/system/<unit>.d/malmo.conf  (drop-ins)
+#   /etc/systemd/system/<unit>.d/moose.conf  (drop-ins)
 # Plus stub parent units for docker/smbd/avahi-daemon so drop-ins attach,
 # plus the test-driver service that runs the assertions.
 rm -rf "$STAGE"
@@ -97,17 +97,17 @@ mkdir -p "$STAGE/etc/systemd/system"
 SYS="$STAGE/etc/systemd/system"
 
 # Real units + targets from dist/systemd/.
-cp "${REPO_ROOT}/dist/systemd/malmo-storage-ready.target"   "$SYS/"
-cp "${REPO_ROOT}/dist/systemd/malmo-storage-verify.service" "$SYS/"
-cp "${REPO_ROOT}/dist/systemd/malmo-recovery.target"        "$SYS/"
+cp "${REPO_ROOT}/dist/systemd/moose-storage-ready.target"   "$SYS/"
+cp "${REPO_ROOT}/dist/systemd/moose-storage-verify.service" "$SYS/"
+cp "${REPO_ROOT}/dist/systemd/moose-recovery.target"        "$SYS/"
 cp "${REPO_ROOT}/dist/systemd/host-agent.service"           "$SYS/"
 
-# Drop-ins. dist/systemd/dropins/<unit>.service.d/malmo.conf
-# → /etc/systemd/system/<unit>.service.d/malmo.conf
+# Drop-ins. dist/systemd/dropins/<unit>.service.d/moose.conf
+# → /etc/systemd/system/<unit>.service.d/moose.conf
 for d in "${REPO_ROOT}/dist/systemd/dropins"/*.service.d; do
     unit_dir="$(basename "$d")"   # e.g. docker.service.d
     mkdir -p "$SYS/$unit_dir"
-    cp "$d/malmo.conf" "$SYS/$unit_dir/"
+    cp "$d/moose.conf" "$SYS/$unit_dir/"
 done
 
 # Stub parent units. systemd-nspawn rootfs has no docker/smbd/avahi
@@ -119,7 +119,7 @@ for svc in docker smbd avahi-daemon; do
 [Unit]
 Description=Stub ${svc}.service for boot-chain test rootfs (slice 0020)
 # Real unit not installed in the nspawn rootfs; this stub exists only
-# so dist/systemd/dropins/${svc}.service.d/malmo.conf has a parent to
+# so dist/systemd/dropins/${svc}.service.d/moose.conf has a parent to
 # attach to. Do not copy to production.
 
 [Service]
@@ -133,9 +133,9 @@ done
 # settles, then powers off. RemainAfterExit=yes ensures `systemctl
 # start` waits for the assertions to finish. ExecStopPost=poweroff
 # --force skips the second-stage shutdown that can hang under nspawn.
-cat >"$SYS/malmo-boot-test.service" <<'EOF'
+cat >"$SYS/moose-boot-test.service" <<'EOF'
 [Unit]
-Description=malmo boot-chain assertion driver (slice 0020)
+Description=moose boot-chain assertion driver (slice 0020)
 After=basic.target
 Wants=basic.target
 # Avoid waiting for multi-user.target — in a minimal rootfs that target
@@ -145,7 +145,7 @@ Wants=basic.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/bin/sh -c 'echo "FAIL: ExecStart never reached" > /var/lib/malmo-boot-result'
+ExecStartPre=/bin/sh -c 'echo "FAIL: ExecStart never reached" > /var/lib/moose-boot-result'
 ExecStart=/usr/local/bin/boot-assertions.sh
 # The script itself execs poweroff after writing the verdict. This
 # ExecStopPost is the belt-and-suspenders fallback if the script exits
@@ -160,7 +160,7 @@ WantedBy=basic.target
 EOF
 # Enable via symlink (no systemctl available at staging time).
 mkdir -p "$SYS/basic.target.wants"
-ln -sf ../malmo-boot-test.service "$SYS/basic.target.wants/malmo-boot-test.service"
+ln -sf ../moose-boot-test.service "$SYS/basic.target.wants/moose-boot-test.service"
 
 # Our --bind-ro replaces /etc/systemd/system wholesale, which drops the
 # rootfs's default.target symlink. Without a default.target, systemd
@@ -207,10 +207,10 @@ systemd-nspawn \
     --register=no \
     --directory="$ROOTFS" \
     --bind-ro="$STAGE/etc/systemd/system:/etc/systemd/system" \
-    --bind-ro="$VERIFY_BIN:/usr/lib/malmo/malmo-storage-verify" \
-    --bind-ro=/bin/true:/usr/lib/malmo/host-agent-real \
+    --bind-ro="$VERIFY_BIN:/usr/lib/moose/moose-storage-verify" \
+    --bind-ro=/bin/true:/usr/lib/moose/host-agent-real \
     --bind-ro="${REPO_ROOT}/dev/test-nspawn/boot-assertions.sh:/usr/local/bin/boot-assertions.sh" \
-    --bind="$RESULT_FILE:/var/lib/malmo-boot-result" \
+    --bind="$RESULT_FILE:/var/lib/moose-boot-result" \
     --boot &
 NSPAWN_PID=$!
 

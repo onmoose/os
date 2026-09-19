@@ -1,5 +1,5 @@
 // formatSize renders a raw byte count as a plain, consumer-facing size ("1.5 GB"
-// — the malmo audience expects GB/MB, never the technical GiB/MiB the live-
+// — the moose audience expects GB/MB, never the technical GiB/MiB the live-
 // resources view uses). Binary math (1 GB = 1024³) so it round-trips the binary
 // units manifests author estimated_size in (APP_MANIFEST.md # Storage) and
 // matches the Synology/Windows convention of GB labels on 1024-based math. The

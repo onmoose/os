@@ -5,14 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/mailpreset"
+	"github.com/onmoose/os/internal/mailpreset"
 )
 
 func sampleProvider(id, label string) MailProvider {
 	return MailProvider{
 		ID: id, Label: label, Host: "smtp.example.com", Port: 587,
-		Username: "malmo@example.com", Password: "hunter2",
-		FromAddress: "malmo@example.com", Encryption: MailEncryptionSTARTTLS,
+		Username: "moose@example.com", Password: "hunter2",
+		FromAddress: "moose@example.com", Encryption: MailEncryptionSTARTTLS,
 		ProviderType: mailpreset.Custom,
 		CreatedAt:    time.Unix(1_700_000_000, 0),
 	}

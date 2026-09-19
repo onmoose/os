@@ -8,7 +8,7 @@
 // Two providers:
 //
 //   - NMProvider (nm_linux.go) reads NetworkManager over the system DBus. NM
-//     owns every interface on a malmo box (BOOT.md # NetworkManager owns the
+//     owns every interface on a moose box (BOOT.md # NetworkManager owns the
 //     network stack), so its active ethernet/WiFi connections *are* the LAN
 //     set. Mesh interfaces, Docker bridges, and veths are structurally
 //     excluded: they are never active NM connections of those types.

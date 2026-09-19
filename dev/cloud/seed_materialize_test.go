@@ -1,5 +1,5 @@
 // Package cloud holds no Go production code — it exists only to host this test,
-// which exercises the real-cloud seed-fetch logic of malmo-seed-materialize.sh
+// which exercises the real-cloud seed-fetch logic of moose-seed-materialize.sh
 // (#246) against a local mock metadata server. The shell script is the artifact
 // baked into the hosted cloud image; testing its fetch/parse/retry/404 paths here
 // (in `make check` / ci-go, on every PR) covers the genuinely novel bash so the
@@ -21,7 +21,7 @@ import (
 	"testing"
 )
 
-const script = "malmo-seed-materialize.sh"
+const script = "moose-seed-materialize.sh"
 
 // runFn sources the materializer and runs one shell snippet against it, returning
 // stdout and the exit code. The main-guard (BASH_SOURCE != $0) keeps `main` from
@@ -42,9 +42,9 @@ func runFn(t *testing.T, snippet string, args ...string) (string, int) {
 	// Keep the tests fast: a 1s per-attempt connect cap and a 1s retry window so
 	// the "endpoint never comes up" path gives up in ~2s instead of the 60s default.
 	cmd.Env = append(cmd.Environ(),
-		"MALMO_SEED_FETCH_TIMEOUT=1",
-		"MALMO_SEED_FETCH_INTERVAL=1",
-		"MALMO_SEED_FETCH_DEADLINE=1",
+		"MOOSE_SEED_FETCH_TIMEOUT=1",
+		"MOOSE_SEED_FETCH_INTERVAL=1",
+		"MOOSE_SEED_FETCH_DEADLINE=1",
 	)
 	out, err := cmd.Output()
 	code := 0
@@ -103,7 +103,7 @@ func TestFetchSeed200KeepAliveSocketStillLandsSeed(t *testing.T) {
 	// this test drives a raw listener that deliberately keeps the connection open.
 	//
 	// Timing invariant (not a hazard): runFn caps the inner read at
-	// MALMO_SEED_FETCH_TIMEOUT=1s. The full seed is written synchronously over
+	// MOOSE_SEED_FETCH_TIMEOUT=1s. The full seed is written synchronously over
 	// loopback (microseconds) before that deadline, so `cat` always captures the
 	// whole response and `timeout` only fires on the trailing keep-alive wait —
 	// which is exactly the case under test.

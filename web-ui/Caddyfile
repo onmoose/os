@@ -1,4 +1,4 @@
-# malmo-ui static SPA server (WEB_UI.md # deploy model). Serves the built bundle
+# moose-ui static SPA server (WEB_UI.md # deploy model). Serves the built bundle
 # from /srv/ui; any path that isn't a real file falls back to index.html so the
 # Vue Router (history mode) owns client-side routing. ETag is on by default in
 # file_server; `encode` adds gzip + zstd (brotli encoding isn't in the stock

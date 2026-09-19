@@ -22,17 +22,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/admission"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/events"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/admission"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/store"
 )
 
 func TestLivePostgresProvisioning(t *testing.T) {
 	ctx := context.Background()
 	stateDir := t.TempDir()
 	catDir := t.TempDir()
-	s, err := store.Open(filepath.Join(stateDir, "malmo.db"))
+	s, err := store.Open(filepath.Join(stateDir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -73,7 +73,7 @@ services:
   app:
     image: traefik/whoami:v1.10.3
     environment:
-      POSTGRES_URL: ${MALMO_SERVICE_DATABASE_DSN}
+      POSTGRES_URL: ${MOOSE_SERVICE_DATABASE_DSN}
 `
 	writeLiveCatalogApp(t, catDir, "liveapp", compose, man)
 
@@ -141,7 +141,7 @@ func TestLivePostgres18Persistence(t *testing.T) {
 	ctx := context.Background()
 	stateDir := t.TempDir()
 	catDir := t.TempDir()
-	s, err := store.Open(filepath.Join(stateDir, "malmo.db"))
+	s, err := store.Open(filepath.Join(stateDir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -178,7 +178,7 @@ services:
   app:
     image: traefik/whoami:v1.10.3
     environment:
-      POSTGRES_URL: ${MALMO_SERVICE_DATABASE_DSN}
+      POSTGRES_URL: ${MOOSE_SERVICE_DATABASE_DSN}
 `
 	writeLiveCatalogApp(t, catDir, "livepg18", compose, man)
 
@@ -264,7 +264,7 @@ func TestLiveMySQLProvisioning(t *testing.T) {
 	ctx := context.Background()
 	stateDir := t.TempDir()
 	catDir := t.TempDir()
-	s, err := store.Open(filepath.Join(stateDir, "malmo.db"))
+	s, err := store.Open(filepath.Join(stateDir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -301,7 +301,7 @@ services:
   app:
     image: traefik/whoami:v1.10.3
     environment:
-      DATABASE_URL: ${MALMO_SERVICE_DATABASE_DSN}
+      DATABASE_URL: ${MOOSE_SERVICE_DATABASE_DSN}
 `
 	writeLiveCatalogApp(t, catDir, "livemysql", compose, man)
 
@@ -359,7 +359,7 @@ func TestLiveRedisProvisioning(t *testing.T) {
 	ctx := context.Background()
 	stateDir := t.TempDir()
 	catDir := t.TempDir()
-	s, err := store.Open(filepath.Join(stateDir, "malmo.db"))
+	s, err := store.Open(filepath.Join(stateDir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -396,7 +396,7 @@ services:
   app:
     image: traefik/whoami:v1.10.3
     environment:
-      REDIS_URL: ${MALMO_SERVICE_CACHE_DSN}
+      REDIS_URL: ${MOOSE_SERVICE_CACHE_DSN}
 `
 	writeLiveCatalogApp(t, catDir, "livecache", compose, man)
 
@@ -469,10 +469,10 @@ func redisUserCanConnect(t *testing.T, user, password string) bool {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		set, err := exec.Command("docker", "exec", container,
-			"valkey-cli", "--no-auth-warning", "-u", url, "set", "malmo:probe", "ok").CombinedOutput()
+			"valkey-cli", "--no-auth-warning", "-u", url, "set", "moose:probe", "ok").CombinedOutput()
 		if err == nil && strings.Contains(string(set), "OK") {
 			got, _ := exec.Command("docker", "exec", container,
-				"valkey-cli", "--no-auth-warning", "-u", url, "get", "malmo:probe").CombinedOutput()
+				"valkey-cli", "--no-auth-warning", "-u", url, "get", "moose:probe").CombinedOutput()
 			if strings.TrimSpace(string(got)) == "ok" {
 				return true
 			}
@@ -500,7 +500,7 @@ func TestLiveServiceUserBootAndWrite(t *testing.T) {
 	ctx := context.Background()
 	stateDir := t.TempDir()
 	catDir := t.TempDir()
-	s, err := store.Open(filepath.Join(stateDir, "malmo.db"))
+	s, err := store.Open(filepath.Join(stateDir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -554,7 +554,7 @@ services:
 	}
 	t.Cleanup(func() {
 		out, _ := exec.Command("docker", "ps", "-aq",
-			"--filter", "label=malmo.instance_id="+inst.ID).Output()
+			"--filter", "label=moose.instance_id="+inst.ID).Output()
 		for _, cid := range strings.Fields(string(out)) {
 			_ = exec.Command("docker", "rm", "-f", cid).Run()
 		}
@@ -573,7 +573,7 @@ services:
 
 	// The main container runs as the allocated identity…
 	cid, err := exec.Command("docker", "ps", "-q",
-		"--filter", "label=malmo.instance_id="+inst.ID,
+		"--filter", "label=moose.instance_id="+inst.ID,
 		"--filter", "label=com.docker.compose.service=app").Output()
 	if err != nil || strings.TrimSpace(string(cid)) == "" {
 		t.Fatalf("app container not found: %v", err)
@@ -659,7 +659,7 @@ func mysqlUserCanConnect(t *testing.T, user, password, dbName string) bool {
 func TestLiveKanBoot(t *testing.T) {
 	ctx := context.Background()
 	stateDir := t.TempDir()
-	s, err := store.Open(filepath.Join(stateDir, "malmo.db"))
+	s, err := store.Open(filepath.Join(stateDir, "moose.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -685,7 +685,7 @@ func TestLiveKanBoot(t *testing.T) {
 	// The compose is kan's own: a migrate service runs first
 	// (service_completed_successfully) then web boots against the provisioned
 	// Postgres with the injected DSN + auth secret. This keeps the one live check
-	// that a real app's own migration job runs against a malmo-provisioned DB.
+	// that a real app's own migration job runs against a moose-provisioned DB.
 	man := `id: kan
 manifest_version: 1
 name: Kan
@@ -709,14 +709,14 @@ permissions:
     image: ghcr.io/kanbn/kan-migrate:0.5.6
     restart: "no"
     environment:
-      POSTGRES_URL: ${MALMO_SERVICE_DATABASE_DSN}
+      POSTGRES_URL: ${MOOSE_SERVICE_DATABASE_DSN}
 
   web:
     image: ghcr.io/kanbn/kan:0.5.6
     environment:
-      POSTGRES_URL: ${MALMO_SERVICE_DATABASE_DSN}
-      BETTER_AUTH_SECRET: ${MALMO_SECRET_AUTH}
-      NEXT_PUBLIC_BASE_URL: ${MALMO_APP_URL}
+      POSTGRES_URL: ${MOOSE_SERVICE_DATABASE_DSN}
+      BETTER_AUTH_SECRET: ${MOOSE_SECRET_AUTH}
+      NEXT_PUBLIC_BASE_URL: ${MOOSE_APP_URL}
       NEXT_PUBLIC_ALLOW_CREDENTIALS: "true"
     depends_on:
       migrate:

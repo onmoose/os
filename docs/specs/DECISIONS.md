@@ -1,4 +1,4 @@
-# malmo Decisions Log
+# moose Decisions Log
 
 > Reverse-chronological log of decisions we made, decisions we *changed*, and the reasoning behind each. Not a changelog of code (there is no code). Not a list of locked decisions (those live at the bottom of each doc). This file captures the **evolution of thinking** — what we used to believe, what we believe now, and why we changed our mind.
 >
@@ -20,6 +20,25 @@ Each entry:
 Keep entries skimmable. The detailed rationale lives in the affected doc; this file is the pointer + the *delta*.
 
 ---
+
+## 2026-09-16 — The project is renamed from malmo to moose (#489)
+
+**Previously:** the project was called malmo. The hosted apex was `malmo.network`, the product site `malmo.com`, the GitHub org `malmoos`, the Go module `github.com/malmoos/malmo`, and every name on a box carried the word: `/var/lib/malmo`, `/etc/pam.d/malmo`, the `malmo-shared` group, the `malmo-ingress` network, the `malmo.instance_id` label, the `malmo_session` cookie, the `MALMO_*` env vars an app is given, and the `X-Malmo-User` header forward auth sets.
+
+**Now:** the project is **moose**. Hosted boxes live under `onmoose.io`, the product site and portal are `mooseos.com`, the org is `onmoose`, the repo `os`, and the module `github.com/onmoose/os`. Every name follows: paths, host accounts, systemd units, containers, labels, cookies, headers, env vars, the `/_moose/` API leg, and the dashboard copy. The appliance dashboard is `moose.local`.
+
+Three calls sit inside the rename.
+
+1. **Clean break, no compatibility layer.** Nothing in the tree accepts an old name. An existing box is not upgraded into the new name: a control-plane update replaces only the brain and the UI, while the host-agent that mounts `/var/lib/malmo`, sets `MALMO_*` and checks the `malmo.protocol.major` label is baked into the image. The few boxes that exist are re-provisioned from a new image instead.
+2. **The app-facing contract is renamed in lockstep with the catalog.** `MALMO_APP_URL`, `MALMO_SECRET_*`, `MALMO_SERVICE_*`, `MALMO_MAIL_*`, `MALMO_FOLDER_*`, `MALMO_INSTANCE_ID`, `MALMO_DATA_DIR` and `X-Malmo-User` become `MOOSE_*` and `X-Moose-User`. Every catalog app reads these, so this repo and `onmoose/store` ship together. The brain does not emit both prefixes.
+
+3. **The box domain and the product site are different registrable domains, and every baked value gets its own subdomain of the box domain.** A tenant controls `<box-id>.onmoose.io`, so sharing a registrable domain with the portal would let a box set a cookie the browser sends to the portal; `SameSite=Lax` is no defence, because the two would be the same site. So the portal is `mooseos.com` and boxes are `onmoose.io`. Within the box domain, nothing a box compiles in points at the bare name: the catalog origin is `https://catalog.onmoose.io`, the acme-dns endpoint `https://auth.onmoose.io`, the update-target source `https://api.onmoose.io/api/updates/target`. The rule carries no exceptions on purpose, because the exception is what nobody remembers later, and because a bare domain is the one a browser-facing stack is eventually pointed at. The assertion `iss` follows the **box** domain rather than the portal, since the box compares `claims.Iss` against its own `profile.NetworkApex` (`internal/api/sso.go`); sending the portal's host instead fails every box at once. All of these are compiled into the image and cannot be changed on a provisioned box, which is why they are settled in the rename rather than after it.
+
+**Why:** a rename is worth doing once and completely. A box carries the name in places that are hard to change later: a group in `/etc/group`, a service account prefix in `/etc/passwd`, a PAM service file, a LUKS-era systemd unit graph, a cookie the browser already holds. Keeping the old names on disk to spare a handful of boxes would leave two vocabularies in the tree forever, which is the cost every later reader pays. The fleet is small enough today that re-provisioning is cheaper than a compatibility layer, and that will never be true again. Emitting both env prefixes for a while has the same shape: it trades one lockstep merge for a cleanup nobody is scheduled to do.
+
+The old name stays in the frozen history. `docs/progress/` entries and the older entries below this one are snapshots of what was true when they were written, so they keep saying malmo.
+
+**Affected docs:** every file in `docs/specs/` except the older entries here, `MALMO_NETWORK.md` renamed to `MOOSE_NETWORK.md` (`docs/README.md` updated), `docs/architecture.md`, all of `docs/dev/`, `README.md`, `CLAUDE.md`, the GitHub issue and PR templates, and the workflows.
 
 ## 2026-09-09 — SSH ships on both profiles; the mandatory auth factor is set by the profile (#463)
 

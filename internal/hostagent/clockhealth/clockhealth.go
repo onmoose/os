@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // issueClockNotSynced is the registered issue ID raised when the clock is off.

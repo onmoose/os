@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/netstate"
-	"github.com/malmoos/malmo/internal/protocol"
-	"github.com/malmoos/malmo/internal/version"
+	"github.com/onmoose/os/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/protocol"
+	"github.com/onmoose/os/internal/version"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -30,7 +30,7 @@ var ErrUnknownUser = errors.New("unknown user")
 // Despite living in a file full of fake-agent scaffolding, systemStatus is
 // SHARED code — it's compiled into and called by both cmd/host-agent (fake)
 // and cmd/host-agent-real, and today reports placeholder data for both alike
-// (Hostname below is hardcoded "malmo-dev" the same way, a known, separate
+// (Hostname below is hardcoded "moose-dev" the same way, a known, separate
 // gap). So this derives from the real stamped internal/version.Version rather
 // than a "-fake" literal: a "-fake" suffix would mislabel host-agent-real too,
 // which this same constant also feeds until real per-binary system-status
@@ -77,11 +77,11 @@ type NetState interface {
 }
 
 // HealthSource is a consumer-side interface for reading the latest storage
-// findings written by malmo-storage-verify (BOOT.md # The storage-ready
+// findings written by moose-storage-verify (BOOT.md # The storage-ready
 // target). It backs the storage category of GET /v1/health/system. Provider
 // packages return concrete types: FakeHealthSource for the fake binary,
 // healthsource.FilesystemHealthSource (which reads
-// /run/malmo/health/storage.json) for cmd/host-agent-real.
+// /run/moose/health/storage.json) for cmd/host-agent-real.
 //
 // Read must always return a usable StorageHealth — missing report = empty
 // findings, malformed report = a single "health-report-malformed" finding.
@@ -151,7 +151,7 @@ type RAMReporter interface {
 // space behind GET /v1/system/status (DataDiskFreeBytes/DataDiskTotalBytes).
 // It backs the install-plan free_bytes figure (BRAIN_UI_PROTOCOL.md #
 // install-plan). Provider packages return concrete types: diskusage.Reporter
-// (real syscall.Statfs on /srv/malmo) for cmd/host-agent-real, FakeDiskReporter
+// (real syscall.Statfs on /srv/moose) for cmd/host-agent-real, FakeDiskReporter
 // for the fake binary and tests.
 //
 // DataDisk always returns usable levels and never errors — a statfs failure
@@ -165,7 +165,7 @@ type DiskReporter interface {
 // behind GET /v1/system/status (SystemStatus.Disks), backing the
 // system-resources panel's Storage bars (LOCAL_ANALYTICS.md # Real-time system
 // resources). Provider packages return concrete types: diskusage.Reporter (real
-// statfs on / and /srv/malmo) for cmd/host-agent-real, FakeDiskSpaceReporter for
+// statfs on / and /srv/moose) for cmd/host-agent-real, FakeDiskSpaceReporter for
 // the fake binary and tests.
 //
 // Disks always returns a usable slice and never errors — it omits a volume
@@ -231,7 +231,7 @@ type UpdateTargetReporter interface {
 // (admin → in `sudo`, member → not in `sudo`); idempotent. ResolveHome returns
 // the user's home directory path and POSIX UID/GID; returns ErrUnknownUser when
 // the user does not exist. WellKnownIdentity returns the fixed service-account
-// UIDs/GIDs for malmo-app and malmo-shared. AllocateAppService reserves a
+// UIDs/GIDs for moose-app and moose-shared. AllocateAppService reserves a
 // fresh UID/GID pair from the app-service band [protocol.AppServiceUIDMin,
 // protocol.AppServiceUIDMax] for a `service_user: true` instance;
 // ReleaseAppService returns one to the band (idempotent — releasing an
@@ -332,14 +332,14 @@ type Agent struct {
 
 	// Disk, when non-nil, backs the data-drive free/total fields of GET
 	// /v1/system/status. Swapped per binary: diskusage.Reporter (real statfs on
-	// /srv/malmo) vs FakeDiskReporter. When nil, both fields report 0 ("not
+	// /srv/moose) vs FakeDiskReporter. When nil, both fields report 0 ("not
 	// measured"), which the brain surfaces as "free space unknown" in the
 	// install plan rather than a misleading empty disk.
 	Disk DiskReporter
 
 	// DiskSpace, when non-nil, backs the per-volume Disks field of GET
 	// /v1/system/status (the Storage bars). Swapped per binary: diskusage.Reporter
-	// (real statfs on / and /srv/malmo) vs FakeDiskSpaceReporter. When nil, Disks
+	// (real statfs on / and /srv/moose) vs FakeDiskSpaceReporter. When nil, Disks
 	// is an empty slice — the panel shows no Storage section rather than phantom
 	// bars. cmd/host-agent-real wires the same diskusage.Reporter to Disk and
 	// DiskSpace.
@@ -530,7 +530,7 @@ func (a *Agent) discoveryState(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, protocol.DiscoveryState{
 		Publisher:  "avahi-fake",
-		HostName:   "malmo",
+		HostName:   "moose",
 		RenamedTo:  nil,
 		Published:  names,
 		Interfaces: ifaces,
@@ -552,7 +552,7 @@ func (a *Agent) systemStatus(w http.ResponseWriter, r *http.Request) {
 		disks = a.DiskSpace.Disks()
 	}
 	writeJSON(w, http.StatusOK, protocol.SystemStatus{
-		Hostname:           "malmo-dev",
+		Hostname:           "moose-dev",
 		UptimeS:            int64(time.Since(a.startedAt).Seconds()),
 		DiskPressure:       false,
 		AgentVersion:       AgentVersion,
@@ -1084,7 +1084,7 @@ func (a *Agent) resolveHome(w http.ResponseWriter, r *http.Request) {
 }
 
 // wellKnownIdentity returns the fixed service-account UIDs/GIDs for the
-// malmo-app system user and the malmo-shared group.
+// moose-app system user and the moose-shared group.
 //
 // When UserMgr is wired (cmd/host-agent-real), delegates to WellKnownIdentity
 // which resolves the real system user/group via os/user.Lookup. When nil
@@ -1099,14 +1099,14 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, protocol.WellKnownIdentityResponse{
-			MalmoAppUID:    appUID,
-			MalmoAppGID:    appGID,
-			MalmoSharedGID: sharedGID,
+			MooseAppUID:    appUID,
+			MooseAppGID:    appGID,
+			MooseSharedGID: sharedGID,
 		})
 		return
 	}
 
-	// Fake branch: resolve the malmo-app service identity to the dev operator's
+	// Fake branch: resolve the moose-app service identity to the dev operator's
 	// own uid/gid (not fixed 2000/2001) for the same reason as resolve-home — a
 	// household-scope folder app then runs as an identity the unprivileged dev
 	// brain owns, so Part A's bind-dir chowns are no-op successes (#147). The
@@ -1119,9 +1119,9 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, protocol.WellKnownIdentityResponse{
-		MalmoAppUID:    uid,
-		MalmoAppGID:    gid,
-		MalmoSharedGID: gid,
+		MooseAppUID:    uid,
+		MooseAppGID:    gid,
+		MooseSharedGID: gid,
 	})
 }
 
@@ -1132,7 +1132,7 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 // already holds a reservation returns the same pair.
 //
 // When UserMgr is wired (cmd/host-agent-real), the reservation is a real
-// system account (malmo-svc-<uid> in /etc/passwd, durable across restarts).
+// system account (moose-svc-<uid> in /etc/passwd, durable across restarts).
 // When nil (cmd/host-agent fake), it resolves to the dev operator's own
 // uid/gid — the same chownable-identity rule as resolveHome/wellKnownIdentity
 // (#147): the unprivileged dev brain runs as this operator, so it already owns

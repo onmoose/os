@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build the hosted cloud-VM image (C1b #203; first-boot wiring #242) and assert it
 # is genuinely lean. This is the image `deploy/hetzner-image/build-and-upload.sh`
-# (cloud repo) snapshots and provisioning uploads as MALMO_HETZNER_IMAGE.
+# (cloud repo) snapshots and provisioning uploads as MOOSE_HETZNER_IMAGE.
 #
-# C1b shipped this as a lean Debian + docker host with NO malmo wiring — it booted
+# C1b shipped this as a lean Debian + docker host with NO moose wiring — it booted
 # to an empty, network-less docker host on a real cloud (#242). This script now
 # bakes the first-boot RUNTIME wiring (the same wiring the boot-proof test lane
 # validates) so a provisioned box self-bootstraps: networkd brings the NIC up via
@@ -279,7 +279,7 @@ PY
 
 # Source-sanity check: verify the committed ExtraTrees source file reads `hosted`
 # so a stale or accidentally blanked file fails fast before the next build.
-MARKER="${CLOUD_DIR}/mkosi.extra/etc/malmo/profile"
+MARKER="${CLOUD_DIR}/mkosi.extra/etc/moose/profile"
 if [ "$(tr -d '[:space:]' < "$MARKER")" != "hosted" ]; then
     echo "source-sanity check failed: $MARKER does not read 'hosted'" >&2
     exit 1

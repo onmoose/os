@@ -3,13 +3,13 @@
 # A BuildKit check directive has to be the first line of the file.)
 # Custom Caddy with the acme-dns DNS provider (caddy-dns/acmedns) compiled in.
 #
-# The hosted profile serves every app at "<slug>.<box-id>.malmo.network" over a
+# The hosted profile serves every app at "<slug>.<box-id>.onmoose.io" over a
 # real Let's Encrypt wildcard cert obtained via ACME DNS-01 against the box's
 # per-box acme-dns account (ENVIRONMENT.md # Networking & discovery; os #207 /
 # C3b). DNS-01 needs a DNS-provider module in the Caddy binary, and the stock
 # caddy:2-alpine image ships none — hence this xcaddy build.
 #
-# Only the hosted image points MALMO_CADDY_IMAGE at this build (see
+# Only the hosted image points MOOSE_CADDY_IMAGE at this build (see
 # ../compose.yml). Appliance keeps riding stock caddy:2-alpine: it does no ACME
 # (plain-HTTP ".local"), so adding the module there would be unused surface and
 # would drop it off the upstream official image. When the appliance secure-URLs

@@ -11,16 +11,16 @@ import (
 
 // controlPlaneComposeFile is the staged compose the brain reconciles the
 // control-plane stack from (# EnsureControlPlane). The name is fixed by the
-// image build, which writes it to MALMO_CONTROL_PLANE_DIR.
+// image build, which writes it to MOOSE_CONTROL_PLANE_DIR.
 const controlPlaneComposeFile = "compose.yml"
 
 // uiServiceName is the compose service that runs the dashboard bundle
 // (CONTROL_PLANE.md # the dashboard UI is a brain-launched container).
-const uiServiceName = "malmo-ui"
+const uiServiceName = "moose-ui"
 
 // ControlPlaneUIImage reports the image reference the staged control-plane
-// compose pins for the dashboard service, e.g. "malmo-ui:dev" today or
-// "ghcr.io/malmoos/ui:v0.6.0" once an update has rewritten it.
+// compose pins for the dashboard service, e.g. "moose-ui:dev" today or
+// "ghcr.io/onmoose/ui:v0.6.0" once an update has rewritten it.
 //
 // Why read the file rather than ask Docker what is running: this compose is the
 // **declaration** the brain reconciles to on every startup, and it is the same

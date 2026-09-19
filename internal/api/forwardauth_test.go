@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/profile"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/profile"
+	"github.com/onmoose/os/internal/store"
 )
 
 // Hosted per-app forward-auth verify endpoint + cookie minting (issue #305).
@@ -75,11 +75,11 @@ func TestForwardAuthVerify_OwnerAllowed(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("verify(owner) = %d; want 200", rec.Code)
 	}
-	if got := rec.Header().Get("X-Malmo-User"); got != owner.Username {
-		t.Fatalf("X-Malmo-User = %q; want %q", got, owner.Username)
+	if got := rec.Header().Get("X-Moose-User"); got != owner.Username {
+		t.Fatalf("X-Moose-User = %q; want %q", got, owner.Username)
 	}
-	if got := rec.Header().Get("X-Malmo-User-Id"); got != owner.ID {
-		t.Fatalf("X-Malmo-User-Id = %q; want %q", got, owner.ID)
+	if got := rec.Header().Get("X-Moose-User-Id"); got != owner.ID {
+		t.Fatalf("X-Moose-User-Id = %q; want %q", got, owner.ID)
 	}
 }
 

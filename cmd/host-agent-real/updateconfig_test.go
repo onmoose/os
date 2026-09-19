@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malmoos/malmo/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
 )
 
-// seedFile writes a seed at a fresh path and points MALMO_SEED_PATH at it, the
+// seedFile writes a seed at a fresh path and points MOOSE_SEED_PATH at it, the
 // way the first-boot materializer lands one before host-agent starts.
 func seedFile(t *testing.T, body string) {
 	t.Helper()
@@ -288,7 +288,7 @@ func TestUpdateWindow(t *testing.T) {
 // that path that has to be checked, not assumed.
 func TestCheckTargetURL_RefusalCarriesNoSecret(t *testing.T) {
 	// Malformed (a control character), with a secret in each hiding place.
-	err := checkTargetURL("http://user:pw-secret@malmo.example\x7f/target?token=query-secret")
+	err := checkTargetURL("http://user:pw-secret@moose.example\x7f/target?token=query-secret")
 	if err == nil {
 		t.Fatal("a URL with a control character was accepted")
 	}
@@ -304,7 +304,7 @@ func TestCheckTargetURL_RefusalCarriesNoSecret(t *testing.T) {
 
 // The two well-formed refusals name the offending value, redacted.
 func TestCheckTargetURL_WrongSchemeCarriesNoSecret(t *testing.T) {
-	err := checkTargetURL("ftp://user:pw-secret@malmo.example/target?token=query-secret")
+	err := checkTargetURL("ftp://user:pw-secret@moose.example/target?token=query-secret")
 	if err == nil {
 		t.Fatal("an ftp URL was accepted")
 	}

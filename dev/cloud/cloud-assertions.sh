@@ -1,26 +1,26 @@
 #!/bin/bash
 # Cloud boot-proof in-VM assertions (C2, #205; seed/gate scenarios C3a, #220).
 # Baked into the boot-proof image at /usr/local/bin/cloud-assertions.sh and run on
-# each boot by malmo-cloud-assertions.service. Writes a single verdict line to the
+# each boot by moose-cloud-assertions.service. Writes a single verdict line to the
 # serial console for dev/cloud/run-cloud-tests.sh to grep:
 #
-#     MALMO_CLOUD_ASSERTIONS: PASS
-#     MALMO_CLOUD_ASSERTIONS: FAIL: <reason>
+#     MOOSE_CLOUD_ASSERTIONS: PASS
+#     MOOSE_CLOUD_ASSERTIONS: FAIL: <reason>
 #
 # The cloud analogue of dev/test-qemu/medium-assertions.sh. Every boot first does
 # the control-plane-up proof (systemd userspace up with no failed units, PSI live,
 # the baked control-plane images loaded, the four containers running, the dashboard
 # + /api answering through Caddy), then asserts the hosted portal-to-box SSO gate
 # (#275; ENVIRONMENT.md # Admin bootstrap — as built) for the scenario the harness
-# selected via the malmo.assert credential. This box-only lane has no portal private
+# selected via the moose.assert credential. This box-only lane has no portal private
 # key, so it asserts the gate's negative properties (the verifier is armed and
 # refuses what it should); the positive owner-create + wizard path needs a real
 # assertion and is the joint cloud on-ramp acceptance (cloud docs/ops/e2e-onramp.md):
 #
-#     unseeded         no seed → no verification key → GET /_malmo/sso ⇒ 503;
+#     unseeded         no seed → no verification key → GET /_moose/sso ⇒ 503;
 #                      POST /setup ⇒ 403 (disabled on hosted)
 #     seeded           seed on disk → key ingested → a bad/unsigned token on
-#                      GET /_malmo/sso ⇒ 401 (verifier armed); /setup ⇒ 403; the
+#                      GET /_moose/sso ⇒ 401 (verifier armed); /setup ⇒ 403; the
 #                      brain logged 'provisioning seed ingested'
 #     frozen:<box-id>  reboot with a DIFFERENT seed → the dashboard + /api still
 #                      serve under the ORIGINAL <box-id> (Caddy route unchanged ⇒
@@ -52,36 +52,36 @@
 set -uo pipefail
 
 SENTINEL=/dev/console
-SEED=/var/lib/malmo/seed.json
+SEED=/var/lib/moose/seed.json
 # Host the dashboard + /api + /setup are served under, resolved per scenario below
 # (just before step 7, once json_str is defined). An UNPROVISIONED hosted box has no
-# box-id yet, so the brain installs the route under the appliance-style "malmo.local"
-# apex; a SEEDED/FROZEN box installs it under "<box-id>.malmo.network" — the apex of
+# box-id yet, so the brain installs the route under the appliance-style "moose.local"
+# apex; a SEEDED/FROZEN box installs it under "<box-id>.onmoose.io" — the apex of
 # the box's wildcard cert (C3b, #207). The assertion is a Host-header route match over
 # localhost — no DNS/mDNS involved. Default is the unprovisioned host.
-DASH_HOST=malmo.local
+DASH_HOST=moose.local
 # Which scenario to assert — set by the harness over SMBIOS (ImportCredential=
-# malmo.assert in the unit). Absent/empty ⇒ unseeded (the bare boot-proof default).
-MODE="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/malmo.assert" 2>/dev/null || true)"
+# moose.assert in the unit). Absent/empty ⇒ unseeded (the bare boot-proof default).
+MODE="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.assert" 2>/dev/null || true)"
 [ -n "$MODE" ] || MODE=unseeded
 
-emit() { echo "MALMO_CLOUD_ASSERTIONS: $1" > "$SENTINEL" 2>/dev/null || true; }
+emit() { echo "MOOSE_CLOUD_ASSERTIONS: $1" > "$SENTINEL" 2>/dev/null || true; }
 # Dump control-plane state to the serial console on failure — the brain's
 # EnsureControlPlane error lives in its container log, which isn't otherwise on
 # the serial the harness captures (mirrors the medium lane's install_diag).
 diag() {
     {
-        echo "=== MALMO_CLOUD_DIAG ==="
+        echo "=== MOOSE_CLOUD_DIAG ==="
         echo "-- docker ps -a --"
         docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1
         echo "-- docker network ls --"
         docker network ls 2>&1
-        echo "-- malmo-ingress containers --"
-        docker network inspect malmo-ingress --format '{{range .Containers}}{{.Name}}={{.IPv4Address}} {{end}}' 2>&1
+        echo "-- moose-ingress containers --"
+        docker network inspect moose-ingress --format '{{range .Containers}}{{.Name}}={{.IPv4Address}} {{end}}' 2>&1
         echo "-- brain networks --"
-        docker inspect malmo-brain --format '{{json .NetworkSettings.Networks}}' 2>&1
+        docker inspect moose-brain --format '{{json .NetworkSettings.Networks}}' 2>&1
         echo "-- proxy networks --"
-        docker inspect malmo-docker-proxy --format '{{json .NetworkSettings.Networks}}' 2>&1
+        docker inspect moose-docker-proxy --format '{{json .NetworkSettings.Networks}}' 2>&1
         echo "-- forwarding sysctls --"
         echo "ip_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>&1) bridge-nf-call-iptables=$(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo '<module not loaded>')"
         echo "-- docker info (firewall backend / warnings) --"
@@ -89,14 +89,14 @@ diag() {
         echo "-- iptables-save (full ruleset) --"
         iptables-save 2>&1
         echo "-- brain netns -> proxy probe (route/neigh/tcp from inside the brain's network ns) --"
-        bp="$(docker inspect -f '{{.State.Pid}}' malmo-brain 2>/dev/null)"
+        bp="$(docker inspect -f '{{.State.Pid}}' moose-brain 2>/dev/null)"
         if [ -n "$bp" ]; then
             nsenter -t "$bp" -n ip route get 172.18.0.2 2>&1
             nsenter -t "$bp" -n ip neigh 2>&1
             nsenter -t "$bp" -n bash -c '(echo >/dev/tcp/172.18.0.2/2375) 2>&1 && echo "tcp 172.18.0.2:2375 OPEN" || echo "tcp 172.18.0.2:2375 FAIL"' 2>&1
         fi
         echo "-- proxy netns (eth0 up? ip? neigh?) --"
-        pp="$(docker inspect -f '{{.State.Pid}}' malmo-docker-proxy 2>/dev/null)"
+        pp="$(docker inspect -f '{{.State.Pid}}' moose-docker-proxy 2>/dev/null)"
         if [ -n "$pp" ]; then
             nsenter -t "$pp" -n ip -br addr 2>&1
             nsenter -t "$pp" -n ip -br link 2>&1
@@ -112,27 +112,27 @@ diag() {
         echo "-- loaded netfilter/bridge modules (/proc/modules) --"
         grep -iE 'br_netfilter|nf_conntrack|nf_nat|^bridge |^veth |iptable|nft|overlay' /proc/modules 2>&1 || echo "(none matched)"
         echo "-- proxy logs (tail 15) --"
-        docker logs malmo-docker-proxy 2>&1 | tail -15
-        echo "-- malmo-brain logs (tail 40) --"
-        docker logs malmo-brain 2>&1 | tail -40
-        echo "-- malmo-brain resolved profile (grep, not tail) --"
-        docker logs malmo-brain 2>&1 | grep -iE 'environment profile resolved|provisioning seed|SSO stays closed' || echo "(no profile line in brain log)"
-        echo "-- malmo-brain mounts (is /etc/malmo/profile bind-mounted?) --"
-        docker inspect malmo-brain --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' 2>&1
+        docker logs moose-docker-proxy 2>&1 | tail -15
+        echo "-- moose-brain logs (tail 40) --"
+        docker logs moose-brain 2>&1 | tail -40
+        echo "-- moose-brain resolved profile (grep, not tail) --"
+        docker logs moose-brain 2>&1 | grep -iE 'environment profile resolved|provisioning seed|SSO stays closed' || echo "(no profile line in brain log)"
+        echo "-- moose-brain mounts (is /etc/moose/profile bind-mounted?) --"
+        docker inspect moose-brain --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' 2>&1
         echo "-- host-agent journal (tail 15) --"
         journalctl -u host-agent.service -b --no-pager 2>&1 | tail -15
         # The update boot (#382) fails on state that lives in files and in
         # host-agent's log, neither of which the blocks above show. A red update
         # boot has to be diagnosable from this serial dump alone.
         echo "-- control-plane declaration (images.json) --"
-        cat /var/lib/malmo/control-plane/images.json 2>&1 || true
+        cat /var/lib/moose/control-plane/images.json 2>&1 || true
         echo "-- control-plane compose (image lines) --"
-        grep -n 'image:' /var/lib/malmo/control-plane/compose.yml 2>&1 || true
+        grep -n 'image:' /var/lib/moose/control-plane/compose.yml 2>&1 || true
         echo "-- brain snapshots --"
-        ls -la /var/lib/malmo/brain-snapshots 2>&1 || true
+        ls -la /var/lib/moose/brain-snapshots 2>&1 || true
         echo "-- host-agent update lines --"
         journalctl -u host-agent.service -b --no-pager 2>&1 | grep -iE 'system-update|control plane|revert|pull|snapshot' | tail -25
-        echo "=== END MALMO_CLOUD_DIAG ==="
+        echo "=== END MOOSE_CLOUD_DIAG ==="
     } > "$SENTINEL" 2>&1 || true
 }
 fail() {
@@ -163,11 +163,11 @@ echo "cloud-assertions: starting boot-proof checks (mode=${MODE})"
 # fast-fail: the unit is ordered After the control-plane units, so any that died
 # during boot is already 'failed' by now.
 failed="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}')"
-for u in docker.service systemd-networkd.service host-agent.service malmo-load-images.service; do
+for u in docker.service systemd-networkd.service host-agent.service moose-load-images.service; do
     grep -qx "$u" <<<"$failed" && fail "control-plane unit failed: $u (failed: $(tr '\n' ' ' <<<"$failed"))"
 done
 
-# --- 1b. root grown to fill the provider disk. malmo-grow-root.service runs
+# --- 1b. root grown to fill the provider disk. moose-grow-root.service runs
 # systemd-repart at boot to extend the baked 8 GiB root partition to the whole
 # disk, then runs systemd-growfs directly to grow the ext4 inside it (issue: a
 # hosted box left on 8 GiB has docker image storage + the brain's SQLite store
@@ -179,13 +179,13 @@ done
 # provider box (the cloud on-ramp), not this lane — a prior version of this unit
 # passed this exact boot-proof while only growing the partition and leaving the
 # filesystem at 8 GiB, because the growfs step was missing.
-command -v systemd-repart >/dev/null 2>&1 || fail "systemd-repart missing from the lean image — malmo-grow-root cannot grow the root disk"
-[ -x /usr/lib/systemd/systemd-growfs ] || fail "systemd-growfs missing from the lean image — malmo-grow-root cannot grow the root filesystem"
-grow_state="$(systemctl is-active malmo-grow-root.service 2>&1 || true)"
+command -v systemd-repart >/dev/null 2>&1 || fail "systemd-repart missing from the lean image — moose-grow-root cannot grow the root disk"
+[ -x /usr/lib/systemd/systemd-growfs ] || fail "systemd-growfs missing from the lean image — moose-grow-root cannot grow the root filesystem"
+grow_state="$(systemctl is-active moose-grow-root.service 2>&1 || true)"
 # Assert the unit actually completed (active, held by RemainAfterExit) — not merely
 # "not failed". An inactive/unknown state means the .wants symlink was dropped or the
 # unit was skipped, i.e. the grow never ran; that must fail the proof, not pass it.
-[ "$grow_state" = active ] || fail "malmo-grow-root.service did not complete successfully (state=$grow_state): $(journalctl -u malmo-grow-root.service -b --no-pager 2>/dev/null | tail -10)"
+[ "$grow_state" = active ] || fail "moose-grow-root.service did not complete successfully (state=$grow_state): $(journalctl -u moose-grow-root.service -b --no-pager 2>/dev/null | tail -10)"
 echo "cloud-assertions: root-grow unit ok (state=$grow_state; systemd-repart + systemd-growfs present and wired — this lane cannot prove real growth, only that both steps ran)"
 
 # --- 1c. the baked host-agent carries a real build stamp (BUILD.md # Versioning:
@@ -202,9 +202,9 @@ echo "cloud-assertions: root-grow unit ok (state=$grow_state; systemd-repart + s
 # version.Version in one only ever pins the default. The release workflow's
 # tag-vs-VERSION assert doesn't reach it either — it checks the file, not what
 # landed in the binary.
-ha_version="$(/usr/lib/malmo/host-agent-real --version 2>&1 || true)"
-grep -qE '^malmo [0-9]+\.[0-9]+\.[0-9]+ ' <<<"$ha_version" || \
-    fail "baked host-agent is not version-stamped: --version reports '$ha_version' (want 'malmo X.Y.Z (g<sha>)'; an unstamped 'dev' build raises version-mismatch and blocks app installs on a healthy box)"
+ha_version="$(/usr/lib/moose/host-agent-real --version 2>&1 || true)"
+grep -qE '^moose [0-9]+\.[0-9]+\.[0-9]+ ' <<<"$ha_version" || \
+    fail "baked host-agent is not version-stamped: --version reports '$ha_version' (want 'moose X.Y.Z (g<sha>)'; an unstamped 'dev' build raises version-mismatch and blocks app installs on a healthy box)"
 echo "cloud-assertions: host-agent build stamp ok ($ha_version)"
 
 # --- 2. PSI is live (BUILD.md # 1 — psi=1 on the cmdline). Without it the
@@ -225,22 +225,22 @@ nwd_state="$(systemctl is-active systemd-networkd.service 2>&1 || true)"
 docker_state="$(systemctl is-active docker.service 2>&1 || true)"
 [ "$docker_state" = active ] || fail "docker.service is '$docker_state' (want active)"
 for _i in $(seq 1 60); do
-    [ -f /var/lib/malmo/.control-plane-images-loaded ] && break
-    systemctl is-failed --quiet malmo-load-images.service && \
-        fail "malmo-load-images.service failed: $(journalctl -u malmo-load-images.service -b --no-pager 2>/dev/null | tail -10)"
+    [ -f /var/lib/moose/.control-plane-images-loaded ] && break
+    systemctl is-failed --quiet moose-load-images.service && \
+        fail "moose-load-images.service failed: $(journalctl -u moose-load-images.service -b --no-pager 2>/dev/null | tail -10)"
     sleep 1
 done
-[ -f /var/lib/malmo/.control-plane-images-loaded ] || fail "control-plane image-load marker never appeared after 60s"
+[ -f /var/lib/moose/.control-plane-images-loaded ] || fail "control-plane image-load marker never appeared after 60s"
 cp_images="$(docker images --format '{{.Repository}}' 2>&1 || true)"
-# Hosted bakes the caddy-dns/acmedns Caddy build (malmo-caddy-acmedns), not stock
+# Hosted bakes the caddy-dns/acmedns Caddy build (moose-caddy-acmedns), not stock
 # caddy:2-alpine — the wildcard cert needs the DNS-01 module (os #207/C3b).
-for repo in malmo-brain malmo-ui malmo-caddy-acmedns tecnativa/docker-socket-proxy; do
+for repo in moose-brain moose-ui moose-caddy-acmedns tecnativa/docker-socket-proxy; do
     grep -qx "$repo" <<<"$cp_images" || fail "baked image '$repo' not loaded (have: $(tr '\n' ' ' <<<"$cp_images"))"
 done
 
 # --- 5. the brain brought the control plane up: four containers running. The
 # brain bootstrap + compose up race this unit, so poll.
-want="malmo-brain malmo-caddy malmo-ui malmo-docker-proxy"
+want="moose-brain moose-caddy moose-ui moose-docker-proxy"
 running=""
 for _i in $(seq 1 120); do
     running="$(docker ps --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')"
@@ -263,28 +263,28 @@ done
 log_driver="$(docker info --format '{{.LoggingDriver}}' 2>/dev/null || true)"
 [ "$log_driver" = journald ] || \
     fail "docker log driver is '$log_driver' (want journald) — the per-app Logs tab reads journalctl CONTAINER_NAME=, which only the journald driver populates"
-# malmo-brain is the safe probe: it is up by now (step 5) and always writes
+# moose-brain is the safe probe: it is up by now (step 5) and always writes
 # startup milestones to stdout. Poll — journald ingest can lag container start
 # by a beat under a loaded TCG boot, same race wait_brain_log documents.
 brain_journal=""
 for _i in $(seq 1 60); do
-    brain_journal="$(journalctl CONTAINER_NAME=malmo-brain -b --no-pager -n 5 -o cat 2>/dev/null || true)"
+    brain_journal="$(journalctl CONTAINER_NAME=moose-brain -b --no-pager -n 5 -o cat 2>/dev/null || true)"
     [ -n "$brain_journal" ] && break
     sleep 1
 done
 [ -n "$brain_journal" ] || \
-    fail "journalctl CONTAINER_NAME=malmo-brain returned nothing after 60s — container stdout is not reaching journald, so the per-app Logs tab will hang for every app"
+    fail "journalctl CONTAINER_NAME=moose-brain returned nothing after 60s — container stdout is not reaching journald, so the per-app Logs tab will hang for every app"
 echo "cloud-assertions: container logs readable via journalctl CONTAINER_NAME= (driver=journald)"
 
 # --- 5c. the control-plane containers run the app sandbox (#431). Apps get
 # cap_drop ALL + no-new-privileges from the brain's override, in code; the
-# control plane declares the same posture by hand (compose for caddy + malmo-ui,
+# control plane declares the same posture by hand (compose for caddy + moose-ui,
 # brainlaunch.proxyRunSpec for the proxy), so this checks what the box actually
 # booted rather than what the file says. Caddy binds :80/:443, so it keeps
 # CAP_NET_BIND_SERVICE and nothing else; the proxy needs no capability at all.
 # The brain is knowingly absent from this list — it needs CAP_CHOWN for app data
 # dirs (CONTROL_PLANE.md # Locked: control-plane container hardening).
-for c in malmo-caddy malmo-ui malmo-docker-proxy; do
+for c in moose-caddy moose-ui moose-docker-proxy; do
     caps="$(docker inspect "$c" --format '{{json .HostConfig.CapDrop}}' 2>/dev/null || true)"
     [ "$caps" = '["ALL"]' ] || \
         fail "$c cap_drop is '${caps:-<nothing>}', want [\"ALL\"] (#431 — the control-plane sandbox is gone)"
@@ -292,19 +292,19 @@ for c in malmo-caddy malmo-ui malmo-docker-proxy; do
     grep -q 'no-new-privileges:true' <<<"$secopt" || \
         fail "$c security_opt is '${secopt:-<nothing>}', want no-new-privileges:true (#431)"
 done
-for c in malmo-caddy malmo-ui; do
+for c in moose-caddy moose-ui; do
     ro="$(docker inspect "$c" --format '{{.HostConfig.ReadonlyRootfs}}' 2>/dev/null || true)"
     [ "$ro" = true ] || fail "$c does not have a read-only root filesystem (#431)"
     capadd="$(docker inspect "$c" --format '{{json .HostConfig.CapAdd}}' 2>/dev/null || true)"
     [ "$capadd" = '["NET_BIND_SERVICE"]' ] || [ "$capadd" = '["CAP_NET_BIND_SERVICE"]' ] || \
         fail "$c cap_add is '${capadd:-<nothing>}', want only NET_BIND_SERVICE (#431)"
 done
-echo "cloud-assertions: control-plane containers sandboxed — cap_drop ALL, no-new-privileges, read-only root on caddy + malmo-ui (#431)"
+echo "cloud-assertions: control-plane containers sandboxed — cap_drop ALL, no-new-privileges, read-only root on caddy + moose-ui (#431)"
 
 # --- 6. proxy boundary: the brain reaches Docker only through the socket-proxy,
 # never the raw socket (CONTROL_PLANE.md # Docker socket exposure).
-brain_sock="$(docker inspect malmo-brain --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null | grep -c 'docker.sock' || true)"
-[ "$brain_sock" = 0 ] || fail "raw docker.sock mounted into malmo-brain (proxy boundary breached)"
+brain_sock="$(docker inspect moose-brain --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null | grep -c 'docker.sock' || true)"
+[ "$brain_sock" = 0 ] || fail "raw docker.sock mounted into moose-brain (proxy boundary breached)"
 
 # --- 6b. metadata SSRF block (#251): forwarded / app-container egress to the cloud
 # metadata endpoint (169.254.169.254) is dropped, while the host-root first-boot
@@ -312,11 +312,11 @@ brain_sock="$(docker inspect malmo-brain --format '{{range .Mounts}}{{println .S
 # there is no real 169.254.169.254 server to positively probe host reachability —
 # instead assert the rule's SHAPE (a forward hook, never an output hook, matching
 # the metadata IP) plus that a real container packet HITS the drop: probe from
-# inside the brain's netns (a genuine forward-path source over malmo-ingress) and
+# inside the brain's netns (a genuine forward-path source over moose-ingress) and
 # require the drop counter to increment. Together: containers blocked, the host
 # OUTPUT path structurally untouched (so the seed fetch still works).
-fw_rules="$(nft list table inet malmo_metadata 2>/dev/null)" || \
-    fail "metadata firewall: nft table 'inet malmo_metadata' absent — egress block not loaded (#251; malmo-metadata-firewall.service is $(systemctl is-active malmo-metadata-firewall.service 2>&1))"
+fw_rules="$(nft list table inet moose_metadata 2>/dev/null)" || \
+    fail "metadata firewall: nft table 'inet moose_metadata' absent — egress block not loaded (#251; moose-metadata-firewall.service is $(systemctl is-active moose-metadata-firewall.service 2>&1))"
 grep -q 'hook forward' <<<"$fw_rules" || \
     fail "metadata firewall: drop chain is not a forward hook (#251) — rules: $(tr '\n' ' ' <<<"$fw_rules")"
 grep -q 'hook output' <<<"$fw_rules" && \
@@ -325,9 +325,9 @@ grep -q '169\.254\.169\.254' <<<"$fw_rules" || \
     fail "metadata firewall: no rule matches 169.254.169.254 (#251) — rules: $(tr '\n' ' ' <<<"$fw_rules")"
 
 # Drop-counter probe: read packets matched before/after a container-origin connect.
-md_packets() { nft list table inet malmo_metadata 2>/dev/null | awk '/169\.254\.169\.254/{for(i=1;i<=NF;i++) if($i=="packets") print $(i+1)}' | head -1; }
-md_pid="$(docker inspect -f '{{.State.Pid}}' malmo-brain 2>/dev/null)"
-[ -n "$md_pid" ] || fail "metadata firewall: malmo-brain pid not found for the egress probe (#251)"
+md_packets() { nft list table inet moose_metadata 2>/dev/null | awk '/169\.254\.169\.254/{for(i=1;i<=NF;i++) if($i=="packets") print $(i+1)}' | head -1; }
+md_pid="$(docker inspect -f '{{.State.Pid}}' moose-brain 2>/dev/null)"
+[ -n "$md_pid" ] || fail "metadata firewall: moose-brain pid not found for the egress probe (#251)"
 # The live drop-counter probe needs the HOST to have a route to the metadata IP, so
 # the container's forwarded packet is actually routed (and so traverses the forward
 # hook) rather than rejected at the routing stage. The host does on a real cloud (it
@@ -384,7 +384,7 @@ full_get() { # PATH HOST [COOKIE] -> full response
     exec 3>&- 3<&-
 }
 # Like full_get, plus one arbitrary extra request header. The path-scoped
-# exposure probes (#415) need to send a FORGED X-Malmo-User and see what the app
+# exposure probes (#415) need to send a FORGED X-Moose-User and see what the app
 # upstream received, which no cookie-only helper can do.
 full_get_hdr() { # PATH HOST HEADER-LINE [COOKIE] -> full response
     exec 3<>/dev/tcp/127.0.0.1/80 || return 1
@@ -450,7 +450,7 @@ json_str_of() { # DOC KEY -> value
 wait_brain_log() { # pattern [timeout_s]
     local pat="$1" timeout="${2:-90}" _i
     for _i in $(seq 1 "$timeout"); do
-        docker logs malmo-brain 2>&1 | grep -qF "$pat" && return 0
+        docker logs moose-brain 2>&1 | grep -qF "$pat" && return 0
         sleep 1
     done
     return 1
@@ -458,17 +458,17 @@ wait_brain_log() { # pattern [timeout_s]
 
 # Resolve the Host the brain actually serves the dashboard under for this scenario
 # (see DASH_HOST above). A provisioned box (seeded/frozen) serves at its wildcard apex
-# "<box-id>.malmo.network", not "malmo.local" — so steps 7–9 must probe that host or
+# "<box-id>.onmoose.io", not "moose.local" — so steps 7–9 must probe that host or
 # Caddy's catch-all answers 404. Seeded
 # reads the box-id from the just-materialized seed; frozen uses the persisted identity
 # carried in MODE (the brain ignores this boot's re-delivered seed, so the route stays
 # under the original box-id).
 case "$MODE" in
-seeded)   DASH_HOST="$(json_str "$SEED" box_id).malmo.network" ;;
-frozen:*) DASH_HOST="${MODE#frozen:}.malmo.network" ;;
-access)   DASH_HOST="$(json_str "$SEED" box_id).malmo.network" ;;
-update)   DASH_HOST="$(json_str "$SEED" box_id).malmo.network" ;;
-ssh)      DASH_HOST="$(json_str "$SEED" box_id).malmo.network" ;;
+seeded)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+frozen:*) DASH_HOST="${MODE#frozen:}.onmoose.io" ;;
+access)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+update)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+ssh)      DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 esac
 echo "cloud-assertions: probing control plane at Host=$DASH_HOST (mode=$MODE)"
 
@@ -495,7 +495,7 @@ grep -qE ' (200|401)' <<<"$api" || fail "/api not routed to the brain through Ca
 
 # --- 9. the hosted portal-to-box SSO gate (#275; ENVIRONMENT.md # Admin bootstrap).
 # The hosted box bootstraps its first admin through the portal-to-box SSO handshake,
-# not a /setup secret. /setup is disabled on hosted, and GET /_malmo/sso verifies a
+# not a /setup secret. /setup is disabled on hosted, and GET /_moose/sso verifies a
 # portal-signed ownership assertion against the seed-delivered verification key.
 # For the unseeded/seeded/frozen boots this lane has no portal private key, so it
 # asserts the *negative* gate properties (the verifier is armed and refuses every
@@ -529,10 +529,10 @@ echo "cloud-assertions: hosted /setup disabled (403 — bootstrap is via SSO)"
 
 case "$MODE" in
 unseeded)
-    # No seed ingested → no verification key → GET /_malmo/sso returns 503, NOT a
+    # No seed ingested → no verification key → GET /_moose/sso returns 503, NOT a
     # redirect or a fall-through. Proof the SSO gate stays closed until a seed lands.
-    sso="$(http_status '/_malmo/sso?token=x.y' "$DASH_HOST" 2>/dev/null || true)"
-    grep -q ' 503' <<<"$sso" || fail "unseeded /_malmo/sso gate not armed: status='$sso' (want 503, unprovisioned)"
+    sso="$(http_status '/_moose/sso?token=x.y' "$DASH_HOST" 2>/dev/null || true)"
+    grep -q ' 503' <<<"$sso" || fail "unseeded /_moose/sso gate not armed: status='$sso' (want 503, unprovisioned)"
     echo "cloud-assertions: hosted SSO gate armed (503, unprovisioned)"
     ;;
 seeded)
@@ -541,23 +541,23 @@ seeded)
     key="$(json_str "$SEED" assertion_verification_key)"
     [ -n "$box_id" ] && [ -n "$key" ] || fail "could not read box_id/assertion_verification_key from $SEED"
 
-    # The seed's verification key was ingested: GET /_malmo/sso now runs the verifier
+    # The seed's verification key was ingested: GET /_moose/sso now runs the verifier
     # and a syntactically-valid-but-unsigned token fails the signature check → 401
     # (not 503). Proof the key loaded and the verifier is wired on this box. Poll:
     # the route is served (step 8 passed) but the verifier arms a beat behind the
     # listener, so a single-shot read can catch a transient 503 before the key loads.
     sso=""
     for _i in $(seq 1 30); do
-        sso="$(http_status '/_malmo/sso?token=ZmFrZQ.ZmFrZXNpZw' "$DASH_HOST" 2>/dev/null || true)"
+        sso="$(http_status '/_moose/sso?token=ZmFrZQ.ZmFrZXNpZw' "$DASH_HOST" 2>/dev/null || true)"
         grep -q ' 401' <<<"$sso" && break
         sleep 1
     done
-    grep -q ' 401' <<<"$sso" || fail "seeded /_malmo/sso with a bad token: status='$sso' (want 401 — key loaded, signature rejected)"
+    grep -q ' 401' <<<"$sso" || fail "seeded /_moose/sso with a bad token: status='$sso' (want 401 — key loaded, signature rejected)"
     echo "cloud-assertions: hosted SSO verifier armed (bad token 401, key loaded from seed; box_id=$box_id)"
 
     # The synchronous seed ingestion ran before the brain served — in fact it ran
     # before steps 7-8 above could pass: the dashboard + /api answered under
-    # DASH_HOST=<box_id>.malmo.network, and the brain only installs that box-id route
+    # DASH_HOST=<box_id>.onmoose.io, and the brain only installs that box-id route
     # AFTER reading the seed and learning its box-id (cmd/brain loadHostedEnvironment).
     # So the milestone has causally already been logged by now; this confirms the
     # exact line was emitted. Use the flush-lag-tolerant waiter — a single-shot grep
@@ -568,7 +568,7 @@ seeded)
 
     # The seed's complete acme-dns enrollment drives the brain's wildcard-TLS pass
     # (cmd/brain EnsureWildcardTLS): it configures Caddy's acme-dns DNS-01 issuer for
-    # the apex + "*.$box_id.malmo.network" and adds the :443 listener. Real issuance
+    # the apex + "*.$box_id.onmoose.io" and adds the :443 listener. Real issuance
     # can't run here — air-gapped (restrict=on), no reach to acme-dns or Let's Encrypt
     # — so no cert is obtained; what this asserts is that the brain REACHES and APPLIES
     # the config and :443 actually binds. That application is the exact step a booted
@@ -600,37 +600,37 @@ seeded)
     # single-shot grep can still lose the race to the docker json-log flush.
     wait_brain_log 'caddy: wildcard TLS configured' || \
         fail "brain did not configure wildcard TLS on the seeded boot (#278 — EnsureWildcardTLS not reached/applied)"
-    echo "cloud-assertions: wildcard TLS configured (acme-dns DNS-01 issuer + :443 set for *.$box_id.malmo.network)"
+    echo "cloud-assertions: wildcard TLS configured (acme-dns DNS-01 issuer + :443 set for *.$box_id.onmoose.io)"
 
     # (c) Caddy's certificate store survives a container recreate (#433). The cert
     # this box would obtain lands in /data; on the writable layer it dies with the
     # container and the box has to place a NEW Let's Encrypt order — not a renewal,
     # so no ARI exemption, and against a "50 new certificates per 7 days" budget
     # that every hosted box shares because they are all under one registered domain
-    # (malmo.network). This lane is air-gapped, so it cannot watch for the absence
+    # (onmoose.io). This lane is air-gapped, so it cannot watch for the absence
     # of an issuance; what it CAN prove is the property that absence rests on — the
     # store is on a named volume with a life of its own, not in the container.
-    mount_name="$(docker inspect malmo-caddy \
+    mount_name="$(docker inspect moose-caddy \
         --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Name}}{{end}}{{end}}' 2>/dev/null || true)"
-    [ "$mount_name" = "volume:malmo-caddy-data" ] || \
-        fail "malmo-caddy /data is not the malmo-caddy-data volume: got '${mount_name:-<nothing>}' (#433 — a recreate would drop the wildcard cert)"
-    docker volume inspect malmo-caddy-data >/dev/null 2>&1 || \
-        fail "docker volume malmo-caddy-data does not exist (#433)"
+    [ "$mount_name" = "volume:moose-caddy-data" ] || \
+        fail "moose-caddy /data is not the moose-caddy-data volume: got '${mount_name:-<nothing>}' (#433 — a recreate would drop the wildcard cert)"
+    docker volume inspect moose-caddy-data >/dev/null 2>&1 || \
+        fail "docker volume moose-caddy-data does not exist (#433)"
 
     # The mount is live in both directions, not just declared: a file Caddy writes
     # under /data is visible to a SEPARATE container mounting the same volume, so it
-    # outlives this container by construction. Reads the image malmo-caddy runs, so
+    # outlives this container by construction. Reads the image moose-caddy runs, so
     # nothing is pulled in the air gap.
-    caddy_img="$(docker inspect malmo-caddy --format '{{.Config.Image}}' 2>/dev/null || true)"
-    [ -n "$caddy_img" ] || fail "could not read the malmo-caddy image ref (#433 probe)"
-    docker exec malmo-caddy sh -c 'echo malmo-433 > /data/.malmo-persist-probe' 2>/dev/null || \
-        fail "could not write a probe into malmo-caddy /data (#433)"
-    probe="$(docker run --rm --entrypoint sh -v malmo-caddy-data:/probe "$caddy_img" \
-        -c 'cat /probe/.malmo-persist-probe' 2>/dev/null || true)"
-    docker exec malmo-caddy rm -f /data/.malmo-persist-probe 2>/dev/null || true
-    [ "$probe" = "malmo-433" ] || \
-        fail "malmo-caddy /data writes do not land in the malmo-caddy-data volume: probe read back '${probe:-<nothing>}' (#433)"
-    echo "cloud-assertions: Caddy cert store on the malmo-caddy-data volume, survives a container recreate (#433)"
+    caddy_img="$(docker inspect moose-caddy --format '{{.Config.Image}}' 2>/dev/null || true)"
+    [ -n "$caddy_img" ] || fail "could not read the moose-caddy image ref (#433 probe)"
+    docker exec moose-caddy sh -c 'echo moose-433 > /data/.moose-persist-probe' 2>/dev/null || \
+        fail "could not write a probe into moose-caddy /data (#433)"
+    probe="$(docker run --rm --entrypoint sh -v moose-caddy-data:/probe "$caddy_img" \
+        -c 'cat /probe/.moose-persist-probe' 2>/dev/null || true)"
+    docker exec moose-caddy rm -f /data/.moose-persist-probe 2>/dev/null || true
+    [ "$probe" = "moose-433" ] || \
+        fail "moose-caddy /data writes do not land in the moose-caddy-data volume: probe read back '${probe:-<nothing>}' (#433)"
+    echo "cloud-assertions: Caddy cert store on the moose-caddy-data volume, survives a container recreate (#433)"
     ;;
 frozen:*)
     expect="${MODE#frozen:}"
@@ -638,16 +638,16 @@ frozen:*)
     # A DIFFERENT seed was delivered this boot, but the brain's identity is frozen in
     # SQLite: it loads the persisted box-id and ignores the new seed. Two proofs that
     # need no admin session:
-    #   1. The dashboard + /api checks above ran against DASH_HOST=<expect>.malmo.network
+    #   1. The dashboard + /api checks above ran against DASH_HOST=<expect>.onmoose.io
     #      (the ORIGINAL box-id) and passed — if a re-delivered seed had re-keyed the
     #      box, Caddy's dashboard route would be under this boot's box-id and those
     #      probes would have 404'd. So serving under <expect> *is* the frozen-identity
     #      proof.
     #   2. This boot does NOT re-ingest: the brain loads the persisted identity and
     #      never logs 'provisioning seed ingested' (that line is first-boot-only).
-    sso="$(http_status '/_malmo/sso?token=ZmFrZQ.ZmFrZXNpZw' "$DASH_HOST" 2>/dev/null || true)"
-    grep -q ' 401' <<<"$sso" || fail "frozen mode: /_malmo/sso bad token status='$sso' (want 401 — verifier still armed from the persisted key)"
-    if docker logs malmo-brain 2>&1 | grep -q 'provisioning seed ingested'; then
+    sso="$(http_status '/_moose/sso?token=ZmFrZQ.ZmFrZXNpZw' "$DASH_HOST" 2>/dev/null || true)"
+    grep -q ' 401' <<<"$sso" || fail "frozen mode: /_moose/sso bad token status='$sso' (want 401 — verifier still armed from the persisted key)"
+    if docker logs moose-brain 2>&1 | grep -q 'provisioning seed ingested'; then
         fail "frozen mode: brain re-ingested a seed — a re-delivered seed must be ignored on a frozen-identity boot"
     fi
     # Confirm the on-disk seed really is this boot's distinct seed (a no-op overwrite
@@ -665,25 +665,25 @@ access)
     # SSO gate above can't reach: it needs a real owner session, so this scenario is
     # seeded with a TEST-PORTAL key (the harness holds the matching private key —
     # dev/cloud/mkassertion) and the harness delivers a valid owner assertion over
-    # the malmo.sso_token credential. The box verifies it exactly as a real portal
+    # the moose.sso_token credential. The box verifies it exactly as a real portal
     # assertion, auto-creates the owner, and mints both cookies. We then install a
     # real app and drive every access mode end-to-end through the box's own Caddy:
     #   - restricted (the hosted default): unauthenticated ⇒ 302 to the box login;
     #     the owner's forward-auth cookie ⇒ proxied through with no second login;
     #   - public (after the exposure toggle): reachable with no session;
-    #   - malmo_forward_auth never reaches the app upstream in EITHER mode, while an
+    #   - moose_forward_auth never reaches the app upstream in EITHER mode, while an
     #     app's own cookie DOES (#335's per-cookie strip — the whole-header delete it
     #     replaced made every third-party app with a browser login unusable, #306).
     [ -f "$SEED" ] || fail "access mode but $SEED absent (seed materializer did not run?)"
     box_id="$(json_str "$SEED" box_id)"
     [ -n "$box_id" ] || fail "access mode: could not read box_id from $SEED"
-    apex="${box_id}.malmo.network"
+    apex="${box_id}.onmoose.io"
     app_host="whoami.${apex}"
 
     # The signed owner assertion the harness minted with the test-portal private key,
-    # delivered over SMBIOS (ImportCredential=malmo.sso_token in the unit).
-    sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/malmo.sso_token" 2>/dev/null || true)"
-    [ -n "$sso_token" ] || fail "access mode: malmo.sso_token credential missing (harness did not mint/deliver the owner assertion)"
+    # delivered over SMBIOS (ImportCredential=moose.sso_token in the unit).
+    sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token" 2>/dev/null || true)"
+    [ -n "$sso_token" ] || fail "access mode: moose.sso_token credential missing (harness did not mint/deliver the owner assertion)"
 
     # The full-response HTTP + cookie helpers this scenario needs (full_get,
     # full_send, status_of, cookie_val, cookie_line) are defined once above, beside
@@ -693,14 +693,14 @@ access)
     #    401s). Steps 7-9 already proved the control plane up + the verifier armed, so
     #    a valid token now lands the owner. Expect 303 + both cookies: the host-only
     #    session and the Domain-scoped forward-auth credential.
-    sso_resp="$(full_get "/_malmo/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
+    sso_resp="$(full_get "/_moose/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
     sso_status="$(status_of "$sso_resp")"
     grep -q ' 303' <<<"$sso_status" \
         || fail "access: SSO landing did not 303 to the dashboard (owner auto-create failed?): status='$sso_status'"
-    session_cookie="$(cookie_val "$sso_resp" malmo_session)"
-    fa_cookie="$(cookie_val "$sso_resp" malmo_forward_auth)"
-    [ -n "$session_cookie" ] || fail "access: no malmo_session cookie from the SSO landing"
-    [ -n "$fa_cookie" ] || fail "access: no malmo_forward_auth cookie from the SSO landing"
+    session_cookie="$(cookie_val "$sso_resp" moose_session)"
+    fa_cookie="$(cookie_val "$sso_resp" moose_forward_auth)"
+    [ -n "$session_cookie" ] || fail "access: no moose_session cookie from the SSO landing"
+    [ -n "$fa_cookie" ] || fail "access: no moose_forward_auth cookie from the SSO landing"
     echo "cloud-assertions: SSO owner session established (session + forward-auth cookies minted; box_id=$box_id)"
 
     # 1a. THE TWO-COOKIE SAFETY MODEL, asserted on the wire (#304's headline claim).
@@ -708,20 +708,20 @@ access)
     #     now that was only ever asserted structurally in unit tests — this lane
     #     captured the real Set-Cookie headers and then looked only at their values.
     #     Assert the attributes:
-    #       - malmo_session carries NO Domain ⇒ host-only, scoped to the dashboard host
+    #       - moose_session carries NO Domain ⇒ host-only, scoped to the dashboard host
     #         alone. A Domain here would send the ADMIN session to every app subdomain,
     #         where a third-party app could replay it as the owner. This is the single
     #         most dangerous regression in the whole epic and it is one attribute wide.
-    #       - malmo_forward_auth carries Domain=<box-id>.malmo.network ⇒ deliberately
+    #       - moose_forward_auth carries Domain=<box-id>.onmoose.io ⇒ deliberately
     #         domain-wide, which is what lets the browser present it to an app subdomain
     #         (and is why the app route must strip it — probed below).
-    sess_line="$(cookie_line "$sso_resp" malmo_session)"
-    fa_line="$(cookie_line "$sso_resp" malmo_forward_auth)"
+    sess_line="$(cookie_line "$sso_resp" moose_session)"
+    fa_line="$(cookie_line "$sso_resp" moose_forward_auth)"
     grep -qiE 'Domain=' <<<"$sess_line" \
         && fail "access: SESSION COOKIE IS DOMAIN-SCOPED — the dashboard session must be host-only or an app subdomain receives it and can replay it as the owner: $sess_line"
     grep -qiE "Domain=\.?${apex}(;|$)" <<<"$fa_line" \
         || fail "access: forward-auth cookie is not Domain-scoped to the box apex (${apex}); the browser would never present it to an app subdomain: $fa_line"
-    echo "cloud-assertions: cookie scopes correct on the wire (malmo_session host-only, malmo_forward_auth Domain=${apex})"
+    echo "cloud-assertions: cookie scopes correct on the wire (moose_session host-only, moose_forward_auth Domain=${apex})"
 
     # 2. install whoami air-gapped: offline mode trusts the catalog-promised digest of
     #    the docker-loaded image (no pull). 202 starts the async install job.
@@ -737,7 +737,7 @@ access)
     #    whoami echo (Hostname:) means the whole transaction converged AND the
     #    forward_auth verify let the owner through. Send an extra throwaway cookie:
     #    the strip assertion below proves the strip is PER-COOKIE (#335) — the probe
-    #    must survive to the app upstream, and malmo_forward_auth must not.
+    #    must survive to the app upstream, and moose_forward_auth must not.
     a_resp=""; a_status=""
     for _i in $(seq 1 150); do
         a_resp="$(full_get / "$app_host" "${fa_cookie}; probe=leakcheck" 2>/dev/null || true)"
@@ -747,18 +747,18 @@ access)
     done
     grep -q ' 200' <<<"$a_status" && grep -qi 'Hostname:' <<<"$a_resp" \
         || fail "access: restricted app with the owner forward-auth cookie never proxied through to whoami after 150s: status='$a_status'"
-    grep -qiE '^X-Malmo-User:' <<<"$a_resp" \
-        || fail "access: forward-auth identity header X-Malmo-User was not forwarded to the app upstream"
-    grep -qiE '^Cookie:.*malmo_forward_auth=' <<<"$a_resp" \
-        && fail "access: COOKIE LEAK (restricted) — the app upstream received malmo_forward_auth; the #335 per-cookie strip is broken"
+    grep -qiE '^X-Moose-User:' <<<"$a_resp" \
+        || fail "access: forward-auth identity header X-Moose-User was not forwarded to the app upstream"
+    grep -qiE '^Cookie:.*moose_forward_auth=' <<<"$a_resp" \
+        && fail "access: COOKIE LEAK (restricted) — the app upstream received moose_forward_auth; the #335 per-cookie strip is broken"
     grep -qiE '^Cookie:.*probe=leakcheck' <<<"$a_resp" \
-        || fail "access: restricted app upstream did not receive its own cookie (probe=leakcheck) — the strip is removing more than malmo_forward_auth: $(grep -i '^Cookie:' <<<"$a_resp" | tr -d '\r')"
-    echo "cloud-assertions: restricted app proxies the owner through with no second login (identity forwarded, only malmo_forward_auth stripped)"
+        || fail "access: restricted app upstream did not receive its own cookie (probe=leakcheck) — the strip is removing more than moose_forward_auth: $(grep -i '^Cookie:' <<<"$a_resp" | tr -d '\r')"
+    echo "cloud-assertions: restricted app proxies the owner through with no second login (identity forwarded, only moose_forward_auth stripped)"
 
     # 3a. RESTRICTED, NO session ⇒ 302 to the box login. Now that the app has
     #     converged, an unauthenticated GET exercises the forward_auth gate's closed
     #     path: the brain verify 401s and Caddy turns it into a redirect to the box
-    #     dashboard (https://<box-id>.malmo.network/, the login).
+    #     dashboard (https://<box-id>.onmoose.io/, the login).
     n_resp="$(full_get / "$app_host" 2>/dev/null || true)"
     n_status="$(status_of "$n_resp")"
     grep -q ' 302' <<<"$n_status" \
@@ -782,32 +782,32 @@ access)
 
     # 3c. THE FORGERY GUARD, and the reason the scrub is unconditional. The gate does
     #     not run on a public path, so nothing there would overwrite a caller-supplied
-    #     X-Malmo-User. If the app got a brain-vouched header on one path and a forged
-    #     one on another it could not tell them apart, and "malmo says this is the
+    #     X-Moose-User. If the app got a brain-vouched header on one path and a forged
+    #     one on another it could not tell them apart, and "moose says this is the
     #     owner" would become "anyone on the internet says so".
-    fg_resp="$(full_get_hdr /v1/traces "$app_host" 'X-Malmo-User: attacker' 2>/dev/null || true)"
+    fg_resp="$(full_get_hdr /v1/traces "$app_host" 'X-Moose-User: attacker' 2>/dev/null || true)"
     grep -qi 'Hostname:' <<<"$fg_resp" || fail "access: forged-header probe did not reach the app on a public path"
-    grep -qiE '^X-Malmo-User:' <<<"$fg_resp" \
-        && fail "access: IDENTITY FORGERY — a client-supplied X-Malmo-User survived to the app upstream on a public path: $(grep -i '^X-Malmo-User:' <<<"$fg_resp" | tr -d '\r')"
+    grep -qiE '^X-Moose-User:' <<<"$fg_resp" \
+        && fail "access: IDENTITY FORGERY — a client-supplied X-Moose-User survived to the app upstream on a public path: $(grep -i '^X-Moose-User:' <<<"$fg_resp" | tr -d '\r')"
     # Same forgery on the GATED path, with the owner's cookie: the app must receive
     # the brain's value, never the caller's.
-    fg2_resp="$(full_get_hdr / "$app_host" 'X-Malmo-User: attacker' "$fa_cookie" 2>/dev/null || true)"
+    fg2_resp="$(full_get_hdr / "$app_host" 'X-Moose-User: attacker' "$fa_cookie" 2>/dev/null || true)"
     grep -qi 'Hostname:' <<<"$fg2_resp" || fail "access: forged-header probe did not reach the app on the gated path"
-    grep -qiE '^X-Malmo-User: *attacker' <<<"$fg2_resp" \
-        && fail "access: IDENTITY FORGERY — a client-supplied X-Malmo-User survived the gate: $(grep -i '^X-Malmo-User:' <<<"$fg2_resp" | tr -d '\r')"
-    grep -qiE '^X-Malmo-User:' <<<"$fg2_resp" \
-        || fail "access: the gated path lost the vouched X-Malmo-User entirely (the scrub is deleting the brain's own value)"
-    echo "cloud-assertions: identity headers scrubbed on both branches (forged X-Malmo-User never reaches the app; the vouched one still does)"
+    grep -qiE '^X-Moose-User: *attacker' <<<"$fg2_resp" \
+        && fail "access: IDENTITY FORGERY — a client-supplied X-Moose-User survived the gate: $(grep -i '^X-Moose-User:' <<<"$fg2_resp" | tr -d '\r')"
+    grep -qiE '^X-Moose-User:' <<<"$fg2_resp" \
+        || fail "access: the gated path lost the vouched X-Moose-User entirely (the scrub is deleting the brain's own value)"
+    echo "cloud-assertions: identity headers scrubbed on both branches (forged X-Moose-User never reaches the app; the vouched one still does)"
 
     # 3d. The #335 per-cookie strip holds on the public branch too — it is the same
     #     proxy handler on both sides of the subroute, and this proves it.
     pc_resp="$(full_get /v1/traces "$app_host" "${fa_cookie}; probe=leakcheck" 2>/dev/null || true)"
     grep -qi 'Hostname:' <<<"$pc_resp" || fail "access: public-path cookie probe did not reach the app"
-    grep -qiE '^Cookie:.*malmo_forward_auth=' <<<"$pc_resp" \
-        && fail "access: COOKIE LEAK (public path) — the app upstream received malmo_forward_auth on a declared public path"
+    grep -qiE '^Cookie:.*moose_forward_auth=' <<<"$pc_resp" \
+        && fail "access: COOKIE LEAK (public path) — the app upstream received moose_forward_auth on a declared public path"
     grep -qiE '^Cookie:.*probe=leakcheck' <<<"$pc_resp" \
-        || fail "access: public path lost the app's own cookie — the strip is removing more than malmo_forward_auth"
-    echo "cloud-assertions: public paths strip only malmo_forward_auth (same proxy handler as the gated branch)"
+        || fail "access: public path lost the app's own cookie — the strip is removing more than moose_forward_auth"
+    echo "cloud-assertions: public paths strip only moose_forward_auth (same proxy handler as the gated branch)"
 
     # 3e. THE BYPASS TABLE — the point of running this through real Caddy. Every
     #     entry is a request that must NOT be treated as a public path. The requests
@@ -849,12 +849,12 @@ access)
 
     # 4. flip to PUBLIC via the exposure toggle (owner session; the endpoint is
     #    hosted-only + owner-or-admin). Resolve the instance id from the running
-    #    container's malmo.instance_id label (whoami is FROM-scratch — no shell to
+    #    container's moose.instance_id label (whoami is FROM-scratch — no shell to
     #    exec — so read it host-side, as the medium lane does).
     cname="$(docker ps --format '{{.Names}}' | grep -i whoami | head -1)"
     [ -n "$cname" ] || fail "access: no running whoami container to resolve the instance id (docker ps: $(docker ps --format '{{.Names}}' | tr '\n' ' '))"
-    inst_id="$(docker inspect "$cname" --format '{{ index .Config.Labels "malmo.instance_id" }}' 2>/dev/null)"
-    [ -n "$inst_id" ] || fail "access: whoami container $cname has no malmo.instance_id label"
+    inst_id="$(docker inspect "$cname" --format '{{ index .Config.Labels "moose.instance_id" }}' 2>/dev/null)"
+    [ -n "$inst_id" ] || fail "access: whoami container $cname has no moose.instance_id label"
     exp_status="$(status_of "$(full_send PUT "/api/v1/apps/${inst_id}/exposure" "$apex" "$session_cookie" '{"exposure":"public"}' 2>/dev/null)")"
     grep -q ' 200' <<<"$exp_status" || fail "access: exposure toggle to public failed: status='$exp_status'"
 
@@ -874,16 +874,16 @@ access)
     # 4b. PUBLIC + a forward-auth cookie ⇒ STILL stripped before the app upstream. A
     #     public app must never receive the Domain-scoped cookie, or it could replay
     #     it against the owner's restricted apps — the reason the route builder
-    #     strips malmo_forward_auth on every hosted route, public included (#335
+    #     strips moose_forward_auth on every hosted route, public included (#335
     #     narrows this from #306's whole-header delete to just that one cookie; the
     #     probe cookie must still reach a public app, same as a restricted one).
     pl_resp="$(full_get / "$app_host" "${fa_cookie}; probe=leakcheck" 2>/dev/null || true)"
     grep -qi 'Hostname:' <<<"$pl_resp" || fail "access: public-app cookie-leak probe did not reach whoami"
-    grep -qiE '^Cookie:.*malmo_forward_auth=' <<<"$pl_resp" \
-        && fail "access: COOKIE LEAK (public) — the app upstream received malmo_forward_auth; the #335 per-cookie strip is broken"
+    grep -qiE '^Cookie:.*moose_forward_auth=' <<<"$pl_resp" \
+        && fail "access: COOKIE LEAK (public) — the app upstream received moose_forward_auth; the #335 per-cookie strip is broken"
     grep -qiE '^Cookie:.*probe=leakcheck' <<<"$pl_resp" \
-        || fail "access: public app upstream did not receive its own cookie (probe=leakcheck) — the strip is removing more than malmo_forward_auth: $(grep -i '^Cookie:' <<<"$pl_resp" | tr -d '\r')"
-    echo "cloud-assertions: public app also strips only malmo_forward_auth (no forward-auth cookie leaks to a public upstream, app's own cookie intact)"
+        || fail "access: public app upstream did not receive its own cookie (probe=leakcheck) — the strip is removing more than moose_forward_auth: $(grep -i '^Cookie:' <<<"$pl_resp" | tr -d '\r')"
+    echo "cloud-assertions: public app also strips only moose_forward_auth (no forward-auth cookie leaks to a public upstream, app's own cookie intact)"
 
     # 5. THE HOSTED CONFIRM STEP (os#469). Destructive admin writes sit behind a
     #    re-auth gate, and until now a hosted owner could not pass it: the portal
@@ -892,10 +892,10 @@ access)
     #    The fix makes a second portal round-trip the proof. This drives it with a
     #    REAL assertion (the harness's second token) against the REAL handshake, and
     #    ends in a real elevation-class write — the only proof that matters.
-    sso_token2="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/malmo.sso_token2" 2>/dev/null || true)"
-    [ -n "$sso_token2" ] || fail "access: malmo.sso_token2 credential missing (harness did not mint/deliver the second owner assertion)"
+    sso_token2="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token2" 2>/dev/null || true)"
+    [ -n "$sso_token2" ] || fail "access: moose.sso_token2 credential missing (harness did not mint/deliver the second owner assertion)"
 
-    new_user_body='{"username":"tester","password":"malmo-cloud-lane-tester-pw"}'
+    new_user_body='{"username":"tester","password":"moose-cloud-lane-tester-pw"}'
 
     # 5a. The plain owner session is admin but NOT elevated, so the write is refused.
     #     This is the state a hosted box could never leave before #469.
@@ -917,13 +917,13 @@ access)
     #     asked for, URL-encoded exactly as the portal forwards it. The box must land
     #     the owner back on the page they came from, with the spent challenge stripped
     #     out of the URL.
-    cf_resp="$(full_get "/_malmo/sso?token=${sso_token2}&return=%2Fsettings%2Fusers%3Fconfirm%3D${challenge}" "$apex" 2>/dev/null || true)"
+    cf_resp="$(full_get "/_moose/sso?token=${sso_token2}&return=%2Fsettings%2Fusers%3Fconfirm%3D${challenge}" "$apex" 2>/dev/null || true)"
     grep -q ' 303' <<<"$(status_of "$cf_resp")" \
         || fail "access: confirm landing answered '$(status_of "$cf_resp")'; wanted 303"
     cf_loc="$(grep -i '^Location:' <<<"$cf_resp" | head -1 | tr -d '\r' | awk '{print $2}')"
     [ "$cf_loc" = "/settings/users" ] \
         || fail "access: confirm landing sent the owner to '$cf_loc'; wanted /settings/users with the confirm stripped"
-    confirm_cookie="$(cookie_val "$cf_resp" malmo_session)"
+    confirm_cookie="$(cookie_val "$cf_resp" moose_session)"
     [ -n "$confirm_cookie" ] || fail "access: confirm landing minted no session cookie"
 
     # 5d. The same write now passes, and it really reached the host: the Linux
@@ -942,15 +942,15 @@ access)
     #     rejected token would 401 before the redirect is ever built, which would
     #     prove nothing about the return path. The other refused shapes are covered
     #     per-shape by the brain's unit tests (internal/api # TestReturnTarget).
-    sso_token3="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/malmo.sso_token3" 2>/dev/null || true)"
-    [ -n "$sso_token3" ] || fail "access: malmo.sso_token3 credential missing (harness did not mint/deliver the third owner assertion)"
-    or_resp="$(full_get "/_malmo/sso?token=${sso_token3}&return=%2F%2Fevil.example%2Fsteal" "$apex" 2>/dev/null || true)"
+    sso_token3="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token3" 2>/dev/null || true)"
+    [ -n "$sso_token3" ] || fail "access: moose.sso_token3 credential missing (harness did not mint/deliver the third owner assertion)"
+    or_resp="$(full_get "/_moose/sso?token=${sso_token3}&return=%2F%2Fevil.example%2Fsteal" "$apex" 2>/dev/null || true)"
     grep -q ' 303' <<<"$(status_of "$or_resp")" \
         || fail "access: landing with an off-box return answered '$(status_of "$or_resp")'; wanted 303 (sign-in still works)"
     or_loc="$(grep -i '^Location:' <<<"$or_resp" | head -1 | tr -d '\r' | awk '{print $2}')"
     [ "$or_loc" = "/" ] \
         || fail "access: OPEN REDIRECT — an off-box return path became Location '$or_loc'; wanted the box's own front page"
-    [ -n "$(cookie_val "$or_resp" malmo_session)" ] \
+    [ -n "$(cookie_val "$or_resp" moose_session)" ] \
         || fail "access: the off-box-return landing minted no session; sign-in must still succeed"
     echo "cloud-assertions: an off-box return path is refused and the owner lands on the box's own front page"
 
@@ -969,10 +969,10 @@ ssh)
     [ -f "$SEED" ] || fail "ssh mode but $SEED absent (seed materializer did not run?)"
     box_id="$(json_str "$SEED" box_id)"
     [ -n "$box_id" ] || fail "ssh mode: could not read box_id from $SEED"
-    apex="${box_id}.malmo.network"
+    apex="${box_id}.onmoose.io"
 
-    DROPIN=/etc/ssh/sshd_config.d/malmo-allowed.conf
-    KEYSDIR=/etc/ssh/malmo-authorized-keys
+    DROPIN=/etc/ssh/sshd_config.d/moose-allowed.conf
+    KEYSDIR=/etc/ssh/moose-authorized-keys
 
     # A TCP connect to :22, as the answer to "is the port open". /dev/tcp fails on a
     # closed port, which is exactly the signal — no ss/netstat parsing.
@@ -991,7 +991,7 @@ ssh)
     }
 
     # --- 1. at boot: nothing listening, nothing enabled.
-    # On hosted the daemon IS the port control — no malmo firewall, and the provider
+    # On hosted the daemon IS the port control — no moose firewall, and the provider
     # attaches none — so a box that boots with sshd running has no control over :22
     # at all. Debian's openssh-server postinst enables ssh.service on install, so
     # this is a live check on the image's own wiring (dev/cloud/mkosi.postinst.chroot
@@ -1003,7 +1003,7 @@ ssh)
     # Host keys are this box's own, not the image's. Debian's postinst generates
     # them at IMAGE BUILD time, so every box provisioned from one image would share
     # them and any holder of the published image could impersonate a box to its
-    # owner's ssh client. The build deletes them and malmo-sshd-keygen.service
+    # owner's ssh client. The build deletes them and moose-sshd-keygen.service
     # makes per-box ones at boot.
     #
     # Their presence is not the question — they have to be here, because host-agent
@@ -1014,7 +1014,7 @@ ssh)
     # clock jitter and still separates the two cases by a wide margin.
     hostkey=/etc/ssh/ssh_host_ed25519_key
     [ -f "$hostkey" ] \
-        || fail "ssh: no host keys at boot — malmo-sshd-keygen.service did not run, so the first enable will fail 'sshd -t' with 'no hostkeys available'"
+        || fail "ssh: no host keys at boot — moose-sshd-keygen.service did not run, so the first enable will fail 'sshd -t' with 'no hostkeys available'"
     btime="$(awk '/^btime /{print $2}' /proc/stat)"
     kmtime="$(stat -c %Y "$hostkey" 2>/dev/null || echo 0)"
     [ -n "$btime" ] && [ "$kmtime" -ge "$((btime - 300))" ] \
@@ -1034,16 +1034,16 @@ ssh)
     # The SSO landing runs first: it is what creates the owner's PAM account, so
     # there is nothing to set a password on before it. Driven ONCE — the jti is
     # single-use, so a retry replays and 401s.
-    sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/malmo.sso_token" 2>/dev/null || true)"
-    [ -n "$sso_token" ] || fail "ssh: malmo.sso_token credential missing (harness did not mint/deliver the owner assertion)"
-    sso_resp="$(full_get "/_malmo/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
+    sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token" 2>/dev/null || true)"
+    [ -n "$sso_token" ] || fail "ssh: moose.sso_token credential missing (harness did not mint/deliver the owner assertion)"
+    sso_resp="$(full_get "/_moose/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
     grep -q ' 303' <<<"$(status_of "$sso_resp")" \
         || fail "ssh: SSO landing did not 303 to the dashboard: status='$(status_of "$sso_resp")'"
-    owner_cookie="$(cookie_val "$sso_resp" malmo_session)"
-    [ -n "$owner_cookie" ] || fail "ssh: no malmo_session cookie from the SSO landing"
+    owner_cookie="$(cookie_val "$sso_resp" moose_session)"
+    [ -n "$owner_cookie" ] || fail "ssh: no moose_session cookie from the SSO landing"
 
     owner=owner
-    OWNER_PW='malmo-cloud-lane-owner-pw'
+    OWNER_PW='moose-cloud-lane-owner-pw'
     id "$owner" >/dev/null 2>&1 \
         || fail "ssh: the SSO landing did not create the PAM account '$owner' (mkassertion's -email local-part)"
     printf '%s:%s\n' "$owner" "$OWNER_PW" | chpasswd || fail "ssh: could not set a known password for '$owner'"
@@ -1076,9 +1076,9 @@ ssh)
     echo "cloud-assertions: enabling SSH with no key refused (422), :22 still closed"
 
     # --- 4. add a key, turn SSH on.
-    KEYFILE=/root/.malmo-ssh-lane
+    KEYFILE=/root/.moose-ssh-lane
     rm -f "$KEYFILE" "${KEYFILE}.pub"
-    ssh-keygen -t ed25519 -N '' -C 'malmo-cloud-lane' -f "$KEYFILE" >/dev/null 2>&1 \
+    ssh-keygen -t ed25519 -N '' -C 'moose-cloud-lane' -f "$KEYFILE" >/dev/null 2>&1 \
         || fail "ssh: ssh-keygen failed (is openssh-client in the image?)"
     pubkey="$(tr -d '\n' < "${KEYFILE}.pub")"
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before adding the key failed"
@@ -1110,11 +1110,11 @@ ssh)
     # Poll: sshd was just started/reloaded and may not have finished binding.
     conn=""
     for _i in $(seq 1 30); do
-        conn="$(ssh $SSH_OPTS -i "$KEYFILE" "${owner}@127.0.0.1" 'echo MALMO_SSH_OK' 2>&1)"
-        grep -q MALMO_SSH_OK <<<"$conn" && break
+        conn="$(ssh $SSH_OPTS -i "$KEYFILE" "${owner}@127.0.0.1" 'echo MOOSE_SSH_OK' 2>&1)"
+        grep -q MOOSE_SSH_OK <<<"$conn" && break
         sleep 1
     done
-    grep -q MALMO_SSH_OK <<<"$conn" \
+    grep -q MOOSE_SSH_OK <<<"$conn" \
         || fail "ssh: key-based login as '$owner' failed: $conn"
     echo "cloud-assertions: real ssh login with the key succeeded, on host keys this box generated itself"
 
@@ -1128,8 +1128,8 @@ ssh)
     # before: an anchored pattern failed against a line that printed identically.
     # Match on what the line says, not on where it ends.
     pw_out="$(ssh $SSH_OPTS -v -o PubkeyAuthentication=no -o PreferredAuthentications=password \
-        "${owner}@127.0.0.1" 'echo MALMO_SSH_PW' 2>&1 | tr -d '\r')"
-    grep -q MALMO_SSH_PW <<<"$pw_out" \
+        "${owner}@127.0.0.1" 'echo MOOSE_SSH_PW' 2>&1 | tr -d '\r')"
+    grep -q MOOSE_SSH_PW <<<"$pw_out" \
         && fail "ssh: PASSWORD-ONLY LOGIN SUCCEEDED — the key is supposed to be the mandatory factor on hosted: $pw_out"
     pw_methods="$(grep -i 'Authentications that can continue' <<<"$pw_out" | tail -1)"
     [ -n "$pw_methods" ] \
@@ -1159,8 +1159,8 @@ ssh)
     # mean the key alone was enough. Poll the other way round: give the reload a
     # moment, but require every attempt in the window to fail.
     sleep 3
-    keyonly="$(ssh $SSH_OPTS -v -i "$KEYFILE" "${owner}@127.0.0.1" 'echo MALMO_SSH_KEYONLY' 2>&1 | tr -d '\r')"
-    grep -q MALMO_SSH_KEYONLY <<<"$keyonly" \
+    keyonly="$(ssh $SSH_OPTS -v -i "$KEYFILE" "${owner}@127.0.0.1" 'echo MOOSE_SSH_KEYONLY' 2>&1 | tr -d '\r')"
+    grep -q MOOSE_SSH_KEYONLY <<<"$keyonly" \
         && fail "ssh: THE KEY ALONE STILL GETS IN with the second factor on — publickey,password is not being enforced: $keyonly"
     # Partial success is the AND, in sshd's own words: the key was accepted and was
     # not enough. Stronger than reading the methods list, because it says the key
@@ -1199,7 +1199,7 @@ ssh)
     # account that no longer exists. Needs a second account, because the owner cannot
     # delete itself.
     GONE_USER=sshgone
-    GONE_PW='malmo-cloud-lane-gone-pw'
+    GONE_PW='moose-cloud-lane-gone-pw'
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before creating the second account failed"
     mk="$(full_send POST /api/v1/users "$apex" "$owner_cookie" \
         "{\"username\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"member\"}" 2>/dev/null)"
@@ -1214,7 +1214,7 @@ ssh)
         "{\"username\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\"}" 2>/dev/null)"
     grep -q ' 200' <<<"$(status_of "$glogin")" \
         || fail "ssh: '$GONE_USER' could not log in: status='$(status_of "$glogin")'"
-    gone_cookie="$(cookie_val "$glogin" malmo_session)"
+    gone_cookie="$(cookie_val "$glogin" moose_session)"
     [ -n "$gone_cookie" ] || fail "ssh: no session cookie for '$GONE_USER'"
     elevate "$apex" "$gone_cookie" "$GONE_PW" || fail "ssh: '$GONE_USER' could not elevate"
 
@@ -1279,27 +1279,27 @@ update)
     [ -f "$SEED" ] || fail "update mode but $SEED absent (seed materializer did not run?)"
     box_id="$(json_str "$SEED" box_id)"
     [ -n "$box_id" ] || fail "update mode: could not read box_id from $SEED"
-    apex="${box_id}.malmo.network"
+    apex="${box_id}.onmoose.io"
 
     # 1. owner session. The trigger is admin-only, so this boot is seeded with the
     #    test-portal key and given a signed owner assertion, exactly as the access
     #    boot is (dev/cloud/mkassertion). Driven once — the jti is single-use.
-    sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/malmo.sso_token" 2>/dev/null || true)"
-    [ -n "$sso_token" ] || fail "update mode: malmo.sso_token credential missing (harness did not mint/deliver the owner assertion)"
-    sso_resp="$(full_get "/_malmo/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
+    sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token" 2>/dev/null || true)"
+    [ -n "$sso_token" ] || fail "update mode: moose.sso_token credential missing (harness did not mint/deliver the owner assertion)"
+    sso_resp="$(full_get "/_moose/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
     grep -q ' 303' <<<"$(status_of "$sso_resp")" \
         || fail "update: SSO landing did not 303 to the dashboard: status='$(status_of "$sso_resp")'"
-    session_cookie="$(cookie_val "$sso_resp" malmo_session)"
-    [ -n "$session_cookie" ] || fail "update: no malmo_session cookie from the SSO landing"
+    session_cookie="$(cookie_val "$sso_resp" moose_session)"
+    [ -n "$session_cookie" ] || fail "update: no moose_session cookie from the SSO landing"
     echo "cloud-assertions: update — owner session established (box_id=$box_id)"
 
     # 2. the in-guest registry. Loaded from the test-only tarball (the production
     #    image ships none of this) and run on the host loopback, where the Docker
     #    daemon that does the pulling can reach it.
-    docker load -i /var/lib/malmo/test-images/registry.tar >/dev/null 2>&1 \
-        || fail "update: could not docker-load the test registry image (/var/lib/malmo/test-images/registry.tar missing from the boot-proof image?)"
-    docker rm -f malmo-test-registry >/dev/null 2>&1 || true
-    docker run -d --name malmo-test-registry -p 127.0.0.1:5000:5000 registry:2 >/dev/null 2>&1 \
+    docker load -i /var/lib/moose/test-images/registry.tar >/dev/null 2>&1 \
+        || fail "update: could not docker-load the test registry image (/var/lib/moose/test-images/registry.tar missing from the boot-proof image?)"
+    docker rm -f moose-test-registry >/dev/null 2>&1 || true
+    docker run -d --name moose-test-registry -p 127.0.0.1:5000:5000 registry:2 >/dev/null 2>&1 \
         || fail "update: could not start the in-guest registry container"
     reg=""
     for _i in $(seq 1 90); do
@@ -1307,14 +1307,14 @@ update)
         grep -qE ' (200|401)' <<<"$reg" && break
         sleep 1
     done
-    grep -qE ' (200|401)' <<<"$reg" || fail "update: in-guest registry never answered on 127.0.0.1:5000 (last status='$reg'): $(docker logs malmo-test-registry 2>&1 | tail -5)"
+    grep -qE ' (200|401)' <<<"$reg" || fail "update: in-guest registry never answered on 127.0.0.1:5000 (last status='$reg'): $(docker logs moose-test-registry 2>&1 | tail -5)"
     echo "cloud-assertions: update — in-guest registry serving on 127.0.0.1:5000"
 
     # 3. publish a new generation of an image and print the digest ref to update to.
     #    `docker commit`, not `docker build`: the guest is air-gapped and has no Go
     #    toolchain, and commit derives from the image the box is ALREADY running, so
     #    the new brain is the real brain plus one changed thing. Labels merge on
-    #    commit, so the derived brain keeps malmo.protocol.major and passes the
+    #    commit, so the derived brain keeps moose.protocol.major and passes the
     #    lockstep guard the way a real release would.
     #
     #    Both local references are dropped after the push. That is what makes the
@@ -1322,7 +1322,7 @@ update)
     #    left the box — and it is asserted, not assumed.
     publish_gen() { # BASE_REF REPO_TAG [dockerfile-change...] -> prints the digest ref
         local base="$1" repotag="$2"; shift 2
-        local tmp=malmo-cpupdate-src target="127.0.0.1:5000/${repotag}" args=(commit) c digest
+        local tmp=moose-cpupdate-src target="127.0.0.1:5000/${repotag}" args=(commit) c digest
         docker rm -f "$tmp" >/dev/null 2>&1 || true
         docker create --name "$tmp" "$base" >/dev/null 2>&1 || return 1
         for c in "$@"; do args+=(--change "$c"); done
@@ -1337,15 +1337,15 @@ update)
         printf '%s' "$digest"
     }
 
-    brain_before_id="$(docker inspect -f '{{.Id}}' malmo-brain 2>/dev/null || true)"
-    brain_before_ref="$(docker inspect -f '{{.Config.Image}}' malmo-brain 2>/dev/null || true)"
-    ui_before_ref="$(docker inspect -f '{{.Config.Image}}' malmo-ui 2>/dev/null || true)"
+    brain_before_id="$(docker inspect -f '{{.Id}}' moose-brain 2>/dev/null || true)"
+    brain_before_ref="$(docker inspect -f '{{.Config.Image}}' moose-brain 2>/dev/null || true)"
+    ui_before_ref="$(docker inspect -f '{{.Config.Image}}' moose-ui 2>/dev/null || true)"
     [ -n "$brain_before_id" ] && [ -n "$brain_before_ref" ] && [ -n "$ui_before_ref" ] \
         || fail "update: could not read the running control-plane pair (brain id='$brain_before_id' brain='$brain_before_ref' ui='$ui_before_ref')"
 
-    brain_v2="$(publish_gen "$brain_before_ref" malmo-brain:v2 'LABEL malmo.test.generation=v2')" \
+    brain_v2="$(publish_gen "$brain_before_ref" moose-brain:v2 'LABEL moose.test.generation=v2')" \
         || fail "update: could not publish the gen-2 brain image to the in-guest registry"
-    ui_v2="$(publish_gen "$ui_before_ref" malmo-ui:v2 'LABEL malmo.test.generation=v2')" \
+    ui_v2="$(publish_gen "$ui_before_ref" moose-ui:v2 'LABEL moose.test.generation=v2')" \
         || fail "update: could not publish the gen-2 ui image to the in-guest registry"
     # The pull has to be real. If either image is still in the local store the
     # digest pull would be satisfied without the registry, and this whole scenario
@@ -1397,17 +1397,17 @@ update)
         && fail "update: the happy-path update reverted: $(tail -1 <<<"$JOB_RESP")"
 
     # 4a. the brain really was replaced — not left running and merely re-declared.
-    brain_after_id="$(docker inspect -f '{{.Id}}' malmo-brain 2>/dev/null || true)"
-    [ -n "$brain_after_id" ] || fail "update: no malmo-brain container after the update"
+    brain_after_id="$(docker inspect -f '{{.Id}}' moose-brain 2>/dev/null || true)"
+    [ -n "$brain_after_id" ] || fail "update: no moose-brain container after the update"
     [ "$brain_after_id" != "$brain_before_id" ] \
         || fail "update: the brain container was NEVER recreated (same id $brain_before_id) — the update reported success without replacing the brain"
-    brain_after_ref="$(docker inspect -f '{{.Config.Image}}' malmo-brain 2>/dev/null || true)"
+    brain_after_ref="$(docker inspect -f '{{.Config.Image}}' moose-brain 2>/dev/null || true)"
     [ "$brain_after_ref" = "$brain_v2" ] \
         || fail "update: the running brain is on '$brain_after_ref', not the target '$brain_v2'"
-    gen="$(docker inspect -f '{{index .Config.Labels "malmo.test.generation"}}' malmo-brain 2>/dev/null || true)"
+    gen="$(docker inspect -f '{{index .Config.Labels "moose.test.generation"}}' moose-brain 2>/dev/null || true)"
     [ "$gen" = v2 ] \
         || fail "update: the running brain does not carry the gen-2 marker label (got '$gen') — it is not the image this update targeted"
-    ui_after_ref="$(docker inspect -f '{{.Config.Image}}' malmo-ui 2>/dev/null || true)"
+    ui_after_ref="$(docker inspect -f '{{.Config.Image}}' moose-ui 2>/dev/null || true)"
     [ "$ui_after_ref" = "$ui_v2" ] \
         || fail "update: the running ui is on '$ui_after_ref', not the target '$ui_v2'"
     echo "cloud-assertions: update — both containers recreated on the new pair (brain id $brain_before_id -> $brain_after_id)"
@@ -1416,19 +1416,19 @@ update)
     #     host-agent reads at the next boot, compose.yml is what the brain
     #     reconciles to. A box whose containers moved but whose declaration did not
     #     silently rolls back on its next reboot.
-    ledger=/var/lib/malmo/control-plane/images.json
+    ledger=/var/lib/moose/control-plane/images.json
     [ -f "$ledger" ] || fail "update: no ledger at $ledger after a successful update"
     grep -qF "$brain_v2" "$ledger" || fail "update: ledger does not name the new brain ref: $(tr -d '\n' < "$ledger")"
     grep -qF "$ui_v2" "$ledger" || fail "update: ledger does not name the new ui ref: $(tr -d '\n' < "$ledger")"
     grep -qF "$brain_before_ref" "$ledger" \
         || fail "update: ledger does not record the previous brain ref '$brain_before_ref' — there is nothing to roll back to: $(tr -d '\n' < "$ledger")"
-    grep -qE "^[[:space:]]*image:[[:space:]]*${ui_v2}\$" /var/lib/malmo/control-plane/compose.yml \
-        || fail "update: the staged compose does not pin the new ui ref '$ui_v2': $(grep -n 'image:' /var/lib/malmo/control-plane/compose.yml | tr '\n' ' ')"
+    grep -qE "^[[:space:]]*image:[[:space:]]*${ui_v2}\$" /var/lib/moose/control-plane/compose.yml \
+        || fail "update: the staged compose does not pin the new ui ref '$ui_v2': $(grep -n 'image:' /var/lib/moose/control-plane/compose.yml | tr '\n' ' ')"
     echo "cloud-assertions: update — declaration written in both files (images.json current+previous, compose.yml ui image)"
 
     # 4c. the new brain is really serving: /healthz on the container itself (the
     #     same probe the updater uses), and the box answering through Caddy again.
-    brain_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' malmo-brain 2>/dev/null | awk '{print $1}')"
+    brain_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' moose-brain 2>/dev/null | awk '{print $1}')"
     [ -n "$brain_ip" ] || fail "update: the recreated brain has no address on the ingress network"
     hz=""
     for _i in $(seq 1 60); do
@@ -1450,10 +1450,10 @@ update)
     #    the bad brain really ran (marker present) and the snapshot really came back
     #    (the database is a valid SQLite file again, and the owner session still
     #    works). A revert that restored nothing would leave the clobbered file.
-    broken_marker=/var/lib/malmo/broken-brain-ran
+    broken_marker=/var/lib/moose/broken-brain-ran
     rm -f "$broken_marker"
-    brain_bad="$(publish_gen "$brain_v2" malmo-brain:bad \
-        'ENTRYPOINT ["/bin/sh","-c","echo BROKEN > /var/lib/malmo/state/malmo.db; touch /var/lib/malmo/broken-brain-ran; sleep 900"]')" \
+    brain_bad="$(publish_gen "$brain_v2" moose-brain:bad \
+        'ENTRYPOINT ["/bin/sh","-c","echo BROKEN > /var/lib/moose/state/moose.db; touch /var/lib/moose/broken-brain-ran; sleep 900"]')" \
         || fail "update: could not publish the deliberately-broken brain image"
 
     bad_resp="$(full_send POST /api/v1/system/update "$apex" "$session_cookie" \
@@ -1481,7 +1481,7 @@ update)
         || fail "update: the broken brain never started (no $broken_marker) — the revert proof would be vacuous"
 
     # 5b. images and declaration are back on the good pair.
-    brain_reverted_ref="$(docker inspect -f '{{.Config.Image}}' malmo-brain 2>/dev/null || true)"
+    brain_reverted_ref="$(docker inspect -f '{{.Config.Image}}' moose-brain 2>/dev/null || true)"
     [ "$brain_reverted_ref" = "$brain_v2" ] \
         || fail "update: after the revert the brain is on '$brain_reverted_ref', not the previous good ref '$brain_v2'"
     grep -qF "$brain_v2" "$ledger" \
@@ -1490,9 +1490,9 @@ update)
         && fail "update: after the revert the ledger still names the failed brain ref '$brain_bad' — the next boot would launch it: $(tr -d '\n' < "$ledger")"
 
     # 5c. the SQLite snapshot was restored over what the bad brain wrote.
-    ls -d /var/lib/malmo/brain-snapshots/* >/dev/null 2>&1 \
-        || fail "update: no pre-update snapshot under /var/lib/malmo/brain-snapshots (UPDATES.md # 3 step 3b)"
-    db_head="$(head -c 15 /var/lib/malmo/state/malmo.db 2>/dev/null || true)"
+    ls -d /var/lib/moose/brain-snapshots/* >/dev/null 2>&1 \
+        || fail "update: no pre-update snapshot under /var/lib/moose/brain-snapshots (UPDATES.md # 3 step 3b)"
+    db_head="$(head -c 15 /var/lib/moose/state/moose.db 2>/dev/null || true)"
     [ "$db_head" = "SQLite format 3" ] \
         || fail "update: the brain database was NOT restored after the revert (starts with '$db_head', the broken brain's write is still there)"
 
@@ -1522,12 +1522,12 @@ update)
     #    is the only channel a real box has for a per-box fact and an environment
     #    drop-in would prove a path production never takes (os#407). The address
     #    below must stay in step with the one that script seeds.
-    target_dir=/var/lib/malmo/test-target
+    target_dir=/var/lib/moose/test-target
     mkdir -p "$target_dir"
 
     write_target() { # BRAIN_REF UI_REF VERSION [WINDOW] -> the answer the box reads
         # The window is optional on the wire (os#408). Left out, the answer has
-        # no opinion and the box keeps MALMO_UPDATE_WINDOW; set, it wins.
+        # no opinion and the box keeps MOOSE_UPDATE_WINDOW; set, it wins.
         local window=""
         if [ -n "${4:-}" ]; then window=",\"window\":\"$4\""; fi
         printf '{"version":"%s","channel":"stable","brain_image":"%s","brain_digest":"%s","ui_image":"%s","ui_digest":"%s","published_at":"2026-01-01T00:00:00Z"%s,"an_unknown_field":true}\n' \
@@ -1547,19 +1547,19 @@ update)
     mkdir -p /etc/systemd/system/host-agent.service.d
     cat > /etc/systemd/system/host-agent.service.d/30-update-target.conf <<EOF
 [Service]
-Environment=MALMO_UPDATE_WINDOW=04:00-04:01
-Environment=MALMO_UPDATE_BRAIN_REPO=127.0.0.1:5000/malmo-brain
-Environment=MALMO_UPDATE_UI_REPO=127.0.0.1:5000/malmo-ui
+Environment=MOOSE_UPDATE_WINDOW=04:00-04:01
+Environment=MOOSE_UPDATE_BRAIN_REPO=127.0.0.1:5000/moose-brain
+Environment=MOOSE_UPDATE_UI_REPO=127.0.0.1:5000/moose-ui
 EOF
     systemctl daemon-reload || fail "update-target: systemctl daemon-reload failed"
 
     # The source: a file server on the loopback, run from the Caddy image the box
     # already has, so this needs nothing the boot-proof image does not ship.
-    caddy_image="$(docker inspect -f '{{.Config.Image}}' malmo-caddy 2>/dev/null || true)"
-    [ -n "$caddy_image" ] || fail "update-target: no malmo-caddy container to borrow a file-server image from"
-    docker rm -f malmo-test-target >/dev/null 2>&1 || true
-    write_target "127.0.0.1:5000/malmo-brain:v3" "127.0.0.1:5000/malmo-ui:v3" "v0.0.0-unpinned"
-    docker run -d --name malmo-test-target -p 127.0.0.1:5001:80 \
+    caddy_image="$(docker inspect -f '{{.Config.Image}}' moose-caddy 2>/dev/null || true)"
+    [ -n "$caddy_image" ] || fail "update-target: no moose-caddy container to borrow a file-server image from"
+    docker rm -f moose-test-target >/dev/null 2>&1 || true
+    write_target "127.0.0.1:5000/moose-brain:v3" "127.0.0.1:5000/moose-ui:v3" "v0.0.0-unpinned"
+    docker run -d --name moose-test-target -p 127.0.0.1:5001:80 \
         -v "$target_dir":/srv:ro "$caddy_image" \
         caddy file-server --root /srv --listen :80 >/dev/null 2>&1 \
         || fail "update-target: could not start the in-guest update-target file server"
@@ -1569,11 +1569,11 @@ EOF
         grep -q ' 200' <<<"$tgt" && break
         sleep 1
     done
-    grep -q ' 200' <<<"$tgt" || fail "update-target: the in-guest source never answered on 127.0.0.1:5001 (last status='$tgt'): $(docker logs malmo-test-target 2>&1 | tail -5)"
+    grep -q ' 200' <<<"$tgt" || fail "update-target: the in-guest source never answered on 127.0.0.1:5001 (last status='$tgt'): $(docker logs moose-test-target 2>&1 | tail -5)"
 
     # 6a. THE REFUSAL. The answer names TAGS. A box that pulled them would be
     #     trusting a movable label, so it must refuse and stay exactly where it is.
-    brain_id_before_target="$(docker inspect -f '{{.Id}}' malmo-brain 2>/dev/null || true)"
+    brain_id_before_target="$(docker inspect -f '{{.Id}}' moose-brain 2>/dev/null || true)"
     # The baseline for the os#447 check below. Read a host-backed endpoint while
     # host-agent is still the process the brain has always talked to, so the
     # "after" read has something to be compared against — without this, a box
@@ -1597,12 +1597,12 @@ EOF
     echo "cloud-assertions: update-target — IDENTITY OK (the box asks as box_id=$box_id)"
     journalctl -u host-agent.service -b --no-pager 2>&1 | grep -q "refusing the answer" \
         || fail "update-target: host-agent did not log a refusal for an unpinned answer: $(journalctl -u host-agent.service -b --no-pager 2>&1 | grep -i 'update target' | tail -5)"
-    [ "$(docker inspect -f '{{.Id}}' malmo-brain 2>/dev/null || true)" = "$brain_id_before_target" ] \
+    [ "$(docker inspect -f '{{.Id}}' moose-brain 2>/dev/null || true)" = "$brain_id_before_target" ] \
         || fail "update-target: the box acted on an UNPINNED answer — the brain container was replaced"
     echo "cloud-assertions: update-target — REFUSAL OK (a tagged answer was refused, box unchanged)"
 
     # 6a-bis. THE SOCKET SURVIVES A PLAIN RESTART (os#447). host-agent was
-    #     restarted above. Before the fix, systemd deleted /run/malmo when the
+    #     restarted above. Before the fix, systemd deleted /run/moose when the
     #     unit stopped and made a fresh inode on start, while the brain's bind
     #     mount still pointed at the deleted one — so the brain saw an empty
     #     directory, never saw the new agent.sock, and every host-backed call
@@ -1624,16 +1624,16 @@ EOF
         sleep 1
     done
     grep -q ' 200' <<<"$target_after" \
-        || fail "update-target: the brain cannot reach host-agent after a plain host-agent restart (status='$target_after') — os#447 regression. /run/malmo inode now: $(stat -c %i /run/malmo 2>&1); RuntimeDirectoryPreserve=$(systemctl show host-agent.service -p RuntimeDirectoryPreserve --value 2>&1); brain mounts: $(docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' malmo-brain 2>&1)"
-    [ "$(docker inspect -f '{{.Id}}' malmo-brain 2>/dev/null || true)" = "$brain_id_before_target" ] \
+        || fail "update-target: the brain cannot reach host-agent after a plain host-agent restart (status='$target_after') — os#447 regression. /run/moose inode now: $(stat -c %i /run/moose 2>&1); RuntimeDirectoryPreserve=$(systemctl show host-agent.service -p RuntimeDirectoryPreserve --value 2>&1); brain mounts: $(docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' moose-brain 2>&1)"
+    [ "$(docker inspect -f '{{.Id}}' moose-brain 2>/dev/null || true)" = "$brain_id_before_target" ] \
         || fail "update-target: the brain container was replaced across the host-agent restart, so the 200 above says nothing about os#447"
     echo "cloud-assertions: update-target — SOCKET SURVIVES OK (a plain host-agent restart left the SAME brain container able to reach it)"
 
     # 6b. THE APPLY. A pinned gen-3 pair, published and dropped locally like the
     #     ones above, so the loop's apply is a real registry pull.
-    brain_v3="$(publish_gen "$(docker inspect -f '{{.Config.Image}}' malmo-brain)" malmo-brain:v3 'LABEL malmo.test.generation=v3')" \
+    brain_v3="$(publish_gen "$(docker inspect -f '{{.Config.Image}}' moose-brain)" moose-brain:v3 'LABEL moose.test.generation=v3')" \
         || fail "update-target: could not publish the gen-3 brain image"
-    ui_v3="$(publish_gen "$(docker inspect -f '{{.Config.Image}}' malmo-ui)" malmo-ui:v3 'LABEL malmo.test.generation=v3')" \
+    ui_v3="$(publish_gen "$(docker inspect -f '{{.Config.Image}}' moose-ui)" moose-ui:v3 'LABEL moose.test.generation=v3')" \
         || fail "update-target: could not publish the gen-3 ui image"
     # The answer carries a whole-day window. The drop-in above says 04:00-04:01,
     # so the apply below is only possible if the box took the window from here.
@@ -1650,7 +1650,7 @@ EOF
     done
     [ -n "$window_taken" ] \
         || fail "update-target: host-agent did not take the update window from the answer: $(journalctl -u host-agent.service -b --no-pager 2>&1 | grep -i 'update target\|window' | tail -5)"
-    echo "cloud-assertions: update-target — WINDOW OK (the answer's window outranked MALMO_UPDATE_WINDOW)"
+    echo "cloud-assertions: update-target — WINDOW OK (the answer's window outranked MOOSE_UPDATE_WINDOW)"
 
     applied=""
     for _i in $(seq 1 420); do
@@ -1666,7 +1666,7 @@ EOF
     # The containers really moved, not just the declaration.
     gen3=""
     for _i in $(seq 1 120); do
-        gen3="$(docker inspect -f '{{index .Config.Labels "malmo.test.generation"}}' malmo-brain 2>/dev/null || true)"
+        gen3="$(docker inspect -f '{{index .Config.Labels "moose.test.generation"}}' moose-brain 2>/dev/null || true)"
         [ "$gen3" = v3 ] && break
         sleep 1
     done

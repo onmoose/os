@@ -67,7 +67,7 @@ fi
 # Bootstrap the rootfs if absent. bootstrap.sh requires root (it uses
 # nspawn to provision packages inside the rootfs); inherit our caller's
 # sudo by running it as the current EUID.
-if [ ! -f "${ROOTFS}/.malmo-nspawn-ready" ]; then
+if [ ! -f "${ROOTFS}/.moose-nspawn-ready" ]; then
     "${REPO_ROOT}/dev/test-nspawn/bootstrap.sh"
 fi
 

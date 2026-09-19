@@ -1,12 +1,12 @@
 # Dev-only: the LAN-facing Caddy reverse proxy (CONTROL_PLANE.md). In
 # production Caddy is a brain-managed container; here we run it standalone so
 # the natively-run brain can drive its admin API. It joins the external
-# malmo-ingress network (created by `make net`) so it can reach app containers
+# moose-ingress network (created by `make net`) so it can reach app containers
 # by their per-instance alias.
 services:
   caddy:
     image: caddy:2-alpine
-    container_name: malmo-caddy
+    container_name: moose-caddy
     command: ["caddy", "run", "--config", "/etc/caddy/caddy.json"]
     volumes:
       - ./caddy.json:/etc/caddy/caddy.json:ro
@@ -28,8 +28,8 @@ services:
       - "80:80"      # app routes on the LAN-facing port so <slug>.local resolves portless (matches prod + Avahi)
       - "2019:2019"  # admin API the brain drives
     networks:
-      - malmo-ingress
+      - moose-ingress
 
 networks:
-  malmo-ingress:
+  moose-ingress:
     external: true

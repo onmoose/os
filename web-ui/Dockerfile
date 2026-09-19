@@ -1,5 +1,5 @@
 # check=skip=InvalidDefaultArgInFrom
-# malmo-ui control-plane image (BUILD.md # 5b; WEB_UI.md # deploy model).
+# moose-ui control-plane image (BUILD.md # 5b; WEB_UI.md # deploy model).
 # Build context is web-ui/, through `make ui-image` — that target feeds the two
 # base images in from dev/control-plane/images.lock. They have no default here on
 # purpose: a default is a second copy of a pin, free to drift, and a bare

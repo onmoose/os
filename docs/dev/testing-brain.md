@@ -1,6 +1,6 @@
 # Testing the brain
 
-How we test `malmo-brain` and its sibling packages. Scoped to the **inner
+How we test `moose-brain` and its sibling packages. Scoped to the **inner
 loop** (the Go code that drives Docker + Caddy + host-agent). The system-
 level lanes — `systemd-nspawn`, QEMU+swtpm, ISO end-to-end — live in
 [`../specs/TESTING.md`](../specs/TESTING.md) and target boot ordering, LUKS,

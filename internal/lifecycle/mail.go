@@ -2,8 +2,8 @@ package lifecycle
 
 // BYO outgoing mail (SERVICE_PROVISIONING.md # BYO outgoing mail). The brain
 // injects an admin-registered SMTP provider into a bound app's .env as
-// MALMO_MAIL_* — writeEnv stamps it at install, RebindMail re-stamps it later.
-// No malmo-run relay: the app dials the provider itself over its declared
+// MOOSE_MAIL_* — writeEnv stamps it at install, RebindMail re-stamps it later.
+// No moose-run relay: the app dials the provider itself over its declared
 // internet permission.
 
 import (
@@ -18,26 +18,26 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
-// mailEnvLines renders a provider as the MALMO_MAIL_* env lines: the discrete
+// mailEnvLines renders a provider as the MOOSE_MAIL_* env lines: the discrete
 // fields plus a Symfony-style DSN, since apps differ in what they consume.
 func mailEnvLines(p store.MailProvider) []string {
 	return []string{
-		"MALMO_MAIL_HOST=" + p.Host,
-		"MALMO_MAIL_PORT=" + strconv.Itoa(p.Port),
-		"MALMO_MAIL_USER=" + p.Username,
-		"MALMO_MAIL_PASSWORD=" + p.Password,
-		"MALMO_MAIL_FROM=" + p.FromAddress,
-		"MALMO_MAIL_ENCRYPTION=" + p.Encryption,
+		"MOOSE_MAIL_HOST=" + p.Host,
+		"MOOSE_MAIL_PORT=" + strconv.Itoa(p.Port),
+		"MOOSE_MAIL_USER=" + p.Username,
+		"MOOSE_MAIL_PASSWORD=" + p.Password,
+		"MOOSE_MAIL_FROM=" + p.FromAddress,
+		"MOOSE_MAIL_ENCRYPTION=" + p.Encryption,
 		// Boolean projections of the encryption mode, for apps that take two
 		// separate flags rather than the string or DSN — STARTTLS vs implicit
 		// TLS as distinct booleans (e.g. Django's EMAIL_USE_TLS / EMAIL_USE_SSL,
 		// which Paperless surfaces). Compose can't derive these from the string.
-		"MALMO_MAIL_USE_TLS=" + strconv.FormatBool(p.Encryption == store.MailEncryptionSTARTTLS),
-		"MALMO_MAIL_USE_SSL=" + strconv.FormatBool(p.Encryption == store.MailEncryptionTLS),
-		"MALMO_MAIL_DSN=" + mailDSN(p),
+		"MOOSE_MAIL_USE_TLS=" + strconv.FormatBool(p.Encryption == store.MailEncryptionSTARTTLS),
+		"MOOSE_MAIL_USE_SSL=" + strconv.FormatBool(p.Encryption == store.MailEncryptionTLS),
+		"MOOSE_MAIL_DSN=" + mailDSN(p),
 	}
 }
 
@@ -45,7 +45,7 @@ func mailEnvLines(p store.MailProvider) []string {
 // (smtp[s]://user:pass@host:port). Implicit TLS is the smtps scheme; starttls
 // and none both stay smtp:// — SMTP URL consumers negotiate STARTTLS
 // opportunistically, and apps needing the exact mode read the discrete
-// MALMO_MAIL_ENCRYPTION var instead. url.URL escapes credentials, so a
+// MOOSE_MAIL_ENCRYPTION var instead. url.URL escapes credentials, so a
 // password with @ / : survives the round trip.
 func mailDSN(p store.MailProvider) string {
 	u := url.URL{Scheme: "smtp", Host: net.JoinHostPort(p.Host, strconv.Itoa(p.Port))}
@@ -59,7 +59,7 @@ func mailDSN(p store.MailProvider) string {
 }
 
 // RebindMail changes (or, with providerID == "", clears) an instance's
-// outgoing-mail binding and re-stamps the MALMO_MAIL_* lines in its .env. A
+// outgoing-mail binding and re-stamps the MOOSE_MAIL_* lines in its .env. A
 // running instance's containers are recreated with `compose up -d` — env is
 // read only at container create — so the change takes effect immediately; a
 // stopped instance picks it up on its next Start (same op). Brain commits
@@ -106,7 +106,7 @@ func (m *Manager) RebindMail(ctx context.Context, id, providerID string) error {
 	return nil
 }
 
-// rewriteEnvMail re-stamps only the MALMO_MAIL_* lines of an instance's .env
+// rewriteEnvMail re-stamps only the MOOSE_MAIL_* lines of an instance's .env
 // from the current binding, leaving every other line byte-identical — unlike a
 // full writeEnv it needs no install-time isolation state, and a stable secret
 // can't be re-rolled by accident.
@@ -119,7 +119,7 @@ func (m *Manager) rewriteEnvMail(id string) error {
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	kept := lines[:0]
 	for _, l := range lines {
-		if !strings.HasPrefix(l, "MALMO_MAIL_") {
+		if !strings.HasPrefix(l, "MOOSE_MAIL_") {
 			kept = append(kept, l)
 		}
 	}

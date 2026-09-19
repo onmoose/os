@@ -1,6 +1,6 @@
 # Web UI
 
-> Working spec for the malmo dashboard — the web app that the browser talks to. Companion to `CONTROL_PLANE.md` (where the API server lives), `BRAIN_UI_PROTOCOL.md` (the contract the UI consumes), `AUTH.md` (session cookie), `UPDATES.md` (UI bundle update path). This doc owns the **stack and deploy model**; the **logged-in information architecture** (home screen, app model, navigation, top bar) lives in `DASHBOARD.md`.
+> Working spec for the moose dashboard — the web app that the browser talks to. Companion to `CONTROL_PLANE.md` (where the API server lives), `BRAIN_UI_PROTOCOL.md` (the contract the UI consumes), `AUTH.md` (session cookie), `UPDATES.md` (UI bundle update path). This doc owns the **stack and deploy model**; the **logged-in information architecture** (home screen, app model, navigation, top bar) lives in `DASHBOARD.md`.
 
 ## Locked: separate codebase, separate container
 
@@ -9,15 +9,15 @@
 - **API contract is versioned and additive.** Brain serves under `/api/v1/...`. Minor versions are additive — fields are added, never removed or repurposed. UI bundle declares the API minor it requires in `version.json`. Brain returns `426 Upgrade Required` on mismatch. The 426 path is the in-tab safety net for "user had a tab open while the UI container updated" — not a transient-during-OS-update artifact. See `BRAIN_UI_PROTOCOL.md` # "API discipline" for the full versioning posture.
 - **Why separate codebase + container:** UI iteration cadence is naturally faster than brain iteration cadence. A coupled ship model forces every CSS tweak through a brain release. Separating them with a stable API contract is the standard web-app shape; we keep it.
 
-## Locked: deploy model — dedicated `malmo-ui` container
+## Locked: deploy model — dedicated `moose-ui` container
 
 - The UI ships as its own Docker image: **`caddy:alpine` base + UI bundle baked in at build time**.
 - Caddyfile is trivial: serve `/srv/ui`, SPA fallback to `index.html`, gzip + brotli + ETag on by default.
 - The existing LAN-facing Caddy (the reverse proxy, separate container, per `CONTROL_PLANE.md`) routes:
-  - `/api/v1/*` → `malmo-brain` container
-  - `/api/v1/events`, `/api/v1/.../log` (SSE streams) → `malmo-brain` (same as above, but with buffering disabled)
-  - everything else → `malmo-ui` container
-- **No shared volumes.** UI bundle is baked into the image at CI build time. Each `malmo-ui` image release is self-contained.
+  - `/api/v1/*` → `moose-brain` container
+  - `/api/v1/events`, `/api/v1/.../log` (SSE streams) → `moose-brain` (same as above, but with buffering disabled)
+  - everything else → `moose-ui` container
+- **No shared volumes.** UI bundle is baked into the image at CI build time. Each `moose-ui` image release is self-contained.
 - **Security profile.** The UI container is a static file server. Read-only root filesystem, no secrets, no outbound network, no host privileges, no Docker socket access. Simplest container in the stack.
 
 **Why `caddy:alpine` over alternatives:**
@@ -28,10 +28,10 @@
 
 ## Locked: deploy + update flow
 
-- Two images are published per release: `malmo-brain` and `malmo-ui`. Both versions appear in the release manifest (`UPDATES.md`).
-- The updater pulls and recreates **only what changed.** Most UI ships: only `malmo-ui` recreates, brain keeps running. Most brain ships: only `malmo-brain` recreates. UI keeps serving.
+- Two images are published per release: `moose-brain` and `moose-ui`. Both versions appear in the release manifest (`UPDATES.md`).
+- The updater pulls and recreates **only what changed.** Most UI ships: only `moose-ui` recreates, brain keeps running. Most brain ships: only `moose-brain` recreates. UI keeps serving.
 - **Coordinated ship.** When a release manifest bumps both versions in the same entry (e.g., a UI change that depends on a new brain endpoint), the updater treats them as one transaction — pull both, recreate both, verify both healthy, commit.
-- **One user-facing toggle.** "Auto-update malmo" governs the whole channel. The user never thinks about brain vs. UI.
+- **One user-facing toggle.** "Auto-update moose" governs the whole channel. The user never thinks about brain vs. UI.
 
 ## Locked: stack
 

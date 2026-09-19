@@ -19,9 +19,11 @@
 import { ref, computed } from "vue";
 import { api, setUnauthenticatedHandler, type AuthState, type SetupResult, type User } from "./api";
 
-// portalURL is the malmo.network control plane an unauthenticated hosted box
-// bounces to. The box lives at "<box-id>.malmo.network"; the portal is the apex.
-const portalURL = "https://malmo.network";
+// portalURL is the control plane an unauthenticated hosted box bounces to. The
+// box lives at "<box-id>.onmoose.io" and the portal at "mooseos.com": a
+// different registrable domain on purpose, so a tenant box cannot set a cookie
+// the browser would send to the portal.
+const portalURL = "https://mooseos.com";
 
 const currentUser = ref<User | null>(null);
 const hasUsers = ref<boolean | null>(null);
@@ -53,7 +55,7 @@ export function isBoxOwner() {
 // the box side is internal/api/sso.go, the portal side is the private cloud repo.
 const portalOpenBoxURL = `${portalURL}/api/boxes/current/open`;
 
-// redirectToPortal sends the browser to the malmo.network portal, which mints a
+// redirectToPortal sends the browser to the mooseos.com portal, which mints a
 // fresh SSO assertion and lands the owner back on the box dashboard. Used as the
 // hosted stand-in for the login screen. replace() so the unauthenticated box URL
 // doesn't linger in history.

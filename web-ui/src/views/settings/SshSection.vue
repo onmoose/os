@@ -15,7 +15,7 @@
 //
 // The profile rule is NOT decided here. The brain answers it in key_required:
 // true on hosted, where a public key is the mandatory method, and false on the
-// appliance, where the malmo password is. The server enforces both rows whatever
+// appliance, where the moose password is. The server enforces both rows whatever
 // this screen does, so reading the flag keeps the two from drifting.
 //
 // Every write is elevation-class server-side, so all three go through
@@ -299,7 +299,7 @@ const busy = computed(
           <div class="flex min-w-0 items-center gap-3">
             <Lock class="size-5 shrink-0 text-muted-foreground" />
             <div class="min-w-0">
-              <div class="text-sm font-medium">malmo password</div>
+              <div class="text-sm font-medium">moose password</div>
               <div class="text-xs text-muted-foreground">
                 <template v-if="!keyRequired">
                   Required by this box. It is the same password you sign in to the dashboard with.
@@ -316,7 +316,7 @@ const busy = computed(
           <SwitchRoot
             :model-value="requirePassword"
             :disabled="busy || !keyRequired || ownerHasNoPassword"
-            aria-label="Ask for my malmo password"
+            aria-label="Ask for my moose password"
             class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-border bg-muted outline-none transition-colors disabled:cursor-default disabled:opacity-60 data-[state=checked]:border-accent data-[state=checked]:bg-accent"
             @update:model-value="togglePassword"
           >

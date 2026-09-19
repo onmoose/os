@@ -1,8 +1,8 @@
-# Running malmo locally
+# Running moose locally
 
-malmo's dev model is **two loops**:
+moose's dev model is **two loops**:
 
-- **Inner loop (seconds) — all native, no VM.** The product logic — `malmo-brain`
+- **Inner loop (seconds) — all native, no VM.** The product logic — `moose-brain`
   and the dashboard — runs directly on your machine against the local Docker
   socket. The host-agent is a **fake** that speaks the real protocol but stubs
   host ops. This is where ~90% of development happens.
@@ -14,7 +14,7 @@ This guide covers the inner loop.
 
 ## Who can contribute to what
 
-malmo's dev model splits cleanly along the inner/outer loop boundary, and that
+moose's dev model splits cleanly along the inner/outer loop boundary, and that
 boundary is also the **macOS/Windows ↔ Linux** boundary. The Go code is
 deliberately build-tagged so the cross-platform surface compiles and runs
 anywhere; the Linux-only parts are the *real host integration*, which by design
@@ -40,7 +40,7 @@ compiles clean; Docker Desktop covers Caddy and app containers.
   (no journald needed), so the per-app Logs tab shows live logs in the inner loop.
 - **The full inner-loop stack** — `make dev` (Caddy container + fake host-agent
   + brain + Vite), installing apps, SSE, routing, uninstall.
-- **Sample manifests** — none in this repo. App artifacts are authored in `malmoos/store`; use `make dev-app APP=<id> STORE=../store` to boot one against the brain.
+- **Sample manifests** — none in this repo. App artifacts are authored in `onmoose/store`; use `make dev-app APP=<id> STORE=../store` to boot one against the brain.
 - **Unit tests** for all the above, plus the self-contained `make test-health`.
 
 On macOS, cgo automatically selects the stub implementations (`pam_other.go`,
@@ -79,7 +79,7 @@ behavior is required.
   `<slug>.local` URLs work portless. If something else holds `:80` (another
   web server, a system service), stop it first or `make caddy` will fail to bind.
 - **`avahi-daemon` running** (Linux, for the `make dev` loop). `make dev` sets
-  `MALMO_DEV_AVAHI=1`, which publishes each app's `.local` name over the real
+  `MOOSE_DEV_AVAHI=1`, which publishes each app's `.local` name over the real
   Avahi DBus API so it resolves on the LAN. Without the daemon, the fake
   host-agent still starts but app installs fail at the publish step. Check with
   `systemctl is-active avahi-daemon`; the publisher itself needs no sudo.
@@ -145,7 +145,7 @@ Vite watches the UI, and since `dev/dev-go.sh` the Go side is watched too: save 
 
 Three things about how it behaves:
 
-- **The debounce is long: 10 seconds of no further edits before it builds.** Most edits here arrive from a coding agent, which writes a burst of files over several seconds; a short debounce would restart the brain in the middle of one, again and again. Editing by hand? `MALMO_DEV_DEBOUNCE=2 make dev`. `MALMO_DEV_POLL` (default 2s) is how often it looks.
+- **The debounce is long: 10 seconds of no further edits before it builds.** Most edits here arrive from a coding agent, which writes a burst of files over several seconds; a short debounce would restart the brain in the middle of one, again and again. Editing by hand? `MOOSE_DEV_DEBOUNCE=2 make dev`. `MOOSE_DEV_POLL` (default 2s) is how often it looks.
 - **A failed build leaves the running brain alone.** The build goes to `.dev/next/` first, and only a build that succeeded stops anything. A typo costs you a `[watch] build failed` line, not your stack.
 - **A restart drops open SSE streams and kills any install job in flight.** The dashboard reconnects on its own; an install that was running does not resume.
 
@@ -158,7 +158,7 @@ The watcher needs GNU `find` (`-newermt`), so it is Linux and WSL. Elsewhere `ma
 ```bash
 make caddy        # 1. dev reverse proxy (Caddy container, detached)
 make run-agent    # 2. fake host-agent (UNIX socket at .dev/agent.sock)
-make run-brain    # 3. malmo-brain (:8080, native)
+make run-brain    # 3. moose-brain (:8080, native)
 make ui           # 4. dashboard (Vite, :5173)
 ```
 
@@ -178,10 +178,10 @@ app HTTP:  http://<slug>.local/ ─▶ Caddy :80 ─▶ app container
 ```
 
 - **Caddy listens on host `:80`** (free it first — see prerequisites) and exposes
-  its admin API on `:2019`. App containers join the `malmo-ingress` network so
+  its admin API on `:2019`. App containers join the `moose-ingress` network so
   Caddy reaches them by per-instance alias.
 - **`.local` URLs resolve under `make dev`.** `make dev` runs the fake host-agent
-  with `MALMO_DEV_AVAHI=1`, which swaps the in-memory discovery publisher for the
+  with `MOOSE_DEV_AVAHI=1`, which swaps the in-memory discovery publisher for the
   real Avahi DBus publisher (`internal/hostagent/avahipublisher`) — the same code
   path `host-agent-real` uses. Each installed app's `<slug>.local` is then
   announced on the LAN, reachable by its portless URL from this box and other LAN
@@ -204,23 +204,23 @@ Everything dev-generated is under `.dev/` (git-ignored):
 ├── agent.sock                    # host-agent UNIX socket
 ├── brain  host-agent             # compiled binaries
 └── state/
-    ├── malmo.db                  # brain SQLite (users, sessions, instances)
+    ├── moose.db                  # brain SQLite (users, sessions, instances)
     ├── fake-shadow.json          # fake host-agent's passwords + roles (stands in for /etc/shadow)
     └── instances/<id>/           # per-app: manifest, compose, override, .env, data/
 ```
 
-Override defaults with env vars: `MALMO_LISTEN`, `MALMO_STATE_DIR`, `MALMO_CATALOG_URL`, `MALMO_CATALOG_CACHE_DIR`, `MALMO_CATALOG_FILE`, `MALMO_CATALOG_REFRESH`, `MALMO_AGENT_SOCK`, `MALMO_CADDY_ADMIN`, `MALMO_CADDY_LISTEN`, `MALMO_TRUSTED_PROXIES`.
+Override defaults with env vars: `MOOSE_LISTEN`, `MOOSE_STATE_DIR`, `MOOSE_CATALOG_URL`, `MOOSE_CATALOG_CACHE_DIR`, `MOOSE_CATALOG_FILE`, `MOOSE_CATALOG_REFRESH`, `MOOSE_AGENT_SOCK`, `MOOSE_CADDY_ADMIN`, `MOOSE_CADDY_LISTEN`, `MOOSE_TRUSTED_PROXIES`.
 
-Two of those are about the catalog and are easy to mix up. `MALMO_CATALOG_CACHE_DIR` is where proxied icons and screenshots land — never the catalog itself, which the brain holds in memory and re-fetches (`../specs/APP_STORE.md` # Failure modes). `MALMO_CATALOG_FILE` is a local snapshot the brain reads once at startup and never writes back, for working without a reachable control plane; `make dev-app` sets it for you. A real box sets neither by hand.
+Two of those are about the catalog and are easy to mix up. `MOOSE_CATALOG_CACHE_DIR` is where proxied icons and screenshots land — never the catalog itself, which the brain holds in memory and re-fetches (`../specs/APP_STORE.md` # Failure modes). `MOOSE_CATALOG_FILE` is a local snapshot the brain reads once at startup and never writes back, for working without a reachable catalog service; `make dev-app` sets it for you. A real box sets neither by hand.
 
-`MALMO_TRUSTED_PROXIES` is the one with a security consequence: it lists the proxies (comma-separated IPs or CIDRs) whose `X-Forwarded-For` the brain will believe when deriving the client IP its per-IP throttles key on (`BRAIN_UI_PROTOCOL.md` # Rate limiting & abuse). Leave it unset and it defaults to loopback plus Docker's bridge pool (`127.0.0.0/8`, `::1/128`, `172.16.0.0/12`) — deliberately **not** all the private ranges, because a trusted hop is skipped during the chain walk, so trusting `192.168.0.0/16` or `10.0.0.0/8` would make every LAN client resolve to Caddy's address and share one throttle bucket. Set it to the empty string to ignore the header entirely and key on the peer address. A value that doesn't parse stops the brain at startup rather than silently falling back.
+`MOOSE_TRUSTED_PROXIES` is the one with a security consequence: it lists the proxies (comma-separated IPs or CIDRs) whose `X-Forwarded-For` the brain will believe when deriving the client IP its per-IP throttles key on (`BRAIN_UI_PROTOCOL.md` # Rate limiting & abuse). Leave it unset and it defaults to loopback plus Docker's bridge pool (`127.0.0.0/8`, `::1/128`, `172.16.0.0/12`) — deliberately **not** all the private ranges, because a trusted hop is skipped during the chain walk, so trusting `192.168.0.0/16` or `10.0.0.0/8` would make every LAN client resolve to Caddy's address and share one throttle bucket. Set it to the empty string to ignore the header entirely and key on the peer address. A value that doesn't parse stops the brain at startup rather than silently falling back.
 
-**Why `fake-shadow.json` exists.** The password lives on the host-agent side, never in the brain (`AUTH.md` # Password storage — the brain calls `verify_password` on every login). The *real* host-agent persists it in `/etc/shadow`; the *fake* one used by `make dev` would otherwise keep it in an in-memory map that dies with the process. Because the brain's SQLite persists the user **and** session rows across a restart, that asymmetry produced a confusing bug: restart the stack, clear cookies, log in again, and the password was rejected even though the account still existed (the session cookie had masked it — a kept cookie skips the password re-check). Backing the fake maps with `fake-shadow.json` under `MALMO_STATE_DIR` makes dev accounts survive a restart, matching the real agent. Set `MALMO_STATE_DIR` and the fake agent picks it up automatically (the dev stack exports it); leave it unset and the fake stays purely in-memory.
+**Why `fake-shadow.json` exists.** The password lives on the host-agent side, never in the brain (`AUTH.md` # Password storage — the brain calls `verify_password` on every login). The *real* host-agent persists it in `/etc/shadow`; the *fake* one used by `make dev` would otherwise keep it in an in-memory map that dies with the process. Because the brain's SQLite persists the user **and** session rows across a restart, that asymmetry produced a confusing bug: restart the stack, clear cookies, log in again, and the password was rejected even though the account still existed (the session cookie had masked it — a kept cookie skips the password re-check). Backing the fake maps with `fake-shadow.json` under `MOOSE_STATE_DIR` makes dev accounts survive a restart, matching the real agent. Set `MOOSE_STATE_DIR` and the fake agent picks it up automatically (the dev stack exports it); leave it unset and the fake stays purely in-memory.
 
 ## Reset
 
 ```bash
-make clean        # stop the dev Caddy, remove malmo app containers + networks,
+make clean        # stop the dev Caddy, remove moose app containers + networks,
                   # wipe .dev/state
 ```
 
@@ -234,7 +234,7 @@ in-memory fakes (tracked in `docs/progress/host-agent-pam-verify.md`).
 
 ```bash
 apt install libpam0g-dev      # PAM headers for CGO
-sudo cp dev/pam/malmo /etc/pam.d/malmo
+sudo cp dev/pam/moose /etc/pam.d/moose
 ```
 
 **Build and run:**
@@ -244,14 +244,14 @@ go build ./cmd/host-agent-real
 sudo ./cmd/host-agent-real    # must run as root — pam_unix.so requires privilege
 ```
 
-Point the brain at it by setting `MALMO_AGENT_SOCK` to the same path the real
+Point the brain at it by setting `MOOSE_AGENT_SOCK` to the same path the real
 binary listens on. Note: because `set-password` is still fake, dashboard login
 will fail until real `useradd`/`passwd` integration lands — use
 `cmd/host-agent` (fake) for all normal dev work.
 
 ## Verifying routing
 
-malmo uses **Host-header-based subdomain routing** — each installed app gets a
+moose uses **Host-header-based subdomain routing** — each installed app gets a
 virtual host (`<slug>.local`), never a path prefix. This keeps apps in
 separate browser origins (same-origin policy enforcement — see `SPEC.md`).
 

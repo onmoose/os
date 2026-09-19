@@ -13,7 +13,7 @@
 #   * The debounce is long (10s by default) because most edits here arrive from
 #     a coding agent, which writes a burst of files over several seconds. A
 #     short debounce would rebuild and restart the brain in the middle of that
-#     burst, repeatedly. Set MALMO_DEV_DEBOUNCE=2 when editing by hand.
+#     burst, repeatedly. Set MOOSE_DEV_DEBOUNCE=2 when editing by hand.
 #   * The build runs BEFORE the running processes are stopped, into a staging
 #     path. A build that fails leaves the old brain up and serving, so a typo
 #     never costs you the stack. (Staging is also what avoids "text file busy":
@@ -26,9 +26,9 @@ set -uo pipefail
 GO=${GO:-go}
 DEV_DIR=${DEV_DIR:-.dev}
 LDFLAGS=${LDFLAGS:-}
-WATCH_DIRS=${MALMO_DEV_WATCH_DIRS:-cmd internal}
-DEBOUNCE=${MALMO_DEV_DEBOUNCE:-10}
-POLL=${MALMO_DEV_POLL:-2}
+WATCH_DIRS=${MOOSE_DEV_WATCH_DIRS:-cmd internal}
+DEBOUNCE=${MOOSE_DEV_DEBOUNCE:-10}
+POLL=${MOOSE_DEV_POLL:-2}
 
 STAGE="$DEV_DIR/next"
 STAMP="$DEV_DIR/.dev-go-stamp"
@@ -38,7 +38,7 @@ brain_pid=""
 log() { printf '[watch] %s\n' "$*"; }
 
 start_procs() {
-  MALMO_DEV_AVAHI=1 "$DEV_DIR/host-agent" > >(sed -u 's/^/[agent] /') 2>&1 &
+  MOOSE_DEV_AVAHI=1 "$DEV_DIR/host-agent" > >(sed -u 's/^/[agent] /') 2>&1 &
   agent_pid=$!
   "$DEV_DIR/brain" > >(sed -u 's/^/[brain] /') 2>&1 &
   brain_pid=$!

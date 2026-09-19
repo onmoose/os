@@ -11,7 +11,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // pendingRecreate reads an instance's owed-recreate marker from the store.
@@ -100,7 +100,7 @@ func TestReconcileRecreatesPendingRunningInstance(t *testing.T) {
 	if err := e.m.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("a pending running instance must be recreated by reconcile: %v", e.docker.methods())
 	}
 	if pendingRecreate(t, e, inst.ID) {
@@ -113,7 +113,7 @@ func TestReconcileRecreatesPendingRunningInstance(t *testing.T) {
 	if err := e.m.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile (2nd pass): %v", err)
 	}
-	if methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("a converged instance must not be recreated again: %v", e.docker.methods())
 	}
 }
@@ -132,7 +132,7 @@ func TestReconcileFailedPendingRecreateStaysMarked(t *testing.T) {
 	if err := e.m.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if !methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("a pending instance must attempt a recreate: %v", e.docker.methods())
 	}
 	if !pendingRecreate(t, e, inst.ID) {
@@ -196,7 +196,7 @@ func TestStartClearsPendingRecreate(t *testing.T) {
 	if err := e.m.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if methodsContainArg(e.docker.Calls(), "ComposeUp", "malmo-"+inst.ID) {
+	if methodsContainArg(e.docker.Calls(), "ComposeUp", "moose-"+inst.ID) {
 		t.Fatalf("reconcile must not recreate an instance Start already converged: %v", e.docker.methods())
 	}
 }

@@ -14,11 +14,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/store"
 )
 
 // CookieName is the dashboard's session cookie. AUTH.md # Sessions.
-const CookieName = "malmo_session"
+const CookieName = "moose_session"
 
 // ForwardAuthCookieName is the hosted per-app forward-auth cookie (issue #305).
 // Unlike CookieName it is Domain-scoped to the box apex so the browser sends it
@@ -27,7 +27,7 @@ const CookieName = "malmo_session"
 // credential: it proves a valid box session exists, but its value is a distinct
 // random token stored in a distinct column, so replaying it as CookieName never
 // resolves to a dashboard session. Hosted-only; the appliance never mints one.
-const ForwardAuthCookieName = "malmo_forward_auth"
+const ForwardAuthCookieName = "moose_forward_auth"
 
 // tokenBytes is the entropy of one session token. 32 bytes = 256 bits;
 // base64url-encoded that's 43 chars. Server-side validated, so length here
@@ -97,9 +97,9 @@ type Manager struct {
 	// the cookie.
 	SecureCookies bool
 	// ForwardAuthDomain is the Domain attribute stamped on the hosted
-	// forward-auth cookie (issue #305): the box apex "<box-id>.malmo.network",
+	// forward-auth cookie (issue #305): the box apex "<box-id>.onmoose.io",
 	// so the browser sends the cookie to every app subdomain
-	// "<slug>.<box-id>.malmo.network" as well as the dashboard host. Empty on
+	// "<slug>.<box-id>.onmoose.io" as well as the dashboard host. Empty on
 	// appliance (and any box with no box-id), which disables minting — the
 	// appliance never issues a forward-auth cookie.
 	ForwardAuthDomain string

@@ -16,12 +16,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${REPO_ROOT}/.dev/qemu"
-IMAGE_OUT="${WORK}/malmo-medium.raw"
+IMAGE_OUT="${WORK}/moose-medium.raw"
 SSH_KEY="${WORK}/ssh-key"
 PASSPHRASE_FILE="${REPO_ROOT}/dev/test-qemu/mkosi.passphrase"
 
 # Per-run ephemeral state.
-RUN_DIR="$(mktemp -d -t malmo-medium.XXXXXX)"
+RUN_DIR="$(mktemp -d -t moose-medium.XXXXXX)"
 SWTPM_DIR="${RUN_DIR}/swtpm"
 SWTPM_SOCK="${SWTPM_DIR}/sock"
 RESULT_FILE="${RUN_DIR}/result"
@@ -222,7 +222,7 @@ qemu_base_args() {
         # initramfs unpacked into RAM and the kernel — can't, so the
         # unlock died with "Not enough available memory to open a
         # keyslot" / "Cannot allocate memory". 2 GiB clears it with
-        # headroom, and is also more representative of a real malmo box
+        # headroom, and is also more representative of a real moose box
         # (an old laptop, never 1 GiB). Harness-only change — the built
         # image is untouched, so no rebuild/canary bump needed.
         -m 2G
@@ -355,7 +355,7 @@ run_boot() {
     scp -P "$SSH_PORT" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR -o ConnectTimeout=2 -o BatchMode=yes \
-        "root@127.0.0.1:/var/lib/malmo-medium-result" \
+        "root@127.0.0.1:/var/lib/moose-medium-result" \
         "$RESULT_FILE" 2>/dev/null || true
     VERDICT="$(cat "$RESULT_FILE" 2>/dev/null || true)"
 
@@ -381,7 +381,7 @@ run_boot() {
 #
 # Boot 1 (enrollment): supply the recovery-passphrase credential over
 # SMBIOS so the initrd can unlock the still-TPM-less root; the run-once
-# malmo-tpm-enroll.service then adds the PCR-7-bound TPM2 keyslot.
+# moose-tpm-enroll.service then adds the PCR-7-bound TPM2 keyslot.
 if ! run_boot "first-boot" -smbios "$LUKS_CRED"; then
     echo "medium-lane test: ${VERDICT}" >&2
     exit 1

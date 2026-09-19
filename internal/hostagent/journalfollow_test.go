@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // stubLogSource emits a fixed set of lines then closes the channel, so the
@@ -75,7 +75,7 @@ func parseFrames(t *testing.T, body string) []frame {
 
 func TestJournalFollow_NilSourceReturns501(t *testing.T) {
 	mux := agentWithLogs(nil)
-	w := get(t, mux, "/v1/journal/follow?container=malmo-x-web")
+	w := get(t, mux, "/v1/journal/follow?container=moose-x-web")
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("nil log source: want 501, got %d", w.Code)
 	}
@@ -94,7 +94,7 @@ func TestJournalFollow_StreamsLinesWithMonotonicIDs(t *testing.T) {
 		{Ts: "t1", Stream: "stdout", Line: "first"},
 		{Ts: "t2", Stream: "stderr", Line: "second"},
 	}})
-	w := get(t, mux, "/v1/journal/follow?container=malmo-x-web")
+	w := get(t, mux, "/v1/journal/follow?container=moose-x-web")
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", w.Code)
 	}
@@ -122,7 +122,7 @@ func TestJournalFollow_LastEventIDEmitsLostThenResumes(t *testing.T) {
 	mux := agentWithLogs(&stubLogSource{lines: []protocol.JournalLine{
 		{Line: "after-reconnect"},
 	}})
-	req := httptest.NewRequest(http.MethodGet, "/v1/journal/follow?container=malmo-x-web", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/journal/follow?container=moose-x-web", nil)
 	req.Header.Set("Last-Event-ID", "42")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -141,7 +141,7 @@ func TestJournalFollow_LastEventIDEmitsLostThenResumes(t *testing.T) {
 
 func TestJournalFollow_SourceErrorReturns500(t *testing.T) {
 	mux := agentWithLogs(&stubLogSource{err: errors.New("journalctl exploded")})
-	w := get(t, mux, "/v1/journal/follow?container=malmo-x-web")
+	w := get(t, mux, "/v1/journal/follow?container=moose-x-web")
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("source error: want 500, got %d", w.Code)
 	}

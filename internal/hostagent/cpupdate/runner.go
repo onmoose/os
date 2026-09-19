@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // Runner adapts Apply to the shape host-agent's job handler wants: two refs in,

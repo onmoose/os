@@ -1,4 +1,4 @@
-# Author's compose, held verbatim by malmo (copy of catalog/whoami/compose.yml).
+# Author's compose, held verbatim by moose (copy of catalog/whoami/compose.yml).
 # traefik/whoami echoes the HTTP request it received — proves the Caddy route
 # reaches the right container. The documents bind (from the manifest folder
 # grant) is injected by the brain into the override; whoami ignores it.

@@ -1,7 +1,0 @@
-# Author's compose, held verbatim by malmo. traefik/whoami is a ~5MB image
-# that prints the HTTP request it received — ideal for proving the Caddy route
-# reaches the right container.
-services:
-  whoami:
-    image: traefik/whoami:v1.10.3
-    command: ["--port=80"]

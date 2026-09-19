@@ -1,0 +1,74 @@
+# Hosted cloud image — grow the root partition + filesystem to fill the provider
+# disk on boot. Runs systemd-repart against the definition in
+# /usr/lib/repart.d/50-moose-grow-root.conf, which extends the baked 8 GiB root
+# partition to the whole disk, then runs systemd-growfs directly to grow the ext4
+# inside it. Without this a provisioned box keeps the image's 8 GiB root on a much
+# larger provider disk; docker image storage and the brain's SQLite store share
+# that volume, so a single catalog-app install can fill it, and once full the
+# brain's first store write (the SSO replay-nonce) fails and login 500s — the box
+# looks offline though it is up. ENVIRONMENT.md # Storage.
+#
+# The filesystem grow is an explicit second step, not a side effect of
+# GrowFileSystem=yes in the repart definition. systemd-repart only extends the
+# partition and sets the GPT GROWFS attribute bit on it; actually growing the
+# filesystem is normally left to systemd-growfs-root.service, which
+# systemd-gpt-auto-generator wires up only when the kernel is booted with
+# root=gpt-auto. Hetzner (and cloud providers generally) boot with an explicit
+# root=PARTUUID=..., so that generator never engages and systemd-growfs-root.service
+# never runs — verified live: a real provider box grew its partition to 75.8 GiB
+# but its ext4 stayed at the baked 8 GiB, because nothing ever called growfs. This
+# unit calls it directly instead of relying on that generator path.
+#
+# Ordered Before=docker.service and host-agent.service so the disk is already full
+# before docker pulls any image layer and before host-agent launches the brain, the
+# two things that write to the shared volume. ConditionVirtualization=!container so
+# it is a no-op inside a container (no disk to repartition). The QEMU boot-proof
+# disk is fixed-size with no spare space, so both steps are a harmless no-op there;
+# real full-disk growth can only be exercised on a live provider box.
+#
+# Enabled by dev/cloud/mkosi.postinst.chroot (a .wants symlink) for both the lean
+# production image and the boot-proof test lane that Include=..'s it.
+#
+# NB: the stock systemd-repart.service (shipped by the systemd-repart package, and
+# statically enabled by it) already runs the very same /usr/lib/repart.d/*.conf at
+# boot, so the partition grow effectively runs twice. That is harmless —
+# systemd-repart is idempotent; a second pass on an already-grown disk is a no-op.
+# This custom unit's ExecStart is redundant with the stock unit for that reason;
+# it is kept so the ordering/gating and the conditional growfs call live in one
+# place. Consolidating onto a stock-unit drop-in that only contributes the
+# ordering/gating (and the growfs step) is a possible later cleanup, not required now.
+[Unit]
+Description=moose — grow the root partition and filesystem to fill the provider disk
+Documentation=man:systemd-repart.service(8)
+Documentation=man:systemd-growfs(8)
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/ENVIRONMENT.md
+ConditionVirtualization=!container
+Before=docker.service host-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 76 = no root block device found; 77 = no GPT partition table. On a boot where
+# there is simply nothing to grow, systemd-repart still succeeds (exit 0); these
+# codes only cover the "no disk to act on" cases, which are not a failure here.
+#
+# growfs only runs when repart exited 0 (an actual GPT root partition was found
+# and acted on) — NOT via a separate ExecStartPost. systemd runs ExecStartPost
+# regardless of *which* accepted exit status ExecStart returned, and ExecStartPost
+# has no visibility into that status (no $EXIT_STATUS — that's ExecStopPost-only),
+# so an unconditional ExecStartPost=systemd-growfs would also run on the 76/77
+# "nothing to grow" cases, have nothing valid to grow, and fail the unit — turning
+# a harmless no-op into a hard boot failure via the Requires= drop-ins on
+# docker.service/host-agent.service (docs/progress/hosted-grow-root-disk.md).
+# Passing 76/77 straight through as success (without calling growfs) keeps
+# that invariant.
+ExecStart=/bin/sh -c '\
+    /usr/bin/systemd-repart --dry-run=no; rc=$?; \
+    case "$rc" in \
+        0) /usr/lib/systemd/systemd-growfs / ;; \
+        76|77) exit 0 ;; \
+        *) exit "$rc" ;; \
+    esac'
+
+[Install]
+WantedBy=multi-user.target

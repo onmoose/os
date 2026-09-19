@@ -1,16 +1,16 @@
-# malmo control-plane compose — the stack the brain brings up after host-agent
+# moose control-plane compose — the stack the brain brings up after host-agent
 # launches the brain (CONTROL_PLANE.md # host-agent launches the brain
 # container; # the dashboard UI is a brain-launched container). Authored in M0
 # (#163); the brain consumes it in M1b via lifecycle.EnsureControlPlane.
 #
 # Two containers — the *services* the brain owns and reconciles:
 #   caddy        — LAN-facing reverse proxy. The brain drives it via the admin
-#                  API at malmo-caddy:2019 over the malmo network and publishes
+#                  API at moose-caddy:2019 over the moose network and publishes
 #                  the catch-all + dashboard + per-app routes there
 #                  (CONTROL_PLANE.md # Caddy). The bootstrap caddy.json only opens
 #                  the admin endpoint and the catch-all; everything else is added
 #                  live via the API.
-#   malmo-ui     — static SPA server; Caddy routes all non-/api traffic here
+#   moose-ui     — static SPA server; Caddy routes all non-/api traffic here
 #                  (WEB_UI.md # deploy model). Read-only, no ports, no secrets.
 #
 # The docker-socket-proxy is deliberately NOT in this compose: it is the brain's
@@ -23,24 +23,24 @@
 services:
   caddy:
     # Appliance rides stock caddy:2-alpine (it does no ACME — plain-HTTP .local).
-    # The hosted profile sets MALMO_CADDY_IMAGE (in the brain's environment, which
+    # The hosted profile sets MOOSE_CADDY_IMAGE (in the brain's environment, which
     # `docker compose` inherits) to a custom build with the caddy-dns/acmedns
-    # module compiled in, needed for the "*.<box-id>.malmo.network" wildcard cert
+    # module compiled in, needed for the "*.<box-id>.onmoose.io" wildcard cert
     # via ACME DNS-01 (ENVIRONMENT.md # Networking & discovery; os #207 / C3b).
     # The recipe is ./caddy-acmedns/Dockerfile; one env var selects the image so
     # the future appliance secure-URLs toggle can reuse the same build.
-    image: ${MALMO_CADDY_IMAGE:-caddy:2-alpine}
-    container_name: malmo-caddy
+    image: ${MOOSE_CADDY_IMAGE:-caddy:2-alpine}
+    container_name: moose-caddy
     restart: unless-stopped
     command: ["caddy", "run", "--config", "/etc/caddy/caddy.json"]
     volumes:
       - ./caddy.json:/etc/caddy/caddy.json:ro
       # Caddy's certificate store. On hosted this holds the ACME account key and
-      # the issued "*.<box-id>.malmo.network" wildcard; without a volume it lives
+      # the issued "*.<box-id>.onmoose.io" wildcard; without a volume it lives
       # in the container's writable layer and a recreate throws it away, so the
       # box has to place a fresh Let's Encrypt order (#433). That order is not a
       # renewal, so it gets no ARI rate-limit exemption, and every hosted box is
-      # a subdomain of ONE registered domain (malmo.network) whose "50 new
+      # a subdomain of ONE registered domain (onmoose.io) whose "50 new
       # certificates per 7 days" budget the whole fleet shares. Losing the store
       # is therefore a fleet-wide cost from a per-box event. Named so the volume
       # is stable whatever the compose project is called, like the network below.
@@ -48,7 +48,7 @@ services:
     # /config holds Caddy's autosave of the last admin-API config. Nothing ever
     # reads it back — the command loads /etc/caddy/caddy.json explicitly and we
     # never run `caddy run --resume` — so it must be writable but is worth
-    # nothing across a recreate. tmpfs, not a volume: same call as malmo-ui below.
+    # nothing across a recreate. tmpfs, not a volume: same call as moose-ui below.
     tmpfs:
       - /config
     # The same sandbox every app container gets (APP_ISOLATION.md # Capabilities
@@ -69,11 +69,11 @@ services:
       - "80:80"
       - "443:443"
     networks:
-      - malmo
+      - moose
 
-  malmo-ui:
-    image: malmo-ui:dev
-    container_name: malmo-ui
+  moose-ui:
+    image: moose-ui:dev
+    container_name: moose-ui
     restart: unless-stopped
     read_only: true
     # caddy writes its storage/autosave under /data and /config on startup; with
@@ -93,18 +93,18 @@ services:
     security_opt:
       - "no-new-privileges:true"
     networks:
-      - malmo
+      - moose
 
 # Caddy's certificate store, kept across container recreates (# caddy, #433).
-# malmo-ui needs no equivalent: its /data is scratch for a static file server.
+# moose-ui needs no equivalent: its /data is scratch for a static file server.
 volumes:
   caddy_data:
-    name: malmo-caddy-data
+    name: moose-caddy-data
 
-# The malmo network is seeded by host-agent (brainlaunch.EnsureTransport) before
+# The moose network is seeded by host-agent (brainlaunch.EnsureTransport) before
 # the brain starts; reference it as external so this compose attaches to it
 # rather than racing to create it.
 networks:
-  malmo:
-    name: malmo-ingress
+  moose:
+    name: moose-ingress
     external: true

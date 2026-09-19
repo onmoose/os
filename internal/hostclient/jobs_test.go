@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/malmoos/malmo/internal/hostagent"
-	"github.com/malmoos/malmo/internal/protocol"
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // blockingUpdater keeps a job running until the test releases it, so the

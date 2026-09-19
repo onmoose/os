@@ -1,4 +1,4 @@
-# malmo dev orchestration. The fast inner loop runs everything natively on the
+# moose dev orchestration. The fast inner loop runs everything natively on the
 # host (no VM): host-agent + brain as Go processes, Caddy as a container, the
 # UI on Vite. The VM is the outer loop for host-integrated parts (boot, LUKS,
 # systemd) and is not wired here yet.
@@ -16,27 +16,27 @@ AGENT_SOCK := $(abspath $(DEV_DIR)/agent.sock)
 # "-dev" suffix logic (DECISIONS.md 2026-07-16). VERSION is read from the repo
 # root; the commit falls back to "unknown" outside a git checkout (e.g. a
 # container build context with no .git) rather than failing the build.
-MALMO_VERSION := $(shell cat $(CURDIR)/VERSION)
-MALMO_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+MOOSE_VERSION := $(shell cat $(CURDIR)/VERSION)
+MOOSE_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 # The minisign public keys a host-agent build accepts for the appliance release
 # manifest (RELEASE_MANIFEST.md # Signing). Comma-separated base64 key lines.
 # EMPTY BY DEFAULT, and that is the safe state: a build with no key refuses every
 # manifest and does not poll at all, rather than trusting one. There is no
 # runtime override on purpose — changing which releases a box accepts should take
 # a new, apt-signed binary, not an edit to a unit file.
-MALMO_RELEASE_KEYS ?=
-LDFLAGS := -X github.com/malmoos/malmo/internal/version.Version=$(MALMO_VERSION) \
-           -X github.com/malmoos/malmo/internal/version.Commit=$(MALMO_COMMIT) \
-           -X github.com/malmoos/malmo/internal/hostagent/relmanifest.BakedKeys=$(MALMO_RELEASE_KEYS)
+MOOSE_RELEASE_KEYS ?=
+LDFLAGS := -X github.com/onmoose/os/internal/version.Version=$(MOOSE_VERSION) \
+           -X github.com/onmoose/os/internal/version.Commit=$(MOOSE_COMMIT) \
+           -X github.com/onmoose/os/internal/hostagent/relmanifest.BakedKeys=$(MOOSE_RELEASE_KEYS)
 
-export MALMO_AGENT_SOCK := $(AGENT_SOCK)
-export MALMO_STATE_DIR := $(STATE_DIR)
-# The brain syncs the catalog from the control plane (MALMO_CATALOG_URL, default
+export MOOSE_AGENT_SOCK := $(AGENT_SOCK)
+export MOOSE_STATE_DIR := $(STATE_DIR)
+# The brain syncs the catalog from the control plane (MOOSE_CATALOG_URL, default
 # the public apex) and holds it in memory; only proxied icons and screenshots are
 # cached, here. Point that at a writable dev path so `make dev` (native, non-root)
-# can write it; set MALMO_CATALOG_URL to a local control plane to develop the
+# can write it; set MOOSE_CATALOG_URL to a local control plane to develop the
 # store offline. To boot against a local snapshot instead, see `make dev-app`.
-export MALMO_CATALOG_CACHE_DIR := ./.dev/catalog-cache
+export MOOSE_CATALOG_CACHE_DIR := ./.dev/catalog-cache
 
 .PHONY: build host-agent brain host-agent-real host-agent-real-hosted brain-image ui-image control-plane-images caddy-acmedns-image build-cloud-image check check-web fmt fmt-check vet test test-nopam test-caddy test-avahi test-netstate test-health test-usermgr test-usermgr-nspawn test-boot-chain-nspawn test-medium-qemu test-cloud-qemu run-agent run-brain net caddy caddy-down ui dev dev-app seed-catalog stop openapi openapi-check clean check-state-owner help
 
@@ -52,14 +52,14 @@ help:
 	@echo "make check       - pre-PR gate: gofmt + vet + full test suite (Go). Run before every PR."
 	@echo "make check-web   - pre-PR gate for frontend changes: web-ui typecheck + build"
 	@echo "make clean       - stop apps, remove dev state"
-	@echo "make control-plane-images - build malmo-brain + malmo-ui images and docker-save the control-plane bundle to .dev/"
+	@echo "make control-plane-images - build moose-brain + moose-ui images and docker-save the control-plane bundle to .dev/"
 	@echo "make caddy-acmedns-image  - build the hosted Caddy (stock Caddy + the caddy-dns/acmedns module)"
 	@echo "make dev         - all three foreground procs in one terminal (recommended); Go edits rebuild + restart the brain"
 	@echo "make dev-app APP=<id> [STORE=../store] - boot ONE store app under curation: seed its catalog snapshot, then make dev with an inert catalog URL"
 	@echo "make seed-catalog APPS=\"<id> <id> ...\" [HOMEFILE=<path/to/home.yml>] - seed several store apps (+ optionally the curated landing) into a local snapshot file, without starting dev"
 	@echo "make fmt         - rewrite Go sources into gofmt-canonical form (autofix)"
 	@echo "make host-agent-real-hosted - build the slim hosted-cloud host-agent (-tags hosted; #204/C1c)"
-	@echo "make net         - create the malmo-ingress docker network"
+	@echo "make net         - create the moose-ingress docker network"
 	@echo "make openapi     - regenerate api/openapi.{json,yaml} from the brain (no server)"
 	@echo "make run-agent   - run the fake host-agent (foreground)"
 	@echo "make run-brain   - run the brain (foreground)"
@@ -185,18 +185,18 @@ brain:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(DEV_DIR)/brain ./cmd/brain
 
 # ---- Control-plane images (M0, #163) -----------------------------------
-# Build the two malmo OCI images and `docker save` them — together with the two
+# Build the two moose OCI images and `docker save` them — together with the two
 # third-party control-plane images the brain's compose names — into a tarball
 # bundle under .dev/ (BUILD.md # 5 / # 5b; TESTING.md # Full-stack control-plane
 # integration). The medium-lane VM bakes this bundle and docker-loads it at
 # first boot; it has no network, so the third-party images must be in the bundle
 # too. Needs only Docker (the images build hermetically — no host Go/Node).
 CP_IMAGE_DIR := $(DEV_DIR)/control-plane
-BRAIN_IMAGE  := malmo-brain:dev
-UI_IMAGE     := malmo-ui:dev
-CADDY_ACMEDNS_IMAGE := malmo-caddy-acmedns:dev
+BRAIN_IMAGE  := moose-brain:dev
+UI_IMAGE     := moose-ui:dev
+CADDY_ACMEDNS_IMAGE := moose-caddy-acmedns:dev
 # Every third-party build input — the two images the box ships, the bases all
-# four malmo/hosted images are built on, and the module compiled into the hosted
+# four moose/hosted images are built on, and the module compiled into the hosted
 # Caddy — lives in one checked-in file, so a shipped box can be traced back to
 # the exact bytes it runs (#432; BUILD.md # 5c).
 include dev/control-plane/images.lock
@@ -208,12 +208,12 @@ CADDY_TAG := $(firstword $(subst @, ,$(CADDY_IMAGE)))
 PROXY_TAG := $(firstword $(subst @, ,$(PROXY_IMAGE)))
 
 brain-image:
-	docker build -f cmd/brain/Dockerfile --build-arg MALMO_COMMIT=$(MALMO_COMMIT) \
+	docker build -f cmd/brain/Dockerfile --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
 	  --build-arg BRAIN_BUILDER_IMAGE=$(BRAIN_BUILDER_IMAGE) \
 	  --build-arg BRAIN_RUNTIME_IMAGE=$(BRAIN_RUNTIME_IMAGE) \
 	  -t $(BRAIN_IMAGE) .
 
-# malmo-ui's runtime base is CADDY_IMAGE, the same pin the proxy runs — one Caddy
+# moose-ui's runtime base is CADDY_IMAGE, the same pin the proxy runs — one Caddy
 # for both, not two pins to keep level.
 ui-image:
 	docker build -f web-ui/Dockerfile \
@@ -227,8 +227,8 @@ control-plane-images: brain-image ui-image
 	docker pull $(PROXY_IMAGE)
 	docker tag $(CADDY_IMAGE) $(CADDY_TAG)
 	docker tag $(PROXY_IMAGE) $(PROXY_TAG)
-	docker save $(BRAIN_IMAGE) -o $(CP_IMAGE_DIR)/malmo-brain.tar
-	docker save $(UI_IMAGE)    -o $(CP_IMAGE_DIR)/malmo-ui.tar
+	docker save $(BRAIN_IMAGE) -o $(CP_IMAGE_DIR)/moose-brain.tar
+	docker save $(UI_IMAGE)    -o $(CP_IMAGE_DIR)/moose-ui.tar
 	docker save $(CADDY_TAG)   -o $(CP_IMAGE_DIR)/caddy.tar
 	docker save $(PROXY_TAG)   -o $(CP_IMAGE_DIR)/docker-socket-proxy.tar
 	@echo "saved control-plane image bundle to $(CP_IMAGE_DIR)/"
@@ -319,7 +319,7 @@ test-cloud-qemu:
 # host-agent, networkd DHCP config, control-plane image bundle, seed materializer)
 # so a provisioned box self-bootstraps instead of booting network-less (#242). Then
 # assert it is still lean (no NetworkManager/Avahi/Samba/mergerfs/cryptsetup/tpm2-
-# tools — the wiring adds no apt packages) with /etc/malmo/profile=hosted. Output: a
+# tools — the wiring adds no apt packages) with /etc/moose/profile=hosted. Output: a
 # raw GPT disk image under .dev/cloud/; the cloud repo snapshots it as the tenant
 # image. Needs root (control-plane image build + mkosi disk ops) + mkosi v22+, go,
 # docker, libpam0g-dev; bootstrap.sh prints an install pointer if anything is missing.
@@ -343,7 +343,7 @@ test-health:
 	./dev/test-health.sh
 
 net:
-	@docker network inspect malmo-ingress >/dev/null 2>&1 || docker network create malmo-ingress
+	@docker network inspect moose-ingress >/dev/null 2>&1 || docker network create moose-ingress
 
 caddy: net
 	docker compose -f dev/docker-compose.yml up -d
@@ -396,7 +396,7 @@ dev: check-state-owner build caddy
 # the brain is a thin HTTP client of the control plane. `make dev-app APP=<id>`
 # restores the inner loop for authoring/curating a store app: it builds a local
 # snapshot from a store checkout (STORE/apps/APP) with mkcatalog, then runs the
-# normal dev stack with MALMO_CATALOG_FILE pointing at it. The brain reads that
+# normal dev stack with MOOSE_CATALOG_FILE pointing at it. The brain reads that
 # file once at boot (internal/catalog/remote.go # loadSnapshotFile) and installs
 # the app from it. The file is an input the brain never writes back — a box keeps
 # no catalog on disk. A seed inlines each app's manifest and compose, because a
@@ -424,7 +424,7 @@ dev: check-state-owner build caddy
 # is ever needed (and can't be committed by accident).
 STORE ?= ../store
 # CATALOG_SEED is the local snapshot seed-catalog writes and dev-app boots from
-# (MALMO_CATALOG_FILE). It is dev scaffolding under .dev/, never a box path.
+# (MOOSE_CATALOG_FILE). It is dev scaffolding under .dev/, never a box path.
 CATALOG_SEED := $(DEV_DIR)/catalog-seed.json
 
 seed-catalog:
@@ -445,15 +445,15 @@ seed-catalog:
 
 # The inert catalog URL and the seed file are target-specific, exported
 # variables, so they are in effect for the `dev` prerequisite's recipe too — the
-# brain reads both from the env, and cmd/brain defaults MALMO_CATALOG_URL to the
-# real apex (https://malmo.network). Without the override the first background
+# brain reads both from the env, and cmd/brain defaults MOOSE_CATALOG_URL to the
+# real catalog origin (https://catalog.onmoose.io). Without the override the first
 # sync would succeed and replace the seed with the published catalog, silently
 # dropping the app(s) under test. Port 1 has nothing listening, so the sync fails
 # fast (same inert-URL trick as dev/test-health.sh). seed-catalog runs first and
 # aborts the whole target if no app was given, so `dev` never starts against a
 # bad seed. Accepts APP or APPS (+ optional HOMEFILE) exactly like seed-catalog.
-dev-app: export MALMO_CATALOG_URL := http://127.0.0.1:1
-dev-app: export MALMO_CATALOG_FILE := $(CATALOG_SEED)
+dev-app: export MOOSE_CATALOG_URL := http://127.0.0.1:1
+dev-app: export MOOSE_CATALOG_FILE := $(CATALOG_SEED)
 dev-app: seed-catalog dev
 
 # Regenerate the committed OpenAPI spec (api/openapi.{json,yaml}) from the huma
@@ -479,14 +479,14 @@ openapi-check:
 
 # Stop the native dev stack (`make dev` runs brain/host-agent/vite outside
 # Docker). Without this, `clean` leaves the brain running with the deleted
-# malmo.db still open (deleted-but-open inode), so it keeps serving the old
+# moose.db still open (deleted-but-open inode), so it keeps serving the old
 # state and the wiped DB silently comes back — `clean` looks like a no-op.
 # Best-effort: pkill exits non-zero when nothing matches, hence the `-` prefix.
-# The supervisor is matched by its MALMO_DEV_AVAHI env prefix; the binaries by
+# The supervisor is matched by its MOOSE_DEV_AVAHI env prefix; the binaries by
 # their $(DEV_DIR) path; vite by this repo's absolute path so we don't reap an
 # unrelated Vite on the box.
 stop:
-	-@pkill -f 'MALMO_DEV_AVAHI=1' 2>/dev/null
+	-@pkill -f 'MOOSE_DEV_AVAHI=1' 2>/dev/null
 	-@pkill -f '$(DEV_DIR)/brain' 2>/dev/null
 	-@pkill -f '$(DEV_DIR)/host-agent' 2>/dev/null
 	-@pkill -f '$(CURDIR)/web-ui/node_modules/.bin/vite' 2>/dev/null
@@ -496,8 +496,8 @@ stop:
 # container (caddy-down), remove app containers/networks, then wipe dev state.
 # stop must run before the rm or the live brain keeps the DB inode alive.
 clean: stop caddy-down
-	-@docker ps -aq --filter "label=com.docker.compose.project" --filter "name=malmo-" | xargs -r docker rm -f
-	-@docker network ls -q --filter "name=malmo-app-" | xargs -r docker network rm
+	-@docker ps -aq --filter "label=com.docker.compose.project" --filter "name=moose-" | xargs -r docker rm -f
+	-@docker network ls -q --filter "name=moose-app-" | xargs -r docker network rm
 	@# App containers (Postgres et al.) write their data as root inside bind
 	@# mounts, so instances/<id>/data is root-owned on the host — same as prod,
 	@# where the privileged uninstall path removes it. A plain `rm` as the dev

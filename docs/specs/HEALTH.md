@@ -1,4 +1,4 @@
-# malmo Health & Degraded Mode
+# moose Health & Degraded Mode
 
 > Working spec for how the brain represents and surfaces things-that-are-wrong without refusing to run. The model that lets the dashboard always come up, explain the problem in plain language, and walk the user through the fix.
 >
@@ -6,13 +6,13 @@
 
 ## Stance
 
-malmo's user is not a sysadmin. The failure-mode ranking for that audience is:
+moose's user is not a sysadmin. The failure-mode ranking for that audience is:
 
 1. **Silent data corruption** — catastrophic, but rare, and they won't notice until backup-restore time.
 2. **Box bricks (no UI, no obvious next step)** — also catastrophic, *and* they notice in 30 seconds. The "I'm returning it" moment.
 3. **Box boots but something is degraded, with a banner explaining what** — annoying but survivable. They can act.
 
-A naive hardening posture optimizes for (1) by halting at the systemd level on any anomaly. For malmo's audience, that ranking is wrong: a brick costs more reputation than the rare corruption case it prevents, especially because most "corruption" risks are recoverable if caught early — the files are usually still *there*, just inaccessible or in the wrong place.
+A naive hardening posture optimizes for (1) by halting at the systemd level on any anomaly. For moose's audience, that ranking is wrong: a brick costs more reputation than the rare corruption case it prevents, especially because most "corruption" risks are recoverable if caught early — the files are usually still *there*, just inaccessible or in the wrong place.
 
 **The principle: if the brain can possibly run, it runs. Anomalies become health issues the user sees in the dashboard, not refusals to boot. The systemd-level recovery target exists only for the cases where the brain genuinely cannot start.**
 
@@ -37,7 +37,7 @@ The brain maintains a set of **health issues**. Each issue is a typed record the
   "blocks_users":    true,                   // refuse to create / modify users?
 
   "summary":         "Your data drive isn't connected.",
-  "details":         "malmo expected the data drive enrolled on 2026-04-12 (UUID abc-123) but it isn't currently attached.",
+  "details":         "moose expected the data drive enrolled on 2026-04-12 (UUID abc-123) but it isn't currently attached.",
 
   "actions": [
     { "label": "Try detecting it again",        "endpoint": "/api/v1/health/data-drive-missing/retry",       "tier": 1 },
@@ -71,7 +71,7 @@ Every action attached to an issue declares a tier. Tiers describe **who does the
 - **Tier 2 — UI-driven remediation, one click.** The UI offers buttons; the brain (via host-agent) executes the fix. The user makes a decision; the box does the work.
   Example: "[Restore from backup (last good: 2 hours ago)]" → brain runs a job → on success, issue clears.
 
-- **Tier 3 — SSH or console rescue.** Genuinely rare. These are the cases where the brain itself can't run, so there's no UI to drive a fix from. Tier 3 issues do **not** appear in the brain's health set (the brain isn't running); they're handled by `malmo-recovery.target` (`BOOT.md` # Failure → recovery target — the narrow cases) or by physical console access for LUKS unlock.
+- **Tier 3 — SSH or console rescue.** Genuinely rare. These are the cases where the brain itself can't run, so there's no UI to drive a fix from. Tier 3 issues do **not** appear in the brain's health set (the brain isn't running); they're handled by `moose-recovery.target` (`BOOT.md` # Failure → recovery target — the narrow cases) or by physical console access for LUKS unlock.
 
 **Rule: every issue in the taxonomy carries the lowest tier its remediation can be expressed at. If a new issue lands in Tier 3, that's a design red flag — figure out whether you can pull it back to Tier 2 with better tooling. Tier 3 stays tiny.**
 
@@ -90,10 +90,10 @@ These are the issue types the brain knows about at v1. New issues are added by c
 | `data-drive-readonly` | critical | writes, apps | 1 | Kernel mounted the data drive read-only (filesystem error suspected). |
 | `disk-nearly-full` | warning | (new installs only) | 1 | A drive is above its usage warning threshold (90% data, 85% OS). |
 | `disk-full` | critical | writes, apps | 1/2 | A drive crossed its hard threshold (95% on either drive). Tier-1 action: free space by removing files (links to Files / app instance breakdown); Tier-2: eject-and-replace flow (Settings → Storage → Eject) for upgrading to a bigger drive. |
-| `canary-mismatch` | critical | writes, apps | 2 | Storage assembly succeeded but the canary check failed — almost certainly a malmo bug. |
+| `canary-mismatch` | critical | writes, apps | 2 | Storage assembly succeeded but the canary check failed — almost certainly a moose bug. |
 | `mergerfs-assembly-failed` | error | writes, apps | 2 | Mergerfs could not assemble the union across the data branches. |
 | `disk-smart-failing` | error | (nothing) | 1 | SMART reports a drive is failing or growing bad sectors. **Deliberately does not block writes** — the data is still readable, and blocking would trap it on the dying drive (`DECISIONS.md` 2026-05-29). Loud banner + notification; Tier-1 action is "replace this drive" (links to the eject-and-replace flow). |
-| `auto-unlock-degraded` | warning | (nothing) | 2 | The box booted, but TPM auto-unlock failed (PCR-7 changed) and it fell back to the recovery passphrase. It will prompt for the passphrase again on the next reboot until the TPM is re-enrolled. The *hard* case (can't boot at all) stays in `malmo-recovery.target`, not here. See `STORAGE.md` # Encryption posture, `BOOT.md`. |
+| `auto-unlock-degraded` | warning | (nothing) | 2 | The box booted, but TPM auto-unlock failed (PCR-7 changed) and it fell back to the recovery passphrase. It will prompt for the passphrase again on the next reboot until the TPM is re-enrolled. The *hard* case (can't boot at all) stays in `moose-recovery.target`, not here. See `STORAGE.md` # Encryption posture, `BOOT.md`. |
 
 ### State
 
@@ -117,8 +117,8 @@ These are the issue types the brain knows about at v1. New issues are added by c
 
 | ID | Severity | Blocks | Tier | Summary |
 |---|---|---|---|---|
-| `mdns-down` | warning | nothing | 1 | Avahi isn't publishing — the box may not appear as `malmo.local`. |
-| `hostname-conflict` | warning | nothing | 2 | Another device on the LAN already claims `malmo.local`; Avahi renamed our host (e.g. `malmo-2.local`). Admin picks a new hostname from Settings → System → Network. See `DISCOVERY.md`. |
+| `mdns-down` | warning | nothing | 1 | Avahi isn't publishing — the box may not appear as `moose.local`. |
+| `hostname-conflict` | warning | nothing | 2 | Another device on the LAN already claims `moose.local`; Avahi renamed our host (e.g. `moose-2.local`). Admin picks a new hostname from Settings → System → Network. See `DISCOVERY.md`. |
 | `lan-unreachable` | warning | nothing | 1 | network-online.target didn't reach in time; LAN reachability from other devices may be delayed. |
 | `clock-not-synced` | warning | nothing | 2 | chrony hasn't synced in 6h or offset > 10s. Gates Let's Encrypt renewal within 7 days of expiry; surfaces in Settings → System → Time. See `TIME.md`. |
 
@@ -130,7 +130,7 @@ Issues that exist to be visible without blocking anything. Same shape; all block
 |---|---|---|---|
 | `update-available` | info | 2 | A brain/UI, app, or OS update is ready to apply. See `UPDATES.md`. |
 | `backup-overdue` | warning | 2 | No successful backup within the configured window. See `STORAGE.md` (backup architecture, deferred). |
-| `tls-cert-near-expiry` | warning | 1/2 | A `.malmo.network` certificate is within its renewal-failure window. See `MALMO_NETWORK.md`. |
+| `tls-cert-near-expiry` | warning | 1/2 | A `.onmoose.io` certificate is within its renewal-failure window. See `MOOSE_NETWORK.md`. |
 | `reboot-required` | info | 2 | A kernel or security update was applied that needs a reboot to take effect. Tier-2 action: reboot now / schedule. See `UPDATES.md`. |
 | `ram-pressure` | warning | 1 | The box is under sustained memory pressure (swap thrashing). Informational — points the user at the per-container monitor to see what's heavy. See `LOCAL_ANALYTICS.md`. |
 | `journal-disk-pressure` | warning | 2 | The persistent journal is near its size cap and competing for OS-drive space. Tier-2 action: vacuum the journal. See `LOGGING.md`. |
@@ -145,7 +145,7 @@ The taxonomy above says *what* the issues are. This section says *how each one i
 
 The brain runs in a container behind the Docker socket-proxy (`CONTROL_PLANE.md`) and **cannot read host hardware** — no `statfs` of the host, no `smartctl`, no `systemctl is-active`, no `/proc/pressure`. That single fact shapes the whole catalog: every *physical* measurement is taken by **host-agent** and reported to the brain; the brain only runs detectors against state it owns directly. Four loci:
 
-- **A — Boot-time reporters.** host-agent (and boot-chain units like `malmo-storage-verify`, `BOOT.md`) write findings to `/run/malmo/health/*.json`. The brain reads them at startup and reconciles. *(Built: storage assembly, canary, mergerfs — slices 0019/0024.)*
+- **A — Boot-time reporters.** host-agent (and boot-chain units like `moose-storage-verify`, `BOOT.md`) write findings to `/run/moose/health/*.json`. The brain reads them at startup and reconciles. *(Built: storage assembly, canary, mergerfs — slices 0019/0024.)*
 - **B — host-agent periodic reporters.** host-agent samples on a timer and the brain polls a health endpoint, reconciling findings the same way boot findings are reconciled. *(Built: `GET /v1/health/system` @ 60s — storage category from the boot reporter, the `service-down` services category via `systemctl is-active`, the `clock-not-synced` time category via `chronyc tracking` (re-queried ≤ every 5 min), the `ram-pressure` resources category via `/proc/pressure/memory` PSI (`some avg60`), and the `reboot-required` system category via `/var/run/reboot-required`; `ApplyFindings(category, …)` reconciles each domain independently.)* Everything host-physical and recurring lives here.
 - **C — brain periodic checks.** Brain goroutine timers over brain-owned state: SQLite, the cert it serves, the version it negotiated, Docker events via the proxy.
 - **D — reactive.** udev (drive add/remove), Docker container events, host-agent push events — no polling, the signal arrives.
@@ -187,7 +187,7 @@ These defaults apply to **every** detector unless its row overrides them. `HEALT
 | `schema-migration-failed` | migration runner result | boot | migration aborted |
 | `bootstrap-state-mismatch` | bootstrap marker present but DB absent | boot | mismatch |
 | `version-mismatch` | host-agent's reported `agent_version` vs the brain's `minimumAgentVersion` floor, on handshake | each handshake | agent version older than the minimum *(built)* |
-| `tls-cert-near-expiry` | NotAfter of the served `.malmo.network` cert | daily | within renewal-failure window |
+| `tls-cert-near-expiry` | NotAfter of the served `.onmoose.io` cert | daily | within renewal-failure window |
 | `update-available` | release/catalog manifest vs installed | per refresh | newer version present |
 | `backup-overdue` | last successful backup timestamp | hourly | older than window *(deferred with backup)* |
 | `store-write-failed` | store write error (reactive, not timed) | on error | any persistent write failure *(built)* |
@@ -196,9 +196,9 @@ These defaults apply to **every** detector unless its row overrides them. `HEALT
 
 **`brain-db-corrupt` is authoritative and 1-shot.** A `PRAGMA integrity_check` verdict is definitive, not a noisy sample, so this row overrides the cross-cutting debounce default (`# Cross-cutting detector policy`: raise on 2 consecutive bad samples) and raises/clears on the first reading — the same posture the policy grants locus-A/D signals. A query that fails to *run* (rather than returning a non-`ok` result) is inconclusive: no raise, no clear; corruption that breaks the query itself surfaces through `store-write-failed` instead.
 
-**Why the `service-down` Caddy check lives at locus C, not B:** Caddy and the socket-proxy are **brain-managed containers, not host systemd units** (`CONTROL_PLANE.md` # Locked: Caddy is malmo substrate, runs as a container) — there is no `caddy.service` for `systemctl is-active` to query. The brain already owns Docker access and Caddy's admin API, so it does a *better* check than systemctl could: container-running **and** actually serving (admin API answers / catch-all route present), which catches a wedged-but-not-exited Caddy that a process-liveness check would miss. The socket-proxy itself is not separately monitored — its failure manifests as the brain losing all Docker access, a self-evident condition surfaced through every Docker-backed operation failing at once.
+**Why the `service-down` Caddy check lives at locus C, not B:** Caddy and the socket-proxy are **brain-managed containers, not host systemd units** (`CONTROL_PLANE.md` # Locked: Caddy is moose substrate, runs as a container) — there is no `caddy.service` for `systemctl is-active` to query. The brain already owns Docker access and Caddy's admin API, so it does a *better* check than systemctl could: container-running **and** actually serving (admin API answers / catch-all route present), which catches a wedged-but-not-exited Caddy that a process-liveness check would miss. The socket-proxy itself is not separately monitored — its failure manifests as the brain losing all Docker access, a self-evident condition surfaced through every Docker-backed operation failing at once.
 
-**Detection feeds bounded self-heal, not a passive banner — and is deferred.** A fully-down Caddy means the dashboard is unreachable (Caddy fronts `malmo.local`), so a banner has nobody to show it to. Instead, the brain restarts the Caddy container on failure, bounded like host-agent's `StartLimitBurst` (≈5 restarts / 60s); `service-down`(caddy) is raised only when that budget is **exhausted** (genuinely stuck), and the issue becomes a logged incident + post-recovery surface. This is **gated on the brain owning Caddy's container lifecycle** (start/stop/restart) — today the brain manages Caddy's *routes* (`EnsureServer`/`EnsureCatchAll`) but not its *container*, so the self-heal detector is **deferred** until that prerequisite lands. See `NEXT.md` # Caddy liveness self-heal and `DECISIONS.md` 2026-05-31.
+**Detection feeds bounded self-heal, not a passive banner — and is deferred.** A fully-down Caddy means the dashboard is unreachable (Caddy fronts `moose.local`), so a banner has nobody to show it to. Instead, the brain restarts the Caddy container on failure, bounded like host-agent's `StartLimitBurst` (≈5 restarts / 60s); `service-down`(caddy) is raised only when that budget is **exhausted** (genuinely stuck), and the issue becomes a logged incident + post-recovery surface. This is **gated on the brain owning Caddy's container lifecycle** (start/stop/restart) — today the brain manages Caddy's *routes* (`EnsureServer`/`EnsureCatchAll`) but not its *container*, so the self-heal detector is **deferred** until that prerequisite lands. See `NEXT.md` # Caddy liveness self-heal and `DECISIONS.md` 2026-05-31.
 
 **Per-reporter authority (reconcile rule).** `service-down` is one issue with a per-unit `instance_key`, but raised from two loci. Each reporter is authoritative **only over the `instance_key`s it reports** — the host-agent systemctl batch owns `{docker, avahi-daemon, chrony, smbd}` on appliance (or just `{docker}` on hosted); host-agent is never on its own watchlist (it can't report on itself); the brain locus-C check owns `{caddy}`. A reporter's batch clears only its own absent keys, never the other reporter's. This refines the "scoped per category" reconcile rule (`# Cross-cutting detector policy`) for the one issue that spans loci.
 
@@ -210,7 +210,7 @@ These defaults apply to **every** detector unless its row overrides them. `HEALT
 
 | Issue | Locus | Trigger |
 |---|---|---|
-| `canary-mismatch`, `mergerfs-assembly-failed` | A | `malmo-storage-verify` finding at boot *(built)* |
+| `canary-mismatch`, `mergerfs-assembly-failed` | A | `moose-storage-verify` finding at boot *(built)* |
 | `health-report-malformed` | A | report file unparseable *(built)* |
 | `auto-unlock-degraded` | A | boot-chain records TPM unseal fell back to passphrase |
 | `data-drive-missing` / `data-drive-wrong` | D | udev add/remove; brain re-verifies enrolled UUID |
@@ -220,11 +220,11 @@ These defaults apply to **every** detector unless its row overrides them. `HEALT
 
 ### What we deliberately do not check
 
-malmo is **closed-by-default, single-node, no email, no public DNS** except the opt-in `.malmo.network` path. Several checks that a public-facing neighbor (Yunohost's `diagnosis`) treats as core are **non-goals** — written down so a future "parity" PR doesn't sleepwalk them in:
+moose is **closed-by-default, single-node, no email, no public DNS** except the opt-in `.onmoose.io` path. Several checks that a public-facing neighbor (Yunohost's `diagnosis`) treats as core are **non-goals** — written down so a future "parity" PR doesn't sleepwalk them in:
 
 - **Email deliverability** — reverse-DNS, DNS blocklists, SMTP port reachability. We ship no mail stack (`NOTIFICATIONS.md` v1 is dashboard-only).
 - **Public port exposure / open-port scans.** Closed-by-default means nothing is meant to be reachable from the internet; we don't probe for it.
-- **Public DNS-record correctness / IPv6 reachability.** The `.malmo.network` path owns its own cert/DNS health (`tls-cert-near-expiry`); there's no user-managed public DNS to validate.
+- **Public DNS-record correctness / IPv6 reachability.** The `.onmoose.io` path owns its own cert/DNS health (`tls-cert-near-expiry`); there's no user-managed public DNS to validate.
 - **fail2ban / intrusion-detection status.** Brute-force throttling on the login endpoint is its own item (`NEXT.md` Tier 4, `AUTH.md`), not a diagnosis check.
 - **Kernel-panic / coredump capture.** Tracked as a `LOGGING.md`/`TELEMETRY.md` concern (`NEXT.md` Tier 4), not a health detector — by the time it'd raise, the box rebooted.
 
@@ -236,7 +236,7 @@ Issues are *facts the brain holds* — they're created by detection, kept until 
 
 Issues are raised by:
 
-- **Boot-time reporters.** `malmo-storage-verify` (`BOOT.md`) and similar boot-chain services write findings to a known path (e.g., `/run/malmo/health/storage.json`). The brain reads this at startup and converts findings into issues.
+- **Boot-time reporters.** `moose-storage-verify` (`BOOT.md`) and similar boot-chain services write findings to a known path (e.g., `/run/moose/health/storage.json`). The brain reads this at startup and converts findings into issues.
 - **Periodic checks.** The brain runs a small set of background checks (SQLite integrity on a timer, disk usage every N minutes, certificate expiry daily). Anomalies become issues.
 - **Reactive signals.** udev events for drive add/remove, host-agent push events for service state, container events from Docker.
 
@@ -270,7 +270,7 @@ Across all active issues, the brain blocks operations whose preconditions don't 
 - `blocks_apps=true` (any issue) → `POST /api/v1/apps`, `POST /api/v1/apps/:id/start`, `POST /api/v1/apps/:id/update` all return `409`. `POST /api/v1/apps/:id/stop` stays available — the user can always reduce activity.
 - `blocks_users=true` (any issue) → `POST /api/v1/users`, password change, group membership changes return `409`. Login remains available.
 
-**No override path on critical blocks.** The user cannot "install this app anyway" through a confirm dialog while `data-drive-missing` is active. The block is the protection; an override is an option the user will use, blame malmo for, and remember. They'll resent the block once; they'll thank us the second time.
+**No override path on critical blocks.** The user cannot "install this app anyway" through a confirm dialog while `data-drive-missing` is active. The block is the protection; an override is an option the user will use, blame moose for, and remember. They'll resent the block once; they'll thank us the second time.
 
 ## What stays available in every degraded state
 
@@ -285,16 +285,16 @@ The non-negotiable invariant — the dashboard is the user's tool to recover the
 
 ## What's deliberately out of scope here
 
-- **The recovery dashboard UI itself.** Recovery mode (the static page served by `malmo-recovery.target` when the brain can't run at all) is its own surface, specced in the deferred `RECOVERY.md` (`NEXT.md`). HEALTH.md owns the brain-is-running-but-unhappy story; RECOVERY.md owns the brain-can't-run story.
+- **The recovery dashboard UI itself.** Recovery mode (the static page served by `moose-recovery.target` when the brain can't run at all) is its own surface, specced in the deferred `RECOVERY.md` (`NEXT.md`). HEALTH.md owns the brain-is-running-but-unhappy story; RECOVERY.md owns the brain-can't-run story.
 - **Auto-remediation.** The brain detects, blocks, and surfaces. It does not autonomously format, restore, or roll back. Every Tier-2 action is user-initiated. The single exception is host-agent's bounded restart policy (5 starts in 60s, then route to recovery) — that's a systemd-level safety net, not "remediation."
 - **Severity escalation over time.** A warning doesn't become an error just because it's been raised for a week. Severities are properties of the condition, not of its age.
 - **Cross-issue interactions.** Issues are independent. If two issues both set `blocks_apps`, the resulting block is the union; there's no priority among issues.
 
 ## Knock-ons to other docs
 
-- **`BOOT.md`** — `malmo-storage-ready.target` is *best-effort assembly*, not a strict gate. Individual storage-unit failures don't activate `malmo-recovery.target`; they write findings to `/run/malmo/health/` which the brain reads on startup. `malmo-recovery.target` shrinks to two cases: TPM unseal failure on the root drive (brain can't start because the system can't boot), and host-agent itself broken (brain can't start because nothing launches it).
+- **`BOOT.md`** — `moose-storage-ready.target` is *best-effort assembly*, not a strict gate. Individual storage-unit failures don't activate `moose-recovery.target`; they write findings to `/run/moose/health/` which the brain reads on startup. `moose-recovery.target` shrinks to two cases: TPM unseal failure on the root drive (brain can't start because the system can't boot), and host-agent itself broken (brain can't start because nothing launches it).
 - **`STORAGE.md`** — the canary check and enrollment-marker mismatch are *reporters* now, not gatekeepers. Their findings become health issues, not boot failures.
-- **`CONTROL_PLANE.md`** — host-agent's systemd ordering uses `After=malmo-storage-ready.target Wants=malmo-storage-ready.target`, not `Requires=`. host-agent always starts (so the brain always starts), reads storage findings, and acts accordingly.
+- **`CONTROL_PLANE.md`** — host-agent's systemd ordering uses `After=moose-storage-ready.target Wants=moose-storage-ready.target`, not `Requires=`. host-agent always starts (so the brain always starts), reads storage findings, and acts accordingly.
 - **`BRAIN_UI_PROTOCOL.md`** — new `/api/v1/health/issues` endpoint family and new event `kind`s (`health.issue_raised`, `health.issue_cleared`, `health.issue_updated`).
 - **`BRAIN_HOST_PROTOCOL.md`** — locus-B detectors are fed by host-agent's `GET /v1/health/system` findings report (the brain can't measure host hardware itself). This doc owns *what* each detector measures; the protocol doc owns *how* findings cross the socket. See `DECISIONS.md` 2026-05-29.
 - **`WEB_UI.md`** — banners, inline cards, disabled-action affordances. Active issues are server state held in the TanStack Query cache (not Pinia — `WEB_UI.md` # Health & degraded mode surfacing reconciled the earlier "Pinia store" phrasing to the locked *server-state-lives-in-Query* rule; issue #12); SSE invalidations wire updates; `useHealth()` composable.

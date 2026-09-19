@@ -7,7 +7,7 @@
 // mDNS at all (ENVIRONMENT.md # Networking & discovery), so it takes this stub
 // instead. That is what keeps godbus out of the slim cloud host-agent —
 // finishing the "no DBus deps" goal of the -tags hosted split (#204/#216, #217)
-// — while cmd/host-agent-real and cmd/malmo-network-verify still compile under
+// — while cmd/host-agent-real and cmd/moose-network-verify still compile under
 // -tags hosted. Mirrors avahipublisher's dbus_other.go.
 package netstate
 

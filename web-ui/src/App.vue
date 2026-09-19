@@ -8,7 +8,7 @@
 //   - Recover (logged out, at /recover — the public recovery-code flow)
 //   - Login (appliance, has users, no active session)
 // On the hosted profile there is no login or setup page: an unauthenticated
-// visitor is bounced to the malmo.network portal, which signs them back in via
+// visitor is bounced to the mooseos.com portal, which signs them back in via
 // the portal-to-box SSO handshake (cloud specs/AUTH_AND_ACCESS.md). Any 401 from
 // a later API call drops currentUser via the handler wired in auth.ts, which
 // flips us back to Login (appliance) or the portal (hosted) without a route change.

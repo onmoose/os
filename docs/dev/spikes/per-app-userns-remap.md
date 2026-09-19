@@ -4,7 +4,7 @@
 
 ## The question
 
-Can malmo run **one** app under a private UID remap (so the app's in-container root / `chown` / `setuid` succeed but are powerless on the host) while **every other** app stays under the normal Tier-3 sandbox — on our actual runtime?
+Can moose run **one** app under a private UID remap (so the app's in-container root / `chown` / `setuid` succeed but are powerless on the host) while **every other** app stays under the normal Tier-3 sandbox — on our actual runtime?
 
 ## Verdict: **(B) RESHAPE**
 
@@ -52,23 +52,23 @@ Rootless `dockerd` runs a single daemon as an unprivileged user with a single su
 ### 4. Folder-identity collision, and the folderless exemption — **both confirmed.**
 
 - **Folder apps collide.** A personal-source folder app runs as the **owner's real host UID (≥ 3000)** — `lifecycle.go:531` (`iso.uid, iso.gid, iso.home = rh.UID, rh.GID, rh.HomePath`), per `APP_ISOLATION.md` # Runtime identity & data ownership — precisely so it can read/write `/home/<user>/` natively. A userns remap shifts in-container UIDs into a subordinate range, so a remapped container can no longer act as the real owner on `~/`; every use-case-folder bind would need remap-offset reconciliation. This is `NEXT.md`'s open question 2 and it remains the hard, unsolved part. **Folder apps stay out of scope.**
-- **Folderless apps are exempt.** A folderless app (brain-euid default, or `service_user`) binds **no** owner home — it writes only its own `./data` under the instance dir, which the brain creates + chowns (`lifecycle.go:572-584`). Under a remap, malmo (or the runtime) targets the *remapped* host uid; **no real host principal is involved**, so there is no collision. A folderless-only first cut is therefore viable while folder apps stay deferred — the key scoping lever, **validated**.
+- **Folderless apps are exempt.** A folderless app (brain-euid default, or `service_user`) binds **no** owner home — it writes only its own `./data` under the instance dir, which the brain creates + chowns (`lifecycle.go:572-584`). Under a remap, moose (or the runtime) targets the *remapped* host uid; **no real host principal is involved**, so there is no collision. A folderless-only first cut is therefore viable while folder apps stay deferred — the key scoping lever, **validated**.
 - **The blocked apps are all folderless.** poznote (#90), postiz (#128), formbricks (#182/#193), kimai (#89 secondary) all store state in their own data dir and declare no use-case `folders` grant (`docs/dev/catalog-import-gaps.md` # nonroot-data-ownership). So folderless-first actually covers the apps that justify the spike.
 
 ### 5. Bind-chown offset — **depends on the runtime, and sysbox largely removes it.**
 
-Today `lifecycle.go:577` does `os.Chown(dir, iso.uid, iso.gid)` per declared relative bind dir. The math under a remap: an in-container uid `u` appears on the host as `base + u`. The snag is that the image's *internal* uid (poznote's `www-data` = 82) is **unknown to malmo** — that opacity is the whole problem — so malmo cannot pre-compute `base + 82` itself.
+Today `lifecycle.go:577` does `os.Chown(dir, iso.uid, iso.gid)` per declared relative bind dir. The math under a remap: an in-container uid `u` appears on the host as `base + u`. The snag is that the image's *internal* uid (poznote's `www-data` = 82) is **unknown to moose** — that opacity is the whole problem — so moose cannot pre-compute `base + 82` itself.
 
-- With **classic daemon-global remap**: malmo would have to chown to `base + u` for an unknown `u` → cannot. Another reason classic remap fails here.
-- With **sysbox + ID-mapped mounts**: sysbox owns the bind-mount shifting (it ID-maps / chowns the bind into the container's allocated range on mount), so malmo can leave the chown targeting the runtime UID and let sysbox shift — likely **no offset math in the brain at all**, pending on-hardware confirmation. If ID-mapped mounts are unavailable, a per-instance subuid *range* would be allocated by host-agent (a sibling of `AllocateAppServiceIdentity`, `docker.go:124`) and the offset logic would live in the `isolation` struct (`lifecycle.go:86`) and the bind-dir loop (`lifecycle.go:572-584`).
+- With **classic daemon-global remap**: moose would have to chown to `base + u` for an unknown `u` → cannot. Another reason classic remap fails here.
+- With **sysbox + ID-mapped mounts**: sysbox owns the bind-mount shifting (it ID-maps / chowns the bind into the container's allocated range on mount), so moose can leave the chown targeting the runtime UID and let sysbox shift — likely **no offset math in the brain at all**, pending on-hardware confirmation. If ID-mapped mounts are unavailable, a per-instance subuid *range* would be allocated by host-agent (a sibling of `AllocateAppServiceIdentity`, `docker.go:124`) and the offset logic would live in the `isolation` struct (`lifecycle.go:86`) and the bind-dir loop (`lifecycle.go:572-584`).
 
 ---
 
 ## Experiment
 
-**Setup.** Docker **28.1.1** (= our `docker-ce` target), registry reachable, no userns-remap on the stock daemon, no rootless, **sysbox not installed**. Subject: `ghcr.io/timothepoznanski/poznote:6` (digest `sha256:75049e…`), a clean hardcoded-internal-UID image. Its `init.sh` runs `chown -R www-data:www-data /var/www/html/data` under `set -e` (line 48); php-fpm pool is `user = www-data` and a supervisord program is `user=www-data`; `www-data` = **uid 82**, and the baked `/var/www/html/data` is owned `82:82`. Plain-Docker mimicry of the malmo sandbox, **indicative, not authoritative** (see caveats).
+**Setup.** Docker **28.1.1** (= our `docker-ce` target), registry reachable, no userns-remap on the stock daemon, no rootless, **sysbox not installed**. Subject: `ghcr.io/timothepoznanski/poznote:6` (digest `sha256:75049e…`), a clean hardcoded-internal-UID image. Its `init.sh` runs `chown -R www-data:www-data /var/www/html/data` under `set -e` (line 48); php-fpm pool is `user = www-data` and a supervisord program is `user=www-data`; `www-data` = **uid 82**, and the baked `/var/www/html/data` is owned `82:82`. Plain-Docker mimicry of the moose sandbox, **indicative, not authoritative** (see caveats).
 
-**Baseline — reproduce malmo's Tier-3 sandbox; confirm it fails.** `--cap-drop ALL --security-opt no-new-privileges:true`, a writable data bind, in both identity shapes the platform has:
+**Baseline — reproduce moose's Tier-3 sandbox; confirm it fails.** `--cap-drop ALL --security-opt no-new-privileges:true`, a writable data bind, in both identity shapes the platform has:
 
 | Run | Flags | Result |
 |---|---|---|
@@ -109,7 +109,7 @@ In-container `www-data` (82) lands on the host as uid **100082** = `100000 + 82`
 **Caveats (indicative, not authoritative).**
 
 - This was **daemon-global** remap on a throwaway second daemon, *not* the per-app `runtime: sysbox-runc` that (B) actually proposes. It proves the **userns property** (remap → in-container privilege works yet is host-powerless); it does **not** prove sysbox's per-container delivery, its bind-shifting, or coexistence with `runc` apps on one daemon — **sysbox was not installed and was not tested**.
-- Plain Docker mimicking the malmo sandbox is not malmo. Only a real brain boot exercises the override generator, the host-agent identity allocation, and admission together.
+- Plain Docker mimicking the moose sandbox is not moose. Only a real brain boot exercises the override generator, the host-agent identity allocation, and admission together.
 - Only poznote's boot was observed, not the full poznote feature path, and not postiz/formbricks/kimai.
 
 ---
@@ -128,7 +128,7 @@ An implementation issue should **not** open until the runtime decision (adopt sy
 
 ---
 
-## What a real malmo-lane boot must verify before trusting this
+## What a real moose-lane boot must verify before trusting this
 
 The plain-Docker experiment is indicative; a QEMU medium-lane boot **with `sysbox-ce` installed** must confirm, end-to-end through the brain:
 

@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/malmoos/malmo/internal/hostagent/updatetarget"
-	"github.com/malmoos/malmo/internal/profile"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
+	"github.com/onmoose/os/internal/profile"
 )
 
 // This file resolves the two per-box update settings: which update target this
@@ -44,9 +44,9 @@ import (
 // anything behind `//go:build hosted` is neither vetted nor tested by CI. The tag
 // stays on the call site (updatetarget_hosted.go); the logic lives here.
 const (
-	envSeedPath        = "MALMO_SEED_PATH"
-	envUpdateTargetURL = "MALMO_UPDATE_TARGET_URL"
-	envUpdateWindow    = "MALMO_UPDATE_WINDOW"
+	envSeedPath        = "MOOSE_SEED_PATH"
+	envUpdateTargetURL = "MOOSE_UPDATE_TARGET_URL"
+	envUpdateWindow    = "MOOSE_UPDATE_WINDOW"
 )
 
 // Which source won, for the startup log.

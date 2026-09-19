@@ -25,9 +25,9 @@
 //
 // # The answer is digests, never tags
 //
-// An image can be named two ways. A tag (`ghcr.io/malmoos/brain:v0.6.0`) is a
+// An image can be named two ways. A tag (`ghcr.io/onmoose/brain:v0.6.0`) is a
 // label, and a label can be moved to point at different bytes. A digest
-// (`ghcr.io/malmoos/brain@sha256:670b…`) IS the bytes. cpupdate pulls by digest
+// (`ghcr.io/onmoose/brain@sha256:670b…`) IS the bytes. cpupdate pulls by digest
 // on purpose (BUILD.md # 6), so something has to turn "v0.6.0" into that hash.
 //
 // **The source does it, and the box consumes what it is given.** A box that
@@ -129,8 +129,8 @@ type Repositories struct {
 // DefaultRepositories is where the published control-plane images live
 // (BUILD.md # 6 — built from the public repo, pulled by digest).
 var DefaultRepositories = Repositories{
-	Brain: "ghcr.io/malmoos/brain",
-	UI:    "ghcr.io/malmoos/ui",
+	Brain: "ghcr.io/onmoose/brain",
+	UI:    "ghcr.io/onmoose/ui",
 }
 
 // pinnedRef matches a reference pinned to a sha256 digest, capturing the

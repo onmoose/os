@@ -44,7 +44,7 @@ const uiImage = computed(() => v.value?.ui_image ?? "");
     <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">About</h2>
     <div class="space-y-2 rounded-xl border border-border bg-card px-4 py-4">
       <div class="flex items-baseline gap-2">
-        <span class="text-base font-medium">malmo</span>
+        <span class="text-base font-medium">moose</span>
         <span v-if="version.isLoading.value" class="text-sm text-muted-foreground">Checking…</span>
         <span v-else-if="boxVersion" class="text-sm text-muted-foreground">{{ boxVersion }}</span>
         <span v-else class="text-sm text-muted-foreground">Version unknown</span>
@@ -78,7 +78,7 @@ const uiImage = computed(() => v.value?.ui_image ?? "");
       </details>
 
       <a
-        href="https://github.com/malmoos/malmo"
+        href="https://github.com/onmoose/os"
         target="_blank"
         rel="noopener noreferrer"
         class="inline-block text-sm text-accent hover:underline"

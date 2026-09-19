@@ -3,7 +3,7 @@
 # /usr/local/bin/medium-assertions.sh by dev/test-qemu/bootstrap.sh.
 #
 # Driven over SSH by dev/test-qemu/run-medium-tests.sh after the VM
-# boots. Writes the verdict to /var/lib/malmo-medium-result; the host
+# boots. Writes the verdict to /var/lib/moose-medium-result; the host
 # driver scp's it back.
 #
 # Takes a phase argument (slice 0023 Stages 2/3); the harness runs the
@@ -27,7 +27,7 @@
 set -uo pipefail
 
 PHASE="${1:-combined}"
-RESULT=/var/lib/malmo-medium-result
+RESULT=/var/lib/moose-medium-result
 
 # Sentinel non-matching the host's ^(PASS|FAIL:) regex so the driver
 # doesn't tear us down before assertions complete.
@@ -47,8 +47,8 @@ echo "medium-assertions phase=$PHASE"
 
 # --- 1. real systemd userspace reached multi-user.
 # Poll, don't sample once: on first boot the run-once
-# malmo-tpm-enroll.service is part of the boot transaction
-# (WantedBy=malmo-storage-ready.target) and its Argon2 keyslot operation
+# moose-tpm-enroll.service is part of the boot transaction
+# (WantedBy=moose-storage-ready.target) and its Argon2 keyslot operation
 # takes a couple of seconds, during which is-system-running legitimately
 # reports 'starting'. sshd has no ordering against the enroll, so it can
 # win the race and let us in before the transaction settles — sampling
@@ -70,15 +70,15 @@ case "$state" in
 esac
 
 # --- 2. storage-verify ran end-to-end
-verify_state="$(systemctl is-active malmo-storage-verify.service 2>&1 || true)"
+verify_state="$(systemctl is-active moose-storage-verify.service 2>&1 || true)"
 [ "$verify_state" = "active" ] \
-    || fail "malmo-storage-verify.service is '$verify_state' (expected active)"
+    || fail "moose-storage-verify.service is '$verify_state' (expected active)"
 
 # --- 3. reporter output exists and is shaped correctly
-test -s /run/malmo/health/storage.json \
-    || fail "/run/malmo/health/storage.json missing or empty"
+test -s /run/moose/health/storage.json \
+    || fail "/run/moose/health/storage.json missing or empty"
 
-payload="$(cat /run/malmo/health/storage.json)"
+payload="$(cat /run/moose/health/storage.json)"
 compact="$(tr -d ' \n\t' <<<"$payload")"
 grep -q '"checked_at"' <<<"$compact" \
     || fail "storage.json missing checked_at: $payload"
@@ -155,14 +155,14 @@ assert_tpm2_pcr7_token() {
 
 # --- network-state slice (#130) -----------------------------------------
 # Second boot only (the steady-state boot, after the LUKS/TPM checks).
-# Drives /usr/lib/malmo/malmo-network-verify — the same netstate +
+# Drives /usr/lib/moose/moose-network-verify — the same netstate +
 # avahipublisher packages cmd/host-agent-real wires, minus PAM — against
 # the VM's real NetworkManager and avahi-daemon. The SSH NIC (MAC pinned
 # in run-medium-tests.sh, NM-unmanaged) is never touched.
 SSH_NIC_MAC="52:54:00:6d:6c:01"
-MNV=/usr/lib/malmo/malmo-network-verify
+MNV=/usr/lib/moose/moose-network-verify
 AVAHI_CONF=/etc/avahi/avahi-daemon.conf
-MNV_LOG=/var/log/malmo-network-verify.log
+MNV_LOG=/var/log/moose-network-verify.log
 
 nic_ipv4() {
     ip -o -4 addr show dev "$1" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1
@@ -199,7 +199,7 @@ assert_network_state() {
 
     # 1. netstate's LAN set == the NM set, SSH NIC excluded.
     local lan lan_names
-    lan="$("$MNV" lan 2>&1)" || fail "malmo-network-verify lan: $lan"
+    lan="$("$MNV" lan 2>&1)" || fail "moose-network-verify lan: $lan"
     lan_names="$(grep -oE '"Name":"[^"]*"' <<<"$lan" | cut -d'"' -f4 | sort)"
     [ "$lan_names" = "$nics" ] \
         || fail "netstate LAN set [$lan_names] != NM set [$nics] (raw: $lan)"
@@ -207,7 +207,7 @@ assert_network_state() {
     # 2. serve: the conf ships with no allow-interfaces, so the startup
     # sync exercises conf-change -> daemon restart -> republish; the
     # published name must then resolve to one of the LAN addresses.
-    "$MNV" serve -slug malmotest >"$MNV_LOG" 2>&1 &
+    "$MNV" serve -slug moosetest >"$MNV_LOG" 2>&1 &
     local mnv_pid=$!
     local want_allow="allow-interfaces=${nic_a},${nic_b}"
     local got=""
@@ -222,14 +222,14 @@ assert_network_state() {
     addr_a="$(nic_ipv4 "$nic_a")"
     addr_b="$(nic_ipv4 "$nic_b")"
     for _i in $(seq 1 30); do
-        resolved="$(avahi-resolve -4 -n malmotest.local 2>/dev/null | awk '{print $2}')"
+        resolved="$(avahi-resolve -4 -n moosetest.local 2>/dev/null | awk '{print $2}')"
         [ -n "$resolved" ] && break
         sleep 1
     done
-    [ -n "$resolved" ] || fail "malmotest.local never resolved: $(tail -5 "$MNV_LOG" 2>/dev/null)"
+    [ -n "$resolved" ] || fail "moosetest.local never resolved: $(tail -5 "$MNV_LOG" 2>/dev/null)"
     case "$resolved" in
         "$addr_a"|"$addr_b") ;;
-        *) fail "malmotest.local resolved to $resolved, want $addr_a or $addr_b" ;;
+        *) fail "moosetest.local resolved to $resolved, want $addr_a or $addr_b" ;;
     esac
 
     # 3. interface removal: disconnecting nic_b must rewrite the allowlist
@@ -256,7 +256,7 @@ assert_network_state() {
         || fail "nmcli connection up '$conn' failed"
     resolved=""
     for _i in $(seq 1 30); do
-        resolved="$(avahi-resolve -4 -n malmotest.local 2>/dev/null | awk '{print $2}')"
+        resolved="$(avahi-resolve -4 -n moosetest.local 2>/dev/null | awk '{print $2}')"
         [ "$resolved" = "10.0.9.99" ] && break
         sleep 1
     done
@@ -264,7 +264,7 @@ assert_network_state() {
         || fail "replay never re-announced 10.0.9.99 (last resolve: '$resolved'): $(tail -10 "$MNV_LOG" 2>/dev/null)"
 
     kill -0 "$mnv_pid" 2>/dev/null \
-        || fail "malmo-network-verify serve died mid-test: $(tail -10 "$MNV_LOG" 2>/dev/null)"
+        || fail "moose-network-verify serve died mid-test: $(tail -10 "$MNV_LOG" 2>/dev/null)"
     kill "$mnv_pid" 2>/dev/null
 }
 
@@ -272,14 +272,14 @@ assert_network_state() {
 # Installs the catalog app whoami end-to-end with NO guest internet (the netdevs
 # run restrict=on — run-medium-tests.sh), proving: the offline image bundle is
 # complete (a pull would hard-fail; the brain trusts the catalog-promised digest
-# of the docker-loaded image — MALMO_OFFLINE_INSTALL), the container runs,
+# of the docker-loaded image — MOOSE_OFFLINE_INSTALL), the container runs,
 # whoami.local resolves, the app's route returns its page through Caddy, a real
 # use-case-folder bind mount lands, and content under it survives uninstall
 # (STORAGE.md # Files are first-class). The socket-proxy boundary is asserted in
 # the M1b block above. Driven over Caddy :80, same /dev/tcp idiom as M1b/M1c.
 #
 # scope=personal, not household: a level-0 VM has no data drive, so the shared
-# tree (/srv/malmo/shared) household would force doesn't exist; personal binds
+# tree (/srv/moose/shared) household would force doesn't exist; personal binds
 # the admin's own ~/Documents, which the brain creates at install.
 assert_app_install() {
     # Locals (not top-level): ADMIN_DOCS interpolates $SETUP_USER, which the M1c
@@ -292,9 +292,9 @@ assert_app_install() {
 
     # 0. authenticate. M1c proved /login returns 200; here we keep the session
     # cookie (install authorizes on the session — no elevation needed for
-    # install). Set-Cookie: malmo_session=<tok>; …  → "malmo_session=<tok>".
+    # install). Set-Cookie: moose_session=<tok>; …  → "moose_session=<tok>".
     local login_resp cookie
-    login_resp="$(http_post /api/v1/login malmo.local "$setup_body" 2>/dev/null || true)"
+    login_resp="$(http_post /api/v1/login moose.local "$setup_body" 2>/dev/null || true)"
     cookie="$(grep -i '^Set-Cookie:' <<<"$login_resp" \
         | sed -E 's/^[Ss]et-[Cc]ookie:[[:space:]]*([^;]*).*/\1/' | tr -d '\r' | head -1)"
     [ -n "$cookie" ] \
@@ -307,14 +307,14 @@ assert_app_install() {
         # mis-size Content-Length and the server would truncate/reject the body.
         len="$(printf '%s' "$body" | wc -c | tr -d ' ')"
         exec 3<>/dev/tcp/127.0.0.1/80 || return 1
-        printf 'POST %s HTTP/1.0\r\nHost: malmo.local\r\nCookie: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+        printf 'POST %s HTTP/1.0\r\nHost: moose.local\r\nCookie: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
             "$1" "$cookie" "$len" "$body" >&3
         cat <&3
         exec 3>&- 3<&-
     }
     app_delete() { # PATH -> status line
         exec 3<>/dev/tcp/127.0.0.1/80 || return 1
-        printf 'DELETE %s HTTP/1.0\r\nHost: malmo.local\r\nCookie: %s\r\nConnection: close\r\n\r\n' "$1" "$cookie" >&3
+        printf 'DELETE %s HTTP/1.0\r\nHost: moose.local\r\nCookie: %s\r\nConnection: close\r\n\r\n' "$1" "$cookie" >&3
         head -1 <&3 | tr -d '\r'
         exec 3>&- 3<&-
     }
@@ -346,13 +346,13 @@ assert_app_install() {
         echo "install response (first lines):"; head -3 <<<"$resp" | tr -d '\r'
         echo "docker ps -a:"; docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>&1
         echo "GET /apps:"; http_get_auth /api/v1/apps 2>/dev/null | sed -n '/^\r\{0,1\}$/,$p' | tr -d '\r' | tail -3
-        echo "brain log (tail 40):"; docker logs malmo-brain 2>&1 | tail -40
+        echo "brain log (tail 40):"; docker logs moose-brain 2>&1 | tail -40
         echo "--- end diagnostics ---"
     }
     # http_get_auth: authenticated GET (used by install_diag + below).
     http_get_auth() {
         exec 3<>/dev/tcp/127.0.0.1/80 || return 1
-        printf 'GET %s HTTP/1.0\r\nHost: malmo.local\r\nCookie: %s\r\nConnection: close\r\n\r\n' "$1" "$cookie" >&3
+        printf 'GET %s HTTP/1.0\r\nHost: moose.local\r\nCookie: %s\r\nConnection: close\r\n\r\n' "$1" "$cookie" >&3
         cat <&3
         exec 3>&- 3<&-
     }
@@ -390,21 +390,21 @@ assert_app_install() {
 
     # 4. a real use-case-folder bind mount landed. whoami is a FROM-scratch image
     # (no shell → no docker exec), so assert host-side: the running container's
-    # Mounts carry /malmo/documents bound from the admin's personal ~/Documents
-    # (scope=personal). Resolve the container by malmo's instance-id label.
+    # Mounts carry /moose/documents bound from the admin's personal ~/Documents
+    # (scope=personal). Resolve the container by moose's instance-id label.
     local cname inst_id mounts
-    cname="$(docker ps --format '{{.Names}}' | grep -E "^malmo-.*-${APP_SLUG}\$" | head -1)"
+    cname="$(docker ps --format '{{.Names}}' | grep -E "^moose-.*-${APP_SLUG}\$" | head -1)"
     [ -n "$cname" ] || fail "no running whoami container (docker ps: $(docker ps --format '{{.Names}}' | tr '\n' ' '))"
-    inst_id="$(docker inspect "$cname" --format '{{ index .Config.Labels "malmo.instance_id" }}' 2>/dev/null)"
-    [ -n "$inst_id" ] || fail "whoami container $cname has no malmo.instance_id label"
+    inst_id="$(docker inspect "$cname" --format '{{ index .Config.Labels "moose.instance_id" }}' 2>/dev/null)"
+    [ -n "$inst_id" ] || fail "whoami container $cname has no moose.instance_id label"
     mounts="$(docker inspect "$cname" --format '{{range .Mounts}}{{.Destination}}={{.Source}}{{"\n"}}{{end}}' 2>/dev/null)"
-    grep -qx "/malmo/documents=${ADMIN_DOCS}" <<<"$mounts" \
-        || fail "documents bind mount missing/wrong (want /malmo/documents=${ADMIN_DOCS}); mounts: $(tr '\n' ' ' <<<"$mounts")"
+    grep -qx "/moose/documents=${ADMIN_DOCS}" <<<"$mounts" \
+        || fail "documents bind mount missing/wrong (want /moose/documents=${ADMIN_DOCS}); mounts: $(tr '\n' ' ' <<<"$mounts")"
 
     # 5. content survives uninstall. Write a marker into the bound host folder
     # (the brain created + chowned it at install), uninstall the app, and assert
     # the file outlives it — uninstalling never deletes user content.
-    echo "malmo-m2-survives" > "$MARKER" || fail "could not write marker $MARKER"
+    echo "moose-m2-survives" > "$MARKER" || fail "could not write marker $MARKER"
     local del_status
     del_status="$(app_delete "/api/v1/apps/${inst_id}" 2>/dev/null || true)"
     case "$del_status" in
@@ -414,7 +414,7 @@ assert_app_install() {
     # Wait for the container to be gone (uninstall = compose down -v + teardown).
     local gone=""
     for _i in $(seq 1 60); do
-        docker ps --format '{{.Names}}' | grep -qE "^malmo-.*-${APP_SLUG}\$" || { gone=1; break; }
+        docker ps --format '{{.Names}}' | grep -qE "^moose-.*-${APP_SLUG}\$" || { gone=1; break; }
         sleep 1
     done
     [ -n "$gone" ] || fail "whoami container still running 60s after uninstall"
@@ -432,19 +432,19 @@ assert_app_install() {
 docker_state="$(systemctl is-active docker.service 2>&1 || true)"
 [ "$docker_state" = "active" ] \
     || fail "docker.service is '$docker_state' (expected active)"
-# malmo-load-images.service runs once at first boot (WantedBy=multi-user.target);
+# moose-load-images.service runs once at first boot (WantedBy=multi-user.target);
 # SSH can beat its docker-load, so poll for the success marker before listing.
 for _i in $(seq 1 60); do
-    [ -f /var/lib/malmo/.control-plane-images-loaded ] && break
-    if systemctl is-failed --quiet malmo-load-images.service; then
-        fail "malmo-load-images.service failed: $(journalctl -u malmo-load-images.service -b --no-pager 2>/dev/null | tail -20)"
+    [ -f /var/lib/moose/.control-plane-images-loaded ] && break
+    if systemctl is-failed --quiet moose-load-images.service; then
+        fail "moose-load-images.service failed: $(journalctl -u moose-load-images.service -b --no-pager 2>/dev/null | tail -20)"
     fi
     sleep 1
 done
-[ -f /var/lib/malmo/.control-plane-images-loaded ] \
+[ -f /var/lib/moose/.control-plane-images-loaded ] \
     || fail "control-plane image-load marker never appeared after 60s"
 cp_images="$(docker images --format '{{.Repository}}' 2>&1 || true)"
-for repo in malmo-brain malmo-ui caddy tecnativa/docker-socket-proxy; do
+for repo in moose-brain moose-ui caddy tecnativa/docker-socket-proxy; do
     grep -qx "$repo" <<<"$cp_images" \
         || fail "control-plane image '$repo' not loaded (have: $(tr '\n' ' ' <<<"$cp_images"))"
 done
@@ -452,13 +452,13 @@ echo "control-plane: docker.service active, 4 bundled images loaded"
 
 # --- M1b (#165): the brain brings up the control-plane stack, reaching Docker
 # only through the host-agent-seeded socket-proxy. Proves the M1b "Done when":
-# Caddy + malmo-ui + socket-proxy launched, dashboard SPA loads through Caddy,
+# Caddy + moose-ui + socket-proxy launched, dashboard SPA loads through Caddy,
 # the raw socket is not mounted into the brain. The thorough app-install
 # assertions are M2 (#167); the headless /setup round-trip is M1c (#166).
 
 # 1. host-agent seeds the proxy; the brain reconciles caddy + ui. The brain
 # bootstrap + compose up run after Docker is ready and race sshd, so poll.
-want_containers="malmo-brain malmo-caddy malmo-ui malmo-docker-proxy"
+want_containers="moose-brain moose-caddy moose-ui moose-docker-proxy"
 running=""
 for _i in $(seq 1 120); do
     running="$(docker ps --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')"
@@ -476,19 +476,19 @@ done
 
 # 2. proxy boundary: the brain must NOT have the raw Docker socket mounted — it
 # reaches Docker only via the proxy (CONTROL_PLANE.md # Docker socket exposure).
-brain_sock="$(docker inspect malmo-brain \
+brain_sock="$(docker inspect moose-brain \
     --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null \
     | grep -c 'docker.sock' || true)"
 [ "$brain_sock" = 0 ] \
-    || fail "raw docker.sock is mounted into malmo-brain (proxy boundary breached)"
-brain_dockerhost="$(docker inspect malmo-brain \
+    || fail "raw docker.sock is mounted into moose-brain (proxy boundary breached)"
+brain_dockerhost="$(docker inspect moose-brain \
     --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
     | sed -n 's/^DOCKER_HOST=//p')"
 [ "$brain_dockerhost" = "tcp://docker-proxy:2375" ] \
     || fail "brain DOCKER_HOST='$brain_dockerhost', want tcp://docker-proxy:2375"
 
 # 3. dashboard loads through Caddy. Caddy publishes :80 on the host; the dashboard
-# host route serves the SPA from malmo-ui and proxies /api to the brain. No curl
+# host route serves the SPA from moose-ui and proxies /api to the brain. No curl
 # in the image — use bash /dev/tcp. Poll: the brain configures the route a beat
 # after Caddy comes up.
 http_status() { # $1 path, $2 host -> prints the HTTP status line
@@ -499,7 +499,7 @@ http_status() { # $1 path, $2 host -> prints the HTTP status line
 }
 spa_status=""
 for _i in $(seq 1 60); do
-    spa_status="$(http_status / malmo.local 2>/dev/null || true)"
+    spa_status="$(http_status / moose.local 2>/dev/null || true)"
     grep -q ' 200' <<<"$spa_status" && break
     sleep 1
 done
@@ -516,7 +516,7 @@ grep -q ' 200' <<<"$spa_status" \
 # (a separate container) already serves 200. Same poll shape as the SPA above.
 api_status=""
 for _i in $(seq 1 60); do
-    api_status="$(http_status /api/v1/me malmo.local 2>/dev/null || true)"
+    api_status="$(http_status /api/v1/me moose.local 2>/dev/null || true)"
     grep -qE ' (200|401)' <<<"$api_status" && break
     sleep 1
 done
@@ -535,15 +535,15 @@ echo "control-plane M1b: stack up, proxy boundary held, dashboard + /api reachab
 # must succeed and a `docker exec` must still be refused. The full provision/
 # drop/readiness round-trip is covered by the dockerlive suite and is the M2
 # app-install lane in the VM; this is the transport-capability check #185 turns
-# on. The malmo-brain image is reused as both the docker-client context (it ships
+# on. The moose-brain image is reused as both the docker-client context (it ships
 # the docker CLI) and the throwaway run-image (it ships /bin/sh) — no extra image
 # is bundled.
-oneshot="$(docker exec malmo-brain docker run --rm --entrypoint sh malmo-brain -c 'echo MALMO_ONESHOT_OK' 2>&1 || true)"
-grep -q 'MALMO_ONESHOT_OK' <<<"$oneshot" \
+oneshot="$(docker exec moose-brain docker run --rm --entrypoint sh moose-brain -c 'echo MOOSE_ONESHOT_OK' 2>&1 || true)"
+grep -q 'MOOSE_ONESHOT_OK' <<<"$oneshot" \
     || fail "one-shot 'docker run --rm' (managed-DB provisioning transport) failed through the proxy: $oneshot"
 # EXEC must stay denied — the proxy boundary the provisioning re-architecture was
 # built to respect rather than widen.
-execout="$(docker exec malmo-brain docker exec malmo-caddy true 2>&1 || true)"
+execout="$(docker exec moose-brain docker exec moose-caddy true 2>&1 || true)"
 grep -qE '403|[Ff]orbidden|denied' <<<"$execout" \
     || fail "docker exec is NOT denied through the proxy (EXEC boundary breached): $execout"
 echo "managed-DB #185: one-shot run+attach permitted through the proxy, EXEC still denied"
@@ -554,8 +554,8 @@ echo "managed-DB #185: one-shot run+attach permitted through the proxy, EXEC sti
 # hash — AUTH.md). Both go through Caddy on :80, the same scriptable HTTP path the
 # QEMU harness drives with no browser. No curl/jq in the image — hand-build the
 # request over bash /dev/tcp, same idiom as http_status above.
-SETUP_USER=malmoadmin
-SETUP_PASS=malmofirstrunpw1
+SETUP_USER=mooseadmin
+SETUP_PASS=moosefirstrunpw1
 setup_body="{\"username\":\"$SETUP_USER\",\"password\":\"$SETUP_PASS\"}"
 
 # http_post PATH HOST JSON -> prints the full HTTP response (status line + headers
@@ -577,12 +577,12 @@ http_post() {
 # disk has already been through first-run — the medium lane reuses one disk
 # across the first-boot and second-boot phases, so the admin created on boot 1
 # (and the brain's SQLite row with it) is still present on boot 2. A 502 means
-# the host path failed (missing malmo/sudo group, useradd/chpasswd error); poll
+# the host path failed (missing moose/sudo group, useradd/chpasswd error); poll
 # briefly to ride out brain-not-ready, then surface the body for diagnosis.
 setup_status=""
 setup_resp=""
 for _i in $(seq 1 20); do
-    setup_resp="$(http_post /api/v1/setup malmo.local "$setup_body" 2>/dev/null || true)"
+    setup_resp="$(http_post /api/v1/setup moose.local "$setup_body" 2>/dev/null || true)"
     setup_status="$(head -1 <<<"$setup_resp" | tr -d '\r')"
     case "$setup_status" in
         *" 200"*|*" 409"*) break ;;
@@ -594,24 +594,24 @@ case "$setup_status" in
     *) fail "/setup did not complete: status='$setup_status' body=$(tr -d '\r' <<<"$setup_resp" | tail -2 | tr '\n' ' ')" ;;
 esac
 
-# 2. The account is a real Linux user: primary group malmo (useradd --gid malmo)
+# 2. The account is a real Linux user: primary group moose (useradd --gid moose)
 # and a member of sudo (the first admin is added to sudo at creation —
 # USERS_AND_GROUPS.md # Roles). Proves SetPassword + SetRole hit the real system.
 id "$SETUP_USER" >/dev/null 2>&1 \
     || fail "admin '$SETUP_USER' not in /etc/passwd after /setup"
 id -nG "$SETUP_USER" 2>/dev/null | grep -qw sudo \
     || fail "admin '$SETUP_USER' not in sudo group (groups: $(id -nG "$SETUP_USER" 2>/dev/null))"
-id -ng "$SETUP_USER" 2>/dev/null | grep -qx malmo \
-    || fail "admin '$SETUP_USER' primary group is '$(id -ng "$SETUP_USER" 2>/dev/null)', want malmo"
+id -ng "$SETUP_USER" 2>/dev/null | grep -qx moose \
+    || fail "admin '$SETUP_USER' primary group is '$(id -ng "$SETUP_USER" 2>/dev/null)', want moose"
 
 # 3. /login authenticates the account against /etc/shadow via host-agent
-# verify-password (PAM pam_unix, service "malmo"). This is the M1c "Done when".
+# verify-password (PAM pam_unix, service "moose"). This is the M1c "Done when".
 # Single attempt: by here useradd+chpasswd have completed (200/409 above), so a
 # correct password logs in first try — and the brain rate-limits failed logins
 # (AUTH.md # Rate limiting), so retrying a real failure would only lock us out.
 # On second-boot the 409 above means the admin and its /etc/shadow entry survived
 # the encrypted-root reboot, so the same credentials authenticate here too.
-login_status="$(http_post /api/v1/login malmo.local "$setup_body" 2>/dev/null | head -1 | tr -d '\r')"
+login_status="$(http_post /api/v1/login moose.local "$setup_body" 2>/dev/null | head -1 | tr -d '\r')"
 case "$login_status" in
     *" 200"*) ;;
     *) fail "/login (verify-password against /etc/shadow) failed: status='$login_status'" ;;
@@ -632,28 +632,28 @@ echo "control-plane M1c: /setup created the admin, verify-password authenticated
 # toggle are proved in the cloud lane, over a serial console with nothing to lose
 # (dev/cloud/cloud-assertions.sh, the `ssh` boot).
 assert_ssh_posture() {
-    [ -f /etc/ssh/sshd_config.d/malmo-hardening.conf ] \
-        || fail "sshd hardening drop-in missing from the image (/etc/ssh/sshd_config.d/malmo-hardening.conf)"
-    grep -qE '^PermitRootLogin +no$' /etc/ssh/sshd_config.d/malmo-hardening.conf \
+    [ -f /etc/ssh/sshd_config.d/moose-hardening.conf ] \
+        || fail "sshd hardening drop-in missing from the image (/etc/ssh/sshd_config.d/moose-hardening.conf)"
+    grep -qE '^PermitRootLogin +no$' /etc/ssh/sshd_config.d/moose-hardening.conf \
         || fail "hardening drop-in does not set PermitRootLogin no"
-    grep -qE '^PasswordAuthentication +yes$' /etc/ssh/sshd_config.d/malmo-hardening.conf \
+    grep -qE '^PasswordAuthentication +yes$' /etc/ssh/sshd_config.d/moose-hardening.conf \
         || fail "hardening drop-in does not set PasswordAuthentication yes (the prerequisite for the password half of AuthenticationMethods)"
 
-    [ -f /etc/nftables.d/malmo-ssh.conf ] \
-        || fail "SSH firewall rule missing from the image (/etc/nftables.d/malmo-ssh.conf)"
+    [ -f /etc/nftables.d/moose-ssh.conf ] \
+        || fail "SSH firewall rule missing from the image (/etc/nftables.d/moose-ssh.conf)"
 
     # The loader ran and the rule is live in the kernel, not just on disk.
-    systemctl is-active --quiet malmo-ssh-firewall.service \
-        || fail "malmo-ssh-firewall.service is not active: $(systemctl status malmo-ssh-firewall.service --no-pager 2>&1 | tail -10)"
-    rules="$(nft list table inet malmo_ssh 2>&1)" \
-        || fail "nftables table inet malmo_ssh not loaded: $rules"
+    systemctl is-active --quiet moose-ssh-firewall.service \
+        || fail "moose-ssh-firewall.service is not active: $(systemctl status moose-ssh-firewall.service --no-pager 2>&1 | tail -10)"
+    rules="$(nft list table inet moose_ssh 2>&1)" \
+        || fail "nftables table inet moose_ssh not loaded: $rules"
 
     # Default-deny plus the three private ranges. Assert the drop and each allow
     # separately — a rule set that dropped everything would pass a "drop exists"
     # check while locking the whole LAN out, and one that allowed everything
     # would pass an "allow exists" check while scoping nothing.
     grep -qE 'tcp dport 22 .*drop' <<<"$rules" \
-        || fail "no default drop on :22 in the malmo_ssh table: $rules"
+        || fail "no default drop on :22 in the moose_ssh table: $rules"
     for range in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
         grep -qF "$range" <<<"$rules" \
             || fail "private range $range is not allowed to reach :22: $rules"
@@ -663,7 +663,7 @@ assert_ssh_posture() {
     # `ip saddr` match compiles to an nfproto==IPv4 test first, so it can never
     # match an IPv6 packet — drop the v6 accepts and every IPv6 connection falls
     # into the final drop instead. A LAN client resolving the box over mDNS
-    # commonly gets an AAAA record, so that would hang `ssh malmo.local` while the
+    # commonly gets an AAAA record, so that would hang `ssh moose.local` while the
     # rule still read as if it allowed the LAN.
     for range in fe80::/10 fc00::/7; do
         grep -qF "$range" <<<"$rules" \
@@ -686,26 +686,26 @@ assert_ssh_posture() {
     # The harness's own drop-in still sorts first, so root login survives every
     # rebuild. This is the check that catches someone renaming it back.
     [ -f /etc/ssh/sshd_config.d/00-medium-test.conf ] \
-        || fail "harness sshd drop-in is not named to sort before malmo-*.conf; root login would be shut off by the hardening drop-in"
+        || fail "harness sshd drop-in is not named to sort before moose-*.conf; root login would be shut off by the hardening drop-in"
     echo "appliance SSH posture: hardening drop-in + LAN-scoped :22 rule shipped and loaded"
 }
 assert_ssh_posture
 
 case "$PHASE" in
     first-boot)
-        # The run-once enrollment unit (malmo-tpm-enroll.service) is
-        # ordered Before=malmo-storage-ready.target but ssh.service has no
+        # The run-once enrollment unit (moose-tpm-enroll.service) is
+        # ordered Before=moose-storage-ready.target but ssh.service has no
         # ordering against it, so SSH can win the race and we may arrive
         # before enrollment finishes. Wait for the marker (written only on
         # a successful enroll); fail fast if the unit itself failed.
         for _i in $(seq 1 120); do
-            [ -f /var/lib/malmo/.luks-tpm-enrolled ] && break
-            if systemctl is-failed --quiet malmo-tpm-enroll.service; then
-                fail "malmo-tpm-enroll.service failed: $(journalctl -u malmo-tpm-enroll.service -b --no-pager 2>/dev/null | tail -20)"
+            [ -f /var/lib/moose/.luks-tpm-enrolled ] && break
+            if systemctl is-failed --quiet moose-tpm-enroll.service; then
+                fail "moose-tpm-enroll.service failed: $(journalctl -u moose-tpm-enroll.service -b --no-pager 2>/dev/null | tail -20)"
             fi
             sleep 1
         done
-        [ -f /var/lib/malmo/.luks-tpm-enrolled ] \
+        [ -f /var/lib/moose/.luks-tpm-enrolled ] \
             || fail "enrollment marker never appeared after 120s (enroll service stuck?)"
         assert_tpm2_pcr7_token
         ;;
@@ -716,7 +716,7 @@ case "$PHASE" in
         # keyslot was unusable — the only way root unlocked is the
         # PCR-7-bound TPM2 token enrolled on the first boot. Confirm the
         # token persisted and the enrollment marker survived the reboot.
-        [ -f /var/lib/malmo/.luks-tpm-enrolled ] \
+        [ -f /var/lib/moose/.luks-tpm-enrolled ] \
             || fail "enrollment marker missing on second boot (did first-boot enrollment not persist?)"
         assert_tpm2_pcr7_token
         # Best-effort, non-fatal: surface the initrd TPM2-unlock line into

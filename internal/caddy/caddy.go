@@ -21,7 +21,7 @@ import (
 // catchAllBody is the HTML returned by the catch-all 404 route for any
 // unmatched hostname. Kept as a raw string so the Go source is readable;
 // serialised to a single JSON string value when sent to the Caddy admin API.
-const catchAllBody = `<!doctype html><html><head><meta charset="utf-8"><title>404 — malmo</title><style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:6rem auto;padding:0 1rem;color:#222}h1{margin:0 0 .5rem;font-size:1.5rem}p{color:#555;line-height:1.5}a{color:#06c}</style></head><body><h1>404 — No app at this hostname</h1><p>The address you tried doesn't match any installed app on this malmo box.</p><p><a href="http://malmo.local">Go to the dashboard</a></p></body></html>`
+const catchAllBody = `<!doctype html><html><head><meta charset="utf-8"><title>404 — moose</title><style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:6rem auto;padding:0 1rem;color:#222}h1{margin:0 0 .5rem;font-size:1.5rem}p{color:#555;line-height:1.5}a{color:#06c}</style></head><body><h1>404 — No app at this hostname</h1><p>The address you tried doesn't match any installed app on this moose box.</p><p><a href="http://moose.local">Go to the dashboard</a></p></body></html>`
 
 type Client struct {
 	admin string
@@ -36,7 +36,7 @@ func New(adminAddr string) *Client {
 }
 
 // routeID is the stable @id we attach to each route so we can delete it later.
-func routeID(instanceID string) string { return "malmo-app-" + instanceID }
+func routeID(instanceID string) string { return "moose-app-" + instanceID }
 
 // RouteConfig is the fully-resolved policy for one app's reverse-proxy route.
 // The profile/exposure decision lives in the caller — internal/lifecycle is the
@@ -47,7 +47,7 @@ func routeID(instanceID string) string { return "malmo-app-" + instanceID }
 type RouteConfig struct {
 	InstanceID string
 	Host       string
-	Upstream   string // "host:port" reachable from Caddy (the app's malmo-ingress alias)
+	Upstream   string // "host:port" reachable from Caddy (the app's moose-ingress alias)
 	// StripCookieName, when non-empty, removes exactly that one cookie from the
 	// inbound Cookie header before proxying to the app upstream (hosted), and
 	// passes every other cookie through untouched. It carries the name rather
@@ -71,9 +71,9 @@ type RouteConfig struct {
 	// to carve out of.
 	PublicPaths []string
 	// ScrubHeaders lists request headers deleted from EVERY request this route
-	// proxies, before any gate runs. It carries malmo's vouched-identity headers
+	// proxies, before any gate runs. It carries moose's vouched-identity headers
 	// so a caller can never supply them: the app must be able to read
-	// X-Malmo-User as "the brain said so", on every path and in every exposure.
+	// X-Moose-User as "the brain said so", on every path and in every exposure.
 	//
 	// The forward_auth gate does its own delete-before-set of the same headers on
 	// the allow branch, and that stays. This is the outer guarantee the gate
@@ -151,7 +151,7 @@ func (c *Client) AddRoute(ctx context.Context, cfg RouteConfig) error {
 // request headers. Placed at the head of an app route it is the one guarantee
 // forward_auth cannot give on its own: forward_auth scrubs only on the branch
 // where it runs, and it does not run on a public app or on a public path, so
-// without this a caller could hand an app a forged X-Malmo-User there.
+// without this a caller could hand an app a forged X-Moose-User there.
 func scrubHeadersHandler(names []string) map[string]any {
 	del := make([]any, 0, len(names))
 	for _, n := range names {
@@ -170,7 +170,7 @@ func scrubHeadersHandler(names []string) map[string]any {
 //  1. `(?:^|;\s*)<name>=[^;]*` removes the cookie wherever it sits in the
 //     header. The leading anchor is the safety: the obvious unanchored form
 //     (`<name>=[^;]*`) also matches *inside* a longer cookie name, so an app
-//     cookie called `evil_malmo_forward_auth` gets silently mangled into `evil_`
+//     cookie called `evil_moose_forward_auth` gets silently mangled into `evil_`
 //     plus whatever followed it. Caddy compiles search_regexp with Go's regexp
 //     and applies it with ReplaceAllString, so every occurrence goes: an app
 //     that sets its own host-only copy of the name cannot push the real cookie
@@ -196,7 +196,7 @@ func stripCookieReplacements(name string) map[string]any {
 // forwardAuthHandler renders the Caddy forward_auth step — a reverse_proxy to the
 // brain verify endpoint with a handle_response policy — that gates a restricted
 // app. It is the native-JSON form of the Caddyfile `forward_auth` directive
-// (malmo drives Caddy over its admin API, so there is no Caddyfile): the
+// (moose drives Caddy over its admin API, so there is no Caddyfile): the
 // subrequest is copied, rewritten to GET fa.VerifyPath, and dialed at
 // fa.Upstream, carrying the request's cookies so the brain can read the
 // forward-auth cookie. On the response:
@@ -261,7 +261,7 @@ func forwardAuthHandler(fa ForwardAuthConfig) map[string]any {
 	}
 }
 
-// AddSplashRoute registers Host(host) -> a malmo-served splash page for the
+// AddSplashRoute registers Host(host) -> a moose-served splash page for the
 // given lifecycle state (APP_LIFECYCLE.md # register early, with a splash).
 // The brain owns the route from install-time so the hostname never returns
 // connection-refused; the upstream is flipped to the real container once
@@ -291,7 +291,7 @@ func (c *Client) upsertRoute(ctx context.Context, instanceID, host string, handl
 	// regardless of the trailing index (verified 2026-05-24). Using PUT/0
 	// keeps the catch-all (which initially sits at index 0, then index 1+
 	// after the first install) last in evaluation order.
-	return c.put(ctx, "/config/apps/http/servers/malmo/routes/0", route)
+	return c.put(ctx, "/config/apps/http/servers/moose/routes/0", route)
 }
 
 func splashHTML(appName, state string) string {
@@ -333,11 +333,11 @@ func (c *Client) RemoveRouteByID(ctx context.Context, id string) error {
 }
 
 // catchAllRoute returns the map[string]any that represents the catch-all 404
-// route. The @id makes it addressable via /id/malmo-catchall so EnsureCatchAll
+// route. The @id makes it addressable via /id/moose-catchall so EnsureCatchAll
 // can probe for its presence idempotently.
 func catchAllRoute() map[string]any {
 	return map[string]any{
-		"@id":   "malmo-catchall",
+		"@id":   "moose-catchall",
 		"match": []any{map[string]any{}},
 		"handle": []any{map[string]any{
 			"handler":     "static_response",
@@ -350,11 +350,11 @@ func catchAllRoute() map[string]any {
 
 // dashboardRouteID is the stable @id of the dashboard route, so EnsureDashboard
 // is idempotent (remove-then-add) the same way per-app routes are.
-const dashboardRouteID = "malmo-dashboard"
+const dashboardRouteID = "moose-dashboard"
 
 // EnsureDashboard installs the dashboard host route (WEB_UI.md # deploy model):
 // requests to the dashboard host split by path — /api/v1/* (including the SSE
-// streams) reverse-proxy to the brain, everything else to the malmo-ui static
+// streams) reverse-proxy to the brain, everything else to the moose-ui static
 // server. It is a production-only route: in dev the brain runs natively and the
 // UI is served by Vite, so cmd/brain only calls this when the UI upstream is
 // configured (the containerized stack). Inserted at index 0 like an app route,
@@ -373,11 +373,11 @@ func (c *Client) EnsureDashboard(ctx context.Context, host, brainUpstream, uiUps
 			"handler": "subroute",
 			"routes": []any{
 				map[string]any{
-					// /api/* is the brain's REST+SSE surface; /_malmo/* is the brain's
+					// /api/* is the brain's REST+SSE surface; /_moose/* is the brain's
 					// non-API browser endpoints (today the portal-to-box SSO landing
-					// GET /_malmo/sso). Both leg to the brain; everything else is the
+					// GET /_moose/sso). Both leg to the brain; everything else is the
 					// dashboard SPA.
-					"match": []any{map[string]any{"path": []string{"/api/*", "/_malmo/*"}}},
+					"match": []any{map[string]any{"path": []string{"/api/*", "/_moose/*"}}},
 					"handle": []any{map[string]any{
 						"handler":        "reverse_proxy",
 						"flush_interval": -1,
@@ -393,7 +393,7 @@ func (c *Client) EnsureDashboard(ctx context.Context, host, brainUpstream, uiUps
 			},
 		}},
 	}
-	if err := c.put(ctx, "/config/apps/http/servers/malmo/routes/0", route); err != nil {
+	if err := c.put(ctx, "/config/apps/http/servers/moose/routes/0", route); err != nil {
 		return fmt.Errorf("caddy: install dashboard route: %w", err)
 	}
 	slog.Info("caddy: dashboard route installed", "host", host, "upstream", uiUpstream)
@@ -423,10 +423,10 @@ func (c *Client) WaitReady(ctx context.Context) error {
 // EnsureCatchAll installs the catch-all 404 route if it is not already present.
 // Called at brain startup after EnsureServer resets the route list — it
 // appends the catch-all at the tail of routes[] so all per-app routes inserted
-// at index 0 naturally sort before it. Idempotent: probes /id/malmo-catchall
+// at index 0 naturally sort before it. Idempotent: probes /id/moose-catchall
 // first and returns nil immediately if found.
 func (c *Client) EnsureCatchAll(ctx context.Context) error {
-	status, err := c.get(ctx, "/id/malmo-catchall")
+	status, err := c.get(ctx, "/id/moose-catchall")
 	if err != nil {
 		return fmt.Errorf("caddy: probe catch-all: %w", err)
 	}
@@ -435,14 +435,14 @@ func (c *Client) EnsureCatchAll(ctx context.Context) error {
 		return nil
 	}
 	// Not found (404 or any non-200) — install it by appending to routes[].
-	if err := c.post(ctx, "/config/apps/http/servers/malmo/routes", catchAllRoute()); err != nil {
+	if err := c.post(ctx, "/config/apps/http/servers/moose/routes", catchAllRoute()); err != nil {
 		return fmt.Errorf("caddy: install catch-all: %w", err)
 	}
 	slog.Info("caddy: catch-all installed")
 	return nil
 }
 
-// EnsureServer resets the "malmo" server's route list to empty at brain
+// EnsureServer resets the "moose" server's route list to empty at brain
 // startup, giving the reconciler a clean slate to rebuild routes from desired
 // state, and (re)declares the empty trusted-proxy set. It touches only those two
 // keys, so it never changes the server's listen addr or Caddy's admin config.
@@ -454,7 +454,7 @@ func (c *Client) EnsureServer(ctx context.Context) error {
 	if err := c.ensureTrustedProxies(ctx); err != nil {
 		return err
 	}
-	return c.patch(ctx, "/config/apps/http/servers/malmo/routes", []any{})
+	return c.patch(ctx, "/config/apps/http/servers/moose/routes", []any{})
 }
 
 // ensureTrustedProxies declares that this Caddy trusts *no* client to have sent
@@ -478,7 +478,7 @@ func (c *Client) EnsureServer(ctx context.Context) error {
 // exists"), while POST creates-or-replaces. That keeps this idempotent across
 // brain restarts.
 func (c *Client) ensureTrustedProxies(ctx context.Context) error {
-	return c.post(ctx, "/config/apps/http/servers/malmo/trusted_proxies", map[string]any{
+	return c.post(ctx, "/config/apps/http/servers/moose/trusted_proxies", map[string]any{
 		"source": "static",
 		"ranges": []any{},
 	})
@@ -494,7 +494,7 @@ type EnrollmentCredentials struct {
 }
 
 // EnsureWildcardTLS configures automatic HTTPS for a hosted box: it tells Caddy
-// to obtain the wildcard cert "*.<box-id>.malmo.network" via an ACME DNS-01
+// to obtain the wildcard cert "*.<box-id>.onmoose.io" via an ACME DNS-01
 // challenge solved against acme-dns with the box's seeded credentials, and adds
 // the :443 listener so the host-matched app routes serve over it. Hosted-only
 // and always-on (ENVIRONMENT.md # Networking & discovery); the appliance path,
@@ -510,15 +510,15 @@ type EnrollmentCredentials struct {
 // acme-dns DNS-01 issuer (HOW — DNS-01 is the only challenge a wildcard can use).
 //
 // Without the automate entry the wildcard order is never placed: the policy sits
-// idle until an app route for "<slug>.<box-id>.malmo.network" forces Caddy to try
+// idle until an app route for "<slug>.<box-id>.onmoose.io" forces Caddy to try
 // a cert for that *exact* name, whose DNS-01 challenge lands at
-// "_acme-challenge.<slug>.<box-id>.malmo.network" — a name that is NOT delegated
-// to acme-dns (only the apex "_acme-challenge.<box-id>.malmo.network" is), so the
+// "_acme-challenge.<slug>.<box-id>.onmoose.io" — a name that is NOT delegated
+// to acme-dns (only the apex "_acme-challenge.<box-id>.onmoose.io" is), so the
 // challenge can never be answered and every app fails TLS. That was the live #278
 // symptom. Once the wildcard cert exists Caddy serves every "<slug>.<box-id>"
 // from it and never attempts per-app issuance.
 //
-// The base name "<box-id>.malmo.network" (the dashboard apex) is deliberately NOT
+// The base name "<box-id>.onmoose.io" (the dashboard apex) is deliberately NOT
 // routed through acme-dns: it is a real, publicly-reachable host on :443, so
 // Caddy's default issuer obtains it over tls-alpn-01/http-01 the moment the
 // dashboard route names it — no DNS-01, no acme-dns account write. That leaves
@@ -527,7 +527,7 @@ type EnrollmentCredentials struct {
 // the earlier serialize-the-two-orders change tried to manage cannot occur.
 //
 // The acme-dns provider sets only this box's own `_acme-challenge` TXT, so
-// renewal (~every 60 days) runs box→acme-dns directly with no malmo control-plane
+// renewal (~every 60 days) runs box→acme-dns directly with no moose control-plane
 // call (cloud specs/ARCHITECTURE.md Contract 2). The challenge `server_url` is a
 // box-side constant (the same acme-dns endpoint for every box), not part of the
 // seeded payload.
@@ -569,7 +569,7 @@ func (c *Client) EnsureWildcardTLS(ctx context.Context, subjects []string, acmeD
 	}
 	// Add :443 alongside the existing :80 so the same host-matched routes serve
 	// HTTPS. PATCH replaces the listen array the bootstrap config declared as [":80"].
-	if err := c.patch(ctx, "/config/apps/http/servers/malmo/listen", []any{":80", ":443"}); err != nil {
+	if err := c.patch(ctx, "/config/apps/http/servers/moose/listen", []any{":80", ":443"}); err != nil {
 		return fmt.Errorf("caddy: add :443 listener: %w", err)
 	}
 	// Config applied and :443 bound; Caddy now obtains the wildcard in the

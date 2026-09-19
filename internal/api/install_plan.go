@@ -10,11 +10,11 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/malmoos/malmo/internal/auth"
-	"github.com/malmoos/malmo/internal/catalog"
-	"github.com/malmoos/malmo/internal/lifecycle"
-	"github.com/malmoos/malmo/internal/manifest"
-	"github.com/malmoos/malmo/internal/store"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/lifecycle"
+	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/store"
 )
 
 // source value constants for folder source menus.
@@ -158,7 +158,7 @@ func scopeMenu(isAdmin bool) (options []string, def string) {
 
 // folderSourceMenu returns the allowed source options and default for a folder
 // under the given install scope. Household forces shared (the household share is
-// the single /srv/malmo/shared/<Folder>/ path); personal offers personal
+// the single /srv/moose/shared/<Folder>/ path); personal offers personal
 // (~/<Folder>/, default) or shared. This is the single source of truth for both
 // the advisory install-plan menus (buildInstallPlan) and the authoritative
 // write-path validation (resolveElections) — keep them sharing it.

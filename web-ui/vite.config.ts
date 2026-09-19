@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 
 // Dev: proxy /api/* to the natively-running brain (WEB_UI.md dev loop). SSE
 // streams pass through the same proxy. In production Caddy does this routing.
-const BRAIN = process.env.MALMO_BRAIN ?? "http://localhost:8080";
+const BRAIN = process.env.MOOSE_BRAIN ?? "http://localhost:8080";
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],

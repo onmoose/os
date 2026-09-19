@@ -1,12 +1,12 @@
-# malmo Time, Timezone & NTP
+# moose Time, Timezone & NTP
 
-> Working spec for how malmo keeps the clock right, what timezone the box runs in, how containers inherit it, and what happens when sync fails. Touches `FIRST_RUN.md` (TZ auto-detect), `BOOT.md` (sync ordering), `HEALTH.md` (`clock-not-synced` issue), `MALMO_NETWORK.md` (Let's Encrypt depends on correct time), `APP_MANIFEST.md` (per-app TZ opt-out), `LOGGING.md` (audit-event ordering), `UPDATES.md` (cron windows).
+> Working spec for how moose keeps the clock right, what timezone the box runs in, how containers inherit it, and what happens when sync fails. Touches `FIRST_RUN.md` (TZ auto-detect), `BOOT.md` (sync ordering), `HEALTH.md` (`clock-not-synced` issue), `MOOSE_NETWORK.md` (Let's Encrypt depends on correct time), `APP_MANIFEST.md` (per-app TZ opt-out), `LOGGING.md` (audit-event ordering), `UPDATES.md` (cron windows).
 
 ## Stance
 
 Time is one of those load-bearing primitives that's invisible when it works and breaks half the product when it doesn't. The failure modes we care about: Let's Encrypt refuses to issue or validate certificates on a skewed clock; cron-based maintenance windows fire at the wrong wall-clock hour; audit-event ordering goes sideways; signed-release-manifest replay protection weakens; future TOTP would silently fail.
 
-malmo's posture is **modern NTP done right, by default**: authenticated time sources (NTS) where available, a real NTP daemon (not just an SNTP client), and a typed health issue when sync degrades. Cheap to get right at v1; expensive to retrofit.
+moose's posture is **modern NTP done right, by default**: authenticated time sources (NTS) where available, a real NTP daemon (not just an SNTP client), and a typed health issue when sync degrades. Cheap to get right at v1; expensive to retrofit.
 
 ## Locked: chrony as the NTP daemon
 
@@ -31,7 +31,7 @@ Two NTS-authenticated sources (Cloudflare primary, NETNOD as backup) and two Deb
 
 **Why NTS matters.** An attacker who can MITM your NTP can step the clock backwards and break Let's Encrypt validity windows (presenting an "old" valid certificate), invalidate TOTP (future), or weaken signed-manifest replay protection. NTS authenticates the time-server response. Free to enable, eliminates the attack class.
 
-**Why no `time.malmo.network` in v1.** Adds infra cost without obvious user need; the captive-network case (ISP blocks public NTP) usually blocks our endpoint too. Revisit if the case turns up.
+**Why no `time.onmoose.io` in v1.** Adds infra cost without obvious user need; the captive-network case (ISP blocks public NTP) usually blocks our endpoint too. Revisit if the case turns up.
 
 **User override** lives in Settings → Advanced → Time. Editing the source list writes a fragment to `/etc/chrony/conf.d/`, then `systemctl reload chrony`. Most users will never touch it.
 
@@ -72,15 +72,15 @@ Spec'd in `APP_MANIFEST.md`. Apps that need a different TZ from the system are v
 
 `systemd-time-wait-sync.service` (ships with chrony) blocks until chrony reports the clock is synchronized. Services that **require** correct time depend on this unit:
 
-- Let's Encrypt renewal (`MALMO_NETWORK.md`) — validation refuses bad clocks.
+- Let's Encrypt renewal (`MOOSE_NETWORK.md`) — validation refuses bad clocks.
 - Backup scheduler (when backups land).
 - Anything cron-based whose semantics depend on wall-clock hour.
 
 Services that **don't** require correct time — and explicitly must *not* gate on it:
 
-- `malmo-brain.service`. The dashboard must come up regardless of NTP state. Users would otherwise lose UI access during ISP NTP outages. The brain runs in a "clock not synced" mode (see below) and refuses the specific operations that need it.
+- `moose-brain.service`. The dashboard must come up regardless of NTP state. Users would otherwise lose UI access during ISP NTP outages. The brain runs in a "clock not synced" mode (see below) and refuses the specific operations that need it.
 - `host-agent.service`. Same reasoning.
-- `malmo-storage-ready.target`. Storage assembly is time-independent.
+- `moose-storage-ready.target`. Storage assembly is time-independent.
 
 This is the same pattern as `HEALTH.md` # Stance — degraded mode over hard failure, every time.
 
@@ -141,7 +141,7 @@ Member view (Settings → System for non-admins) shows the first three (TZ, curr
 - `FIRST_RUN.md` # Step 3 — TZ auto-detect at first-run.
 - `BOOT.md` — `time-wait-sync` gate vs. the brain's independence from it.
 - `HEALTH.md` # Network — `clock-not-synced` typed issue.
-- `MALMO_NETWORK.md` — Let's Encrypt renewal interaction.
+- `MOOSE_NETWORK.md` — Let's Encrypt renewal interaction.
 - `APP_MANIFEST.md` — `timezone:` field for per-container opt-out.
 - `LOGGING.md` — audit-event timestamps assume monotonic-ish wall-clock; degrades silently if clock jumps backward.
 - `UPDATES.md` — maintenance windows are wall-clock-anchored.
@@ -150,6 +150,6 @@ Member view (Settings → System for non-admins) shows the first three (TZ, curr
 
 Tracked in `NEXT.md`. The notable ones:
 
-- **Captive-network NTP fallback.** If user reports surface, reconsider `time.malmo.network`.
+- **Captive-network NTP fallback.** If user reports surface, reconsider `time.onmoose.io`.
 - **Per-user display TZ.** Browser-side rendering covers the traveler case in v1; revisit if box-time-regardless requests appear.
 - **`last-known-time` rollback prevention.** Persisting last-shutdown time so first-boot-no-network doesn't show 1970 in logs — polish, not v1.

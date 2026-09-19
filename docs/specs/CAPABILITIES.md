@@ -1,12 +1,12 @@
-# malmo Capabilities Manifest
+# moose Capabilities Manifest
 
-> The machine-readable list of platform capabilities malmo has shipped, so catalog curation stops depending on someone remembering. Sibling to the human gap ledger [`../dev/catalog-import-gaps.md`](../dev/catalog-import-gaps.md) (the prose this graduates from) and [`APP_STORE.md`](APP_STORE.md) (the store this keeps fresh). The manifest itself is [`../dev/capabilities.yml`](../dev/capabilities.yml).
+> The machine-readable list of platform capabilities moose has shipped, so catalog curation stops depending on someone remembering. Sibling to the human gap ledger [`../dev/catalog-import-gaps.md`](../dev/catalog-import-gaps.md) (the prose this graduates from) and [`APP_STORE.md`](APP_STORE.md) (the store this keeps fresh). The manifest itself is [`../dev/capabilities.yml`](../dev/capabilities.yml).
 
 ## Why this exists
 
-An app is `blocked` or `degraded` in the store *because malmo lacks a feature* — user-namespace remap, a per-app operator-config surface, managed MongoDB, a headless-tool category. When that feature ships, the app can graduate. Today the only thing that connects "malmo shipped capability X" to "these apps were waiting on X" is a human remembering to grep the gap ledger. The ledger's own instructions say as much: flip an entry to `implemented` "so the next person can grep this ledger for every app that was waiting on that gap and revisit them." That is a manual, forgettable step.
+An app is `blocked` or `degraded` in the store *because moose lacks a feature* — user-namespace remap, a per-app operator-config surface, managed MongoDB, a headless-tool category. When that feature ships, the app can graduate. Today the only thing that connects "moose shipped capability X" to "these apps were waiting on X" is a human remembering to grep the gap ledger. The ledger's own instructions say as much: flip an entry to `implemented` "so the next person can grep this ledger for every app that was waiting on that gap and revisit them." That is a manual, forgettable step.
 
-This manifest makes the connection mechanical. It is a versioned list of the capabilities malmo has shipped, each keyed by the gap-class it closes. A curation record that names the gap-classes it waits on can then be cross-referenced against this list automatically: the moment every gap-class an app waits on appears here, the app surfaces on a re-screen list. The signal is a data lookup, not a memory.
+This manifest makes the connection mechanical. It is a versioned list of the capabilities moose has shipped, each keyed by the gap-class it closes. A curation record that names the gap-classes it waits on can then be cross-referenced against this list automatically: the moment every gap-class an app waits on appears here, the app surfaces on a re-screen list. The signal is a data lookup, not a memory.
 
 ## What it is
 
@@ -25,7 +25,7 @@ A shipped capability does not un-ship. **Append; never remove or renumber an id.
 
 One nuance the ledger already carries: a gap-class can be *partially* closed. `nonroot-data-ownership` shipped `service-user` (an app that adopts the runtime `user:` is unblocked) but the hardcoded-internal-UID facet still waits on the separate, unshipped `userns-remap`. List only the capability that actually shipped (`service-user`), under its own id — never the broader unclosed gap-class. A curation record waiting on the unshipped facet references the unshipped id (`userns-remap`), so it correctly stays blocked.
 
-A partial closure's id is, by definition, **not** the gap-class tag verbatim — it is coined for the shipped facet. That breaks the single-vocabulary guarantee unless the bridge is written down: the `catalog-import-gaps.md` entry that names the shipped facet must state which `capabilities.yml` id it maps to (e.g. the `nonroot-data-ownership — poznote` entry names `service-user` as the mechanism malmo now ships). Without that bridge, someone starting from the ledger's gap-class tag has no way to find the narrower id in the manifest. Coining a sub-capability id with no ledger cross-reference is a doc bug, not a valid partial closure.
+A partial closure's id is, by definition, **not** the gap-class tag verbatim — it is coined for the shipped facet. That breaks the single-vocabulary guarantee unless the bridge is written down: the `catalog-import-gaps.md` entry that names the shipped facet must state which `capabilities.yml` id it maps to (e.g. the `nonroot-data-ownership — poznote` entry names `service-user` as the mechanism moose now ships). Without that bridge, someone starting from the ledger's gap-class tag has no way to find the narrower id in the manifest. Coining a sub-capability id with no ledger cross-reference is a doc bug, not a valid partial closure.
 
 ## Who consumes it
 
