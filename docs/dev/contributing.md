@@ -181,13 +181,25 @@ echo "X.Y.Z" > VERSION
 git checkout dev && git pull
 git checkout -b release/X.Y.Z            # a fresh branch, after the bump landed
 git merge origin/main                    # expect conflicts; see below
+# then PR release/X.Y.Z into main, let CI gate it, and merge.
+
+# 3. After the release PR merges, carry main back into dev.
+git checkout dev && git pull
+git merge origin/main                    # resolve VERSION to dev's value; see below
+git push
 ```
 
 `VERSION` conflicts on every release, because `main` still holds the previous number. **Always resolve it to the new `X.Y.Z`** — that file is the release trigger, so resolving it the other way ships nothing. Other conflicts are ordinary content: keep both sides unless they genuinely contradict.
 
 Then open the PR from `release/X.Y.Z` into `main`, let `ci-go.yml` and `ci-web.yml` gate it, and merge. `release.yml` does the rest.
 
-**Why the merge-back is needed at all:** anything that landed on `main` without going through `dev` is missing from `dev`, and a `dev` -> `main` PR then conflicts. That should be rare — **every PR targets `dev`, including docs-only and gap-ledger changes**. A PR opened against `main` is the mistake that causes this; if you find one, retarget it to `dev` rather than merging it. After each release, `sync-dev.yml` opens a `main` -> `dev` PR for whatever `main` gained (the merge commit, and anything that slipped in), so the next release starts from a clean `dev`. Merge that sync PR promptly; it is only doing work that grows if left.
+**Why step 3 is needed at all:** anything that landed on `main` without going through `dev` is missing from `dev`, and the next `dev` -> `main` PR then conflicts. The release merge itself is always one such commit, so `dev` falls behind at every release even when nothing else slipped in. Step 3 is what keeps the next release starting from a clean `dev`. Do it right after the release PR merges: the work only grows if left.
+
+`VERSION` conflicts here too, in the other direction. **Resolve it to `dev`'s value**, the version being worked towards, not the one `main` just released. Resolving it the other way walks the version backwards on `dev`.
+
+Anything *other* than the release merge showing up in step 3 means a PR was opened against `main` directly. That is the mistake to catch, not to clean up after: **every PR targets `dev`**, including docs-only and gap-ledger changes. If you find one open, retarget it to `dev` rather than merging it.
+
+This used to be a `sync-dev.yml` workflow that opened the `main` -> `dev` PR by itself. It was removed in favour of the step above: it needed an org-wide "Actions may create pull requests" permission that the org does not grant, so every run failed and the PR had to be opened by hand anyway (#484).
 
 ## Definition of done — checklist
 
