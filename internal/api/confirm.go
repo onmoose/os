@@ -45,6 +45,22 @@ import (
 // Handler), and a challenge nobody can read is inert -- single-use, bound to its
 // user, and expiring unspent. A landing that carries no valid challenge signs
 // the owner in exactly as before and grants no elevation.
+//
+// Assume nothing upstream filters that navigation, because nothing does. The
+// challenge is not one gate of two; it is the whole of the box's defence against
+// a forced confirm. Do not be tempted to weaken it on the reasoning that the
+// portal would have refused a navigation from somewhere else: the portal cannot
+// tell, and it is right not to guess. The box dashboard and the portal are on
+// different registrable domains by design (ENVIRONMENT.md # Public DNS), so the
+// owner's own confirm navigation is cross-site like any other, and no header the
+// browser sets on that hop separates the owner from an attacker. A portal that
+// tried to read intent off fetch metadata would only refuse the owner.
+//
+// Two consequences follow, and both are load-bearing. The brain must keep serving
+// no CORS headers, since that is now the only reason a cross-site page cannot read
+// a mint. And the SSO landing must keep treating an arrival with no valid
+// challenge as a plain sign-in, never as a confirmation: a forced navigation is
+// expected traffic here, not an anomaly to be accommodated.
 
 // elevationChallengeTTL bounds a confirm challenge. It has to outlast the portal
 // round-trip — which may include a portal login — but nothing more, so it is

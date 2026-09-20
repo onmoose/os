@@ -168,6 +168,13 @@ const (
 // the dashboard API, and a reflected header would let the app read the reply.
 // AUTH.md # Re-authentication and confirm.go both rest on the opposite: that
 // a cross-origin page cannot make an authenticated JSON POST here.
+//
+// confirm.go rests on it more narrowly and more heavily than the rest: the
+// confirm challenge it mints is the only thing standing between a forced portal
+// navigation and an elevated owner session, and that challenge is unguessable
+// only because no cross-origin caller can read the response that carries it.
+// Adding a CORS layer here is therefore not a convenience change; it is a change
+// to how hosted re-authentication holds.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig(openAPITitle, openAPIVersion))
