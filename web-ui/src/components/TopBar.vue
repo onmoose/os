@@ -6,7 +6,7 @@
 //   - Bell — no unread dot until NOTIFICATIONS.md is wired (queue item #2).
 //   - Live-resources chevron — opens a compact CPU/RAM/net/disk panel backed by
 //     the GET /api/v1/system/live SSE stream; available to every signed-in user.
-//   - Account menu — username + role; sign-out is intentionally omitted in the
+//   - Account menu — the person's name + role; sign-out is intentionally omitted in the
 //     single-user dev phase (re-enabled with the AUTH.md login screen).
 // The storage pill is deferred until a capacity endpoint exists; it will return
 // here (per the design, top-right) rather than the old left-side Settings link.
@@ -37,10 +37,10 @@ function initial(name: string | undefined): string {
           type="button"
           variant="primary"
           size="icon"
-          :title="currentUser?.username"
+          :title="currentUser?.display_name"
           @click="menuOpen = !menuOpen"
         >
-          {{ initial(currentUser?.username) }}
+          {{ initial(currentUser?.display_name) }}
         </Button>
         <div
           v-if="menuOpen"
@@ -48,7 +48,7 @@ function initial(name: string | undefined): string {
           @click="menuOpen = false"
         >
           <div class="px-3 py-2">
-            <div class="text-sm font-medium">{{ currentUser?.username }}</div>
+            <div class="text-sm font-medium">{{ currentUser?.display_name }}</div>
             <div class="text-xs capitalize text-muted-foreground">{{ currentUser?.role }}</div>
           </div>
           <RouterLink

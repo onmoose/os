@@ -982,6 +982,23 @@ export interface paths {
         patch: operations["update-user-role"];
         trace?: never;
     };
+    "/api/v1/users/{id}/name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change a user's display name (self, or admin for anyone) */
+        post: operations["rename-user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users/{id}/password": {
         parameters: {
             query?: never;
@@ -1147,9 +1164,9 @@ export interface components {
              * @example https://example.com/schemas/Create-userRequest.json
              */
             readonly $schema?: string;
+            display_name: string;
             password: string;
             role?: string;
-            username: string;
         };
         CustomFolderDTO: {
             folder: string;
@@ -1594,6 +1611,7 @@ export interface components {
             users: components["schemas"]["UserDTO"][] | null;
         };
         LoginPickerUser: {
+            display_name: string;
             id: string;
             username: string;
         };
@@ -1740,6 +1758,15 @@ export interface components {
             readonly $schema?: string;
             new_recovery_code: string;
         };
+        "Rename-userRequest": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Rename-userRequest.json
+             */
+            readonly $schema?: string;
+            display_name: string;
+        };
         "Render-custom-overlayRequest": {
             /**
              * Format: uri
@@ -1859,9 +1886,9 @@ export interface components {
              * @example https://example.com/schemas/SetupRequest.json
              */
             readonly $schema?: string;
+            display_name: string;
             password: string;
             recovery?: boolean;
-            username: string;
         };
         SetupResponse: {
             /**
@@ -2008,6 +2035,7 @@ export interface components {
             box_id?: string;
             /** Format: int64 */
             created_at: number;
+            display_name: string;
             id: string;
             owner?: boolean;
             role: string;
@@ -4045,6 +4073,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["Update-user-roleRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "rename-user": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Rename-userRequest"];
             };
         };
         responses: {

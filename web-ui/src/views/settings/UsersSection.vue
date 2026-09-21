@@ -4,7 +4,13 @@
 // hides this nav item from members); this view also redirects members away as
 // defence in depth.
 // Consumes: GET /users, POST /users, PATCH /users/{id} (role), DELETE /users/{id},
-// POST /users/{id}/password. Guard rejections (409 last-admin, 409 self-delete/self-
+// POST /users/{id}/password, POST /users/{id}/name (rename).
+//
+// Names: the person's own name is what this list shows and what the admin types
+// when adding somebody. The account name underneath it is the Linux login, which
+// the box derives and never lets anyone change (FIRST_RUN.md # Identity & display
+// names). It is shown here, small, because it is what an admin needs when helping
+// somebody with SSH, and it is the one screen besides Settings -> SSH that shows it. Guard rejections (409 last-admin, 409 self-delete/self-
 // demotion, 409 duplicate) surface as inline error messages; controls are never
 // hidden. Every mutation is wrapped in withElevation: the brain requires a 5-minute
 // elevation window for these ops (USERS_AND_GROUPS.md # Elevation in the UI), so the
@@ -37,7 +43,7 @@ const users = useQuery({
 });
 
 // ── create form ────────────────────────────────────────────────────────────────
-const newUsername = ref("");
+const newName = ref("");
 const newPassword = ref("");
 const newRole = ref<"member" | "admin">("member");
 const createError = ref<string | null>(null);
@@ -46,13 +52,13 @@ const create = useMutation({
   mutationFn: () =>
     withElevation(() =>
       api.post<User>("/users", {
-        username: newUsername.value.trim(),
+        display_name: newName.value.trim(),
         password: newPassword.value,
         role: newRole.value,
       }),
     ),
   onSuccess: () => {
-    newUsername.value = "";
+    newName.value = "";
     newPassword.value = "";
     newRole.value = "member";
     createError.value = null;
@@ -68,6 +74,24 @@ const create = useMutation({
 // id of the user whose reset-password form is expanded (only one at a time)
 const resetFor = ref<string | null>(null);
 const resetPasswordValue = ref("");
+
+// id of the user whose rename form is expanded (only one at a time)
+const renameFor = ref<string | null>(null);
+const renameValue = ref("");
+
+const rename = useMutation({
+  mutationFn: ({ id, name }: { id: string; name: string }) =>
+    withElevation(() => api.post<User>(`/users/${id}/name`, { display_name: name })),
+  onSuccess: () => {
+    renameFor.value = null;
+    renameValue.value = "";
+    qc.invalidateQueries({ queryKey: ["users"] });
+    refreshCurrentUser();
+  },
+  onError: (e) => {
+    if (renameFor.value) setRowError(renameFor.value, e);
+  },
+});
 
 // id of the user pending delete confirmation (destructive op, so confirm before
 // the elevation prompt; USERS_AND_GROUPS.md # Elevation in the UI).
@@ -143,11 +167,11 @@ const doResetPassword = useMutation({
       <div class="rounded-xl border border-border bg-card px-4 py-3 space-y-3">
         <div class="flex flex-wrap gap-2">
           <input
-            v-model="newUsername"
-            placeholder="Username"
+            v-model="newName"
+            placeholder="First name"
             class="min-w-28 flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent"
             autocomplete="off"
-            @keydown.enter="!create.isPending.value && newUsername.trim() && newPassword && create.mutate()"
+            @keydown.enter="!create.isPending.value && newName.trim() && newPassword && create.mutate()"
           />
           <input
             v-model="newPassword"
@@ -155,7 +179,7 @@ const doResetPassword = useMutation({
             placeholder="Password"
             class="min-w-28 flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent"
             autocomplete="new-password"
-            @keydown.enter="!create.isPending.value && newUsername.trim() && newPassword && create.mutate()"
+            @keydown.enter="!create.isPending.value && newName.trim() && newPassword && create.mutate()"
           />
           <select
             v-model="newRole"
@@ -166,7 +190,7 @@ const doResetPassword = useMutation({
           </select>
           <Button
             size="sm"
-            :disabled="create.isPending.value || !newUsername.trim() || !newPassword"
+            :disabled="create.isPending.value || !newName.trim() || !newPassword"
             @click="create.mutate()"
           >
             Add
@@ -189,9 +213,18 @@ const doResetPassword = useMutation({
           <!-- Main row -->
           <div class="flex flex-wrap items-center gap-2">
             <div class="min-w-0 flex-1">
-              <span class="text-sm font-medium">{{ u.username }}</span>
+              <span class="text-sm font-medium">{{ u.display_name }}</span>
               <span v-if="u.id === currentUser?.id" class="ml-1.5 text-xs text-muted-foreground">(you)</span>
+              <div class="truncate font-mono text-xs text-muted-foreground">{{ u.username }}</div>
             </div>
+            <!-- Rename toggle -->
+            <Button
+              variant="secondary"
+              size="sm"
+              @click="renameFor = renameFor === u.id ? null : u.id; renameValue = u.display_name"
+            >
+              Rename
+            </Button>
             <!-- Role -->
             <select
               :value="u.role"
@@ -222,12 +255,39 @@ const doResetPassword = useMutation({
             </Button>
           </div>
 
+          <!-- Rename: changes the name only. The account name below it, the home
+               folder, and who owns which files all stay as they are. -->
+          <div
+            v-if="renameFor === u.id"
+            class="flex flex-wrap items-center gap-2 border-t border-border pt-3"
+          >
+            <input
+              v-model="renameValue"
+              placeholder="First name"
+              class="min-w-28 flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent"
+              autocomplete="off"
+              @keydown.enter="renameValue.trim() && rename.mutate({ id: u.id, name: renameValue.trim() })"
+            />
+            <Button
+              size="sm"
+              :disabled="rename.isPending.value || !renameValue.trim()"
+              @click="rename.mutate({ id: u.id, name: renameValue.trim() })"
+            >
+              Save
+            </Button>
+            <Button variant="ghost" size="sm" @click="renameFor = null">Cancel</Button>
+            <p class="basis-full text-xs text-muted-foreground">
+              Changes the name shown everywhere. The sign-in name
+              <span class="font-mono">{{ u.username }}</span> stays the same.
+            </p>
+          </div>
+
           <!-- Delete confirmation (irreversible, so confirm before mutating) -->
           <div
             v-if="confirmDeleteFor === u.id"
             class="flex flex-wrap items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2"
           >
-            <span class="text-sm">Delete <strong>{{ u.username }}</strong>? This can't be undone.</span>
+            <span class="text-sm">Delete <strong>{{ u.display_name }}</strong>? This can't be undone.</span>
             <Button
               variant="secondary"
               size="sm"

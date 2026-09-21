@@ -14,7 +14,10 @@ import { login } from "./auth";
 import Button from "@/components/ui/Button.vue";
 import Heading from "@/components/ui/Heading.vue";
 
-interface PickerUser { id: string; username: string; }
+// username is the account name POST /login authenticates on; display_name is
+// what the person is called and the only one this screen shows
+// (FIRST_RUN.md # Identity & display names).
+interface PickerUser { id: string; username: string; display_name: string; }
 
 // Public endpoint on the appliance: lists users for the login picker (no session
 // required). 404 on hosted, where this screen is never reached.
@@ -60,6 +63,13 @@ function glyphColor(username: string): string {
   for (let i = 0; i < username.length; i++) h = (h * 31 + username.charCodeAt(i)) >>> 0;
   return GLYPHS[h % GLYPHS.length]!;
 }
+
+// initial is the letter in the glyph. Taken from the display name, so it is the
+// person's own initial, and tolerant of a name whose first character is not a
+// letter rather than rendering something odd.
+function initial(name: string): string {
+  return (name.trim()[0] ?? "?").toUpperCase();
+}
 </script>
 
 <template>
@@ -78,9 +88,9 @@ function glyphColor(username: string): string {
           @click="pick(u)"
         >
           <span class="glyph" :style="{ background: glyphColor(u.username) }">
-            {{ u.username[0]!.toUpperCase() }}
+            {{ initial(u.display_name) }}
           </span>
-          <span class="name">{{ u.username }}</span>
+          <span class="name">{{ u.display_name }}</span>
         </li>
       </ul>
     </div>
@@ -90,9 +100,9 @@ function glyphColor(username: string): string {
       <button type="button" class="back" @click="back">← Back</button>
       <div class="selected-user">
         <span class="glyph" :style="{ background: glyphColor(selected.username) }">
-          {{ selected.username[0]!.toUpperCase() }}
+          {{ initial(selected.display_name) }}
         </span>
-        <span class="name">{{ selected.username }}</span>
+        <span class="name">{{ selected.display_name }}</span>
       </div>
       <label>
         Password

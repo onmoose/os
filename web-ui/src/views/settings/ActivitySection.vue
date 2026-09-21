@@ -44,15 +44,15 @@ const usersQuery = useQuery({
 });
 const nameById = computed(() => {
   const m = new Map<string, string>();
-  for (const u of usersQuery.data.value?.users ?? []) m.set(u.id, u.username);
+  for (const u of usersQuery.data.value?.users ?? []) m.set(u.id, u.display_name);
   return m;
 });
 
-// Resolve a user id to a display name, or null when we can't. Never the raw
+// Resolve a user id to the person's name, or null when we can't. Never the raw
 // UUID. currentUser always names the signed-in user; the /users map names the
 // rest for an admin; a member viewing another user's id falls through to null.
 function userName(id: string): string | null {
-  if (id === currentUser.value?.id) return currentUser.value!.username;
+  if (id === currentUser.value?.id) return currentUser.value!.display_name;
   return nameById.value.get(id) ?? null;
 }
 
@@ -61,8 +61,10 @@ function actorName(e: AuditEvent): string {
   return userName(e.actor_user_id) ?? (e.actor_role === "admin" ? "An administrator" : "Another user");
 }
 
-// Target: app slug / username / health-issue key, by target_kind. A user target
-// resolves to a username when we can name it, else a generic label.
+// Target: app slug / person / health-issue key, by target_kind. A user target
+// resolves to that person's name when we can name it, else a generic label.
+// Names are resolved at render time from the current user list, so a person who
+// has been renamed reads under their new name throughout the feed.
 function targetText(e: AuditEvent): string {
   if (!e.target_kind || !e.target_id) return "None";
   if (e.target_kind === "user") return userName(e.target_id) ?? "A user";
@@ -83,6 +85,7 @@ const ACTION_LABELS: Record<string, string> = {
   "app.custom.create": "Custom container installed",
   "user.create": "User created",
   "user.role.change": "Role changed",
+  "user.rename": "Name changed",
   "user.delete": "User deleted",
   "user.password.reset": "Password reset by admin",
   "user.password.change": "Password changed",
