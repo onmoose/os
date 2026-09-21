@@ -48,7 +48,7 @@ func TestHostedSetup_Disabled(t *testing.T) {
 		s.SetEnvironment(profile.Hosted, "cindy-fox", nil)
 	})
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "andrei", "password": "hunter2",
+		"display_name": "andrei", "password": "hunter2",
 	})
 	if resp.StatusCode != 403 {
 		t.Fatalf("hosted setup = %d; want 403", resp.StatusCode)
@@ -67,7 +67,7 @@ func TestHostedSetup_Disabled(t *testing.T) {
 func TestApplianceSetup_OpenAndOmitsBoxID(t *testing.T) {
 	h := newHarness(t) // zero-valued env ⇒ appliance
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "andrei", "password": "hunter2",
+		"display_name": "andrei", "password": "hunter2",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("appliance setup = %d; want 200", resp.StatusCode)

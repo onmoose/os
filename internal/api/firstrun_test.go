@@ -267,7 +267,7 @@ func TestAuthState_HostedProfile(t *testing.T) {
 func TestSetup_RecoveryExplicitTrue_GeneratesCode(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do("POST", "/api/v1/setup", map[string]any{
-		"username": "alice", "password": "hunter2", "recovery": true,
+		"display_name": "alice", "password": "hunter2", "recovery": true,
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup recovery:true = %d; want 200", resp.StatusCode)
@@ -283,7 +283,7 @@ func TestSetup_RecoveryExplicitTrue_GeneratesCode(t *testing.T) {
 func TestSetup_RecoveryOff_NoCodeAndCannotRecover(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do("POST", "/api/v1/setup", map[string]any{
-		"username": "alice", "password": "hunter2", "recovery": false,
+		"display_name": "alice", "password": "hunter2", "recovery": false,
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup recovery:false = %d; want 200", resp.StatusCode)

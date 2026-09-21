@@ -21,7 +21,7 @@ func fixture(t *testing.T) (*Manager, *store.Store, store.User, func() time.Time
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	u := store.User{
-		ID: "u1", Username: "andrei", Role: store.RoleAdmin,
+		ID: "u1", Username: "andrei", DisplayName: "andrei", Role: store.RoleAdmin,
 		CreatedAt: time.Unix(1_700_000_000, 0),
 	}
 	if err := s.CreateUser(u); err != nil {

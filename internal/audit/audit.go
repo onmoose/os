@@ -37,6 +37,7 @@ const (
 	ActionUserDelete         = "user.delete"
 	ActionUserPasswordReset  = "user.password.reset"
 	ActionUserPasswordChange = "user.password.change"
+	ActionUserRename         = "user.rename"
 
 	// Recovery-code redemption (AUTH.md # Using the recovery code).
 	ActionRecoverSuccess = "recover.success"

@@ -152,6 +152,8 @@ type stubUserMgr struct {
 	roleCalls              []struct{ user, role string }
 	deleteCalls            []string
 	resolveHomeCalls       []string
+	existsCalls            []string
+	existing               map[string]bool
 	wellKnownIdentityCalls int
 	allocateCalls          []string
 	releaseCalls           []int
@@ -176,6 +178,11 @@ type stubUserMgr struct {
 func (s *stubUserMgr) UpsertPassword(user, password string) error {
 	s.calls = append(s.calls, struct{ user, password string }{user, password})
 	return s.err
+}
+
+func (s *stubUserMgr) UserExists(user string) (bool, error) {
+	s.existsCalls = append(s.existsCalls, user)
+	return s.existing[user], s.err
 }
 
 func (s *stubUserMgr) SetRole(user, role string) error {
@@ -1238,5 +1245,53 @@ func TestReleaseAppService_UserMgrError_Returns500(t *testing.T) {
 	}
 	if bytes.Contains(w.Body.Bytes(), []byte("userdel")) {
 		t.Errorf("response leaked system detail: %s", w.Body.String())
+	}
+}
+
+// The fake branch answers from the accounts this agent itself created. That is
+// what makes it usable as the brain's existence probe in the dev loop, and it
+// is exactly where resolve-home cannot stand in: resolve-home answers for every
+// name, so as a probe it would report every name taken and the brain's
+// account-name derivation would never terminate.
+func TestUserExists_FakeBranch_KnowsOnlyItsOwnAccounts(t *testing.T) {
+	_, mux := newTestAgent(&stubVerifier{})
+
+	w := get(t, mux, "/v1/users/cindy/exists")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if decodeBody[protocol.UserExistsResponse](t, w).Exists {
+		t.Error("unknown user reported as existing")
+	}
+
+	post(t, mux, "/v1/auth/set-password", protocol.SetPasswordRequest{User: "cindy", Password: "hunter2"})
+
+	w = get(t, mux, "/v1/users/cindy/exists")
+	if !decodeBody[protocol.UserExistsResponse](t, w).Exists {
+		t.Error("created user reported as missing")
+	}
+
+	// resolve-home, by contrast, answers for a name that does not exist. Pinned
+	// here so the two are not quietly collapsed into one route later.
+	if w := get(t, mux, "/v1/users/ghost/home"); w.Code != http.StatusOK {
+		t.Errorf("fake resolve-home for an unknown user = %d; want 200", w.Code)
+	}
+}
+
+func TestUserExists_DelegatesToUserMgrWhenSet(t *testing.T) {
+	mgr := &stubUserMgr{existing: map[string]bool{"plex": true}}
+	a := New(&stubVerifier{}, NewFakePublisher(".local"))
+	a.UserMgr = mgr
+	mux := http.NewServeMux()
+	a.Mount(mux)
+
+	if !decodeBody[protocol.UserExistsResponse](t, get(t, mux, "/v1/users/plex/exists")).Exists {
+		t.Error("plex should exist")
+	}
+	if decodeBody[protocol.UserExistsResponse](t, get(t, mux, "/v1/users/cindy/exists")).Exists {
+		t.Error("cindy should not exist")
+	}
+	if len(mgr.existsCalls) != 2 {
+		t.Errorf("UserExists called %d times; want 2", len(mgr.existsCalls))
 	}
 }

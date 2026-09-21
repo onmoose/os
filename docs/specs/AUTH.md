@@ -100,6 +100,8 @@ This is the **only** routine cross-origin transition in normal use. Re-auth here
 
 The login page lists every account on the box — first name + colored letter glyph (avatars are deferred per `FIRST_RUN.md`). Click your name → password field appears → submit.
 
+The payload behind it (`GET /api/v1/auth/users`) carries both names per account: the display name, which is the only one the screen renders, and the account name, which is what the browser posts back to `POST /api/v1/login`. `/login` still authenticates on the account name, so nothing about it changes and the person never has to know theirs. The glyph colour is keyed on the account name, which is stable, so a rename does not change the colour somebody recognises.
+
 **Why a user list, not a username field:**
 
 - Household device. 1–4 users. Set is small and known to people physically near the box.

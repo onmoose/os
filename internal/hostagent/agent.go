@@ -239,6 +239,7 @@ type UpdateTargetReporter interface {
 // endpoints and USERS_AND_GROUPS.md # Roles.
 type UserManager interface {
 	UpsertPassword(user, password string) error
+	UserExists(user string) (bool, error)
 	SetRole(user, role string) error
 	DeleteUser(user string) error
 	ResolveHome(user string) (home string, uid, gid int, err error)
@@ -460,6 +461,7 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/journal/follow", a.journalFollow)
 	mux.HandleFunc("POST /v1/jobs/system-update", a.startSystemUpdate)
 	mux.HandleFunc("GET /v1/jobs/{id}", a.jobStatus)
+	mux.HandleFunc("GET /v1/users/{username}/exists", a.userExists)
 	mux.HandleFunc("GET /v1/users/{username}/home", a.resolveHome)
 	mux.HandleFunc("GET /v1/identity/well-known", a.wellKnownIdentity)
 	mux.HandleFunc("POST /v1/identity/app-service", a.allocateAppService)
@@ -1043,6 +1045,39 @@ func (a *Agent) sshState(w http.ResponseWriter, r *http.Request) {
 //
 // 404 with code "unknown-user" when the real manager reports the user is gone.
 // The brain maps this to a 422 or installation error, not a 500 retry.
+// userExists answers whether the host already has an account by this name, for
+// the brain's account-name derivation (protocol.UserExistsResponse).
+//
+// The fake branch answers from the accounts this agent itself created, which is
+// the right answer for the dev loop: the inner loop has no real /etc/passwd to
+// collide with, and the names the brain has already handed out are the only
+// ones that can collide. This is exactly where resolve-home cannot stand in —
+// it resolves every name to the operator's own home and so would report every
+// name taken.
+func (a *Agent) userExists(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+	if username == "" {
+		writeErr(w, http.StatusBadRequest, "bad-request", "username is required")
+		return
+	}
+
+	if a.UserMgr != nil {
+		exists, err := a.UserMgr.UserExists(username)
+		if err != nil {
+			slog.Error("user-exists: user-manager error", "username", username, "err", err)
+			writeErr(w, http.StatusInternalServerError, "user-exists-failed", "user-exists failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, protocol.UserExistsResponse{Exists: exists})
+		return
+	}
+
+	a.mu.Lock()
+	_, exists := a.passwords[username]
+	a.mu.Unlock()
+	writeJSON(w, http.StatusOK, protocol.UserExistsResponse{Exists: exists})
+}
+
 func (a *Agent) resolveHome(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
 	if username == "" {

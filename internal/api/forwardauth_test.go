@@ -102,7 +102,7 @@ func TestForwardAuthVerify_NonOwnerRejected(t *testing.T) {
 	h, _, _ := ssoOwnerBox(t)
 
 	// A second, non-owner user with a live session + forward-auth token.
-	other := store.User{ID: "u_other", Username: "cindy", Role: store.RoleMember, CreatedAt: time.Now()}
+	other := store.User{ID: "u_other", Username: "cindy", DisplayName: "cindy", Role: store.RoleMember, CreatedAt: time.Now()}
 	if err := h.st.CreateUser(other); err != nil {
 		t.Fatalf("create non-owner: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestForwardAuthVerify_NonOwnerRejected(t *testing.T) {
 // yet (no SSO handshake has completed) must be rejected, never allowed through.
 func TestForwardAuthVerify_UnprovisionedOwnerRejected(t *testing.T) {
 	h := hostedHarness(t) // hosted, but no owner meta written
-	other := store.User{ID: "u_x", Username: "andrei", Role: store.RoleAdmin, CreatedAt: time.Now()}
+	other := store.User{ID: "u_x", Username: "andrei", DisplayName: "andrei", Role: store.RoleAdmin, CreatedAt: time.Now()}
 	if err := h.st.CreateUser(other); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestForwardAuthVerify_NoCookieFloodIsThrottled(t *testing.T) {
 func TestHostedLogin_SetsBothCookies(t *testing.T) {
 	h := hostedHarness(t)
 	ctx := context.Background()
-	if err := h.st.CreateUser(store.User{ID: "u1", Username: "andrei", Role: store.RoleAdmin, CreatedAt: time.Now()}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u1", Username: "andrei", DisplayName: "andrei", Role: store.RoleAdmin, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	if err := h.apiSrv.host.SetPassword(ctx, "andrei", "hunter2"); err != nil {
@@ -271,7 +271,7 @@ func TestHostedLogin_SetsBothCookies(t *testing.T) {
 func TestApplianceLogin_NoForwardAuthCookie(t *testing.T) {
 	h := newHarness(t) // appliance
 	ctx := context.Background()
-	if err := h.st.CreateUser(store.User{ID: "u1", Username: "andrei", Role: store.RoleAdmin, CreatedAt: time.Now()}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u1", Username: "andrei", DisplayName: "andrei", Role: store.RoleAdmin, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	if err := h.apiSrv.host.SetPassword(ctx, "andrei", "hunter2"); err != nil {
@@ -300,7 +300,7 @@ func TestHostedLogout_ClearsBothCookies(t *testing.T) {
 	// revoke. The SSO recorder issued cookies out-of-band, so drive a fresh login
 	// via a second user instead: create + authenticate a hosted account.
 	ctx := context.Background()
-	if err := h.st.CreateUser(store.User{ID: "u_login", Username: "dana", Role: store.RoleAdmin, CreatedAt: time.Now()}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u_login", Username: "dana", DisplayName: "dana", Role: store.RoleAdmin, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	if err := h.apiSrv.host.SetPassword(ctx, "dana", "hunter2"); err != nil {

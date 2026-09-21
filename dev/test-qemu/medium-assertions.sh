@@ -556,7 +556,7 @@ echo "managed-DB #185: one-shot run+attach permitted through the proxy, EXEC sti
 # request over bash /dev/tcp, same idiom as http_status above.
 SETUP_USER=mooseadmin
 SETUP_PASS=moosefirstrunpw1
-setup_body="{\"username\":\"$SETUP_USER\",\"password\":\"$SETUP_PASS\"}"
+setup_body="{\"display_name\":\"$SETUP_USER\",\"password\":\"$SETUP_PASS\"}"
 
 # http_post PATH HOST JSON -> prints the full HTTP response (status line + headers
 # + body). HTTP/1.0 + Connection: close so the server closes the stream and `cat`

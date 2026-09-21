@@ -46,7 +46,7 @@ func applianceSSHHarness(t *testing.T) *harness {
 func seedAdminSession(t *testing.T, h *harness) {
 	t.Helper()
 	if err := h.st.CreateUser(store.User{
-		ID: "u_alex", Username: "alex", Role: store.RoleAdmin,
+		ID: "u_alex", Username: "alex", DisplayName: "alex", Role: store.RoleAdmin,
 	}); err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestHostedLastKeyCannotBeRemovedWhileEnabled(t *testing.T) {
 // about who has a shell (CLAUDE.md # Brain commits first).
 func TestHostFailureRollsBackTheAccessRow(t *testing.T) {
 	h := newHarness(t)
-	if err := h.st.CreateUser(store.User{ID: "u_fail", Username: sshFailUser, Role: store.RoleAdmin}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u_fail", Username: sshFailUser, DisplayName: sshFailUser, Role: store.RoleAdmin}); err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
 	h.seedPassword(sshFailUser, "pass1")
@@ -260,7 +260,7 @@ func TestHostFailureRollsBackTheAccessRow(t *testing.T) {
 func TestDeletingAUserRevokesTheirSSH(t *testing.T) {
 	h := newHarness(t)
 	seedAdminSession(t, h)
-	if err := h.st.CreateUser(store.User{ID: "u_bob", Username: "bob", Role: store.RoleMember}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u_bob", Username: "bob", DisplayName: "bob", Role: store.RoleMember}); err != nil {
 		t.Fatalf("create member: %v", err)
 	}
 	if err := h.st.SetSSHAccess("u_bob", true, false); err != nil {
@@ -294,7 +294,7 @@ func TestDeletingAUserRevokesTheirSSH(t *testing.T) {
 func TestDeletingAUserWithoutSSHDoesNotCallTheHost(t *testing.T) {
 	h := newHarness(t)
 	seedAdminSession(t, h)
-	if err := h.st.CreateUser(store.User{ID: "u_cid", Username: "cid", Role: store.RoleMember}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u_cid", Username: "cid", DisplayName: "cid", Role: store.RoleMember}); err != nil {
 		t.Fatalf("create member: %v", err)
 	}
 
@@ -313,7 +313,7 @@ func TestDeletingAUserWithoutSSHDoesNotCallTheHost(t *testing.T) {
 // would show the key gone, a retry would 404, and nothing re-reads the host.
 func TestHostFailureRestoresTheDeletedKey(t *testing.T) {
 	h := newHarness(t)
-	if err := h.st.CreateUser(store.User{ID: "u_fail", Username: sshFailUser, Role: store.RoleAdmin}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u_fail", Username: sshFailUser, DisplayName: sshFailUser, Role: store.RoleAdmin}); err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
 	h.seedPassword(sshFailUser, "pass1")
@@ -353,7 +353,7 @@ func TestHostFailureRestoresTheDeletedKey(t *testing.T) {
 // view can answer "did someone try to open a shell into this box?".
 func TestSSHWritesRequireElevation(t *testing.T) {
 	h := newHarness(t)
-	if err := h.st.CreateUser(store.User{ID: "u_alex", Username: "alex", Role: store.RoleAdmin}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u_alex", Username: "alex", DisplayName: "alex", Role: store.RoleAdmin}); err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
 	h.seedPassword("alex", "pass1")
@@ -472,7 +472,7 @@ func TestSecondKeyMakesTheFirstRemovable(t *testing.T) {
 func TestDeletingADisabledUserStillHoldsTheSSHLock(t *testing.T) {
 	h := newHarness(t)
 	seedAdminSession(t, h)
-	if err := h.st.CreateUser(store.User{ID: "u_dan", Username: "dan", Role: store.RoleMember}); err != nil {
+	if err := h.st.CreateUser(store.User{ID: "u_dan", Username: "dan", DisplayName: "dan", Role: store.RoleMember}); err != nil {
 		t.Fatalf("create member: %v", err)
 	}
 

@@ -295,22 +295,25 @@ func TestSSO_ApplianceReturns404(t *testing.T) {
 	}
 }
 
-func TestSSOUsername(t *testing.T) {
-	cases := map[string]string{
-		"Owner@Example.com":    "owner",
-		"jane.doe@example.com": "jane_doe",
-		"a+b@x.io":             "a_b",
-		"123start@x.io":        "owner_123start", // must start with a letter
-		"@x.io":                "owner",          // empty local part
-		"weird!!!@x.io":        "weird",
-		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@x.io": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // capped at 32
+// The owner's account name now comes from the same derivation every other
+// account uses, so this test covers only the SSO-specific half: which string
+// gets fed into it. The derivation itself is tested in accountname_test.go.
+func TestSSODisplayName(t *testing.T) {
+	cases := []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{"Jane Doe", "jane.doe@example.com", "Jane Doe"}, // the portal sent a name
+		{"  Jane   Doe ", "j@x.io", "Jane Doe"},          // and it gets normalized
+		{"", "jane.doe@example.com", "jane.doe"},         // no name: email local part
+		{"", "Owner@Example.com", "Owner"},               // case is preserved here
+		{"", "@x.io", ""},                                // nothing usable at all
 	}
-	for email, want := range cases {
-		if got := ssoUsername(email); got != want {
-			t.Errorf("ssoUsername(%q) = %q; want %q", email, got, want)
-		}
-		if got := ssoUsername(email); len(got) > maxSSOUsernameLen {
-			t.Errorf("ssoUsername(%q) = %q exceeds %d chars", email, got, maxSSOUsernameLen)
+	for _, c := range cases {
+		got := ssoDisplayName(assertion.Claims{Name: c.name, Email: c.email})
+		if got != c.want {
+			t.Errorf("ssoDisplayName(name=%q, email=%q) = %q; want %q", c.name, c.email, got, c.want)
 		}
 	}
 }
@@ -322,4 +325,52 @@ func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+// TestSSO_AdoptsAnOwnerLeftHalfCreated is the crash-retry the owner bootstrap
+// has always had to survive: a prior handshake wrote the admin row and died
+// before the owner meta committed, leaving an admin with no owner. The retry
+// must adopt that admin.
+//
+// It is a regression test for a wedge this is easy to reintroduce. The account
+// name is derived from a display name now, and deriving one runs the
+// display-name uniqueness check. The half-created admin already holds the name
+// this assertion asks for, so deriving first answers 409 and the adopt path
+// below is never reached. The box would then be stuck: every retry refuses, and
+// nothing else can set the owner.
+func TestSSO_AdoptsAnOwnerLeftHalfCreated(t *testing.T) {
+	h, priv := ssoHarness(t)
+
+	// The wreckage of a prior attempt: an admin row, and no owner meta.
+	if err := h.st.CreateFirstAdmin(store.User{
+		ID: "u_half", Username: "owner", DisplayName: "Owner",
+		Role: store.RoleAdmin, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed the half-created admin: %v", err)
+	}
+
+	rec := h.sso(mint(t, priv, ownerClaims()))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("sso retry = %d; want 303 (the box is wedged otherwise)", rec.Code)
+	}
+
+	// It adopted the existing row rather than making a second account.
+	users, err := h.st.ListUsers()
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("box has %d users after the retry; want the one it adopted", len(users))
+	}
+	if users[0].ID != "u_half" {
+		t.Errorf("adopted %q; want the half-created u_half", users[0].ID)
+	}
+
+	owner, err := h.st.GetBoxMeta(store.BoxMetaOwnerUserID)
+	if err != nil {
+		t.Fatalf("owner meta not committed by the retry: %v", err)
+	}
+	if owner != "u_half" {
+		t.Errorf("owner meta = %q; want u_half", owner)
+	}
 }

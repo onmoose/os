@@ -431,7 +431,7 @@ func TestDeleteCascadesToInstanceImages(t *testing.T) {
 
 func sampleUser(id, username, role string) User {
 	return User{
-		ID: id, Username: username, Role: role,
+		ID: id, Username: username, DisplayName: username, Role: role,
 		CreatedAt: time.Unix(1_700_000_000, 0),
 	}
 }
@@ -649,7 +649,7 @@ func sampleAuditEvent(actorUserID, action string) AuditEvent {
 
 func TestAuditEventsInsertAndList(t *testing.T) {
 	s := open(t)
-	u := User{ID: "u1", Username: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
+	u := User{ID: "u1", Username: "alice", DisplayName: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
 	if err := s.CreateUser(u); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -684,7 +684,7 @@ func TestAuditEventsInsertAndList(t *testing.T) {
 
 func TestAuditEventsAppendOnlyTriggersBlockUpdate(t *testing.T) {
 	s := open(t)
-	u := User{ID: "u1", Username: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
+	u := User{ID: "u1", Username: "alice", DisplayName: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
 	if err := s.CreateUser(u); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestAuditEventsAppendOnlyTriggersBlockUpdate(t *testing.T) {
 
 func TestAuditEventsAppendOnlyTriggersBlockDelete(t *testing.T) {
 	s := open(t)
-	u := User{ID: "u1", Username: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
+	u := User{ID: "u1", Username: "alice", DisplayName: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
 	if err := s.CreateUser(u); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -716,7 +716,7 @@ func TestAuditEventsAppendOnlyTriggersBlockDelete(t *testing.T) {
 
 func TestAuditEventsActorUserIDSetNullOnUserDelete(t *testing.T) {
 	s := open(t)
-	u := User{ID: "u1", Username: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
+	u := User{ID: "u1", Username: "alice", DisplayName: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
 	if err := s.CreateUser(u); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -763,8 +763,8 @@ func TestAuditEventsSystemEventNullActor(t *testing.T) {
 
 func TestAuditEventsMemberVisibilityFilter(t *testing.T) {
 	s := open(t)
-	u1 := User{ID: "u1", Username: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
-	u2 := User{ID: "u2", Username: "bob", Role: RoleMember, CreatedAt: time.Unix(1_700_000_001, 0)}
+	u1 := User{ID: "u1", Username: "alice", DisplayName: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
+	u2 := User{ID: "u2", Username: "bob", DisplayName: "bob", Role: RoleMember, CreatedAt: time.Unix(1_700_000_001, 0)}
 	_ = s.CreateUser(u1)
 	_ = s.CreateUser(u2)
 
@@ -812,7 +812,7 @@ func TestAuditEventsMemberVisibilityFilter(t *testing.T) {
 
 func TestAuditEventsAfterIDCursor(t *testing.T) {
 	s := open(t)
-	u := User{ID: "u1", Username: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
+	u := User{ID: "u1", Username: "alice", DisplayName: "alice", Role: RoleAdmin, CreatedAt: time.Unix(1_700_000_000, 0)}
 	_ = s.CreateUser(u)
 
 	for i := 0; i < 5; i++ {
@@ -890,7 +890,7 @@ func TestUpdateRoleAndCountAdmins(t *testing.T) {
 func TestAuditEventsActorUserIDIsText(t *testing.T) {
 	s := open(t)
 	const uuid = "01HFGZ8XK4-bob-2026"
-	u := User{ID: uuid, Username: "bob", Role: RoleMember, CreatedAt: time.Unix(1_700_000_000, 0)}
+	u := User{ID: uuid, Username: "bob", DisplayName: "bob", Role: RoleMember, CreatedAt: time.Unix(1_700_000_000, 0)}
 	if err := s.CreateUser(u); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}

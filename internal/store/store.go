@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -70,8 +71,12 @@ const (
 // (USERS_AND_GROUPS.md); the *password* lives in PAM via host-agent, never
 // in this row. `recovery_hash` is set only for admins (AUTH.md # Recovery).
 type User struct {
-	ID           string
-	Username     string
+	ID       string
+	Username string
+	// DisplayName is what every surface shows. Mutable: a person may rename
+	// themselves at any time, and doing so never touches Username, the home
+	// directory, or file ownership (FIRST_RUN.md # Identity & display names).
+	DisplayName  string
 	Role         string // "admin" | "member"
 	RecoveryHash string // argon2id of recovery code; empty for non-admin
 	CreatedAt    time.Time
@@ -249,6 +254,7 @@ func (s *Store) migrate() error {
 		CREATE TABLE IF NOT EXISTS users (
 			id            TEXT PRIMARY KEY,
 			username      TEXT NOT NULL UNIQUE,
+			display_name  TEXT NOT NULL DEFAULT '',
 			role          TEXT NOT NULL CHECK (role IN ('admin','member')),
 			recovery_hash TEXT NOT NULL DEFAULT '',
 			created_at    INTEGER NOT NULL
@@ -426,6 +432,7 @@ func (s *Store) migrate() error {
 		{"instances", "pending_recreate", "ALTER TABLE instances ADD COLUMN pending_recreate INTEGER NOT NULL DEFAULT 0"},
 		{"instances", "exposure", "ALTER TABLE instances ADD COLUMN exposure TEXT NOT NULL DEFAULT 'public'"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
+		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
 	} {
 		has, hErr := s.hasColumn(col.table, col.name)
 		if hErr != nil {
@@ -468,6 +475,88 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	// Backfill display_name for accounts created before the box had one, so a
+	// migrated box shows a name rather than a blank where a name goes. The
+	// account name is the only thing we know about those rows, and it is what
+	// the dashboard was already showing them as.
+	if _, err := s.db.Exec(
+		`UPDATE users SET display_name = username WHERE display_name = ''`,
+	); err != nil {
+		return err
+	}
+
+	// The backfill above copies usernames, which are unique case-SENSITIVELY:
+	// nothing ever stopped a box having both "Bob" and "bob", since the old
+	// validateUsername rejected only "--" and an "xn--" prefix. Both would land
+	// on display names the NOCASE index below treats as one, so it would fail to
+	// build, migrate would error, and the brain would not start after the
+	// upgrade. Resolve the collisions first.
+	if err := s.dedupeDisplayNames(); err != nil {
+		return err
+	}
+
+	// Display names are unique (FIRST_RUN.md # Identity & display names): two
+	// people called Cindy on one box is the confusing case the spec rejects at
+	// creation time. This index is the backstop, not the check. NOCASE only
+	// folds ASCII, so the real comparison is the Unicode-aware one the API does
+	// before it writes.
+	if _, err := s.db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name COLLATE NOCASE)`,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// dedupeDisplayNames makes display names unique ignoring case, renaming the
+// later of any two that clash. Oldest account keeps the name it has; the next
+// becomes "Bob 2", then "Bob 3", which is the shape the spec suggests to an
+// admin who hits the same clash by hand (FIRST_RUN.md # Identity & display
+// names).
+//
+// Only migrating boxes can need this: every new row goes through the API's own
+// uniqueness check. It is idempotent, so a second startup finds nothing to do.
+//
+// Comparison is Go's Unicode-aware lowercase, which folds strictly more than
+// the NOCASE index does. Erring that way is the safe direction: anything NOCASE
+// would call a clash, this already renamed.
+func (s *Store) dedupeDisplayNames() error {
+	rows, err := s.db.Query(`SELECT id, display_name FROM users ORDER BY created_at, id`)
+	if err != nil {
+		return err
+	}
+	type row struct{ id, name string }
+	var all []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.name); err != nil {
+			rows.Close()
+			return err
+		}
+		all = append(all, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	taken := make(map[string]bool, len(all))
+	for _, r := range all {
+		candidate := r.name
+		for n := 2; taken[strings.ToLower(candidate)]; n++ {
+			candidate = fmt.Sprintf("%s %d", r.name, n)
+		}
+		taken[strings.ToLower(candidate)] = true
+		if candidate == r.name {
+			continue
+		}
+		if _, err := s.db.Exec(`UPDATE users SET display_name=? WHERE id=?`, candidate, r.id); err != nil {
+			return err
+		}
+		slog.Warn("display name renamed to keep names unique on this box",
+			"user_id", r.id, "from", r.name, "name", candidate)
+	}
 	return nil
 }
 
@@ -935,15 +1024,30 @@ func (s *Store) SlugTaken(slug string) (bool, error) {
 	return n > 0, err
 }
 
-// CreateUser inserts a user row. Returns ErrConflict on duplicate username.
+// CreateUser inserts a user row. Returns ErrConflict on a duplicate username or
+// a duplicate display name.
 func (s *Store) CreateUser(u User) error {
+	if err := requireDisplayName(u); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO users (id, username, role, recovery_hash, created_at) VALUES (?,?,?,?,?)`,
-		u.ID, u.Username, u.Role, u.RecoveryHash, u.CreatedAt.Unix())
+		`INSERT INTO users (id, username, display_name, role, recovery_hash, created_at) VALUES (?,?,?,?,?,?)`,
+		u.ID, u.Username, u.DisplayName, u.Role, u.RecoveryHash, u.CreatedAt.Unix())
 	if err != nil && isUniqueErr(err) {
 		return ErrConflict
 	}
 	return err
+}
+
+// requireDisplayName rejects a user row with no display name. Every surface
+// renders the display name, so a blank one is a caller bug, and the unique index
+// would otherwise turn it into a confusing conflict on the *second* such insert
+// rather than an error on the first.
+func requireDisplayName(u User) error {
+	if u.DisplayName == "" {
+		return fmt.Errorf("user %q: display name is required", u.Username)
+	}
+	return nil
 }
 
 // CreateFirstAdmin inserts an admin user iff the users table is empty. Used
@@ -952,6 +1056,9 @@ func (s *Store) CreateUser(u User) error {
 func (s *Store) CreateFirstAdmin(u User) error {
 	if u.Role != RoleAdmin {
 		return fmt.Errorf("CreateFirstAdmin: role must be admin, got %q", u.Role)
+	}
+	if err := requireDisplayName(u); err != nil {
+		return err
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -966,8 +1073,8 @@ func (s *Store) CreateFirstAdmin(u User) error {
 		return ErrConflict
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO users (id, username, role, recovery_hash, created_at) VALUES (?,?,?,?,?)`,
-		u.ID, u.Username, u.Role, u.RecoveryHash, u.CreatedAt.Unix()); err != nil {
+		`INSERT INTO users (id, username, display_name, role, recovery_hash, created_at) VALUES (?,?,?,?,?,?)`,
+		u.ID, u.Username, u.DisplayName, u.Role, u.RecoveryHash, u.CreatedAt.Unix()); err != nil {
 		if isUniqueErr(err) {
 			return ErrConflict
 		}
@@ -978,17 +1085,17 @@ func (s *Store) CreateFirstAdmin(u User) error {
 
 func (s *Store) GetUser(id string) (User, error) {
 	return scanUser(s.db.QueryRow(
-		`SELECT id, username, role, recovery_hash, created_at FROM users WHERE id=?`, id))
+		`SELECT id, username, display_name, role, recovery_hash, created_at FROM users WHERE id=?`, id))
 }
 
 func (s *Store) GetUserByUsername(username string) (User, error) {
 	return scanUser(s.db.QueryRow(
-		`SELECT id, username, role, recovery_hash, created_at FROM users WHERE username=?`, username))
+		`SELECT id, username, display_name, role, recovery_hash, created_at FROM users WHERE username=?`, username))
 }
 
 func (s *Store) ListUsers() ([]User, error) {
 	rows, err := s.db.Query(
-		`SELECT id, username, role, recovery_hash, created_at FROM users ORDER BY created_at`)
+		`SELECT id, username, display_name, role, recovery_hash, created_at FROM users ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -1007,6 +1114,25 @@ func (s *Store) ListUsers() ([]User, error) {
 func (s *Store) DeleteUser(id string) error {
 	res, err := s.db.Exec(`DELETE FROM users WHERE id=?`, id)
 	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateDisplayName changes what every surface shows for a user. It touches
+// nothing else on purpose: the account name, the home directory, and file
+// ownership are frozen at creation (FIRST_RUN.md # Identity & display names).
+// Returns ErrNotFound when no such user exists, ErrConflict when another
+// account already uses the name.
+func (s *Store) UpdateDisplayName(id, name string) error {
+	res, err := s.db.Exec(`UPDATE users SET display_name=? WHERE id=?`, name, id)
+	if err != nil {
+		if isUniqueErr(err) {
+			return ErrConflict
+		}
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -1332,7 +1458,7 @@ func (s *Store) ListSessionsForUser(userID string) ([]Session, error) {
 func scanUser(row scanner) (User, error) {
 	var u User
 	var created int64
-	err := row.Scan(&u.ID, &u.Username, &u.Role, &u.RecoveryHash, &created)
+	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.RecoveryHash, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}

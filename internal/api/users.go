@@ -46,6 +46,11 @@ func (s *Server) registerUsers(api huma.API) {
 		OperationID: "reset-user-password", Method: "POST", Path: "/api/v1/users/{id}/password",
 		Summary: "Admin-set password reset (admin only)", DefaultStatus: 204,
 	}, s.resetUserPassword)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "rename-user", Method: "POST", Path: "/api/v1/users/{id}/name",
+		Summary: "Change a user's display name (self, or admin for anyone)",
+	}, s.renameUser)
 }
 
 // validateUsername enforces the constraints owner-scoped instance slugs depend
@@ -88,9 +93,12 @@ func (s *Server) listUsers(ctx context.Context, _ *struct{}) (*struct {
 
 func (s *Server) createUser(ctx context.Context, in *struct {
 	Body struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Role     string `json:"role,omitempty"`
+		// DisplayName is the person's name, as the admin types it. The account
+		// name is derived from it here, never sent by the caller
+		// (FIRST_RUN.md # Identity & display names).
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
+		Role        string `json:"role,omitempty"`
 	}
 }) (*struct{ Body UserDTO }, error) {
 	if err := requireAdmin(ctx); err != nil {
@@ -100,13 +108,9 @@ func (s *Server) createUser(ctx context.Context, in *struct {
 		return nil, err
 	}
 
-	username := strings.TrimSpace(in.Body.Username)
 	password := in.Body.Password
-	if username == "" || password == "" {
-		return nil, huma.Error422UnprocessableEntity("username and password are required")
-	}
-	if err := validateUsername(username); err != nil {
-		return nil, err
+	if password == "" {
+		return nil, huma.Error422UnprocessableEntity("name and password are required")
 	}
 
 	role := in.Body.Role
@@ -117,14 +121,25 @@ func (s *Server) createUser(ctx context.Context, in *struct {
 		return nil, huma.Error422UnprocessableEntity("role must be admin or member")
 	}
 
-	u := store.User{
-		ID: newID(), Username: username, Role: role, CreatedAt: time.Now(),
+	displayName, username, err := s.newAccount(ctx, in.Body.DisplayName, "")
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserCreate, audit.Target{Kind: "user"},
+			map[string]any{"role": role}, false)
+		return nil, err
 	}
-	meta := map[string]any{"username": username, "role": role}
+
+	u := store.User{
+		ID: newID(), Username: username, DisplayName: displayName,
+		Role: role, CreatedAt: time.Now(),
+	}
+	meta := map[string]any{"username": username, "name": displayName, "role": role}
 	if err := s.store.CreateUser(u); err != nil {
 		s.auditor.Record(ctx, audit.ActionUserCreate, audit.Target{Kind: "user"}, meta, false)
 		if errors.Is(err, store.ErrConflict) {
-			return nil, huma.Error409Conflict("username already exists")
+			// The derivation already walked past every name it could see, so a
+			// conflict here is the race it cannot close: a concurrent create
+			// that took the name between the check and this insert.
+			return nil, huma.Error409Conflict("that name was just taken; try again")
 		}
 		return nil, huma.Error500InternalServerError("create user failed", err)
 	}
@@ -373,6 +388,77 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 
 	s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, true)
 	return nil, nil
+}
+
+// renameUser changes what a person is called. It touches the display name and
+// nothing else: the account name, the home directory, and file ownership are
+// frozen at creation, because renaming a Linux user is destructive and we do
+// not expose it (FIRST_RUN.md # Identity & display names).
+//
+// Anyone may rename themselves. Renaming somebody else is an admin action in
+// the Users settings section, so it also needs the elevation window, matching
+// every other mutation an admin makes to another account there.
+func (s *Server) renameUser(ctx context.Context, in *struct {
+	ID   string `path:"id"`
+	Body struct {
+		DisplayName string `json:"display_name"`
+	}
+}) (*struct{ Body UserDTO }, error) {
+	id, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("unauthenticated")
+	}
+	tgt := audit.Target{Kind: "user", ID: in.ID}
+	if in.ID != id.User.ID {
+		if err := requireAdmin(ctx); err != nil {
+			s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+			return nil, err
+		}
+		if err := requireElevated(ctx); err != nil {
+			s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+			return nil, err
+		}
+	}
+
+	target, err := s.store.GetUser(in.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("user not found")
+		}
+		s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+		return nil, huma.Error500InternalServerError("get user failed", err)
+	}
+
+	name := normalizeDisplayName(in.Body.DisplayName)
+	if err := validateDisplayName(name); err != nil {
+		return nil, err
+	}
+	clash, err := s.displayNameTaken(name, target.ID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+		return nil, huma.Error500InternalServerError("list users failed", err)
+	}
+	if clash != "" {
+		s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+		return nil, huma.Error409Conflict(displayNameClashMessage(clash))
+	}
+
+	meta := map[string]any{"username": target.Username, "name": name, "from": target.DisplayName}
+	if err := s.store.UpdateDisplayName(target.ID, name); err != nil {
+		s.auditor.Record(ctx, audit.ActionUserRename, tgt, meta, false)
+		if errors.Is(err, store.ErrConflict) {
+			return nil, huma.Error409Conflict("that name was just taken; try again")
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("user not found")
+		}
+		return nil, huma.Error500InternalServerError("rename user failed", err)
+	}
+
+	target.DisplayName = name
+	s.auditor.Record(ctx, audit.ActionUserRename, tgt, meta, true)
+	slog.Info("user renamed", "user_id", target.ID, "username", target.Username, "name", name)
+	return &struct{ Body UserDTO }{Body: userDTO(target)}, nil
 }
 
 func (s *Server) changeMyPassword(ctx context.Context, in *struct {

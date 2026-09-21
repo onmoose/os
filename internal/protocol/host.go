@@ -333,6 +333,25 @@ type Finding struct {
 	Details     string `json:"details,omitempty"`
 }
 
+// UserExistsResponse is GET /v1/users/{username}/exists: does the host already
+// have a Linux account by this name. The brain asks while deriving an account
+// name from a display name (FIRST_RUN.md # Identity & display names), so it can
+// walk past a name that is taken instead of colliding with it.
+//
+// It answers about /etc/passwd as a whole, not just moose's own users, because
+// the collision that matters is with a daemon account an app package added. The
+// reason it is a route of its own rather than a read of
+// GET /v1/users/{username}/home is the fake agent: the fake resolves every name
+// to the dev operator's own home, so as an existence probe it would call every
+// name taken and the derivation would never terminate.
+//
+// Deliberately a boolean probe for one name, not a listing. Nothing widens it
+// into an enumerate op, and nothing proxies it to the browser: that would hand
+// an unprivileged caller an oracle for which system accounts exist.
+type UserExistsResponse struct {
+	Exists bool `json:"exists"`
+}
+
 // ResolveHomeResponse is GET /v1/users/{username}/home. Returns the owner's home
 // directory path and POSIX UID/GID so the brain (containerized, no /etc/passwd
 // access) can emit correct bind-mount sources and user: directives in the
