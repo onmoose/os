@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -484,18 +485,78 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	// The backfill above copies usernames, which are unique case-SENSITIVELY:
+	// nothing ever stopped a box having both "Bob" and "bob", since the old
+	// validateUsername rejected only "--" and an "xn--" prefix. Both would land
+	// on display names the NOCASE index below treats as one, so it would fail to
+	// build, migrate would error, and the brain would not start after the
+	// upgrade. Resolve the collisions first.
+	if err := s.dedupeDisplayNames(); err != nil {
+		return err
+	}
+
 	// Display names are unique (FIRST_RUN.md # Identity & display names): two
 	// people called Cindy on one box is the confusing case the spec rejects at
-	// creation time. This index is the backstop, not the check — NOCASE only
+	// creation time. This index is the backstop, not the check. NOCASE only
 	// folds ASCII, so the real comparison is the Unicode-aware one the API does
-	// before it writes. Created after the backfill, which fills the column from
-	// the already-unique username and so cannot collide.
+	// before it writes.
 	if _, err := s.db.Exec(
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name COLLATE NOCASE)`,
 	); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+// dedupeDisplayNames makes display names unique ignoring case, renaming the
+// later of any two that clash. Oldest account keeps the name it has; the next
+// becomes "Bob 2", then "Bob 3", which is the shape the spec suggests to an
+// admin who hits the same clash by hand (FIRST_RUN.md # Identity & display
+// names).
+//
+// Only migrating boxes can need this: every new row goes through the API's own
+// uniqueness check. It is idempotent, so a second startup finds nothing to do.
+//
+// Comparison is Go's Unicode-aware lowercase, which folds strictly more than
+// the NOCASE index does. Erring that way is the safe direction: anything NOCASE
+// would call a clash, this already renamed.
+func (s *Store) dedupeDisplayNames() error {
+	rows, err := s.db.Query(`SELECT id, display_name FROM users ORDER BY created_at, id`)
+	if err != nil {
+		return err
+	}
+	type row struct{ id, name string }
+	var all []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.name); err != nil {
+			rows.Close()
+			return err
+		}
+		all = append(all, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	taken := make(map[string]bool, len(all))
+	for _, r := range all {
+		candidate := r.name
+		for n := 2; taken[strings.ToLower(candidate)]; n++ {
+			candidate = fmt.Sprintf("%s %d", r.name, n)
+		}
+		taken[strings.ToLower(candidate)] = true
+		if candidate == r.name {
+			continue
+		}
+		if _, err := s.db.Exec(`UPDATE users SET display_name=? WHERE id=?`, candidate, r.id); err != nil {
+			return err
+		}
+		slog.Warn("display name renamed to keep names unique on this box",
+			"user_id", r.id, "from", r.name, "name", candidate)
+	}
 	return nil
 }
 

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -106,5 +107,86 @@ func TestDisplayNameMustBeUniqueAndPresent(t *testing.T) {
 	}
 	if err := s.CreateUser(dupe); err != nil {
 		t.Errorf("create after the name was freed: %v", err)
+	}
+}
+
+// TestDisplayNameMigrationSurvivesCaseOnlyUsernameClash is the upgrade that
+// would otherwise brick a box. Usernames are unique case-sensitively, and the
+// old validateUsername rejected only "--" and an "xn--" prefix, so a box can
+// hold both "Bob" and "bob". Backfilling display names from them gives the
+// NOCASE index two rows it treats as one, and a migration that errors is a
+// brain that does not start.
+func TestDisplayNameMigrationSurvivesCaseOnlyUsernameClash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "moose.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if _, err := old.Exec(`
+		CREATE TABLE users (
+			id            TEXT PRIMARY KEY,
+			username      TEXT NOT NULL UNIQUE,
+			role          TEXT NOT NULL CHECK (role IN ('admin','member')),
+			recovery_hash TEXT NOT NULL DEFAULT '',
+			created_at    INTEGER NOT NULL
+		);
+		INSERT INTO users (id, username, role, recovery_hash, created_at)
+		VALUES ('u_1','Bob','admin','',1700000000),
+		       ('u_2','bob','member','',1700000001),
+		       ('u_3','BOB','member','',1700000002);
+	`); err != nil {
+		t.Fatalf("seed old schema: %v", err)
+	}
+	old.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("migration failed on a box with case-only username clashes: %v", err)
+	}
+	defer s.Close()
+
+	users, err := s.ListUsers()
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 3 {
+		t.Fatalf("got %d users; want 3", len(users))
+	}
+	seen := map[string]string{}
+	for _, u := range users {
+		key := strings.ToLower(u.DisplayName)
+		if other, dupe := seen[key]; dupe {
+			t.Errorf("display names %q and %q still clash", other, u.DisplayName)
+		}
+		seen[key] = u.DisplayName
+		// Account names are untouched by any of this.
+		if u.Username != "Bob" && u.Username != "bob" && u.Username != "BOB" {
+			t.Errorf("username %q was modified", u.Username)
+		}
+	}
+	// The oldest account keeps the name it had.
+	first, err := s.GetUser("u_1")
+	if err != nil {
+		t.Fatalf("get u_1: %v", err)
+	}
+	if first.DisplayName != "Bob" {
+		t.Errorf("oldest account renamed to %q; want Bob", first.DisplayName)
+	}
+
+	// Idempotent: a second startup has nothing to do and changes nothing.
+	s.Close()
+	again, err := Open(path)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	defer again.Close()
+	after, err := again.ListUsers()
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	for i, u := range after {
+		if u.DisplayName != users[i].DisplayName {
+			t.Errorf("second startup renamed %q to %q", users[i].DisplayName, u.DisplayName)
+		}
 	}
 }

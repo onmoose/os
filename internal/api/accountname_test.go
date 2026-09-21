@@ -47,6 +47,10 @@ func TestAccountNameBaseIsAlwaysUsable(t *testing.T) {
 	for _, in := range []string{
 		"José Smith", "李", "2024", "----", "xn--bcher-kva", "a--b",
 		"ThisNameIsFarTooLongToBeALinuxAccountNameByAnyMeasureAtAll", "!!!", "ß",
+		// A long all-digit name takes the "u" prefix AND the length cap. Capping
+		// before prefixing would hand back 33 characters wearing a new "u".
+		"123456789012345678901234567890123456789012",
+		"9" + "ThisIsAlsoRatherTooLongToBeAnAccountName",
 	} {
 		got := accountNameBase(in)
 		if got == "" {

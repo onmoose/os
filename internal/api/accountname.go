@@ -167,22 +167,23 @@ func accountNameBase(display string) string {
 		}
 	}
 	name := b.String()
-	if len(name) > maxAccountNameLen {
-		name = name[:maxAccountNameLen]
-	}
 	switch {
 	case name == "":
 		// No Latin letters or digits survived: a name written entirely in a
 		// script we do not transliterate.
-		return accountNameFallback
+		name = accountNameFallback
 	case name[0] >= '0' && name[0] <= '9':
 		// useradd refuses an all-numeric name, and a leading digit is legal but
 		// discouraged, so give it a letter to start on rather than reject a
 		// name a person is entitled to use.
-		return "u" + name
-	default:
-		return name
+		name = "u" + name
 	}
+	// Cap last, after the prefix above has been added. Capping first would let a
+	// 32-digit name come back out at 33 characters wearing its new "u".
+	if len(name) > maxAccountNameLen {
+		name = name[:maxAccountNameLen]
+	}
+	return name
 }
 
 // deriveAccountName produces the Linux account name for a display name, walking

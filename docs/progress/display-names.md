@@ -30,6 +30,14 @@ Realizes `FIRST_RUN.md` # Identity & display names, which was spec-only until no
 
 Two spec sentences were corrected rather than implemented as written. The derivation removes characters outside `[a-z0-9]` instead of collapsing runs of them, which is what produces `josesmith` and is what makes the `--` and `xn--` reservations true by construction rather than by argument. And `systemd*` is matched as the bare name, not as a prefix: every systemd account Debian creates is hyphenated and so already unreachable, while a prefix match would also reject `systemd1`, `systemd2` and every other name the collision walk could fall back to, leaving a person called Systemd with no name at all. A test found that one.
 
+## What the self-review caught
+
+Three real bugs, all found by the fresh review agent on the opened PR, all fixed on the branch with a test that fails against the code as it was.
+
+- **The migration would have stopped a box from starting.** Usernames are unique case-*sensitively*, and the old `validateUsername` rejected only `--` and an `xn--` prefix, so a box can be holding both `Bob` and `bob`. Backfilling display names from them hands the `NOCASE` index two rows it treats as one, so the index fails to build, `migrate` returns an error, and the brain does not come up after the upgrade. `dedupeDisplayNames` now resolves the clashes first, oldest account keeping its name and the next becoming `Bob 2`. It is idempotent, and only a migrating box can need it.
+- **The SSO wedge was still there, one line further along.** Moving the adopt path off name-derivation was right but not sufficient: `newAccount` runs the display-name uniqueness check, and the half-created admin already holds the name the assertion asks for, so the retry answered 409 and never reached `CreateFirstAdmin` or the adopt branch. The check for an existing user now comes first, before anything is derived. The `CreateFirstAdmin` conflict branch stays, because it is the atomic guard for two handshakes racing on a genuinely empty box.
+- **The length cap ran before the digit prefix**, so a 32-digit name came back out at 33 characters wearing its new `u`, past the limit the cap exists to satisfy. Capping is last now. `TestAccountNameBaseIsAlwaysUsable` covered the invariant but had no long all-digit input to catch it.
+
 ## Known gaps & deviations
 
 - **Non-Latin names get `user`, `user1`.** `FIRST_RUN.md` used to promise `李` → `li`. That needs a full transliteration table, which is a dependency and a lot of surface; the spec now states the fallback instead. The slug is invisible unless somebody uses SSH.

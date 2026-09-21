@@ -202,13 +202,27 @@ func (s *Server) resolveSSOOwner(ctx context.Context, claims assertion.Claims) (
 // fails so the next assertion can retry. The owner box-meta is written last as
 // the commit marker.
 //
-// A CreateFirstAdmin conflict means a prior attempt created the user row but
-// crashed before the owner meta committed. We adopt that existing admin rather
-// than wedging the box. The adopt path finds it by being the box's only admin,
-// not by re-deriving its name: account-name derivation walks past names that
-// are already taken, so a second run sees the first run's own account and would
-// derive a different name than the row it is looking for.
+// A prior attempt that wrote the user row but crashed before the owner meta
+// committed leaves the box with an admin and no owner. We adopt that admin
+// rather than wedging the box, and the adopt path finds it by being the box's
+// only admin rather than by re-deriving its name: derivation walks past names
+// that are already taken, so a second run would look for a row that is not
+// there.
+//
+// The check for it has to come first, before anything is derived. Deriving
+// would refuse outright, because that half-created admin already holds the very
+// display name this assertion asks for, and a 409 here is the wedge this is
+// supposed to prevent. The CreateFirstAdmin conflict below still matters: it is
+// the atomic guard for two handshakes racing on a genuinely empty box.
 func (s *Server) createSSOOwner(ctx context.Context, claims assertion.Claims) (store.User, error) {
+	existing, err := s.store.UserCount()
+	if err != nil {
+		return store.User{}, err
+	}
+	if existing > 0 {
+		return s.adoptSSOOwner(ctx, claims)
+	}
+
 	displayName, username, err := s.newAccount(ctx, ssoDisplayName(claims), "")
 	if err != nil {
 		return store.User{}, err
