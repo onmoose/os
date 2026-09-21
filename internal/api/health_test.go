@@ -126,7 +126,7 @@ func TestHealth_MemberGetsForbidden(t *testing.T) {
 
 	// Create a member and switch to that session.
 	resp := h.do("POST", "/api/v1/users", map[string]any{
-		"username": "bob", "password": "bobpass", "role": "member",
+		"display_name": "bob", "password": "bobpass", "role": "member",
 	})
 	if resp.StatusCode >= 300 {
 		body, _ := newCookieRespBody(resp)

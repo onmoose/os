@@ -221,6 +221,25 @@ func (m *LinuxUserManager) DeleteUser(slug string) error {
 // os/user.Lookup and returns the user's home directory, UID, and GID.
 // Returns hostagent.ErrUnknownUser when the user does not exist so the
 // calling handler can return 404 rather than 500.
+// UserExists implements hostagent.UserManager: does /etc/passwd (via NSS)
+// already hold this name. A lookup failure that is not "unknown user" is
+// returned as an error rather than reported as "free", because treating a
+// broken NSS as an empty passwd file would hand the brain a name that is in
+// fact taken.
+func (m *LinuxUserManager) UserExists(username string) (bool, error) {
+	if username == "" {
+		return false, fmt.Errorf("usermgr: empty username")
+	}
+	if _, err := user.Lookup(username); err != nil {
+		var unknown user.UnknownUserError
+		if errors.As(err, &unknown) {
+			return false, nil
+		}
+		return false, fmt.Errorf("usermgr: lookup %q: %w", username, err)
+	}
+	return true, nil
+}
+
 func (m *LinuxUserManager) ResolveHome(username string) (home string, uid, gid int, err error) {
 	if username == "" {
 		return "", 0, 0, fmt.Errorf("usermgr: empty username")

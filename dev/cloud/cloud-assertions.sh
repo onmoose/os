@@ -520,7 +520,7 @@ grep -qE ' (200|401)' <<<"$api" || fail "/api not routed to the brain through Ca
 setup=""
 for _i in $(seq 1 30); do
     setup="$(http_post_status /api/v1/setup "$DASH_HOST" \
-        '{"username":"probe","password":"probe-pw-once"}' 2>/dev/null || true)"
+        '{"display_name":"probe","password":"probe-pw-once"}' 2>/dev/null || true)"
     grep -qE ' (403|409|200)' <<<"$setup" && break
     sleep 1
 done
@@ -895,7 +895,7 @@ access)
     sso_token2="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token2" 2>/dev/null || true)"
     [ -n "$sso_token2" ] || fail "access: moose.sso_token2 credential missing (harness did not mint/deliver the second owner assertion)"
 
-    new_user_body='{"username":"tester","password":"moose-cloud-lane-tester-pw"}'
+    new_user_body='{"display_name":"tester","password":"moose-cloud-lane-tester-pw"}'
 
     # 5a. The plain owner session is admin but NOT elevated, so the write is refused.
     #     This is the state a hosted box could never leave before #469.
@@ -1202,7 +1202,7 @@ ssh)
     GONE_PW='moose-cloud-lane-gone-pw'
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before creating the second account failed"
     mk="$(full_send POST /api/v1/users "$apex" "$owner_cookie" \
-        "{\"username\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"member\"}" 2>/dev/null)"
+        "{\"display_name\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"member\"}" 2>/dev/null)"
     grep -qE ' (200|201)' <<<"$(status_of "$mk")" \
         || fail "ssh: could not create the second account: status='$(status_of "$mk")'"
     gone_id="$(json_str_of "$mk" id)"

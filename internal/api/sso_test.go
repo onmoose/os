@@ -295,22 +295,25 @@ func TestSSO_ApplianceReturns404(t *testing.T) {
 	}
 }
 
-func TestSSOUsername(t *testing.T) {
-	cases := map[string]string{
-		"Owner@Example.com":    "owner",
-		"jane.doe@example.com": "jane_doe",
-		"a+b@x.io":             "a_b",
-		"123start@x.io":        "owner_123start", // must start with a letter
-		"@x.io":                "owner",          // empty local part
-		"weird!!!@x.io":        "weird",
-		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@x.io": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // capped at 32
+// The owner's account name now comes from the same derivation every other
+// account uses, so this test covers only the SSO-specific half: which string
+// gets fed into it. The derivation itself is tested in accountname_test.go.
+func TestSSODisplayName(t *testing.T) {
+	cases := []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{"Jane Doe", "jane.doe@example.com", "Jane Doe"}, // the portal sent a name
+		{"  Jane   Doe ", "j@x.io", "Jane Doe"},          // and it gets normalized
+		{"", "jane.doe@example.com", "jane.doe"},         // no name: email local part
+		{"", "Owner@Example.com", "Owner"},               // case is preserved here
+		{"", "@x.io", ""},                                // nothing usable at all
 	}
-	for email, want := range cases {
-		if got := ssoUsername(email); got != want {
-			t.Errorf("ssoUsername(%q) = %q; want %q", email, got, want)
-		}
-		if got := ssoUsername(email); len(got) > maxSSOUsernameLen {
-			t.Errorf("ssoUsername(%q) = %q exceeds %d chars", email, got, maxSSOUsernameLen)
+	for _, c := range cases {
+		got := ssoDisplayName(assertion.Claims{Name: c.name, Email: c.email})
+		if got != c.want {
+			t.Errorf("ssoDisplayName(name=%q, email=%q) = %q; want %q", c.name, c.email, got, c.want)
 		}
 	}
 }

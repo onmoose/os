@@ -211,8 +211,8 @@ func configServer(t *testing.T, ownerID, scope, state string, cfg []store.Instan
 	// Seed the owner + an admin actor so the elevation-class audit insert (FK to
 	// users) succeeds; without these the audit silently fails its FK constraint.
 	for _, u := range []store.User{
-		{ID: ownerID, Username: ownerID, Role: store.RoleMember},
-		{ID: "u_admin", Username: "admin", Role: store.RoleAdmin},
+		{ID: ownerID, Username: ownerID, DisplayName: ownerID, Role: store.RoleMember},
+		{ID: "u_admin", Username: "admin", DisplayName: "admin", Role: store.RoleAdmin},
 	} {
 		if err := st.CreateUser(u); err != nil {
 			t.Fatalf("seed user %s: %v", u.ID, err)

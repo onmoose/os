@@ -117,6 +117,15 @@ func newHarness(t *testing.T, opts ...func(*Server)) *harness {
 		pmu.Unlock()
 		_ = json.NewEncoder(w).Encode(struct{}{})
 	})
+	// Existence probe for account-name derivation. Answers from the same map
+	// set-password writes, which is what the real fake agent does too: the
+	// accounts this agent created are the only ones that can collide.
+	mux.HandleFunc("GET /v1/users/{username}/exists", func(w http.ResponseWriter, r *http.Request) {
+		pmu.Lock()
+		_, ok := pwds[r.PathValue("username")]
+		pmu.Unlock()
+		_ = json.NewEncoder(w).Encode(protocol.UserExistsResponse{Exists: ok})
+	})
 	mux.HandleFunc("POST /v1/auth/verify-password", func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.VerifyPasswordRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -293,7 +302,7 @@ func TestAuthStateProgression(t *testing.T) {
 
 	// Setup the admin.
 	resp = h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "andrei", "password": "hunter2",
+		"display_name": "andrei", "password": "hunter2",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
@@ -311,7 +320,7 @@ func TestAuthStateProgression(t *testing.T) {
 
 	// After setup, the same endpoint should refuse with 409.
 	resp = h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "cindy", "password": "doesntmatter",
+		"display_name": "cindy", "password": "doesntmatter",
 	})
 	if resp.StatusCode != 409 {
 		t.Fatalf("second setup = %d; want 409", resp.StatusCode)
@@ -347,7 +356,7 @@ func TestProtectedRoutesRequireSession(t *testing.T) {
 func TestAuthUsersPublicPicker(t *testing.T) {
 	h := newHarness(t)
 	h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	}).Body.Close()
 	h.addMember("u_bob", "bob", "bobpass")
 
@@ -393,7 +402,7 @@ func TestLoginLogoutFlow(t *testing.T) {
 	h := newHarness(t)
 	// Bootstrap admin so we have credentials to log in with.
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "andrei", "password": "hunter2",
+		"display_name": "andrei", "password": "hunter2",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
@@ -460,7 +469,7 @@ func TestLoginLogoutFlow(t *testing.T) {
 func TestLoginLockoutAfterRepeatedFailures(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "andrei", "password": "hunter2",
+		"display_name": "andrei", "password": "hunter2",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
@@ -538,6 +547,11 @@ func TestSetupRollsBackOnHostFailure(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	mux := http.NewServeMux()
+	// Nothing exists on this host, so account-name derivation resolves on its
+	// first candidate and the test reaches the failure it is actually about.
+	mux.HandleFunc("GET /v1/users/{username}/exists", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(protocol.UserExistsResponse{Exists: false})
+	})
 	mux.HandleFunc("POST /v1/auth/set-password", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"code":"boom","message":"nope"}`, 500)
 	})
@@ -561,7 +575,7 @@ func TestSetupRollsBackOnHostFailure(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	resp, err := http.Post(ts.URL+"/api/v1/setup", "application/json",
-		bytes.NewReader([]byte(`{"username":"andrei","password":"hunter2"}`)))
+		bytes.NewReader([]byte(`{"display_name":"andrei","password":"hunter2"}`)))
 	if err != nil {
 		t.Fatalf("setup post: %v", err)
 	}
@@ -614,6 +628,11 @@ func TestSetupRollsBackOnSetRoleFailure(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	mux := http.NewServeMux()
+	// Nothing exists on this host, so account-name derivation resolves on its
+	// first candidate and the test reaches the failure it is actually about.
+	mux.HandleFunc("GET /v1/users/{username}/exists", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(protocol.UserExistsResponse{Exists: false})
+	})
 	mux.HandleFunc("POST /v1/auth/set-password", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(struct{}{})
 	})
@@ -640,7 +659,7 @@ func TestSetupRollsBackOnSetRoleFailure(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	resp, err := http.Post(ts.URL+"/api/v1/setup", "application/json",
-		bytes.NewReader([]byte(`{"username":"andrei","password":"hunter2"}`)))
+		bytes.NewReader([]byte(`{"display_name":"andrei","password":"hunter2"}`)))
 	if err != nil {
 		t.Fatalf("setup post: %v", err)
 	}
@@ -680,7 +699,7 @@ func TestListAuditAdminSeesAll(t *testing.T) {
 	// Setup creates the first admin (records setup.complete) and leaves
 	// a valid session cookie in h.jar.
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
@@ -744,7 +763,7 @@ func (h *harness) elevate(password string) {
 func (h *harness) addMember(id, username, password string) {
 	h.t.Helper()
 	if err := h.st.CreateUser(store.User{
-		ID: id, Username: username, Role: store.RoleMember, CreatedAt: time.Now(),
+		ID: id, Username: username, DisplayName: username, Role: store.RoleMember, CreatedAt: time.Now(),
 	}); err != nil {
 		h.t.Fatalf("create member: %v", err)
 	}
@@ -759,7 +778,7 @@ func TestListAuditMemberVisibility(t *testing.T) {
 
 	// Admin bootstrap records setup.complete (target = admin user).
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
@@ -821,7 +840,7 @@ func TestListAuditMemberVisibility(t *testing.T) {
 func setupAdminWithCode(t *testing.T, h *harness, username, password string) string {
 	t.Helper()
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": username, "password": password,
+		"display_name": username, "password": password,
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
@@ -1087,7 +1106,7 @@ func TestRecoverAuditsFailureOnWrongCode(t *testing.T) {
 func TestListAuditLimitClamped(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
@@ -1116,7 +1135,7 @@ func TestListAuditLimitClamped(t *testing.T) {
 func TestListAuditCursorPagination(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("setup: %d", resp.StatusCode)
@@ -1159,7 +1178,7 @@ func TestListAuditCursorPagination(t *testing.T) {
 func TestElevateHappyPath(t *testing.T) {
 	h := newHarness(t)
 	h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	}).Body.Close()
 
 	resp := h.do("POST", "/api/v1/auth/elevate", map[string]string{
@@ -1194,7 +1213,7 @@ func TestElevateHappyPath(t *testing.T) {
 func TestElevateWrongPasswordFails(t *testing.T) {
 	h := newHarness(t)
 	h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	}).Body.Close()
 
 	resp := h.do("POST", "/api/v1/auth/elevate", map[string]string{
@@ -1224,7 +1243,7 @@ func TestElevateWrongPasswordFails(t *testing.T) {
 func TestElevateRequiresAuth(t *testing.T) {
 	h := newHarness(t)
 	h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	}).Body.Close()
 	// Clear session.
 	jar, _ := newJar()
@@ -1240,7 +1259,7 @@ func TestElevateRequiresAuth(t *testing.T) {
 func TestSessionIdleExpiry(t *testing.T) {
 	h := newHarness(t)
 	h.do("POST", "/api/v1/setup", map[string]string{
-		"username": "alice", "password": "hunter2",
+		"display_name": "alice", "password": "hunter2",
 	}).Body.Close()
 
 	// Set the auth manager's clock forward past the idle window. We need to
@@ -1282,7 +1301,7 @@ func TestUserCRUDRequiresElevation(t *testing.T) {
 		path   string
 		body   any
 	}{
-		{"POST", "/api/v1/users", map[string]string{"username": "eve", "password": "x"}},
+		{"POST", "/api/v1/users", map[string]string{"display_name": "eve", "password": "x"}},
 		{"PATCH", "/api/v1/users/" + bob.ID, map[string]string{"role": "admin"}},
 		{"DELETE", "/api/v1/users/" + bob.ID, nil},
 		{"POST", "/api/v1/users/" + bob.ID + "/password", map[string]string{"password": "x"}},
@@ -1297,7 +1316,7 @@ func TestUserCRUDRequiresElevation(t *testing.T) {
 
 	// After elevation, POST /users should succeed.
 	h.elevate("pass1")
-	resp := h.do("POST", "/api/v1/users", map[string]string{"username": "eve", "password": "x"})
+	resp := h.do("POST", "/api/v1/users", map[string]string{"display_name": "eve", "password": "x"})
 	if resp.StatusCode != 200 {
 		t.Fatalf("POST /users after elevate = %d; want 200", resp.StatusCode)
 	}

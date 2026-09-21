@@ -311,14 +311,14 @@ components:
           format: uri
           readOnly: true
           type: string
+        display_name:
+          type: string
         password:
           type: string
         role:
           type: string
-        username:
-          type: string
       required:
-        - username
+        - display_name
         - password
       type: object
     CustomFolderDTO:
@@ -1308,6 +1308,8 @@ components:
     LoginPickerUser:
       additionalProperties: false
       properties:
+        display_name:
+          type: string
         id:
           type: string
         username:
@@ -1315,6 +1317,7 @@ components:
       required:
         - id
         - username
+        - display_name
       type: object
     LoginRequest:
       additionalProperties: false
@@ -1630,6 +1633,21 @@ components:
       required:
         - new_recovery_code
       type: object
+    Rename-userRequest:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/Rename-userRequest.json
+          format: uri
+          readOnly: true
+          type: string
+        display_name:
+          type: string
+      required:
+        - display_name
+      type: object
     Render-custom-overlayRequest:
       additionalProperties: false
       properties:
@@ -1844,14 +1862,14 @@ components:
           format: uri
           readOnly: true
           type: string
+        display_name:
+          type: string
         password:
           type: string
         recovery:
           type: boolean
-        username:
-          type: string
       required:
-        - username
+        - display_name
         - password
       type: object
     SetupResponse:
@@ -2138,6 +2156,8 @@ components:
         created_at:
           format: int64
           type: integer
+        display_name:
+          type: string
         id:
           type: string
         owner:
@@ -2151,6 +2171,7 @@ components:
       required:
         - id
         - username
+        - display_name
         - role
         - created_at
       type: object
@@ -3560,6 +3581,35 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Change a user's role (admin only)
+  /api/v1/users/{id}/name:
+    post:
+      operationId: rename-user
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Rename-userRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDTO"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Change a user's display name (self, or admin for anyone)
   /api/v1/users/{id}/password:
     post:
       operationId: reset-user-password

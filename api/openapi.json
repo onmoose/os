@@ -441,18 +441,18 @@
             "readOnly": true,
             "type": "string"
           },
+          "display_name": {
+            "type": "string"
+          },
           "password": {
             "type": "string"
           },
           "role": {
             "type": "string"
-          },
-          "username": {
-            "type": "string"
           }
         },
         "required": [
-          "username",
+          "display_name",
           "password"
         ],
         "type": "object"
@@ -1852,6 +1852,9 @@
       "LoginPickerUser": {
         "additionalProperties": false,
         "properties": {
+          "display_name": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -1861,7 +1864,8 @@
         },
         "required": [
           "id",
-          "username"
+          "username",
+          "display_name"
         ],
         "type": "object"
       },
@@ -2298,6 +2302,27 @@
         ],
         "type": "object"
       },
+      "Rename-userRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/Rename-userRequest.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "type": "object"
+      },
       "Render-custom-overlayRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2595,18 +2620,18 @@
             "readOnly": true,
             "type": "string"
           },
+          "display_name": {
+            "type": "string"
+          },
           "password": {
             "type": "string"
           },
           "recovery": {
             "type": "boolean"
-          },
-          "username": {
-            "type": "string"
           }
         },
         "required": [
-          "username",
+          "display_name",
           "password"
         ],
         "type": "object"
@@ -3009,6 +3034,9 @@
             "format": "int64",
             "type": "integer"
           },
+          "display_name": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -3028,6 +3056,7 @@
         "required": [
           "id",
           "username",
+          "display_name",
           "role",
           "created_at"
         ],
@@ -5340,6 +5369,54 @@
           }
         },
         "summary": "Change a user's role (admin only)"
+      }
+    },
+    "/api/v1/users/{id}/name": {
+      "post": {
+        "operationId": "rename-user",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Rename-userRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserDTO"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Change a user's display name (self, or admin for anyone)"
       }
     },
     "/api/v1/users/{id}/password": {

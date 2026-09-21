@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -202,22 +203,28 @@ func (s *Server) resolveSSOOwner(ctx context.Context, claims assertion.Claims) (
 // the commit marker.
 //
 // A CreateFirstAdmin conflict means a prior attempt created the user row but
-// crashed before the owner meta committed; the username is derived
-// deterministically from the email, so we adopt that existing admin rather than
-// wedging the box.
+// crashed before the owner meta committed. We adopt that existing admin rather
+// than wedging the box. The adopt path finds it by being the box's only admin,
+// not by re-deriving its name: account-name derivation walks past names that
+// are already taken, so a second run sees the first run's own account and would
+// derive a different name than the row it is looking for.
 func (s *Server) createSSOOwner(ctx context.Context, claims assertion.Claims) (store.User, error) {
-	username := ssoUsername(claims.Email)
+	displayName, username, err := s.newAccount(ctx, ssoDisplayName(claims), "")
+	if err != nil {
+		return store.User{}, err
+	}
 	password, err := randomPassword()
 	if err != nil {
 		return store.User{}, err
 	}
 
 	u := store.User{
-		ID: newID(), Username: username, Role: store.RoleAdmin, CreatedAt: time.Now(),
+		ID: newID(), Username: username, DisplayName: displayName,
+		Role: store.RoleAdmin, CreatedAt: time.Now(),
 	}
 	if err := s.store.CreateFirstAdmin(u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			return s.adoptSSOOwner(ctx, claims, username)
+			return s.adoptSSOOwner(ctx, claims)
 		}
 		return store.User{}, err
 	}
@@ -248,14 +255,12 @@ func (s *Server) createSSOOwner(ctx context.Context, claims assertion.Claims) (s
 // delete the brain row. Re-running SetPassword/SetRole here (both idempotent on
 // the host) re-establishes the account, so an adopted owner always has a PAM
 // entry to back the box session — never a session with no underlying account.
-func (s *Server) adoptSSOOwner(ctx context.Context, claims assertion.Claims, username string) (store.User, error) {
-	u, err := s.store.GetUserByUsername(username)
+func (s *Server) adoptSSOOwner(ctx context.Context, claims assertion.Claims) (store.User, error) {
+	u, err := s.soleAdmin()
 	if err != nil {
 		return store.User{}, err
 	}
-	if u.Role != store.RoleAdmin {
-		return store.User{}, errors.New("sso: existing user for owner email is not an admin")
-	}
+	username := u.Username
 	password, err := randomPassword()
 	if err != nil {
 		return store.User{}, err
@@ -271,6 +276,41 @@ func (s *Server) adoptSSOOwner(ctx context.Context, claims assertion.Claims, use
 	}
 	slog.Info("sso: adopted existing admin as owner", "user_id", u.ID, "username", username)
 	return u, nil
+}
+
+// soleAdmin returns the box's only admin, for the owner-adopt path. A hosted box
+// with no owner meta has no way to have gained a user except a previous run of
+// this same handshake, so exactly one admin is the state we expect. Anything
+// else (no admin, or more than one) is a box we do not understand, and handing
+// ownership to a guess there would be worse than failing.
+func (s *Server) soleAdmin() (store.User, error) {
+	users, err := s.store.ListUsers()
+	if err != nil {
+		return store.User{}, err
+	}
+	var admins []store.User
+	for _, u := range users {
+		if u.Role == store.RoleAdmin {
+			admins = append(admins, u)
+		}
+	}
+	if len(admins) != 1 {
+		return store.User{}, fmt.Errorf("sso: expected exactly one admin to adopt as owner, found %d", len(admins))
+	}
+	return admins[0], nil
+}
+
+// ssoDisplayName is the name the box shows for the owner. The portal asks for a
+// name at sign-up but does not require one, so the assertion may not carry it
+// (assertion.Claims.Name). The fallback is the email local part: not pretty, but
+// it is the only thing we actually know, and anything prettier would be a guess
+// that the real name overwrites the moment the control plane starts sending it.
+func ssoDisplayName(claims assertion.Claims) string {
+	if name := normalizeDisplayName(claims.Name); name != "" {
+		return name
+	}
+	local, _, _ := strings.Cut(claims.Email, "@")
+	return normalizeDisplayName(local)
 }
 
 // recordSSOOwner persists the owner identity (portal account id + brain user-id)
@@ -294,46 +334,6 @@ func (s *Server) rollbackSSOUser(ctx context.Context, u store.User) {
 	if err := s.store.DeleteUser(u.ID); err != nil {
 		slog.Error("sso: rollback user row failed", "user_id", u.ID, "err", err)
 	}
-}
-
-// maxSSOUsernameLen caps the derived username at the conservative classic Linux
-// username length, so an over-long email local-part can't produce a name useradd
-// or a hardened PAM stack rejects. The result is ASCII, so a byte slice is safe.
-const maxSSOUsernameLen = 32
-
-// ssoUsername derives a valid Linux/PAM username from the owner's email: the
-// local part, lowercased, with every character outside [a-z0-9] folded to '_'.
-// Folding (rather than emitting '-') keeps the result clear of the '--' instance
-// separator and the 'xn--' prefix validateUsername guards (users.go), and the
-// leading-letter guard satisfies useradd. The derivation is the canonical source
-// of a valid username here (the SSO path doesn't round-trip through
-// validateUsername); it folds to ASCII [a-z0-9_], starts with a letter, and is
-// length-capped, so it satisfies every current validateUsername rule by
-// construction. Falls back to "owner" when the email yields nothing usable.
-func ssoUsername(email string) string {
-	local, _, _ := strings.Cut(email, "@")
-	local = strings.ToLower(strings.TrimSpace(local))
-	var b strings.Builder
-	for _, r := range local {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	name := strings.Trim(b.String(), "_")
-	if name == "" || name[0] < 'a' || name[0] > 'z' {
-		name = "owner_" + name
-		name = strings.TrimRight(name, "_")
-	}
-	if len(name) > maxSSOUsernameLen {
-		name = strings.TrimRight(name[:maxSSOUsernameLen], "_")
-		if name == "" {
-			name = "owner"
-		}
-	}
-	return name
 }
 
 // randomPassword returns a 32-hex-char (128-bit) random password for the
