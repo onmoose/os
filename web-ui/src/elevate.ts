@@ -47,12 +47,25 @@ function requestElevation(): Promise<void> {
   });
 }
 
+// leavingForConfirm is true once confirmViaPortal has started sending the page to
+// the portal. A screen that warns before unload about unsaved changes reads it and
+// stays quiet for this one leave: the redirect is part of saving, not a way out,
+// and the screen has already put its draft somewhere that survives the trip.
+let leavingForConfirm = false;
+export function isLeavingForConfirm() {
+  return leavingForConfirm;
+}
+
 // confirmViaPortal leaves the page, so its promise never settles — the returned
 // Promise is a way of saying "this call ends here". The pending mutation is not
 // resumed on the way back: the user lands on the page they were on, with the
 // window open, and clicks the action again. Losing a half-finished action is the
 // honest cost of a full-page round-trip, and it keeps us from replaying a
 // destructive write the user may have changed their mind about.
+//
+// A form that holds a draft keeps it across the trip itself, in sessionStorage
+// (the SSH screen does, issue #494). That is not a replay: the user gets their
+// form back and presses Save again.
 async function confirmViaPortal(): Promise<never> {
   const { challenge } = await api.post<{ challenge: string; expires_at: number }>(
     "/auth/elevate/challenge",
@@ -61,6 +74,7 @@ async function confirmViaPortal(): Promise<never> {
   const params = new URLSearchParams(window.location.search);
   params.set("confirm", challenge);
   const query = params.toString();
+  leavingForConfirm = true;
   redirectToPortalConfirm(
     `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
   );

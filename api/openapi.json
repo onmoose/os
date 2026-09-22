@@ -1,30 +1,6 @@
 {
   "components": {
     "schemas": {
-      "Add-my-ssh-keyRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/Add-my-ssh-keyRequest.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "label": {
-            "type": "string"
-          },
-          "public_key": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "public_key"
-        ],
-        "type": "object"
-      },
       "AppConfigDTO": {
         "additionalProperties": false,
         "properties": {
@@ -2457,6 +2433,22 @@
         ],
         "type": "object"
       },
+      "SSHKeyInput": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "A key the account already holds. Omit for a new key.",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "public_key": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "Set-app-exposureRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2518,12 +2510,22 @@
           "enabled": {
             "type": "boolean"
           },
+          "keys": {
+            "items": {
+              "$ref": "#/components/schemas/SSHKeyInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "require_password": {
             "type": "boolean"
           }
         },
         "required": [
-          "enabled"
+          "enabled",
+          "keys"
         ],
         "type": "object"
       },
@@ -4564,76 +4566,7 @@
             "description": "Error"
           }
         },
-        "summary": "Turn my SSH access on or off (auth required, elevation-class)"
-      }
-    },
-    "/api/v1/me/ssh/keys": {
-      "post": {
-        "operationId": "add-my-ssh-key",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Add-my-ssh-keyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SSHAccessDTO"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorModel"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Add one of my SSH public keys (auth required, elevation-class)"
-      }
-    },
-    "/api/v1/me/ssh/keys/{id}": {
-      "delete": {
-        "operationId": "delete-my-ssh-key",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "No Content"
-          },
-          "default": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorModel"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Remove one of my SSH public keys (auth required, elevation-class)"
+        "summary": "Save my whole SSH state: on or off, the password choice, and the complete key set (auth required, elevation-class)"
       }
     },
     "/api/v1/notifications": {

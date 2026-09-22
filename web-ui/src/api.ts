@@ -9,10 +9,15 @@ import type { components } from "./generated/openapi";
 export class ApiError extends Error {
   code: string;
   status: number;
-  constructor(code: string, message: string, status: number) {
+  // location is the field the brain blamed, when it named one (huma's
+  // errors[0].location, e.g. "body.keys[2].public_key"). Lets a form show the
+  // message next to the input at fault instead of only at its submit button.
+  location?: string;
+  constructor(code: string, message: string, status: number, location?: string) {
     super(message);
     this.code = code;
     this.status = status;
+    this.location = location;
   }
 }
 
@@ -51,7 +56,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts?: R
     const code = err.code ?? err.detail ?? "unknown";
     const message =
       err.message ?? err.errors?.[0]?.message ?? err.detail ?? err.title ?? res.statusText;
-    throw new ApiError(code, message, res.status);
+    throw new ApiError(code, message, res.status, err.errors?.[0]?.location);
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
