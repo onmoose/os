@@ -1478,6 +1478,7 @@ export interface components {
             owner_username: string;
             public_paths?: string[] | null;
             scope: string;
+            short_description?: string;
             slug: string;
             state: string;
             url: string;
