@@ -35,7 +35,7 @@ const attentionIDs = computed(() => {
   const ids = new Set<string>();
   for (const issue of activeIssues.value) {
     if (
-      (issue.category === "container-restart-loop" || issue.category === "app-unresponsive") &&
+      (issue.id === "container-restart-loop" || issue.id === "app-unresponsive") &&
       issue.instance_key
     ) {
       ids.add(issue.instance_key);
