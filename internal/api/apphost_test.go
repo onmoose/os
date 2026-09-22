@@ -3,6 +3,7 @@ package api
 import (
 	"testing"
 
+	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/profile"
 	"github.com/onmoose/os/internal/store"
 )
@@ -53,5 +54,28 @@ func TestToDTO_URLByProfile(t *testing.T) {
 				t.Errorf("URL = %q, want %q", got.URL, tt.wantURL)
 			}
 		})
+	}
+}
+
+// toDTO fills IconURL, IconGlyph, and ShortDescription from the catalog entry
+// when one is given, and leaves them empty for a Door-2 custom app that has
+// none (#487) — the installed-apps list must show no description line for
+// those rather than a stale or blank one.
+func TestToDTO_ShortDescriptionFromCatalogEntry(t *testing.T) {
+	s := &Server{profile: profile.Appliance}
+	inst := store.Instance{ID: "1", Slug: "photos"}
+
+	withEntry := s.toDTO(inst, "", &catalog.Entry{
+		IconURL:          "/api/v1/catalog/photos/icon",
+		IconGlyph:        "camera",
+		ShortDescription: "Self-hosted photo backup",
+	})
+	if withEntry.ShortDescription != "Self-hosted photo backup" {
+		t.Errorf("ShortDescription = %q, want catalog tagline", withEntry.ShortDescription)
+	}
+
+	withoutEntry := s.toDTO(inst, "", nil)
+	if withoutEntry.ShortDescription != "" {
+		t.Errorf("ShortDescription = %q, want empty for custom app with no catalog entry", withoutEntry.ShortDescription)
 	}
 }

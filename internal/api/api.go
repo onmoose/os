@@ -375,6 +375,10 @@ type InstanceDTO struct {
 	Exposure  string `json:"exposure" enum:"restricted,public"`
 	IconURL   string `json:"icon_url,omitempty"`
 	IconGlyph string `json:"icon_glyph,omitempty"`
+	// ShortDescription is the catalog's one-line tagline, so the installed-apps
+	// list can show it without a per-row /catalog/<id> request. A Door-2 custom
+	// app has no catalog entry, so this stays empty.
+	ShortDescription string `json:"short_description,omitempty"`
 	// Mail fields are detail-page enrichments set only by getApp (list
 	// responses omit them): MailSupported reports the manifest's mail block,
 	// MailProviderID the current binding ("" ⇒ unbound). They drive the
@@ -416,6 +420,7 @@ func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry)
 	if e != nil {
 		dto.IconURL = e.IconURL
 		dto.IconGlyph = e.IconGlyph
+		dto.ShortDescription = e.ShortDescription
 	}
 	return dto
 }

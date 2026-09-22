@@ -1441,6 +1441,9 @@
           "scope": {
             "type": "string"
           },
+          "short_description": {
+            "type": "string"
+          },
           "slug": {
             "type": "string"
           },
