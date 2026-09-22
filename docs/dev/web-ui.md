@@ -55,6 +55,9 @@ web-ui/
     │
     ├── mailProviderForm.ts # outgoing-mail form shape + preset rules, shared by
     │                       #   the add flow and the inline edit form
+    ├── sshDraft.ts         # the SSH screen's unsaved draft: the save body, and the
+    │                       #   sessionStorage copy that survives a reload or the
+    │                       #   hosted owner's portal confirm
     ├── useInstall.ts       # catalog-app install flow (plan fetch, consent dialog,
     │                       #   duplicate/job errors, per-app button state) — shared
     │                       #   by AppDetailView; see "Install flow" below
@@ -68,7 +71,7 @@ web-ui/
     │   └── settings/           # Settings left-nav shell + its sections
     │       ├── SettingsLayout.vue        # sidebar + nested-route content pane
     │       ├── AccountSection.vue        # identity + self-service password change
-    │       ├── SshSection.vue            # per-account SSH opt-in + public keys
+    │       ├── SshSection.vue            # per-account SSH opt-in + public keys (draft + Save)
     │       ├── NotificationsSection.vue  # per-category bell mutes
     │       ├── InstalledAppsSection.vue  # manage/uninstall/logs list
     │       ├── ActivitySection.vue       # audit-log browser (all users)
@@ -106,7 +109,7 @@ A handful of top-level `.vue` files (`Login.vue`, `Setup.vue`, `NotificationBell
 
 - **`api.ts`** — the ~30-LOC `fetch` wrapper. `api.get/post/put/patch/del` prepend `/api/v1`, send `credentials: "include"`, and normalize both error shapes the brain emits (huma's `{detail,title,errors}` and the jobs `{code,message}`) into a typed `ApiError(code, message, status)`. A 401 from *any* call fires the `onUnauthenticated` handler (registered by `auth.ts`) to drop the session. It also re-exports the **wire types** as friendly aliases (`User`, `Instance`, `CatalogEntry`, …) sourced from `generated/openapi.ts`, plus a few hand-maintained types for endpoints that bypass huma codegen (the Door-2 custom-install request/result types, and the `Scope` literal union the generator emits as a bare string).
 - **`auth.ts`** — owns the session lifecycle and the `currentUser`/`hasUsers`/`booted` singletons that drive `App.vue`'s three-way branch. `bootstrap()` runs `GET /auth/state` → (`/me` | login | setup). `setup()`/`setupComplete()` are split intentionally so the Setup view stays mounted to show the one-time recovery code before flipping to the shell. Call `refreshCurrentUser()` in the `onSettled` of user-management mutations so `single_user_mode` stays accurate without a reload.
-- **`elevate.ts`** — the 5-minute re-prompt window for destructive admin ops (`USERS_AND_GROUPS.md` # Elevation in the UI). Wrap a mutation in `withElevation(fn)`: it runs `fn`, and on a `403 elevation_required` it drives the single `ElevateDialog` (mounted in `AppShell`), elevates the session, and retries once. Inside a live window the prompt never shows. A user cancel rejects with `elevationCancelled` — map it to a no-op, not an error.
+- **`elevate.ts`** — the 5-minute re-prompt window for destructive admin ops (`USERS_AND_GROUPS.md` # Elevation in the UI). Wrap a mutation in `withElevation(fn)`: it runs `fn`, and on a `403 elevation_required` it drives the single `ElevateDialog` (mounted in `AppShell`), elevates the session, and retries once. Inside a live window the prompt never shows. A user cancel rejects with `elevationCancelled` — map it to a no-op, not an error. For the hosted box owner the confirm step is a full-page portal round-trip, so the pending call never resumes. A screen that holds a draft keeps it in `sessionStorage` itself (the SSH screen does, via `sshDraft.ts`), and reads `isLeavingForConfirm()` to skip its unsaved-changes warning for that one leave.
 - **`toasts.ts`** — app-wide ephemeral feedback. `pushErrorToast(message)` from anywhere; `<ToastHost>` (mounted in `AppShell`) renders the live list, auto-dismissing after 6s. Error-only today (the rollback feedback for optimistic notification mutations); success/confirm toasts extend this same channel when they land.
 
 ## Routing

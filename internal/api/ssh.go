@@ -48,18 +48,8 @@ func (s *Server) registerSSHRoutes(api huma.API) {
 
 	huma.Register(api, huma.Operation{
 		OperationID: "set-my-ssh", Method: "PUT", Path: "/api/v1/me/ssh",
-		Summary: "Turn my SSH access on or off (auth required, elevation-class)",
+		Summary: "Save my whole SSH state: on or off, the password choice, and the complete key set (auth required, elevation-class)",
 	}, s.setMySSH)
-
-	huma.Register(api, huma.Operation{
-		OperationID: "add-my-ssh-key", Method: "POST", Path: "/api/v1/me/ssh/keys",
-		Summary: "Add one of my SSH public keys (auth required, elevation-class)",
-	}, s.addMySSHKey)
-
-	huma.Register(api, huma.Operation{
-		OperationID: "delete-my-ssh-key", Method: "DELETE", Path: "/api/v1/me/ssh/keys/{id}",
-		Summary: "Remove one of my SSH public keys (auth required, elevation-class)", DefaultStatus: 204,
-	}, s.deleteMySSHKey)
 }
 
 // SSHKeyDTO is one stored key as the dashboard sees it. The key material is sent
@@ -102,9 +92,9 @@ func (s *Server) keyRequired() bool {
 // table).
 //
 // It is applied once, at the only entry point a caller-supplied value comes in
-// through. Every other push (syncSSHIfEnabled, the deleteUser restore, the
-// rollbacks) reads the stored row, so normalising before the write makes all of
-// them right and stops the row describing a posture sshd is not running.
+// through. Every other push (the deleteUser restore, the rollbacks) reads the
+// stored row, so normalising before the write makes all of them right and stops
+// the row describing a posture sshd is not running.
 //
 // The brain is the right place for this and host-agent is not: host-agent does
 // not know the environment profile and must not second-guess which factor is
@@ -132,6 +122,29 @@ func (s *Server) getMySSH(ctx context.Context, _ *struct{}) (*struct {
 	return &struct{ Body SSHAccessDTO }{Body: dto}, nil
 }
 
+// SSHKeyInput is one key in the account's desired key set. A key the account
+// already holds is named by its id. A new key carries its text instead. An entry
+// has one or the other, never both.
+type SSHKeyInput struct {
+	ID string `json:"id,omitempty" required:"false" doc:"A key the account already holds. Omit for a new key."`
+	// The key text for a new key. It goes through the same validation a single
+	// paste always did (parseSSHPublicKey).
+	PublicKey string `json:"public_key,omitempty" required:"false"`
+	// Optional: the key's own comment names it when the user gives no label.
+	// Read only for a new key; a held key keeps the label it was added with.
+	Label string `json:"label,omitempty" required:"false"`
+}
+
+// setMySSH applies one Save of the SSH screen. The body is the whole desired
+// state, not a change: the on/off flag, the password choice, and the complete
+// key set. The brain diffs that against what it holds, writes the difference in
+// one transaction, and pushes the result to the host once.
+//
+// Taking the whole state is what lets the screen be a draft. With one request
+// per control, a Save over several of them is a batch that can half-fail. It is
+// also what makes key rotation work: "remove the old key, add the new one" is
+// one change here, and only the state it ends in is checked, so there is no
+// moment in between where the account has no key.
 func (s *Server) setMySSH(ctx context.Context, in *struct {
 	Body struct {
 		Enabled bool `json:"enabled"`
@@ -141,6 +154,10 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 		// nothing and the server resolves it to true either way
 		// (effectiveRequirePassword).
 		RequirePassword bool `json:"require_password,omitempty" required:"false"`
+		// Required, and the complete set: a held key missing from it is removed.
+		// Required rather than optional so an old client that sends only the flag
+		// is refused instead of wiping every key the account holds.
+		Keys []SSHKeyInput `json:"keys"`
 	}
 }) (*struct {
 	Body SSHAccessDTO
@@ -154,7 +171,7 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 	requirePassword := s.effectiveRequirePassword(in.Body.RequirePassword)
 
 	// The audit meta carries what was *asked for*, because that is what every
-	// record here is about — including the ones written when the request was
+	// record here is about, including the ones written when the request was
 	// refused and nothing was applied. Writing the resolved value on those would
 	// describe a posture the box never took and hide what the caller actually
 	// sent, which is the thing an Activity reader is trying to see. The success
@@ -162,8 +179,11 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 	// applied state to report.
 	meta := map[string]any{"enabled": in.Body.Enabled, "require_password": in.Body.RequirePassword}
 
-	if err := requireElevated(ctx); err != nil {
-		s.auditor.Record(ctx, audit.ActionSSHAccessSet, tgt, meta, false)
+	// Every new key is parsed before anything is read or written. A rejected
+	// paste is a validation 422, not an elevation-class failure, so it does not
+	// audit (CLAUDE.md: validation 422s don't audit).
+	newKeys, err := parseNewSSHKeys(id.User.ID, in.Body.Keys)
+	if err != nil {
 		return nil, err
 	}
 
@@ -174,48 +194,93 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 	s.sshWrites.Lock()
 	defer s.sshWrites.Unlock()
 
-	keys, err := s.store.ListSSHKeys(id.User.ID)
-	if err != nil {
-		s.auditor.Record(ctx, audit.ActionSSHAccessSet, tgt, meta, false)
-		return nil, huma.Error500InternalServerError("read ssh keys failed", err)
-	}
-
-	// The profile's mandatory factor, enforced here and not only in the UI. On
-	// hosted an account with no key could only ever authenticate by password, on
-	// a port the open internet can reach — which is the thing this design exists
-	// to prevent.
-	if in.Body.Enabled && s.keyRequired() && len(keys) == 0 {
-		s.auditor.Record(ctx, audit.ActionSSHAccessSet, tgt, meta, false)
-		return nil, huma.Error422UnprocessableEntity(
-			"add an SSH key before turning SSH on; a password alone is not enough on this box")
-	}
-
-	// Brain commits first; the host is reconstructible. On host failure the row is
-	// rolled back to what it was, so the two sides cannot disagree about who has a
-	// shell (CLAUDE.md # Brain commits first).
 	prev, err := s.store.SSHAccessFor(id.User.ID)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionSSHAccessSet, tgt, meta, false)
 		return nil, huma.Error500InternalServerError("read ssh access failed", err)
 	}
-	if err := s.store.SetSSHAccess(id.User.ID, in.Body.Enabled, requirePassword); err != nil {
+	held, err := s.store.ListSSHKeys(id.User.ID)
+	if err != nil {
 		s.auditor.Record(ctx, audit.ActionSSHAccessSet, tgt, meta, false)
+		return nil, huma.Error500InternalServerError("read ssh keys failed", err)
+	}
+
+	// The plan is worked out before the elevation check so that a refused request
+	// still names each key it tried to add or remove in Activity, the same trail
+	// the per-key routes this replaced used to leave.
+	plan, planErr := planSSHKeys(held, in.Body.Keys, newKeys)
+	accessChanged := prev.Enabled != in.Body.Enabled ||
+		s.effectiveRequirePassword(prev.RequirePassword) != requirePassword
+	record := func(success bool) {
+		s.auditSSHChange(ctx, tgt, meta, accessChanged, plan, success)
+	}
+
+	if err := requireElevated(ctx); err != nil {
+		record(false)
+		return nil, err
+	}
+	// Guard rejections from here on, not malformed requests, so they audit
+	// (CLAUDE.md # Elevation-class mutations).
+	if planErr != nil {
+		record(false)
+		return nil, planErr
+	}
+	if len(plan.final) > maxSSHKeysPerUser {
+		record(false)
+		return nil, huma.Error422UnprocessableEntity(
+			fmt.Sprintf("you can have at most %d SSH keys; remove one first", maxSSHKeysPerUser))
+	}
+	// The profile's mandatory factor, checked against the state the request ends
+	// in and not only in the UI. On hosted an account with no key could only ever
+	// authenticate by password, on a port the open internet can reach, which is
+	// the thing this design exists to prevent. Checking the end state is what
+	// lets a rotation through: removing the only key is fine when the same Save
+	// adds its replacement.
+	if in.Body.Enabled && s.keyRequired() && len(plan.final) == 0 {
+		record(false)
+		return nil, huma.Error422UnprocessableEntity(
+			"add an SSH key before turning SSH on; a password alone is not enough on this box")
+	}
+
+	// Brain commits first; the host is reconstructible. On host failure the change
+	// is undone, so the two sides cannot disagree about who has a shell
+	// (CLAUDE.md # Brain commits first).
+	if err := s.store.ApplySSHChange(id.User.ID, in.Body.Enabled, requirePassword,
+		plan.removeIDs(), plan.add); err != nil {
+		record(false)
+		switch {
+		case errors.Is(err, store.ErrDuplicateSSHKey):
+			return nil, huma.Error409Conflict("that key is already on your account")
+		case errors.Is(err, store.ErrNotFound):
+			return nil, huma.Error409Conflict(sshKeysMovedMessage)
+		}
 		return nil, huma.Error500InternalServerError("save ssh access failed", err)
 	}
-	if err := s.applySSH(ctx, id.User.Username, in.Body.Enabled, requirePassword, keys); err != nil {
-		if rbErr := s.store.SetSSHAccess(id.User.ID, prev.Enabled, prev.RequirePassword); rbErr != nil {
-			slog.Error("ssh access rollback failed", "user_id", id.User.ID,
-				"username", id.User.Username, "service", "ssh", "err", rbErr)
+
+	// Push while SSH is on, and once more on the way off so the host revokes. An
+	// account that was off and stays off changes nothing the host needs to know:
+	// pushing its keys would write an authorized_keys file for an account sshd is
+	// not admitting, and would fail outright on a box with no sshd installed.
+	if in.Body.Enabled || prev.Enabled {
+		if err := s.applySSH(ctx, id.User.Username, in.Body.Enabled, requirePassword, plan.final); err != nil {
+			// The inverse of the change above: the old access row back, the added
+			// keys out, the removed ones in with their original AddedAt so the list
+			// keeps its order.
+			if rbErr := s.store.ApplySSHChange(id.User.ID, prev.Enabled, prev.RequirePassword,
+				plan.addIDs(), plan.remove); rbErr != nil {
+				slog.Error("ssh access rollback failed", "user_id", id.User.ID,
+					"username", id.User.Username, "service", "ssh", "err", rbErr)
+			}
+			record(false)
+			return nil, huma.Error502BadGateway("host-agent ssh set-access failed", err)
 		}
-		s.auditor.Record(ctx, audit.ActionSSHAccessSet, tgt, meta, false)
-		return nil, huma.Error502BadGateway("host-agent ssh set-access failed", err)
 	}
 
 	// Only now is there an applied state to name. On the appliance this differs
 	// from what was asked whenever the caller omitted require_password, and the
 	// pair is what makes the record readable: what they wanted, what they got.
 	meta["require_password_applied"] = requirePassword
-	s.auditor.Record(ctx, audit.ActionSSHAccessSet, tgt, meta, true)
+	record(true)
 	dto, err := s.sshAccessDTO(id.User.ID)
 	if err != nil {
 		return nil, err
@@ -223,189 +288,141 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 	return &struct{ Body SSHAccessDTO }{Body: dto}, nil
 }
 
-func (s *Server) addMySSHKey(ctx context.Context, in *struct {
-	Body struct {
-		PublicKey string `json:"public_key"`
-		// Optional: the key's own comment names it when the user gives no label.
-		Label string `json:"label,omitempty" required:"false"`
-	}
-}) (*struct {
-	Body SSHAccessDTO
-}, error) {
-	id, ok := auth.FromContext(ctx)
-	if !ok {
-		return nil, huma.Error401Unauthorized("unauthenticated")
-	}
-	tgt := audit.Target{Kind: "user", ID: id.User.ID}
+// sshKeysMovedMessage is the answer when a request names a key the account no
+// longer holds. The usual cause is a second tab or device that removed it first.
+const sshKeysMovedMessage = "your SSH keys changed somewhere else; reload the page and try again"
 
-	if err := requireElevated(ctx); err != nil {
-		s.auditor.Record(ctx, audit.ActionSSHKeyAdd, tgt, nil, false)
-		return nil, err
-	}
-
-	line, fingerprint, err := parseSSHPublicKey(in.Body.PublicKey)
-	if err != nil {
-		// A rejected paste is a validation 422, not an elevation-class failure, so
-		// it does not audit (CLAUDE.md: validation 422s don't audit).
-		return nil, err
-	}
-
-	// See setMySSH: the count check, the insert and the host push are one
-	// sequence and must not interleave with another SSH write (api.go # sshWrites).
-	s.sshWrites.Lock()
-	defer s.sshWrites.Unlock()
-
-	existing, err := s.store.ListSSHKeys(id.User.ID)
-	if err != nil {
-		s.auditor.Record(ctx, audit.ActionSSHKeyAdd, tgt, nil, false)
-		return nil, huma.Error500InternalServerError("read ssh keys failed", err)
-	}
-	if len(existing) >= maxSSHKeysPerUser {
-		// Also a guard rejection rather than a malformed request, so it audits.
-		s.auditor.Record(ctx, audit.ActionSSHKeyAdd, tgt, nil, false)
-		return nil, huma.Error422UnprocessableEntity(
-			fmt.Sprintf("you can have at most %d SSH keys; remove one first", maxSSHKeysPerUser))
-	}
-
-	meta := map[string]any{"fingerprint": fingerprint}
-	key := store.SSHKey{
-		ID:          newID(),
-		UserID:      id.User.ID,
-		Label:       strings.TrimSpace(in.Body.Label),
-		PublicKey:   line,
-		Fingerprint: fingerprint,
-	}
-	if err := s.store.AddSSHKey(key); err != nil {
-		if errors.Is(err, store.ErrDuplicateSSHKey) {
-			s.auditor.Record(ctx, audit.ActionSSHKeyAdd, tgt, meta, false)
-			return nil, huma.Error409Conflict("that key is already on your account")
-		}
-		s.auditor.Record(ctx, audit.ActionSSHKeyAdd, tgt, meta, false)
-		return nil, huma.Error500InternalServerError("save ssh key failed", err)
-	}
-
-	// Push the new key set to the host only while SSH is on. Adding a key to a
-	// disabled account changes nothing the host needs to know, and pushing it
-	// would write an authorized_keys file for an account sshd is not admitting.
-	if err := s.syncSSHIfEnabled(ctx, id.User.ID, id.User.Username); err != nil {
-		if rbErr := s.store.DeleteSSHKey(id.User.ID, key.ID); rbErr != nil {
-			slog.Error("ssh key rollback failed", "user_id", id.User.ID,
-				"service", "ssh", "err", rbErr)
-		}
-		s.auditor.Record(ctx, audit.ActionSSHKeyAdd, tgt, meta, false)
-		return nil, huma.Error502BadGateway("host-agent ssh set-access failed", err)
-	}
-
-	s.auditor.Record(ctx, audit.ActionSSHKeyAdd, tgt, meta, true)
-	dto, err := s.sshAccessDTO(id.User.ID)
-	if err != nil {
-		return nil, err
-	}
-	return &struct{ Body SSHAccessDTO }{Body: dto}, nil
+// sshPlan is the difference between the keys an account holds and the set a
+// request asks for.
+type sshPlan struct {
+	remove []store.SSHKey // held, and missing from the request
+	add    []store.SSHKey // new in the request, parsed and fingerprinted
+	final  []store.SSHKey // the set the account ends with: kept keys, then added
 }
 
-func (s *Server) deleteMySSHKey(ctx context.Context, in *struct {
-	ID string `path:"id"`
-}) (*struct{}, error) {
-	id, ok := auth.FromContext(ctx)
-	if !ok {
-		return nil, huma.Error401Unauthorized("unauthenticated")
+func (p sshPlan) removeIDs() []string {
+	ids := make([]string, 0, len(p.remove))
+	for _, k := range p.remove {
+		ids = append(ids, k.ID)
 	}
-	tgt := audit.Target{Kind: "user", ID: id.User.ID}
+	return ids
+}
 
-	if err := requireElevated(ctx); err != nil {
-		s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, nil, false)
-		return nil, err
+func (p sshPlan) addIDs() []string {
+	ids := make([]string, 0, len(p.add))
+	for _, k := range p.add {
+		ids = append(ids, k.ID)
 	}
+	return ids
+}
 
-	// See setMySSH: the last-key guard, the delete and the host push are one
-	// sequence and must not interleave with another SSH write (api.go # sshWrites).
-	s.sshWrites.Lock()
-	defer s.sshWrites.Unlock()
-
-	access, err := s.store.SSHAccessFor(id.User.ID)
-	if err != nil {
-		s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, nil, false)
-		return nil, huma.Error500InternalServerError("read ssh access failed", err)
-	}
-	keys, err := s.store.ListSSHKeys(id.User.ID)
-	if err != nil {
-		s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, nil, false)
-		return nil, huma.Error500InternalServerError("read ssh keys failed", err)
-	}
-
-	// Removing the last key while SSH is on would leave an enabled account with no
-	// mandatory factor on hosted. Refuse rather than silently turning SSH off: the
-	// user asked to remove a key, not to lose their access, and they may be about
-	// to add a replacement.
-	if access.Enabled && s.keyRequired() && len(keys) == 1 && keys[0].ID == in.ID {
-		// A guard rejection, the same shape as the last-admin guard, so it audits
-		// (CLAUDE.md # Elevation-class mutations). Not a plain validation 422.
-		s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, nil, false)
-		return nil, huma.Error422UnprocessableEntity(
-			"this is your only SSH key; add another one or turn SSH off before removing it")
-	}
-
-	// Kept so the row can be restored if the host push fails. Nothing re-reads the
-	// host today, so a delete the host never saw has to leave both sides agreeing
-	// or it stays wrong forever.
-	var removed store.SSHKey
-	for _, k := range keys {
-		if k.ID == in.ID {
-			removed = k
-			break
-		}
-	}
-
-	if err := s.store.DeleteSSHKey(id.User.ID, in.ID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			// Audited: an attempt to revoke a key that is not there is still an
-			// attempted elevation-class mutation, and it is what probing another
-			// account's key ids would look like from the Activity view.
-			s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, nil, false)
-			return nil, huma.Error404NotFound("key not found")
-		}
-		s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, nil, false)
-		return nil, huma.Error500InternalServerError("delete ssh key failed", err)
-	}
-	if err := s.syncSSHIfEnabled(ctx, id.User.ID, id.User.Username); err != nil {
-		// Roll the row back, the same as the other two writes. The key is still live
-		// on the host either way — the push is what failed — so dropping the row
-		// would only hide it: the brain would show the key gone, a retry would 404,
-		// and nothing re-reads the host to notice. Restoring it keeps the two sides
-		// agreeing and leaves the user a delete they can repeat once the host is
-		// back. The 502 and the audit record both say it did not happen.
-		if removed.ID != "" {
-			if rbErr := s.store.AddSSHKey(removed); rbErr != nil {
-				slog.Error("ssh key rollback failed", "user_id", id.User.ID,
-					"username", id.User.Username, "service", "ssh", "err", rbErr)
+// parseNewSSHKeys validates every new key in a request and returns them keyed by
+// their index in it. A refusal names the entry's location, so the screen can show
+// the message under the key at fault rather than only at the Save button.
+func parseNewSSHKeys(userID string, entries []SSHKeyInput) (map[int]store.SSHKey, error) {
+	out := map[int]store.SSHKey{}
+	for i, e := range entries {
+		loc := fmt.Sprintf("body.keys[%d].public_key", i)
+		if e.ID != "" {
+			if e.PublicKey != "" {
+				msg := "a key is either one you already have or a new one, not both"
+				return nil, huma.Error422UnprocessableEntity(msg, &huma.ErrorDetail{Message: msg, Location: loc})
 			}
+			continue
 		}
-		slog.Error("ssh key delete host push failed", "user_id", id.User.ID,
-			"username", id.User.Username, "service", "ssh", "err", err)
-		s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, nil, false)
-		return nil, huma.Error502BadGateway("host-agent ssh set-access failed", err)
+		line, fingerprint, err := parseSSHPublicKey(e.PublicKey)
+		if err != nil {
+			msg := err.Error()
+			return nil, huma.Error422UnprocessableEntity(msg, &huma.ErrorDetail{Message: msg, Location: loc})
+		}
+		out[i] = store.SSHKey{
+			ID:          newID(),
+			UserID:      userID,
+			Label:       strings.TrimSpace(e.Label),
+			PublicKey:   line,
+			Fingerprint: fingerprint,
+		}
 	}
-
-	s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, nil, true)
-	return nil, nil
+	return out, nil
 }
 
-// syncSSHIfEnabled pushes the account's current key set to the host, but only
-// when the account has SSH turned on.
-func (s *Server) syncSSHIfEnabled(ctx context.Context, userID, username string) error {
-	access, err := s.store.SSHAccessFor(userID)
-	if err != nil {
-		return err
+// planSSHKeys diffs the requested key set against the held one. It returns what
+// it could work out even when it also returns an error, so a refused request can
+// still audit the keys it named.
+//
+// Two refusals, both 409. An id the account does not hold means the request was
+// built from a key list that has since changed. A new key the account would then
+// hold twice is the duplicate the store's unique index would refuse anyway, but
+// caught here it can name the entry. A new key that matches one being removed in
+// the same request is fine: the store removes before it adds.
+func planSSHKeys(held []store.SSHKey, entries []SSHKeyInput, newKeys map[int]store.SSHKey) (sshPlan, error) {
+	var (
+		plan    sshPlan
+		planErr error
+	)
+	keep := map[string]bool{}
+	heldIDs := map[string]bool{}
+	for _, k := range held {
+		heldIDs[k.ID] = true
 	}
-	if !access.Enabled {
-		return nil
+	for _, e := range entries {
+		if e.ID == "" {
+			continue
+		}
+		if !heldIDs[e.ID] && planErr == nil {
+			planErr = huma.Error409Conflict(sshKeysMovedMessage)
+		}
+		keep[e.ID] = true
 	}
-	keys, err := s.store.ListSSHKeys(userID)
-	if err != nil {
-		return err
+
+	fingerprints := map[string]bool{}
+	for _, k := range held {
+		if keep[k.ID] {
+			plan.final = append(plan.final, k)
+			fingerprints[k.Fingerprint] = true
+		} else {
+			plan.remove = append(plan.remove, k)
+		}
 	}
-	return s.applySSH(ctx, username, access.Enabled, access.RequirePassword, keys)
+	for i := range entries {
+		k, ok := newKeys[i]
+		if !ok {
+			continue
+		}
+		if fingerprints[k.Fingerprint] {
+			if planErr == nil {
+				msg := "that key is already on your account"
+				planErr = huma.Error409Conflict(msg, &huma.ErrorDetail{
+					Message: msg, Location: fmt.Sprintf("body.keys[%d].public_key", i),
+				})
+			}
+			continue
+		}
+		fingerprints[k.Fingerprint] = true
+		plan.add = append(plan.add, k)
+		plan.final = append(plan.final, k)
+	}
+	return plan, planErr
+}
+
+// auditSSHChange writes the Activity trail for one Save: one record per key
+// added, one per key removed, and an access record when the on/off flag or the
+// password choice moved. A Save that changes nothing still writes the access
+// record, so every elevation-class request leaves at least one line.
+//
+// The same records are written on failure with success false, so a refused Save
+// still shows which keys somebody tried to add or remove (CLAUDE.md #
+// Elevation-class mutations).
+func (s *Server) auditSSHChange(ctx context.Context, tgt audit.Target, meta map[string]any, accessChanged bool, plan sshPlan, success bool) {
+	if accessChanged || (len(plan.add) == 0 && len(plan.remove) == 0) {
+		s.auditor.Record(ctx, audit.ActionSSHAccessSet, tgt, meta, success)
+	}
+	for _, k := range plan.add {
+		s.auditor.Record(ctx, audit.ActionSSHKeyAdd, tgt, map[string]any{"fingerprint": k.Fingerprint}, success)
+	}
+	for _, k := range plan.remove {
+		s.auditor.Record(ctx, audit.ActionSSHKeyDelete, tgt, map[string]any{"fingerprint": k.Fingerprint}, success)
+	}
 }
 
 // applySSH sends one account's full desired state to host-agent.

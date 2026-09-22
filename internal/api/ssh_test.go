@@ -1,11 +1,17 @@
 package api
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/onmoose/os/internal/audit"
 	"github.com/onmoose/os/internal/profile"
@@ -24,6 +30,21 @@ const (
 	testKeyA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIfJnhGAA/rWbxmvMGuZvXV6in+czTK5F8Ie7QGTKOT+ alex@laptop"
 	testKeyB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHmywREXaNctQmxNs8UMGg8mSDO4MP1SfJnIhUAeEoY9 alex@desktop"
 )
+
+// freshKey makes a new public key line, for tests that need more distinct keys
+// than the two pasted above.
+func freshKey(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatalf("wrap key: %v", err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))) + " test@fresh"
+}
 
 // hostedSSHHarness is a hosted-profile harness with a signed-in, elevated admin.
 func hostedSSHHarness(t *testing.T) *harness {
@@ -77,13 +98,100 @@ func (h *harness) sshCallsSnapshot() []protocol.SetSSHAccessRequest {
 	return out
 }
 
+// sshState reads the signed-in account's SSH screen state.
+func (h *harness) sshState(t *testing.T) SSHAccessDTO {
+	t.Helper()
+	resp := h.do("GET", "/api/v1/me/ssh", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("get ssh = %d", resp.StatusCode)
+	}
+	return decodeJSON[SSHAccessDTO](t, resp)
+}
+
+// keep names every key the account holds, which is how a Save that leaves the
+// key list alone describes it.
+func keep(state SSHAccessDTO) []map[string]any {
+	out := []map[string]any{}
+	for _, k := range state.Keys {
+		out = append(out, map[string]any{"id": k.ID})
+	}
+	return out
+}
+
+// addKey saves the current state plus one new key: what the screen sends when the
+// only change is a pasted key.
 func (h *harness) addKey(t *testing.T, key string) SSHAccessDTO {
 	t.Helper()
-	resp := h.do("POST", "/api/v1/me/ssh/keys", map[string]string{"public_key": key})
+	cur := h.sshState(t)
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled":          cur.Enabled,
+		"require_password": cur.RequirePassword,
+		"keys":             append(keep(cur), map[string]any{"public_key": key}),
+	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("add key = %d", resp.StatusCode)
 	}
 	return decodeJSON[SSHAccessDTO](t, resp)
+}
+
+// enable turns SSH on and keeps every held key.
+func (h *harness) enable(t *testing.T) SSHAccessDTO {
+	t.Helper()
+	cur := h.sshState(t)
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true, "keys": keep(cur)})
+	if resp.StatusCode != 200 {
+		t.Fatalf("enable = %d", resp.StatusCode)
+	}
+	return decodeJSON[SSHAccessDTO](t, resp)
+}
+
+// errorLocation returns the first field location in a huma error body.
+func errorLocation(t *testing.T, raw []byte) string {
+	t.Helper()
+	var body struct {
+		Errors []struct {
+			Location string `json:"location"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, raw)
+	}
+	if len(body.Errors) == 0 {
+		return ""
+	}
+	return body.Errors[0].Location
+}
+
+func readAll(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return raw
+}
+
+// countAudited counts the audit events for one action and outcome.
+func countAudited(t *testing.T, h *harness, action string, success bool) int {
+	t.Helper()
+	events, err := h.st.ListAuditEvents(store.AuditFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	n := 0
+	for _, e := range events {
+		if e.Action == action && e.Success == success {
+			n++
+		}
+	}
+	return n
+}
+
+func assertAudited(t *testing.T, h *harness, action string, success bool) {
+	t.Helper()
+	if countAudited(t, h, action, success) == 0 {
+		t.Fatalf("no %s audit event with success=%v", action, success)
+	}
 }
 
 // On hosted a public key is the mandatory factor, enforced by the brain and not
@@ -92,7 +200,7 @@ func (h *harness) addKey(t *testing.T, key string) SSHAccessDTO {
 func TestHostedEnableWithoutKeyIsRefused(t *testing.T) {
 	h := hostedSSHHarness(t)
 
-	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true})
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true, "keys": []any{}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 422 {
 		t.Fatalf("hosted enable with no key = %d; want 422", resp.StatusCode)
@@ -109,11 +217,7 @@ func TestHostedEnableWithoutKeyIsRefused(t *testing.T) {
 func TestApplianceEnableWithoutKeyIsAllowed(t *testing.T) {
 	h := applianceSSHHarness(t)
 
-	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true})
-	if resp.StatusCode != 200 {
-		t.Fatalf("appliance enable with no key = %d; want 200", resp.StatusCode)
-	}
-	body := decodeJSON[SSHAccessDTO](t, resp)
+	body := h.enable(t)
 	if !body.Enabled || body.KeyRequired {
 		t.Fatalf("appliance state = %+v; want enabled and key_required false", body)
 	}
@@ -123,13 +227,32 @@ func TestApplianceEnableWithoutKeyIsAllowed(t *testing.T) {
 	}
 }
 
+// The body is the whole state, so the key set is required. An old client that
+// sent only the flag must be refused, not read as "no keys" and allowed to wipe
+// every key the account holds.
+func TestSaveWithoutAKeySetIsRefused(t *testing.T) {
+	h := hostedSSHHarness(t)
+	h.addKey(t, testKeyA)
+
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": false})
+	resp.Body.Close()
+	if resp.StatusCode != 422 {
+		t.Fatalf("save with no keys field = %d; want 422", resp.StatusCode)
+	}
+	if keys, _ := h.st.ListSSHKeys("u_alex"); len(keys) != 1 {
+		t.Fatalf("keys after the refused save = %d; want 1", len(keys))
+	}
+}
+
 // The optional password rides to the host as require_password, which is what
 // makes it a second required method rather than an alternative one.
 func TestRequirePasswordReachesTheHost(t *testing.T) {
 	h := hostedSSHHarness(t)
-	h.addKey(t, testKeyA)
+	cur := h.addKey(t, testKeyA)
 
-	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true, "require_password": true})
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": true, "require_password": true, "keys": keep(cur),
+	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("enable = %d", resp.StatusCode)
 	}
@@ -143,29 +266,41 @@ func TestRequirePasswordReachesTheHost(t *testing.T) {
 }
 
 // A private key is the worst paste a user can make, so it gets its own message
-// and is never stored.
+// and is never stored. The refusal names the entry, so the screen can show it
+// under the key at fault.
 func TestPrivateKeyPasteIsRefused(t *testing.T) {
 	h := hostedSSHHarness(t)
+	cur := h.addKey(t, testKeyA)
 
-	resp := h.do("POST", "/api/v1/me/ssh/keys", map[string]string{
-		"public_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----",
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": false,
+		"keys": append(keep(cur), map[string]any{
+			"public_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----",
+		}),
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != 422 {
 		t.Fatalf("private key paste = %d; want 422", resp.StatusCode)
 	}
+	raw := readAll(t, resp)
+	if loc := errorLocation(t, raw); loc != "body.keys[1].public_key" {
+		t.Fatalf("error location = %q; want body.keys[1].public_key", loc)
+	}
+	if !strings.Contains(string(raw), "private key") {
+		t.Fatalf("error does not say it is a private key: %s", raw)
+	}
 	keys, err := h.st.ListSSHKeys("u_alex")
 	if err != nil {
 		t.Fatalf("list keys: %v", err)
 	}
-	if len(keys) != 0 {
-		t.Fatalf("a private key was stored: %+v", keys)
+	if len(keys) != 1 {
+		t.Fatalf("keys after the refused paste = %d; want the 1 held before (%+v)", len(keys), keys)
 	}
 }
 
-// authorized_keys options (command=, from=, …) change what a key can do. The
-// stored line is re-serialised from the parsed key, so a paste cannot smuggle
-// them in.
+// authorized_keys options (command=, from=, and the rest) change what a key can
+// do. The stored line is re-serialised from the parsed key, so a paste cannot
+// smuggle them in.
 func TestAuthorizedKeysOptionsAreStripped(t *testing.T) {
 	h := hostedSSHHarness(t)
 
@@ -183,16 +318,66 @@ func TestAuthorizedKeysOptionsAreStripped(t *testing.T) {
 }
 
 // The same key twice is a 409, not a silent success: the user should learn the
-// key was already there rather than wonder which one is live.
+// key was already there rather than wonder which one is live. Both shapes: a
+// paste of a key the account holds, and the same new key twice in one Save.
 func TestDuplicateKeyIsConflict(t *testing.T) {
+	h := hostedSSHHarness(t)
+	cur := h.addKey(t, testKeyA)
+
+	for name, keys := range map[string][]map[string]any{
+		"already held": append(keep(cur), map[string]any{"public_key": testKeyA}),
+		"twice in one save": append(keep(cur),
+			map[string]any{"public_key": testKeyB}, map[string]any{"public_key": testKeyB}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": false, "keys": keys})
+			defer resp.Body.Close()
+			if resp.StatusCode != 409 {
+				t.Fatalf("duplicate key = %d; want 409", resp.StatusCode)
+			}
+			if got, _ := h.st.ListSSHKeys("u_alex"); len(got) != 1 {
+				t.Fatalf("keys after the refused save = %d; want 1", len(got))
+			}
+		})
+	}
+	assertAudited(t, h, audit.ActionSSHKeyAdd, false)
+}
+
+// Removing a key and pasting it back in the same Save is not a duplicate. The
+// store removes before it adds, so the unique index never sees both.
+func TestRemovingAndReaddingAKeyInOneSaveIsAllowed(t *testing.T) {
 	h := hostedSSHHarness(t)
 	h.addKey(t, testKeyA)
 
-	resp := h.do("POST", "/api/v1/me/ssh/keys", map[string]string{"public_key": testKeyA})
-	defer resp.Body.Close()
-	if resp.StatusCode != 409 {
-		t.Fatalf("duplicate key = %d; want 409", resp.StatusCode)
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": false, "keys": []map[string]any{{"public_key": testKeyA}},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("remove and re-add = %d; want 200", resp.StatusCode)
 	}
+	if got := decodeJSON[SSHAccessDTO](t, resp); len(got.Keys) != 1 {
+		t.Fatalf("keys = %d; want 1", len(got.Keys))
+	}
+}
+
+// A request built from a key list that has since changed names a key the account
+// no longer holds. Refuse it rather than guess: the screen reloads and the user
+// saves again against what is really there.
+func TestUnknownKeyIDIsConflict(t *testing.T) {
+	h := hostedSSHHarness(t)
+	h.addKey(t, testKeyA)
+
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": false, "keys": []map[string]any{{"id": "nope"}},
+	})
+	resp.Body.Close()
+	if resp.StatusCode != 409 {
+		t.Fatalf("unknown key id = %d; want 409", resp.StatusCode)
+	}
+	if got, _ := h.st.ListSSHKeys("u_alex"); len(got) != 1 {
+		t.Fatalf("the held key was removed by a refused save: %+v", got)
+	}
+	assertAudited(t, h, audit.ActionSSHKeyDelete, false)
 }
 
 // Adding a key while SSH is off changes nothing the host needs to know, so it
@@ -206,25 +391,142 @@ func TestKeyAddDoesNotTouchHostWhileDisabled(t *testing.T) {
 	}
 }
 
-// Removing the last key on hosted while SSH is on would leave an enabled account
-// with no mandatory factor. Refuse, rather than silently turning SSH off.
-func TestHostedLastKeyCannotBeRemovedWhileEnabled(t *testing.T) {
+// Turning SSH off pushes once more, so the host revokes. Skipping it because the
+// account is now off would leave sshd admitting it.
+func TestTurningSSHOffRevokesOnTheHost(t *testing.T) {
 	h := hostedSSHHarness(t)
-	body := h.addKey(t, testKeyA)
-	keyID := body.Keys[0].ID
+	h.addKey(t, testKeyA)
+	cur := h.enable(t)
 
-	if resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true}); resp.StatusCode != 200 {
-		t.Fatalf("enable = %d", resp.StatusCode)
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": false, "keys": keep(cur)})
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("disable = %d", resp.StatusCode)
 	}
+	calls := h.sshCallsSnapshot()
+	if last := calls[len(calls)-1]; last.Enabled {
+		t.Fatalf("last host call = %+v; want a revoke", last)
+	}
+}
 
-	resp := h.do("DELETE", "/api/v1/me/ssh/keys/"+keyID, nil)
-	defer resp.Body.Close()
+// On hosted, a Save that would leave an enabled account with no key is refused
+// and audited. This is the final-state guard: it replaces the old per-delete
+// last-key guard, and like that one it is a guard rejection, so it audits.
+func TestHostedEnabledWithAnEmptyKeySetIsRefused(t *testing.T) {
+	h := hostedSSHHarness(t)
+	h.addKey(t, testKeyA)
+	h.enable(t)
+	before := len(h.sshCallsSnapshot())
+
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true, "keys": []any{}})
+	resp.Body.Close()
 	if resp.StatusCode != 422 {
-		t.Fatalf("removing the only key = %d; want 422", resp.StatusCode)
+		t.Fatalf("enabled with no keys = %d; want 422", resp.StatusCode)
 	}
-	keys, _ := h.st.ListSSHKeys("u_alex")
-	if len(keys) != 1 {
+	if keys, _ := h.st.ListSSHKeys("u_alex"); len(keys) != 1 {
 		t.Fatalf("key was removed anyway: %+v", keys)
+	}
+	if calls := h.sshCallsSnapshot(); len(calls) != before {
+		t.Fatalf("refused save reached the host: %+v", calls[before:])
+	}
+	assertAudited(t, h, audit.ActionSSHKeyDelete, false)
+}
+
+// Key rotation: remove the only key and add its replacement in one Save. The old
+// per-delete guard refused the removal on its own, so rotating needed a spare key
+// first. Only the end state is checked now, and it has a key.
+func TestHostedKeyRotationInOneSave(t *testing.T) {
+	h := hostedSSHHarness(t)
+	h.addKey(t, testKeyA)
+	h.enable(t)
+	before := len(h.sshCallsSnapshot())
+
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": true, "keys": []map[string]any{{"public_key": testKeyB, "label": "desktop"}},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("rotation = %d; want 200", resp.StatusCode)
+	}
+	got := decodeJSON[SSHAccessDTO](t, resp)
+	if len(got.Keys) != 1 || got.Keys[0].Label != "desktop" || !strings.HasPrefix(testKeyB, got.Keys[0].PublicKey) {
+		t.Fatalf("keys after rotation = %+v; want only the new key", got.Keys)
+	}
+
+	calls := h.sshCallsSnapshot()
+	if len(calls) != before+1 {
+		t.Fatalf("rotation made %d host calls; want exactly 1", len(calls)-before)
+	}
+	last := calls[len(calls)-1]
+	if !last.Enabled || len(last.AuthorizedKeys) != 1 || !strings.HasPrefix(testKeyB, last.AuthorizedKeys[0]) {
+		t.Fatalf("host call = %+v; want enabled with only the new key", last)
+	}
+	assertAudited(t, h, audit.ActionSSHKeyAdd, true)
+	assertAudited(t, h, audit.ActionSSHKeyDelete, true)
+}
+
+// A second key makes the first removable while SSH stays on.
+func TestSecondKeyMakesTheFirstRemovable(t *testing.T) {
+	h := hostedSSHHarness(t)
+	h.addKey(t, testKeyA)
+	cur := h.addKey(t, testKeyB)
+	h.enable(t)
+
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": true, "keys": []map[string]any{{"id": cur.Keys[1].ID}},
+	})
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("remove with a spare key = %d; want 200", resp.StatusCode)
+	}
+	calls := h.sshCallsSnapshot()
+	last := calls[len(calls)-1]
+	if len(last.AuthorizedKeys) != 1 {
+		t.Fatalf("host got %d keys after the revoke; want 1", len(last.AuthorizedKeys))
+	}
+}
+
+// One Save on the appliance: turn SSH on, add a key and remove another. It is one
+// request, one host call, and one audit record for each thing that changed, so
+// Activity still shows which keys moved.
+func TestApplianceOneSaveIsOneHostCall(t *testing.T) {
+	h := applianceSSHHarness(t)
+	h.addKey(t, testKeyA)
+	cur := h.addKey(t, testKeyB)
+	third := freshKey(t)
+
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": true,
+		"keys":    []map[string]any{{"id": cur.Keys[1].ID}, {"public_key": third}},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("save = %d; want 200", resp.StatusCode)
+	}
+	got := decodeJSON[SSHAccessDTO](t, resp)
+	if !got.Enabled || len(got.Keys) != 2 {
+		t.Fatalf("state = %+v; want enabled with two keys", got)
+	}
+	// Kept key first, then the new one: the order the user saw them in.
+	if got.Keys[0].ID != cur.Keys[1].ID {
+		t.Fatalf("kept key is not first: %+v", got.Keys)
+	}
+
+	calls := h.sshCallsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("host calls = %d; want 1 (the key adds were made while SSH was off)", len(calls))
+	}
+	if !calls[0].Enabled || !calls[0].RequirePassword || len(calls[0].AuthorizedKeys) != 2 {
+		t.Fatalf("host call = %+v; want enabled, password required, two keys", calls[0])
+	}
+
+	// Three key adds (two set-up saves, one here), one delete, one access change.
+	if n := countAudited(t, h, audit.ActionSSHKeyAdd, true); n != 3 {
+		t.Errorf("ssh.key.add records = %d; want 3", n)
+	}
+	if n := countAudited(t, h, audit.ActionSSHKeyDelete, true); n != 1 {
+		t.Errorf("ssh.key.delete records = %d; want 1", n)
+	}
+	if n := countAudited(t, h, audit.ActionSSHAccessSet, true); n != 1 {
+		t.Errorf("ssh.access.set records = %d; want 1 (only this save turned SSH on)", n)
 	}
 }
 
@@ -239,7 +541,7 @@ func TestHostFailureRollsBackTheAccessRow(t *testing.T) {
 	h.loginAs(sshFailUser, "pass1")
 	h.elevate("pass1")
 
-	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true})
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true, "keys": []any{}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 502 {
 		t.Fatalf("host failure = %d; want 502", resp.StatusCode)
@@ -252,6 +554,122 @@ func TestHostFailureRollsBackTheAccessRow(t *testing.T) {
 		t.Fatal("brain row stayed enabled after the host refused")
 	}
 	assertAudited(t, h, audit.ActionSSHAccessSet, false)
+}
+
+// A Save the host never applied is undone in full. The removed key comes back
+// with its original timestamp, so the list keeps its order, and the added key
+// goes. The keys are live on the host as they were either way, since the push is
+// what failed, so leaving the brain changed would only hide that.
+func TestHostFailureUndoesTheWholeSave(t *testing.T) {
+	h := newHarness(t)
+	if err := h.st.CreateUser(store.User{ID: "u_fail", Username: sshFailUser, DisplayName: sshFailUser, Role: store.RoleAdmin}); err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	h.seedPassword(sshFailUser, "pass1")
+	h.loginAs(sshFailUser, "pass1")
+	h.elevate("pass1")
+
+	// Seeded straight into the store: every route that would set this up goes
+	// through the same host mock, which answers 500 for this account.
+	if err := h.st.SetSSHAccess("u_fail", true, false); err != nil {
+		t.Fatalf("seed access: %v", err)
+	}
+	older := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	for _, k := range []store.SSHKey{
+		{ID: "k_a", UserID: "u_fail", PublicKey: testKeyA, Fingerprint: "fp_a", AddedAt: older},
+		{ID: "k_b", UserID: "u_fail", PublicKey: testKeyB, Fingerprint: "fp_b", AddedAt: older.Add(time.Hour)},
+	} {
+		if err := h.st.AddSSHKey(k); err != nil {
+			t.Fatalf("seed key: %v", err)
+		}
+	}
+
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": true,
+		"keys":    []map[string]any{{"id": "k_b"}, {"public_key": freshKey(t)}},
+	})
+	resp.Body.Close()
+	if resp.StatusCode != 502 {
+		t.Fatalf("host failure = %d; want 502", resp.StatusCode)
+	}
+	keys, err := h.st.ListSSHKeys("u_fail")
+	if err != nil {
+		t.Fatalf("list keys: %v", err)
+	}
+	if len(keys) != 2 || keys[0].ID != "k_a" || keys[1].ID != "k_b" {
+		t.Fatalf("keys after the failed save = %+v; want k_a then k_b, as before", keys)
+	}
+	if !keys[0].AddedAt.Equal(older.UTC()) {
+		t.Fatalf("restored key was re-stamped: added_at = %v, want %v", keys[0].AddedAt, older.UTC())
+	}
+	access, _ := h.st.SSHAccessFor("u_fail")
+	if !access.Enabled {
+		t.Fatalf("access row changed by a failed save: %+v", access)
+	}
+	assertAudited(t, h, audit.ActionSSHKeyDelete, false)
+	assertAudited(t, h, audit.ActionSSHKeyAdd, false)
+}
+
+// Every write here is elevation-class, and a rejection audits so the Activity
+// view can answer "did someone try to open a shell into this box?". A refused
+// Save names each key it tried to add or remove, the same trail the separate
+// key routes left before they were folded into this one.
+func TestSSHWritesRequireElevation(t *testing.T) {
+	h := newHarness(t)
+	if err := h.st.CreateUser(store.User{ID: "u_alex", Username: "alex", DisplayName: "alex", Role: store.RoleAdmin}); err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := h.st.AddSSHKey(store.SSHKey{ID: "k_old", UserID: "u_alex", PublicKey: testKeyB, Fingerprint: "fp_old"}); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	h.seedPassword("alex", "pass1")
+	h.loginAs("alex", "pass1") // signed in, deliberately not elevated
+
+	// Turn SSH on, drop k_old, add a new key: one of each record.
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{
+		"enabled": true, "keys": []map[string]any{{"public_key": testKeyA}},
+	})
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("unelevated save = %d; want 403", resp.StatusCode)
+	}
+	if keys, _ := h.st.ListSSHKeys("u_alex"); len(keys) != 1 || keys[0].ID != "k_old" {
+		t.Fatalf("an unelevated save changed the keys: %+v", keys)
+	}
+	assertAudited(t, h, audit.ActionSSHAccessSet, false)
+	assertAudited(t, h, audit.ActionSSHKeyAdd, false)
+	assertAudited(t, h, audit.ActionSSHKeyDelete, false)
+}
+
+// The removed routes stay removed: the screen has one write, and a leftover
+// per-key route would be a second way to change keys that skips the final-state
+// guard.
+func TestPerKeyRoutesAreGone(t *testing.T) {
+	h := hostedSSHHarness(t)
+	for _, c := range []struct{ method, path string }{
+		{"POST", "/api/v1/me/ssh/keys"},
+		{"DELETE", "/api/v1/me/ssh/keys/whatever"},
+	} {
+		resp := h.do(c.method, c.path, map[string]any{"public_key": testKeyA})
+		resp.Body.Close()
+		if resp.StatusCode != 404 && resp.StatusCode != 405 {
+			t.Fatalf("%s %s = %d; want the route gone", c.method, c.path, resp.StatusCode)
+		}
+	}
+}
+
+// The panel state tells the UI which factor this profile makes mandatory, so the
+// two cannot drift.
+func TestKeyRequiredReflectsTheProfile(t *testing.T) {
+	hosted := hostedSSHHarness(t)
+	if got := hosted.sshState(t); !got.KeyRequired {
+		t.Fatalf("hosted key_required = false; want true")
+	}
+
+	appliance := applianceSSHHarness(t)
+	if got := appliance.sshState(t); got.KeyRequired {
+		t.Fatalf("appliance key_required = true; want false")
+	}
 }
 
 // Deleting a user revokes their SSH on the host first. The brain's rows cascade
@@ -305,163 +723,6 @@ func TestDeletingAUserWithoutSSHDoesNotCallTheHost(t *testing.T) {
 	}
 	if calls := h.sshCallsSnapshot(); len(calls) != 0 {
 		t.Fatalf("host was called for an account with no SSH: %+v", calls)
-	}
-}
-
-// A delete the host never applied is put back. The key is still live on the host
-// whichever way this goes, so dropping the row would only hide it: the panel
-// would show the key gone, a retry would 404, and nothing re-reads the host.
-func TestHostFailureRestoresTheDeletedKey(t *testing.T) {
-	h := newHarness(t)
-	if err := h.st.CreateUser(store.User{ID: "u_fail", Username: sshFailUser, DisplayName: sshFailUser, Role: store.RoleAdmin}); err != nil {
-		t.Fatalf("create admin: %v", err)
-	}
-	h.seedPassword(sshFailUser, "pass1")
-	h.loginAs(sshFailUser, "pass1")
-	h.elevate("pass1")
-
-	// Seeded straight into the store: every route that would set this up goes
-	// through the same host mock, which answers 500 for this account.
-	if err := h.st.SetSSHAccess("u_fail", true, false); err != nil {
-		t.Fatalf("seed access: %v", err)
-	}
-	for _, k := range []store.SSHKey{
-		{ID: "k_a", UserID: "u_fail", PublicKey: testKeyA, Fingerprint: "fp_a"},
-		{ID: "k_b", UserID: "u_fail", PublicKey: testKeyB, Fingerprint: "fp_b"},
-	} {
-		if err := h.st.AddSSHKey(k); err != nil {
-			t.Fatalf("seed key: %v", err)
-		}
-	}
-
-	resp := h.do("DELETE", "/api/v1/me/ssh/keys/k_a", nil)
-	resp.Body.Close()
-	if resp.StatusCode != 502 {
-		t.Fatalf("host failure = %d; want 502", resp.StatusCode)
-	}
-	keys, err := h.st.ListSSHKeys("u_fail")
-	if err != nil {
-		t.Fatalf("list keys: %v", err)
-	}
-	if len(keys) != 2 {
-		t.Fatalf("keys after the failed delete = %d; want 2 (%+v)", len(keys), keys)
-	}
-	assertAudited(t, h, audit.ActionSSHKeyDelete, false)
-}
-
-// Every write here is elevation-class, and a rejection audits so the Activity
-// view can answer "did someone try to open a shell into this box?".
-func TestSSHWritesRequireElevation(t *testing.T) {
-	h := newHarness(t)
-	if err := h.st.CreateUser(store.User{ID: "u_alex", Username: "alex", DisplayName: "alex", Role: store.RoleAdmin}); err != nil {
-		t.Fatalf("create admin: %v", err)
-	}
-	h.seedPassword("alex", "pass1")
-	h.loginAs("alex", "pass1") // signed in, deliberately not elevated
-
-	// Bodies are valid on purpose: huma validates the schema before the handler
-	// runs, so an empty body would 422 and never reach the elevation gate this
-	// test is about.
-	for _, c := range []struct {
-		method, path string
-		body         map[string]any
-	}{
-		{"PUT", "/api/v1/me/ssh", map[string]any{"enabled": true}},
-		{"POST", "/api/v1/me/ssh/keys", map[string]any{"public_key": testKeyA}},
-		{"DELETE", "/api/v1/me/ssh/keys/whatever", nil},
-	} {
-		resp := h.do(c.method, c.path, c.body)
-		resp.Body.Close()
-		if resp.StatusCode != 403 {
-			t.Fatalf("%s %s unelevated = %d; want 403", c.method, c.path, resp.StatusCode)
-		}
-	}
-	assertAudited(t, h, audit.ActionSSHAccessSet, false)
-	assertAudited(t, h, audit.ActionSSHKeyAdd, false)
-	assertAudited(t, h, audit.ActionSSHKeyDelete, false)
-}
-
-// The panel state tells the UI which factor this profile makes mandatory, so the
-// two cannot drift.
-func TestKeyRequiredReflectsTheProfile(t *testing.T) {
-	hosted := hostedSSHHarness(t)
-	resp := hosted.do("GET", "/api/v1/me/ssh", nil)
-	if got := decodeJSON[SSHAccessDTO](t, resp); !got.KeyRequired {
-		t.Fatalf("hosted key_required = false; want true")
-	}
-
-	appliance := applianceSSHHarness(t)
-	resp = appliance.do("GET", "/api/v1/me/ssh", nil)
-	if got := decodeJSON[SSHAccessDTO](t, resp); got.KeyRequired {
-		t.Fatalf("appliance key_required = true; want false")
-	}
-}
-
-func assertAudited(t *testing.T, h *harness, action string, success bool) {
-	t.Helper()
-	events, err := h.st.ListAuditEvents(store.AuditFilter{Limit: 100})
-	if err != nil {
-		t.Fatalf("list audit: %v", err)
-	}
-	for _, e := range events {
-		if e.Action == action && e.Success == success {
-			return
-		}
-	}
-	t.Fatalf("no %s audit event with success=%v", action, success)
-}
-
-// A failed elevation-class delete leaves a trace, including one against an id
-// that is not there — which is what probing another account's key ids would look
-// like from the Activity view.
-func TestFailedKeyDeleteIsAudited(t *testing.T) {
-	h := hostedSSHHarness(t)
-
-	resp := h.do("DELETE", "/api/v1/me/ssh/keys/nope", nil)
-	resp.Body.Close()
-	if resp.StatusCode != 404 {
-		t.Fatalf("delete unknown key = %d; want 404", resp.StatusCode)
-	}
-	assertAudited(t, h, audit.ActionSSHKeyDelete, false)
-}
-
-// The last-key guard is a guard rejection in the CLAUDE.md sense, the same shape
-// as the last-admin guard, so it audits rather than passing silently as a plain
-// validation failure.
-func TestLastKeyGuardIsAudited(t *testing.T) {
-	h := hostedSSHHarness(t)
-	body := h.addKey(t, testKeyA)
-	if resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true}); resp.StatusCode != 200 {
-		t.Fatalf("enable = %d", resp.StatusCode)
-	}
-
-	resp := h.do("DELETE", "/api/v1/me/ssh/keys/"+body.Keys[0].ID, nil)
-	resp.Body.Close()
-	if resp.StatusCode != 422 {
-		t.Fatalf("removing the only key = %d; want 422", resp.StatusCode)
-	}
-	assertAudited(t, h, audit.ActionSSHKeyDelete, false)
-}
-
-// A second key makes the first removable, which is the escape hatch the guard
-// leaves open.
-func TestSecondKeyMakesTheFirstRemovable(t *testing.T) {
-	h := hostedSSHHarness(t)
-	first := h.addKey(t, testKeyA)
-	h.addKey(t, testKeyB)
-	if resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true}); resp.StatusCode != 200 {
-		t.Fatalf("enable = %d", resp.StatusCode)
-	}
-
-	resp := h.do("DELETE", "/api/v1/me/ssh/keys/"+first.Keys[0].ID, nil)
-	resp.Body.Close()
-	if resp.StatusCode != 204 {
-		t.Fatalf("delete with a spare key = %d; want 204", resp.StatusCode)
-	}
-	calls := h.sshCallsSnapshot()
-	last := calls[len(calls)-1]
-	if len(last.AuthorizedKeys) != 1 {
-		t.Fatalf("host got %d keys after the revoke; want 1", len(last.AuthorizedKeys))
 	}
 }
 
@@ -627,7 +888,7 @@ func TestApplianceKeepsThePasswordWhenAKeyIsAdded(t *testing.T) {
 func assertApplianceKeepsThePassword(t *testing.T, body map[string]any) {
 	t.Helper()
 	h := applianceSSHHarness(t)
-	h.addKey(t, testKeyA)
+	body["keys"] = keep(h.addKey(t, testKeyA))
 	before := len(h.sshCallsSnapshot())
 
 	resp := h.do("PUT", "/api/v1/me/ssh", body)
@@ -663,9 +924,9 @@ func assertApplianceKeepsThePassword(t *testing.T, body map[string]any) {
 // with the key alone.
 func TestHostedKeepsTheAccountsPasswordChoice(t *testing.T) {
 	h := hostedSSHHarness(t)
-	h.addKey(t, testKeyA)
+	cur := h.addKey(t, testKeyA)
 
-	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true, "require_password": false})
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true, "require_password": false, "keys": keep(cur)})
 	if resp.StatusCode != 200 {
 		t.Fatalf("enable = %d", resp.StatusCode)
 	}
@@ -687,7 +948,7 @@ func TestHostedKeepsTheAccountsPasswordChoice(t *testing.T) {
 func TestApplianceWithoutAKeyStillRequiresThePassword(t *testing.T) {
 	h := applianceSSHHarness(t)
 
-	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true})
+	resp := h.do("PUT", "/api/v1/me/ssh", map[string]any{"enabled": true, "keys": []any{}})
 	if resp.StatusCode != 200 {
 		t.Fatalf("enable = %d", resp.StatusCode)
 	}

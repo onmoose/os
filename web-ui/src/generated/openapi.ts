@@ -613,44 +613,10 @@ export interface paths {
         };
         /** Read my SSH access settings and keys (auth required) */
         get: operations["get-my-ssh"];
-        /** Turn my SSH access on or off (auth required, elevation-class) */
+        /** Save my whole SSH state: on or off, the password choice, and the complete key set (auth required, elevation-class) */
         put: operations["set-my-ssh"];
         post?: never;
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/ssh/keys": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Add one of my SSH public keys (auth required, elevation-class) */
-        post: operations["add-my-ssh-key"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/me/ssh/keys/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** Remove one of my SSH public keys (auth required, elevation-class) */
-        delete: operations["delete-my-ssh-key"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1020,16 +986,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        "Add-my-ssh-keyRequest": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Add-my-ssh-keyRequest.json
-             */
-            readonly $schema?: string;
-            label?: string;
-            public_key: string;
-        };
         AppConfigDTO: {
             /**
              * Format: uri
@@ -1815,6 +1771,12 @@ export interface components {
             label: string;
             public_key: string;
         };
+        SSHKeyInput: {
+            /** @description A key the account already holds. Omit for a new key. */
+            id?: string;
+            label?: string;
+            public_key?: string;
+        };
         "Set-app-exposureRequest": {
             /**
              * Format: uri
@@ -1842,6 +1804,7 @@ export interface components {
              */
             readonly $schema?: string;
             enabled: boolean;
+            keys: components["schemas"]["SSHKeyInput"][] | null;
             require_password?: boolean;
         };
         "Set-telemetryRequest": {
@@ -3351,68 +3314,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SSHAccessDTO"];
                 };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ErrorModel"];
-                };
-            };
-        };
-    };
-    "add-my-ssh-key": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["Add-my-ssh-keyRequest"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SSHAccessDTO"];
-                };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ErrorModel"];
-                };
-            };
-        };
-    };
-    "delete-my-ssh-key": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description No Content */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             /** @description Error */
             default: {
