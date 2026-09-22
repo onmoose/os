@@ -174,10 +174,10 @@ The following `action` strings are the pinned v1 set. Defined as exported consts
 | `ssh.access.set` | A Save on the SSH screen (`PUT /api/v1/me/ssh`) turned SSH on or off, or changed the password choice. Also written for a Save that changes nothing, so every request leaves a line. Success and failure both audited. Metadata carries `enabled` and `require_password` as asked, plus `require_password_applied` on success. |
 | `ssh.key.add` | A Save on the SSH screen added an SSH public key. One record per key added. Metadata carries the fingerprint, never the key. |
 | `ssh.key.delete` | A Save on the SSH screen removed an SSH public key. One record per key removed. Metadata carries the fingerprint. |
-
-All three come from the one `PUT /api/v1/me/ssh` handler (#494). A refused Save writes the same records with success false, so Activity still shows which keys somebody tried to add or remove.
 | `health.issue.raised` | A typed health issue transitioned from cleared to active. One record per issue, system actor, `target_kind: health_issue`. |
 | `health.issue.cleared` | A typed health issue transitioned from active to cleared. One record per issue, system actor, `target_kind: health_issue`. |
+
+The three `ssh.*` actions all come from the one `PUT /api/v1/me/ssh` handler (#494). A refused Save writes the same records with success false, so Activity still shows which keys somebody tried to add or remove.
 
 SSH/SMB/sudo ingestion (`ssh.login.success`, `ssh.login.failure`, `smb.login.*`, `sudo.invoke`, `su.invoke`) is deferred — see "What this doc deliberately doesn't pin" and `NEXT.md`.
 
