@@ -1,8 +1,9 @@
 // Shared shape and helpers for the outgoing-email provider form
-// (SERVICE_PROVISIONING.md # BYO outgoing mail). Two views consume it: the add
-// flow at /settings/mail/add/:preset and the inline edit form on the account
-// list, which must agree field for field — the same preset rules decide what
-// is shown and what is sent on both.
+// (SERVICE_PROVISIONING.md # BYO outgoing mail). Three places consume it: the
+// add flow at /settings/mail/add/:preset, the inline edit form on the account
+// list, and the inline add on the install setup page. They must agree field for
+// field: the same preset rules decide what is shown and what is sent on all.
+import type { Ref } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { api, ApiError, type MailPreset } from "@/api";
 import { isHosted } from "@/auth";
@@ -20,12 +21,15 @@ export type ProviderForm = {
 };
 
 // The preset table is static server-side data, so it never needs refetching
-// within a session. Both views call this; Query dedupes them onto one request.
-export function useMailPresets() {
+// within a session. Every caller shares it; Query dedupes them onto one request.
+// The endpoint is admin-only, so the install page passes `enabled` and fetches
+// only once an admin opens its add flow.
+export function useMailPresets(enabled?: Ref<boolean>) {
   return useQuery({
     queryKey: ["mail-presets"],
     queryFn: () => api.get<{ presets: MailPreset[] }>("/mail-presets"),
     staleTime: Infinity,
+    enabled: enabled ?? true,
   });
 }
 

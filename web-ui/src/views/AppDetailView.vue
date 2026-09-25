@@ -5,27 +5,29 @@
 // charges plus the third-party costs the manifest declares. Both are imported
 // from the marketing store's app page (cloud internal/web/templates/pages/app.html)
 // so the two store surfaces show one catalog the same way. This is
-// where Install lives (the browse grid only navigates here): the consent flow,
-// duplicate handling, and household/personal split-button are driven by the
-// useInstall composable, shared in shape with what the Store row used to do.
+// where Install starts (the browse grid only navigates here): the button goes
+// to the setup page (/store/:id/install), and the household item of the split
+// button adds ?scope=household. Which copies the caller already has, and so
+// whether the button reads Install, Open, or "Installing…", comes from
+// useAppInstances.
 //
 // The long description is author markdown rendered to HTML and sanitized before
 // it touches the DOM (catalog text is author-controlled; sanitize anyway).
 import { computed, onUnmounted, ref, watch } from "vue";
-import { useRoute, RouterLink } from "vue-router";
+import { useRoute, useRouter, RouterLink } from "vue-router";
 import { useQuery } from "@tanstack/vue-query";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { ChevronLeft, ChevronRight, Info, X } from "lucide-vue-next";
 import { api, type CatalogDetail, type CatalogHome } from "../api";
-import { useInstall } from "../useInstall";
+import { useAppInstances } from "../useInstall";
 import { formatSize, safeExternalUrl } from "../utils";
 import AppGlyph from "../components/AppGlyph.vue";
-import InstallDialog from "../components/InstallDialog.vue";
 import SplitButton from "../components/SplitButton.vue";
 import HealthGated from "../components/HealthGated.vue";
 
 const route = useRoute();
+const router = useRouter();
 // The route param is the manifest id; keep it reactive so navigating between two
 // detail pages without unmounting re-drives the queries.
 const manifestId = computed(() => String(route.params.id));
@@ -54,49 +56,19 @@ const categoryLabels = computed(() => {
     .join(", ");
 });
 
-const {
-  activePlan,
-  dialogScope,
-  dialogError,
-  duplicateInfo,
-  installError,
-  installing,
-  currentStep,
-  install,
-  openInstallDialog,
-  closeDialog,
-  handleSubmit,
-  handleConfirmDuplicate,
-  householdInstance,
-  ownPersonalInstance,
-  dropdownItems,
-} = useInstall(manifestId);
+const { householdInstance, ownPersonalInstance, installing, canInstallHousehold } = useAppInstances(manifestId);
 
-// The brain emits a fine-grained `step` throughout the install job
-// (internal/lifecycle/lifecycle.go). Collapse those ~15 technical steps into a
-// few friendly, non-technical phases for the Install button — wording stays in
-// the view (useInstall exposes the raw step). Any unknown or empty step falls
-// back to the generic "Installing…" so a newly-added brain step never surfaces
-// raw on the button.
-const INSTALL_PHASES: Record<string, string> = {
-  admitting_compose: "Preparing…",
-  checking_gpu: "Preparing…",
-  allocating_slug: "Preparing…",
-  writing_instance_dir: "Preparing…",
-  generating_secrets: "Preparing…",
-  provisioning_services: "Preparing…",
-  binding_mail_provider: "Preparing…",
-  generating_override: "Preparing…",
-  creating_network: "Preparing…",
-  publishing_mdns: "Preparing…",
-  registering_route: "Preparing…",
-  resolving_digests: "Downloading…",
-  compose_up: "Downloading…",
-  waiting_healthy: "Starting…",
-  flipping_route: "Starting…",
-};
-const installPhaseLabel = computed(
-  () => (currentStep.value && INSTALL_PHASES[currentStep.value]) || "Installing…",
+function goInstall(household = false) {
+  router.push({
+    path: `/store/${encodeURIComponent(manifestId.value)}/install`,
+    query: household ? { scope: "household" } : undefined,
+  });
+}
+
+// The split button's menu. Only admins outside single-user mode get the
+// household item; everyone else gets a plain Install button.
+const dropdownItems = computed(() =>
+  canInstallHousehold.value ? [{ label: "Install for the whole household", action: () => goInstall(true) }] : [],
 );
 
 // brokenIcon falls the header icon back to the glyph if the asset fails to load;
@@ -113,7 +85,7 @@ const descriptionHtml = computed(() => {
 });
 
 // sizeLabel is the coarse catalog footprint (image disk bytes); shown only when
-// the manifest carries sized images. The install dialog shows the sharper,
+// the manifest carries sized images. The install setup page shows the sharper,
 // box-specific figure (DASHBOARD.md # the consent screen shows the on-disk footprint).
 const sizeLabel = computed(() => {
   const b = app.value?.footprint.image_disk_bytes ?? 0;
@@ -315,11 +287,11 @@ watch(shots, (list) => {
             blocks="apps"
           >
             <SplitButton
-              :label="installing ? installPhaseLabel : 'Install'"
+              :label="installing ? 'Installing…' : 'Install'"
               :loading="installing"
               :disabled="installing"
               :items="dropdownItems"
-              @click="openInstallDialog()"
+              @click="goInstall()"
             />
           </HealthGated>
         </div>
@@ -503,40 +475,6 @@ watch(shots, (list) => {
         </aside>
       </div>
 
-      <!-- Duplicate-install warning (409 duplicate-install) -->
-      <div v-if="duplicateInfo" class="rounded-xl border border-border bg-card px-4 py-3 space-y-2">
-        <p class="text-sm">{{ duplicateInfo }}</p>
-        <div class="flex gap-2">
-          <button
-            class="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-            :disabled="installing"
-            @click="handleConfirmDuplicate"
-          >
-            Install my own copy
-          </button>
-          <button class="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-muted" @click="closeDialog">
-            Cancel
-          </button>
-        </div>
-      </div>
-
-      <!-- Install failed after the dialog closed (job failure / host 5xx) -->
-      <div v-if="installError" class="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 space-y-2">
-        <p class="text-sm text-destructive">{{ installError }}</p>
-        <button class="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-muted" @click="installError = null">
-          Dismiss
-        </button>
-      </div>
-
-      <!-- Install consent dialog -->
-      <InstallDialog
-        v-if="activePlan && !duplicateInfo && !install.isPending.value"
-        :plan="activePlan"
-        :scope="dialogScope"
-        :submit-error="dialogError"
-        @submit="handleSubmit"
-        @cancel="closeDialog"
-      />
     </template>
   </div>
 </template>

@@ -136,7 +136,7 @@ export type SSHKey = Schemas["SSHKeyDTO"];
 // serves scope (like severity / status / state) as a free string — the huma
 // structs don't declare enums (filed as a follow-up in
 // docs/progress/openapi-codegen.md). The dashboard only ever sets/compares the
-// two real values, and InstallDialog indexes FolderSources by scope, which
+// two real values, and the install setup page indexes FolderSources by scope, which
 // needs the literal union.
 export type Scope = "household" | "personal";
 

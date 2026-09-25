@@ -19,6 +19,16 @@ const routes: RouteRecordRaw[] = [
   // App detail page (APP_STORE.md # Catalog schema) — the browse grid links here;
   // it's where the description, screenshots, and the Install flow live.
   { path: "/store/:id", name: "store-app", component: () => import("@/views/AppDetailView.vue") },
+  // Installing a catalog app is two pages (INSTALL_SETUP.md # 6): the setup form,
+  // then the progress of the job it starts. ?scope=household on the setup page
+  // is the split-button's household install. The job id is in the progress URL,
+  // so a reload picks the job up again.
+  { path: "/store/:id/install", name: "store-install", component: () => import("@/views/InstallSetupView.vue") },
+  {
+    path: "/store/:id/install/:jobId",
+    name: "store-install-progress",
+    component: () => import("@/views/InstallProgressView.vue"),
+  },
   // Settings shell + its sections (DASHBOARD.md # global navigation, AUTH.md #
   // Roles). The bare /settings redirects to Account, the default landing. The old
   // /settings/users and /settings/activity paths are preserved here as the same
