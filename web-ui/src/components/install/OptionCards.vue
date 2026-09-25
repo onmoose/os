@@ -54,7 +54,9 @@ const visible = computed<Option[]>(() => {
   return [...head, ...extra];
 });
 
-const hasMore = computed(() => props.options.length > props.featured);
+// With allowTyped the button shows even for a short list, because the search
+// box behind it is also where a typed value goes.
+const hasMore = computed(() => props.options.length > props.featured || props.allowTyped);
 
 // A typed value is offered when the search has text that is not already an
 // option id.
