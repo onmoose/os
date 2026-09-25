@@ -53,6 +53,11 @@ type Editing = { slot: AISlot; provider: AIProvider; draft: AIChoice };
 const editing = ref<Editing | null>(null);
 
 function pick(id: string) {
+  // A second click on the provider being edited closes its editor.
+  if (editing.value?.provider.id === id) {
+    editing.value = null;
+    return;
+  }
   const provider = providerOf(id);
   const slot = provider && slotFor(provider, props.slots);
   if (!provider || !slot) return;
@@ -105,9 +110,6 @@ const APP_DEFAULT = "__app_default";
 const modelOptions = computed<Option[]>(() => {
   if (!editing.value) return [];
   const opts: Option[] = editing.value.provider.models.map((m) => ({ id: m, label: m }));
-  // A typed model stays visible as a card of its own once chosen.
-  const m = editing.value.draft.model;
-  if (m && !opts.some((o) => o.id === m)) opts.push({ id: m, label: m });
   if (!modelRequired(editing.value.slot)) {
     opts.unshift({ id: APP_DEFAULT, label: "App default", description: `Let ${props.appName} choose` });
   }
@@ -120,6 +122,20 @@ const selectedModel = computed(() => {
 function pickModel(id: string) {
   if (editing.value) editing.value.draft.model = id === APP_DEFAULT ? "" : id;
 }
+
+// otherModel is the typed field under the model cards: a model id that is not
+// in our list. Providers ship new models faster than the list changes, so the
+// field is always there, never hidden behind "More". It shows the current
+// model only when that model is not one of the cards.
+const otherModel = computed({
+  get: () => {
+    const m = editing.value?.draft.model ?? "";
+    return editing.value?.provider.models.includes(m) ? "" : m;
+  },
+  set: (v: string) => {
+    if (editing.value) editing.value.draft.model = v;
+  },
+});
 
 const inputClass =
   "block w-full rounded-md bg-card px-3 py-1.5 text-base text-foreground outline-1 -outline-offset-1 " +
@@ -193,7 +209,7 @@ const inputClass =
             id="ai-url"
             v-model="editing.draft.baseUrl"
             type="url"
-            :placeholder="editing.provider.id === 'ollama' ? 'http://192.168.1.20:11434/v1' : 'https://example.com/v1'"
+            placeholder="https://example.com/v1"
             autocomplete="off"
             :class="inputClass"
           />
@@ -212,14 +228,12 @@ const inputClass =
           label="Model"
           :options="modelOptions"
           :selected="selectedModel"
-          allow-typed
           @pick="pickModel"
         />
         <input
-          v-else
-          v-model="editing.draft.model"
-          aria-label="Model"
-          placeholder="Model name, for example llama3.2"
+          v-model="otherModel"
+          :aria-label="editing.provider.models.length > 0 ? 'Other model' : 'Model'"
+          :placeholder="editing.provider.models.length > 0 ? 'Or type another model name' : 'Model name'"
           autocomplete="off"
           :class="inputClass"
         />

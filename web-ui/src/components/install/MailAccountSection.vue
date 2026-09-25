@@ -3,10 +3,12 @@
 // outgoing mail). The user picks which account the app sends from, or None:
 // the app then installs with email features off.
 //
-// An admin can add an account right here, without leaving the install. The
+// Any user can add an account right here, without leaving the install. The
 // form is the Settings add flow in short, and shares its rules through
-// mailProviderForm.ts. Adding an account is admin-only and elevation-class, so
-// it goes through withElevation, and a dismissed prompt is a quiet no-op.
+// mailProviderForm.ts. The account belongs to the user who adds it, and the
+// list shows only their own. Adding needs no password re-prompt, which is
+// what lets a hosted owner add one here: their re-prompt is a full-page trip
+// to the portal that would lose this form.
 //
 // A new account reaches the picker through the install-plan query: the page
 // refetches the plan, and this picks the new account once it is there.
@@ -14,8 +16,6 @@ import { computed, ref } from "vue";
 import { useMutation, useQueryClient } from "@tanstack/vue-query";
 import { MailX, Plus } from "lucide-vue-next";
 import { api, type MailPreset, type MailProvider, type MailProviderOption } from "../../api";
-import { withElevation } from "../../elevate";
-import { useAuth } from "../../auth";
 import Button from "../ui/Button.vue";
 import MailProviderLogo from "../MailProviderLogo.vue";
 import OptionCards from "./OptionCards.vue";
@@ -40,8 +40,6 @@ const props = defineProps<{
 const selected = defineModel<string>({ required: true });
 
 const qc = useQueryClient();
-const { currentUser } = useAuth();
-const isAdmin = computed(() => currentUser.value?.role === "admin");
 
 const NONE = "__none";
 const options = computed(() => [
@@ -67,7 +65,7 @@ const addError = ref("");
 const testOnAdd = ref(true);
 const checking = ref(false);
 
-// Only fetched once the admin opens the add flow: the endpoint is admin-only.
+// Only fetched once the user opens the add flow: most installs never need it.
 const presets = useMailPresets(adding);
 const presetOptions = computed(() =>
   (presets.data.value?.presets ?? []).map((p) => ({ id: p.id, label: p.label })),
@@ -113,7 +111,7 @@ const create = useMutation({
         checking.value = false;
       }
     }
-    return withElevation(() => api.post<MailProvider>("/mail-providers", body));
+    return api.post<MailProvider>("/mail-providers", body);
   },
   onSuccess: async (created) => {
     qc.invalidateQueries({ queryKey: ["mail-providers"] });
@@ -148,7 +146,7 @@ const inputClass =
         </span>
         <MailProviderLogo v-else :id="typeOf(option.id)" :label="option.label" size="inline" />
       </template>
-      <template v-if="isAdmin && !adding" #extra>
+      <template v-if="!adding" #extra>
         <button
           type="button"
           class="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border px-4 py-3.5 text-left hover:border-olive-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
@@ -162,9 +160,6 @@ const inputClass =
       </template>
     </OptionCards>
 
-    <p v-if="!isAdmin && providers.length === 0" class="text-sm text-muted-foreground">
-      No email accounts yet. An admin can add one in Settings, and you can pick it later on the app's settings screen.
-    </p>
 
     <!-- Inline add, step 1: who sends the email. -->
     <div v-if="adding" class="space-y-4 rounded-lg border border-border bg-card p-4">

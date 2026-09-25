@@ -63,13 +63,20 @@ export function useInstallSubmit(manifestId: Ref<string>) {
 
   const mutation = useMutation({
     mutationFn: (req: InstallRequest) => api.post<Job>("/apps", req),
-    onSuccess: (job) => {
+    onSuccess: (job, req) => {
       // The instance row appears early in the job; refetch so the detail page
       // shows "Installing…" if the user goes back to it.
       qc.invalidateQueries({ queryKey: ["apps"] });
       // replace, not push: Back from the progress page should not land on a
       // setup form for an install that has already started.
-      router.replace(`/store/${encodeURIComponent(manifestId.value)}/install/${encodeURIComponent(job.job_id)}`);
+      //
+      // The scope rides along in the URL. The job does not say which scope it
+      // had, and the progress page's "Try again" must go back to the same
+      // setup page, household or personal.
+      router.replace({
+        path: `/store/${encodeURIComponent(manifestId.value)}/install/${encodeURIComponent(job.job_id)}`,
+        query: req.scope === "household" ? { scope: "household" } : {},
+      });
     },
     onError: (err: unknown) => {
       if (err instanceof ApiError && err.code === "duplicate-install") {

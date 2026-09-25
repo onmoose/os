@@ -33,11 +33,11 @@ Every panel below is already implied by an existing spec. The **owning doc** col
 | | SSH | Per-account SSH opt-in, and the account's SSH public keys (upload a file or paste the text). The mandatory auth factor is the profile's: a key on hosted, the password on the appliance. Built as its own screen named SSH (#482): SMB has no API yet, so nothing would sit beside it. The SMB opt-in joins this screen when file shares ship, and the screen goes back to being called Device access. The screen is a draft with one Cancel and one Save, so a whole change is one request and one confirm (#494) | `AUTH.md` # Device access | any user |
 | | Sessions | "Sign out everywhere" | `AUTH.md` # Sessions | any user |
 | | Notifications | Per-category mute toggles | `NOTIFICATIONS.md` # Configuration | any user (role-filtering the list is a `NEXT.md` open item) |
+| | Outgoing email | The user's own email accounts (add / edit / delete / test-send), which their apps send from. Each account belongs to the user who added it, and only they see or use it (`DECISIONS.md` 2026-09-25). Adding one is a provider picker plus the credential, not seven blank fields; host / port / encryption sit behind Advanced settings. Add and edit need no password re-prompt; delete does | `SERVICE_PROVISIONING.md` # BYO outgoing mail | any user |
 | **Box settings** | Users | Create / reset password / role change; per-user pending update facts | `USERS_AND_GROUPS.md`, `UPDATES.md` # Admin visibility | admin |
 | | Storage | Capacity, add / eject data drive, recovery passphrase | `STORAGE.md` | admin |
 | | Network | WiFi, static IP, hostname, multi-NIC priority, mesh enrollment | `MOOSE_NETWORK.md`, `FIRST_RUN.md` | admin |
 | | Sharing | Samba network shares, media streaming (DLNA) | `SERVICE_PROVISIONING.md` | admin |
-| | Outgoing email | SMTP provider registry (add / edit / delete / test-send) apps bind to for sending email. Adding one is a provider picker plus the credential, not seven blank fields; host / port / encryption sit behind Advanced settings | `SERVICE_PROVISIONING.md` # BYO outgoing mail | admin |
 | | Remote access | Tailscale / Headscale UI at `/settings/tailscale` | `SERVICE_PROVISIONING.md`, `MOOSE_NETWORK.md` | admin |
 | | Updates | Aggregate app + OS view, check-for-updates, rollback | `UPDATES.md` | admin |
 | | Privacy | Telemetry on/off (single toggle, both streams), last-transmission timestamp | `TELEMETRY.md` # Settings UI | admin |

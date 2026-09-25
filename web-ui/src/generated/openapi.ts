@@ -151,7 +151,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Bind an app to an outgoing-mail provider (empty provider_id unbinds) */
+        /** Bind an app to one of the caller's outgoing-mail providers (empty provider_id unbinds) */
         put: operations["set-app-mail-binding"];
         post?: never;
         delete?: never;
@@ -473,7 +473,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List built-in outgoing-mail provider presets (admin only) */
+        /** List built-in outgoing-mail provider presets */
         get: operations["list-mail-presets"];
         put?: never;
         post?: never;
@@ -490,10 +490,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List outgoing-mail providers (admin only) */
+        /** List the caller's own outgoing-mail providers */
         get: operations["list-mail-providers"];
         put?: never;
-        /** Register an outgoing-mail provider (admin only) */
+        /** Add an outgoing-mail provider owned by the caller */
         post: operations["create-mail-provider"];
         delete?: never;
         options?: never;
@@ -508,7 +508,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List provider picker options: id, label and provider type (any authenticated user) */
+        /** List the caller's provider picker options: id, label and provider type */
         get: operations["list-mail-provider-options"];
         put?: never;
         post?: never;
@@ -527,7 +527,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Check an unsaved provider config by connecting and authenticating (admin only) */
+        /** Check an unsaved provider config by connecting and authenticating */
         post: operations["verify-mail-provider-config"];
         delete?: never;
         options?: never;
@@ -543,10 +543,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update an outgoing-mail provider (admin only) */
+        /** Update one of the caller's outgoing-mail providers */
         put: operations["update-mail-provider"];
         post?: never;
-        /** Delete an outgoing-mail provider (admin only; bound apps fall back to unbound) */
+        /** Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound) */
         delete: operations["delete-mail-provider"];
         options?: never;
         head?: never;
@@ -562,7 +562,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send a test email through a provider (admin only) */
+        /** Send a test email through one of the caller's providers */
         post: operations["test-mail-provider"];
         delete?: never;
         options?: never;

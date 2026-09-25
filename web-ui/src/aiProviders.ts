@@ -32,7 +32,7 @@ export type AIProvider = {
   // baseUrl is the provider's OpenAI-compatible endpoint. A provider without
   // one (a self-hosted server) asks the user to type it.
   baseUrl?: string;
-  // needsKey is false for a local server (Ollama) that takes no key.
+  // needsKey is false for a server the user runs, which may take no key.
   needsKey: boolean;
   // models are suggestions, first one is the default. The picker also takes a
   // typed model id, so a model missing here never blocks the user.
@@ -41,15 +41,26 @@ export type AIProvider = {
 
 // Order is the featured order: the setup page shows the first five, and the
 // rest behind "More".
+//
+// Checked against each provider's own docs on 2026-09-25: the model ids of
+// Anthropic, OpenAI, Gemini, Groq, Mistral, DeepSeek, xAI and Cerebras; the
+// base URLs of Anthropic, Gemini, OpenRouter, Mistral, DeepSeek and xAI; the
+// key pages of Anthropic and DeepSeek. Everything else here (the other key
+// pages and base URLs, most OpenRouter models, and the Together and
+// Fireworks entries) was not checked.
+//
+// No Ollama tile: Ollama runs on the user's own computer, which a hosted box
+// cannot reach. "Other" covers a server the box can reach, since the user
+// types its address.
 export const PROVIDERS: AIProvider[] = [
   {
     id: "anthropic",
     label: "Anthropic",
     icon: Sparkles,
-    keyUrl: "https://console.anthropic.com/settings/keys",
+    keyUrl: "https://platform.claude.com/settings/keys",
     baseUrl: "https://api.anthropic.com/v1/",
     needsKey: true,
-    models: ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
+    models: ["claude-sonnet-5", "claude-opus-5-5", "claude-haiku-4-5", "claude-fable-5-1"],
   },
   {
     id: "openai",
@@ -58,7 +69,7 @@ export const PROVIDERS: AIProvider[] = [
     keyUrl: "https://platform.openai.com/api-keys",
     baseUrl: "https://api.openai.com/v1",
     needsKey: true,
-    models: ["gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4o-mini"],
+    models: ["gpt-6-sol", "gpt-6-astra", "gpt-6-luna"],
   },
   {
     id: "gemini",
@@ -67,7 +78,7 @@ export const PROVIDERS: AIProvider[] = [
     keyUrl: "https://aistudio.google.com/apikey",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
     needsKey: true,
-    models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    models: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-2.5-pro"],
   },
   {
     id: "openrouter",
@@ -76,13 +87,9 @@ export const PROVIDERS: AIProvider[] = [
     keyUrl: "https://openrouter.ai/keys",
     baseUrl: "https://openrouter.ai/api/v1",
     needsKey: true,
-    models: [
-      "anthropic/claude-sonnet-4.5",
-      "openai/gpt-5",
-      "google/gemini-2.5-pro",
-      "meta-llama/llama-3.3-70b-instruct",
-      "deepseek/deepseek-chat",
-    ],
+    // "~openai/gpt-sol-latest" is the id OpenRouter's own quickstart uses. The
+    // others follow its vendor/model naming but were not checked.
+    models: ["~openai/gpt-sol-latest", "anthropic/claude-sonnet-5", "google/gemini-3.8-flash"],
   },
   {
     id: "groq",
@@ -91,7 +98,7 @@ export const PROVIDERS: AIProvider[] = [
     keyUrl: "https://console.groq.com/keys",
     baseUrl: "https://api.groq.com/openai/v1",
     needsKey: true,
-    models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b", "qwen/qwen3-32b"],
+    models: ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "llama-3.1-8b-instant"],
   },
   {
     id: "mistral",
@@ -100,16 +107,16 @@ export const PROVIDERS: AIProvider[] = [
     keyUrl: "https://console.mistral.ai/api-keys",
     baseUrl: "https://api.mistral.ai/v1",
     needsKey: true,
-    models: ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest"],
+    models: ["mistral-large-latest", "mistral-small-latest"],
   },
   {
     id: "deepseek",
     label: "DeepSeek",
     icon: Bot,
     keyUrl: "https://platform.deepseek.com/api_keys",
-    baseUrl: "https://api.deepseek.com/v1",
+    baseUrl: "https://api.deepseek.com",
     needsKey: true,
-    models: ["deepseek-chat", "deepseek-reasoner"],
+    models: ["deepseek-flash", "deepseek-v4-pro"],
   },
   {
     id: "xai",
@@ -118,7 +125,7 @@ export const PROVIDERS: AIProvider[] = [
     keyUrl: "https://console.x.ai",
     baseUrl: "https://api.x.ai/v1",
     needsKey: true,
-    models: ["grok-4", "grok-3-mini"],
+    models: ["grok-4.7", "grok-4.6"],
   },
   {
     id: "together",
@@ -145,14 +152,7 @@ export const PROVIDERS: AIProvider[] = [
     keyUrl: "https://cloud.cerebras.ai",
     baseUrl: "https://api.cerebras.ai/v1",
     needsKey: true,
-    models: ["llama-3.3-70b", "qwen-3-32b"],
-  },
-  {
-    id: "ollama",
-    label: "Ollama",
-    icon: Server,
-    needsKey: false,
-    models: ["llama3.2", "qwen2.5", "mistral"],
+    models: ["gpt-oss-120b", "qwen-3.8-27b"],
   },
   {
     id: "custom",
@@ -260,7 +260,7 @@ export function usedAsCompatible(p: AIProvider, slot: AISlot): boolean {
   return slot.native !== p.id;
 }
 
-// A provider without a fixed endpoint (Ollama, other) asks for its URL.
+// A provider without a fixed endpoint ("Other") asks for its URL.
 export function asksForUrl(p: AIProvider, slot: AISlot): boolean {
   return usedAsCompatible(p, slot) && !p.baseUrl;
 }

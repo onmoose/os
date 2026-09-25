@@ -110,24 +110,11 @@ watch(
 
 // ── Storage footprint (DASHBOARD.md # the consent screen shows the on-disk
 // footprint) ────────────────────────────────────────────────────────────────
-// download_bytes already subtracts images this box has cached. The row is
-// skipped for an unsized manifest rather than showing a bare 0.
+// The page shows only the disk space the app takes. The download size and the
+// "grows as you use it" estimate are left out on purpose. The row is skipped
+// for an unsized manifest rather than showing a bare 0.
 const fp = computed(() => plan.value?.footprint);
-const hasFootprint = computed(
-  () => !!fp.value && (fp.value.image_disk_bytes > 0 || fp.value.estimated_state_bytes != null || fp.value.download_bytes > 0),
-);
-const downloadLine = computed(() =>
-  (fp.value?.download_bytes ?? 0) > 0
-    ? `Download about ${formatSize(fp.value!.download_bytes)}.`
-    : "Already downloaded, nothing new to fetch.",
-);
-const usesLine = computed(() => {
-  const grows = fp.value?.estimated_state_bytes != null;
-  if ((fp.value?.image_disk_bytes ?? 0) > 0) {
-    return `Uses about ${formatSize(fp.value!.image_disk_bytes)} on your box${grows ? ", and grows as you use it" : ""}.`;
-  }
-  return grows ? "Uses space on your box that grows as you use it." : "Uses some space on your box.";
-});
+const hasSize = computed(() => (fp.value?.image_disk_bytes ?? 0) > 0);
 // Warn, never block, when the projected need nears the free space. 90% is a
 // UI judgement of "nears"; free_bytes 0 means the brain could not measure.
 const notEnoughSpace = computed(() => {
@@ -362,14 +349,10 @@ const ddClass = "mt-2 text-sm/6 text-foreground sm:col-span-2 sm:mt-0";
             </dd>
           </div>
 
-          <div v-if="hasFootprint && fp" :class="rowClass">
-            <dt :class="dtClass">Storage</dt>
+          <div v-if="(hasSize || notEnoughSpace) && fp" :class="rowClass">
+            <dt :class="dtClass">Size</dt>
             <dd :class="[ddClass, 'space-y-3']">
-              <ul class="list-disc space-y-1 pl-5 marker:text-muted-foreground">
-                <li v-if="fp.image_disk_bytes > 0 || fp.download_bytes > 0">{{ downloadLine }}</li>
-                <li>{{ usesLine }}</li>
-                <li class="text-muted-foreground">Your own files stay in your folders, not inside the app.</li>
-              </ul>
+              <p v-if="hasSize">About {{ formatSize(fp.image_disk_bytes) }}</p>
               <p v-if="notEnoughSpace" class="flex gap-2 rounded-md bg-destructive/10 px-3 py-2 text-destructive">
                 <TriangleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
                 This might not fit. Only about {{ formatSize(fp.free_bytes) }} is free on your box. You can still

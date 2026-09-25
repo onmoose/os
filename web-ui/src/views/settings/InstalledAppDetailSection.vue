@@ -145,9 +145,10 @@ const accessSummary = computed(() => {
 
 // ── Outgoing email (SERVICE_PROVISIONING.md # BYO outgoing mail) ─────────────
 // Shown only for mail-capable apps (mail_supported comes from GET /apps/{id}).
-// The options endpoint is id+label and readable by any signed-in user, so a
-// member can rebind their own personal app. A rebind recreates the app's
-// containers (env is read at container create), hence the job + hint below.
+// The options endpoint lists the caller's own accounts, the only ones the
+// brain lets them bind: an admin rebinding a household app picks from the
+// admin's own accounts. A rebind recreates the app's containers (env is read
+// at container create), hence the job + hint below.
 const mailOptions = useQuery({
   queryKey: ["mail-provider-options"],
   queryFn: () => api.get<{ providers: MailProviderOption[] }>("/mail-providers/options"),
@@ -179,7 +180,11 @@ const mailLabel = computed(() => {
   if (boundProvider.value) return boundProvider.value.label;
   if (!app.value?.mail_provider_id) return "None (email features off)";
   if (mailOptions.isError.value) return "Account list unavailable";
-  return mailOptions.isLoading.value ? "Loading…" : "Unknown account";
+  // Bound, the list has arrived, and the account is not in it: another user
+  // added it (accounts are per user, and the list is only the caller's own).
+  // The picker still works; choosing one replaces it with an account of the
+  // caller's.
+  return mailOptions.isLoading.value ? "Loading…" : "Someone else's account";
 });
 
 // ── Setup secrets (#152, SERVICE_PROVISIONING.md # Env-var injection) ─────────

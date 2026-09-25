@@ -3542,7 +3542,7 @@
             "description": "Error"
           }
         },
-        "summary": "Bind an app to an outgoing-mail provider (empty provider_id unbinds)"
+        "summary": "Bind an app to one of the caller's outgoing-mail providers (empty provider_id unbinds)"
       }
     },
     "/api/v1/apps/{id}/secrets": {
@@ -4202,7 +4202,7 @@
             "description": "Error"
           }
         },
-        "summary": "List built-in outgoing-mail provider presets (admin only)"
+        "summary": "List built-in outgoing-mail provider presets"
       }
     },
     "/api/v1/mail-providers": {
@@ -4230,7 +4230,7 @@
             "description": "Error"
           }
         },
-        "summary": "List outgoing-mail providers (admin only)"
+        "summary": "List the caller's own outgoing-mail providers"
       },
       "post": {
         "operationId": "create-mail-provider",
@@ -4266,7 +4266,7 @@
             "description": "Error"
           }
         },
-        "summary": "Register an outgoing-mail provider (admin only)"
+        "summary": "Add an outgoing-mail provider owned by the caller"
       }
     },
     "/api/v1/mail-providers/options": {
@@ -4294,7 +4294,7 @@
             "description": "Error"
           }
         },
-        "summary": "List provider picker options: id, label and provider type (any authenticated user)"
+        "summary": "List the caller's provider picker options: id, label and provider type"
       }
     },
     "/api/v1/mail-providers/verify": {
@@ -4325,7 +4325,7 @@
             "description": "Error"
           }
         },
-        "summary": "Check an unsaved provider config by connecting and authenticating (admin only)"
+        "summary": "Check an unsaved provider config by connecting and authenticating"
       }
     },
     "/api/v1/mail-providers/{id}": {
@@ -4356,7 +4356,7 @@
             "description": "Error"
           }
         },
-        "summary": "Delete an outgoing-mail provider (admin only; bound apps fall back to unbound)"
+        "summary": "Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound)"
       },
       "put": {
         "operationId": "update-mail-provider",
@@ -4402,7 +4402,7 @@
             "description": "Error"
           }
         },
-        "summary": "Update an outgoing-mail provider (admin only)"
+        "summary": "Update one of the caller's outgoing-mail providers"
       }
     },
     "/api/v1/mail-providers/{id}/test": {
@@ -4443,7 +4443,7 @@
             "description": "Error"
           }
         },
-        "summary": "Send a test email through a provider (admin only)"
+        "summary": "Send a test email through one of the caller's providers"
       }
     },
     "/api/v1/me": {

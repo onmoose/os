@@ -59,9 +59,10 @@ type InstallPlanConfigField struct {
 
 // InstallPlanMail is the outgoing-mail picker block, present only when the
 // manifest declares mail support (SERVICE_PROVISIONING.md # BYO outgoing
-// mail). Providers carry id, label and preset only. The full provider settings
-// (host, username) stay on the admin-only CRUD surface; any installer just
-// picks a name. Empty Providers ⇒ the UI renders the picker with only "None".
+// mail). Providers are the caller's own accounts, with id, label and preset
+// only; the full settings (host, username) stay on the CRUD surface. Empty
+// Providers means the UI renders the picker with only "None" and the add
+// card.
 type InstallPlanMail struct {
 	Optional  bool                 `json:"optional"`
 	Providers []MailProviderOption `json:"providers"`
@@ -323,10 +324,12 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 	plan := buildInstallPlan(man, id.IsAdmin())
 	plan.Footprint = toInstallPlanFootprint(s.life.InstallFootprint(ctx, man))
 	// The mail picker menu is attached here (not in pure buildInstallPlan) for
-	// the same reason as the footprint: it reads box state. Advisory like the
-	// folder menus — installApp re-validates the election authoritatively.
+	// the same reason as the footprint: it reads box state. It lists only the
+	// caller's own accounts, the only ones installApp will accept. Advisory
+	// like the folder menus: installApp re-validates the election
+	// authoritatively.
 	if man.Mail != nil {
-		providers, err := s.store.ListMailProviders()
+		providers, err := s.store.ListMailProviders(id.User.ID)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("list mail providers failed", err)
 		}

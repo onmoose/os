@@ -1,7 +1,8 @@
 package api
 
-// API-boundary tests for outgoing-mail providers: admin + elevation fences,
-// write-only passwords, audit on success AND failure (the elevation-class
+// API-boundary tests for outgoing-mail providers: per-user ownership, the
+// elevation fence on delete only, write-only passwords, audit on success AND
+// failure (the elevation-class
 // mutation rule), the test-send path against an in-process SMTP sink, and the
 // synchronous pre-checks of the install and rebind wiring. The lifecycle
 // effects of a binding (env stamping, recreate) are covered in
@@ -65,29 +66,104 @@ func (h *harness) hasAuditEvent(action, targetID string, success bool) bool {
 
 // --- provider CRUD ---------------------------------------------------------
 
-func TestMailProvidersAdminOnly(t *testing.T) {
+// A member manages their own accounts: add and edit without a re-prompt,
+// list them, and read the presets. Nothing here is admin-only any more.
+func TestMailProvidersMemberManagesOwn(t *testing.T) {
 	h := newHarness(t)
 	h.setupAdmin("alice", "pass1")
 	h.addMember("u_bob", "bob", "bobpass")
 	h.loginAs("bob", "bobpass")
 
-	// Bodies must pass huma's schema validation, which runs before the
-	// handler's admin fence — an off-schema body would 422 instead of 403.
-	for _, c := range []struct {
-		method, path string
-		body         any
-	}{
-		{"GET", "/api/v1/mail-providers", nil},
-		{"POST", "/api/v1/mail-providers", providerBody("x")},
-		{"PUT", "/api/v1/mail-providers/mp_x", providerBody("x")},
-		{"DELETE", "/api/v1/mail-providers/mp_x", nil},
-		{"POST", "/api/v1/mail-providers/mp_x/test", map[string]string{"to": "a@b.c"}},
-	} {
-		resp := h.do(c.method, c.path, c.body)
+	resp := h.do("GET", "/api/v1/mail-presets", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("member GET /mail-presets = %d; want 200", resp.StatusCode)
+	}
+
+	p := h.createProvider("fastmail") // no h.elevate: add needs no re-prompt
+	stored, err := h.st.GetMailProvider(p.ID)
+	if err != nil || stored.OwnerUserID != "u_bob" {
+		t.Fatalf("stored owner = %q (%v); want u_bob", stored.OwnerUserID, err)
+	}
+
+	body := providerBody("fastmail")
+	body["host"] = "smtp2.example.com"
+	resp = h.do("PUT", "/api/v1/mail-providers/"+p.ID, body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("member edit own without elevation = %d; want 200", resp.StatusCode)
+	}
+
+	list := decodeJSON[struct {
+		Providers []MailProviderDTO `json:"providers"`
+	}](t, h.do("GET", "/api/v1/mail-providers", nil))
+	if len(list.Providers) != 1 || list.Providers[0].Host != "smtp2.example.com" {
+		t.Fatalf("member list = %+v", list.Providers)
+	}
+}
+
+// Accounts belong to one user. Another user's account is invisible on every
+// read and answers 404 on every write, exactly like an id that does not exist,
+// so ids do not leak. A write aimed at it audits a failure.
+func TestMailProviderOwnershipScoping(t *testing.T) {
+	h := newHarness(t)
+	h.setupAdmin("alice", "pass1")
+	alices := h.createProvider("fastmail")
+
+	h.addMember("u_bob", "bob", "bobpass")
+	h.loginAs("bob", "bobpass")
+
+	// Reads: nothing of alice's shows up.
+	for _, path := range []string{"/api/v1/mail-providers", "/api/v1/mail-providers/options"} {
+		resp := h.do("GET", path, nil)
+		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("%s %s as member = %d; want 403", c.method, c.path, resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, resp.StatusCode)
 		}
+		if strings.Contains(string(raw), alices.ID) || strings.Contains(string(raw), "fastmail") {
+			t.Errorf("GET %s shows another user's account: %s", path, raw)
+		}
+	}
+
+	// The same label is free for bob: labels are unique per owner.
+	bobs := h.createProvider("fastmail")
+
+	// Writes and the test-send: 404, the same answer as a missing id.
+	resp := h.do("PUT", "/api/v1/mail-providers/"+alices.ID, providerBody("mine now"))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("edit another user's account = %d; want 404", resp.StatusCode)
+	}
+	if !h.hasAuditEvent(audit.ActionMailProviderUpdate, alices.ID, false) {
+		t.Error("edit of another user's account did not audit a failure")
+	}
+	resp = h.do("POST", "/api/v1/mail-providers/"+alices.ID+"/test", map[string]string{"to": "a@b.c"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("test-send through another user's account = %d; want 404", resp.StatusCode)
+	}
+	h.elevate("bobpass")
+	resp = h.do("DELETE", "/api/v1/mail-providers/"+alices.ID, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("delete another user's account = %d; want 404", resp.StatusCode)
+	}
+	if !h.hasAuditEvent(audit.ActionMailProviderDelete, alices.ID, false) {
+		t.Error("delete of another user's account did not audit a failure")
+	}
+	if got, err := h.st.GetMailProvider(alices.ID); err != nil || got.Label != "fastmail" || got.OwnerUserID == "u_bob" {
+		t.Fatalf("another user's account changed: %+v, %v", got, err)
+	}
+
+	// Alice, an admin, gets no more reach into bob's accounts than he has
+	// into hers.
+	h.loginAs("alice", "pass1")
+	h.elevate("pass1")
+	resp = h.do("DELETE", "/api/v1/mail-providers/"+bobs.ID, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("admin deleting a member's account = %d; want 404", resp.StatusCode)
 	}
 }
 
@@ -106,15 +182,28 @@ func TestMailProvidersRequireAuth(t *testing.T) {
 	}
 }
 
-func TestCreateMailProviderRequiresElevation(t *testing.T) {
+// Add and edit need no re-prompt, so a hosted owner can add an account from
+// the install setup page without the portal round trip. Delete keeps it.
+func TestMailProviderElevationOnlyOnDelete(t *testing.T) {
 	h := newHarness(t)
 	h.setupAdmin("alice", "pass1")
-	// No h.elevate — the write must be rejected.
+	// No h.elevate.
 
-	resp := h.do("POST", "/api/v1/mail-providers", providerBody("fastmail"))
+	p := h.createProvider("fastmail")
+	resp := h.do("PUT", "/api/v1/mail-providers/"+p.ID, providerBody("renamed"))
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("create without elevation = %d; want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update without elevation = %d; want 200", resp.StatusCode)
+	}
+
+	resp = h.do("DELETE", "/api/v1/mail-providers/"+p.ID, nil)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(raw), "elevation_required") {
+		t.Fatalf("delete without elevation = %d %s; want 403 elevation_required", resp.StatusCode, raw)
+	}
+	if _, err := h.st.GetMailProvider(p.ID); err != nil {
+		t.Fatalf("un-elevated delete removed the account: %v", err)
 	}
 }
 
@@ -291,10 +380,9 @@ func TestDeleteMailProviderNotFound(t *testing.T) {
 func TestListMailProviderOptionsMemberVisible(t *testing.T) {
 	h := newHarness(t)
 	h.setupAdmin("alice", "pass1")
-	h.elevate("pass1")
-	h.createProvider("fastmail")
 	h.addMember("u_bob", "bob", "bobpass")
 	h.loginAs("bob", "bobpass")
+	h.createProvider("fastmail")
 
 	resp := h.do("GET", "/api/v1/mail-providers/options", nil)
 	if resp.StatusCode != 200 {
@@ -650,7 +738,7 @@ func TestInstallPlanCarriesMailProviders(t *testing.T) {
 
 // --- provider presets ------------------------------------------------------
 
-func TestListMailPresetsAdminOnly(t *testing.T) {
+func TestListMailPresetsSignedIn(t *testing.T) {
 	h := newHarness(t)
 	h.setupAdmin("alice", "pass1")
 
@@ -670,13 +758,13 @@ func TestListMailPresetsAdminOnly(t *testing.T) {
 		t.Error("custom missing from the preset list")
 	}
 
-	// A member cannot register a provider, so a member cannot read the presets.
-	h.addMember("u_bob", "bob", "bobpass")
-	h.loginAs("bob", "bobpass")
+	// Signed-out callers get nothing.
+	jar, _ := newJar()
+	h.jar = jar
 	resp := h.do("GET", "/api/v1/mail-presets", nil)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("member GET /mail-presets = %d; want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("signed-out GET /mail-presets = %d; want 401", resp.StatusCode)
 	}
 }
 
@@ -825,7 +913,7 @@ func TestVerifyMailProviderConfigConnectsWithoutSending(t *testing.T) {
 	}
 
 	// It stores nothing either — a config that checks out is still not an account.
-	list, err := h.st.ListMailProviders()
+	list, err := h.st.ListAllMailProviders()
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -869,13 +957,14 @@ func TestVerifyMailProviderConfigGuards(t *testing.T) {
 		t.Fatalf("invalid body = %d; want 422", resp.StatusCode)
 	}
 
-	// Admin-only: a member cannot register a provider, so cannot probe with one.
-	h.addMember("u_bob", "bob", "bobpass")
-	h.loginAs("bob", "bobpass")
+	// Signed-in only. Any user may add an account, so any user may check
+	// one first, but a signed-out caller must not be able to make the box dial.
+	jar, _ := newJar()
+	h.jar = jar
 	resp = h.do("POST", "/api/v1/mail-providers/verify", providerBody("v"))
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("member verify = %d; want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("signed-out verify = %d; want 401", resp.StatusCode)
 	}
 }
 
@@ -910,5 +999,113 @@ func TestGetAppMailSupportedComesFromTheInstanceManifest(t *testing.T) {
 			t.Errorf("%s mail_supported = %v, want %v (read from the persisted manifest, catalog is empty)",
 				tc.id, dto.MailSupported, tc.want)
 		}
+	}
+}
+
+// An app can only be bound to the caller's own account, at install and on a
+// rebind, whoever owns the app. Another user's account answers like a missing
+// one (422 "no such mail provider"), and the attempt audits a failure.
+func TestMailBindingRejectsAnotherUsersAccount(t *testing.T) {
+	h := newHarness(t)
+	writeManifestFixture(t, h.catalogDir, "mailer", mailManifestYML)
+	h.setupAdmin("alice", "pass1")
+	h.addMember("u_bob", "bob", "bobpass")
+	h.loginAs("bob", "bobpass")
+	bobs := h.createProvider("bob's mail")
+
+	// Alice, an admin, installs a household app: she may not use bob's account.
+	h.loginAs("alice", "pass1")
+	resp := h.do("POST", "/api/v1/apps", map[string]any{
+		"manifest_id": "mailer",
+		"config":      map[string]any{"mail_provider_id": bobs.ID},
+	})
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "no such mail provider") {
+		t.Fatalf("install with another user's account = %d %s; want 422 no such mail provider", resp.StatusCode, raw)
+	}
+	if !h.hasAuditEvent(audit.ActionAppInstall, "", false) {
+		t.Fatal("install with another user's account did not audit a failure")
+	}
+
+	// Nor rebind an existing household app to it.
+	h.seedInstance("i1", "mailer", "mailer", "u_admin", store.ScopeHousehold)
+	h.seedInstanceManifest("i1", mailManifestYML)
+	resp = h.do("PUT", "/api/v1/apps/i1/mail-binding", map[string]string{"provider_id": bobs.ID})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("rebind to another user's account = %d; want 422", resp.StatusCode)
+	}
+	if !h.hasAuditEvent(audit.ActionAppMailRebind, "i1", false) {
+		t.Fatal("rebind to another user's account did not audit a failure")
+	}
+	if _, err := h.st.GetInstanceMailProvider("i1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected rebind left a binding: %v", err)
+	}
+}
+
+// The install plan's picker lists only the caller's own accounts.
+func TestInstallPlanListsOnlyCallersAccounts(t *testing.T) {
+	h := newHarness(t)
+	writeManifestFixture(t, h.catalogDir, "mailer", mailManifestYML)
+	h.setupAdmin("alice", "pass1")
+	h.createProvider("alice's mail")
+	h.addMember("u_bob", "bob", "bobpass")
+	h.loginAs("bob", "bobpass")
+	bobs := h.createProvider("bob's mail")
+
+	plan := decodeJSON[InstallPlanDTO](t, h.do("GET", "/api/v1/catalog/mailer/install-plan", nil))
+	if plan.Mail == nil || len(plan.Mail.Providers) != 1 || plan.Mail.Providers[0].ID != bobs.ID {
+		t.Fatalf("bob's install plan mail = %+v; want only bob's account", plan.Mail)
+	}
+}
+
+// Deleting a user takes their accounts with them. If the host step fails, the
+// user row comes back, and it must come back with its accounts and the app
+// bindings to them, not stripped of them.
+func TestDeleteUserMailAccounts(t *testing.T) {
+	h := newHarness(t)
+	h.setupAdmin("alice", "pass1")
+	h.addMember("u_bob", deleteFailUser, "pw-bob")
+	h.addMember("u_carol", "carol", "pw-carol")
+	h.seedInstance("i1", "mailer", "mailer", "u_bob", store.ScopePersonal)
+	h.seedInstance("i2", "mailer", "mailer2", "u_carol", store.ScopePersonal)
+
+	for _, u := range []struct{ id, name, pw string }{{"u_bob", deleteFailUser, "pw-bob"}, {"u_carol", "carol", "pw-carol"}} {
+		h.loginAs(u.name, u.pw)
+		p := h.createProvider(u.name + " mail")
+		inst := map[string]string{"u_bob": "i1", "u_carol": "i2"}[u.id]
+		if err := h.st.SetInstanceMailBinding(inst, p.ID); err != nil {
+			t.Fatalf("bind: %v", err)
+		}
+	}
+
+	h.loginAs("alice", "pass1")
+	h.elevate("pass1")
+
+	// Host failure: bob comes back whole.
+	resp := h.do("DELETE", "/api/v1/users/u_bob", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("delete with host failure = %d; want 502", resp.StatusCode)
+	}
+	if got, _ := h.st.ListMailProviders("u_bob"); len(got) != 1 {
+		t.Fatalf("rollback lost the user's mail accounts: %+v", got)
+	}
+	if _, err := h.st.GetInstanceMailProvider("i1"); err != nil {
+		t.Fatalf("rollback lost the app's mail binding: %v", err)
+	}
+
+	// Success: carol's account goes, and her app falls back to unbound.
+	resp = h.do("DELETE", "/api/v1/users/u_carol", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete carol = %d; want 204", resp.StatusCode)
+	}
+	if got, _ := h.st.ListMailProviders("u_carol"); len(got) != 0 {
+		t.Fatalf("deleted user's accounts survived: %+v", got)
+	}
+	if _, err := h.st.GetInstanceMailProvider("i2"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("app still bound to a deleted user's account: %v", err)
 	}
 }

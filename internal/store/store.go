@@ -218,30 +218,6 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (instance_id, logical_name),
 			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
 		);
-		-- mail_providers: admin-registered outgoing SMTP providers (BYO outgoing
-		-- mail, SERVICE_PROVISIONING.md). The brain holds the credential and
-		-- injects it into bound apps as MOOSE_MAIL_*; there is no moose-run
-		-- relay. password is plaintext at rest (same trust model as
-		-- instance_secrets; hardening deferred, NEXT.md # App-secret injection
-		-- hardening).
-		CREATE TABLE IF NOT EXISTS mail_providers (
-			id           TEXT    PRIMARY KEY,
-			label        TEXT    NOT NULL UNIQUE,
-			host         TEXT    NOT NULL,
-			port         INTEGER NOT NULL,
-			username     TEXT    NOT NULL,
-			password     TEXT    NOT NULL,
-			from_address TEXT    NOT NULL,
-			encryption   TEXT    NOT NULL CHECK (encryption IN ('none','starttls','tls')),
-			-- provider_type: which built-in preset the admin picked, or
-			-- 'custom' for hand-typed values (internal/mailpreset). No CHECK:
-			-- a CHECK cannot ride the ALTER migration path, so it would apply
-			-- only to fresh DBs — validated in Go instead, like scope and
-			-- exposure. Rows that predate presets migrate to 'custom', which
-			-- is right: they were typed by hand.
-			provider_type TEXT   NOT NULL DEFAULT 'custom',
-			created_at   INTEGER NOT NULL
-		);
 		-- instance_mail_bindings: which provider a mail-capable app sends
 		-- through — at most one per instance; an unbound instance gets no
 		-- MOOSE_MAIL_* vars at all. Cascades with the app instance, and with
@@ -413,6 +389,13 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+	// mail_providers is created from the same DDL the owner migration rebuilds
+	// it with (mailProvidersDDL), so a fresh box and a migrated box end up with
+	// one schema. instance_mail_bindings above references it before it exists,
+	// which SQLite allows: a foreign key is resolved when it is used.
+	if _, err := s.db.Exec(mailProvidersDDL("IF NOT EXISTS mail_providers")); err != nil {
+		return err
+	}
 
 	// Idempotent migrations: add new columns when an older DB predates them.
 	// SQLite doesn't support IF NOT EXISTS on ALTER TABLE; we detect existence
@@ -443,6 +426,12 @@ func (s *Store) migrate() error {
 				return err
 			}
 		}
+	}
+
+	// Email accounts gained an owner (INSTALL_SETUP.md # 5). Runs after the
+	// ALTER loop, so a very old table has its provider_type column by now.
+	if err := s.migrateMailProviderOwners(); err != nil {
+		return fmt.Errorf("migrate mail_providers owners: %w", err)
 	}
 
 	// Index the hosted forward-auth token (issue #305) for its per-request reverse

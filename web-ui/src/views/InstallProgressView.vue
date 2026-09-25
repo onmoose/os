@@ -22,6 +22,12 @@ const qc = useQueryClient();
 
 const manifestId = computed(() => String(route.params.id));
 const jobId = computed(() => String(route.params.jobId));
+// The setup page puts ?scope=household on this URL for a household install, so
+// "Try again" returns to the same setup page rather than a personal one.
+const retryTo = computed(() => ({
+  path: `/store/${manifestId.value}/install`,
+  query: route.query.scope === "household" ? { scope: "household" } : {},
+}));
 
 // Same key as the detail page, so the name is usually a cache read.
 const detailQuery = useQuery({
@@ -221,7 +227,7 @@ const errorText = computed(() => {
         <div v-else-if="failed" class="space-y-3">
           <p class="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">{{ errorText }}</p>
           <div class="flex flex-wrap gap-2">
-            <Button :as="RouterLink" :to="`/store/${manifestId}/install`">Try again</Button>
+            <Button :as="RouterLink" :to="retryTo">Try again</Button>
             <Button variant="secondary" :as="RouterLink" :to="`/store/${manifestId}`">Back to the app</Button>
           </div>
         </div>

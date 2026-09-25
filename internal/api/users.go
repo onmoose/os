@@ -330,6 +330,22 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 		return nil, huma.Error500InternalServerError("read ssh keys failed", err)
 	}
 
+	// The user's email accounts, and the app bindings to them, go with the user
+	// row (ON DELETE CASCADE): an app bound to one falls back to unbound, as it
+	// does when the account itself is deleted. Read them first, for the same
+	// reason as the SSH keys: a host failure below puts the user row back, and
+	// it must come back with its accounts and bindings, not without them.
+	mailAccounts, err := s.store.ListMailProviders(targetID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
+		return nil, huma.Error500InternalServerError("read mail accounts failed", err)
+	}
+	mailBindings, err := s.store.ListMailBindingsForOwner(targetID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
+		return nil, huma.Error500InternalServerError("read mail bindings failed", err)
+	}
+
 	// This is the one place the brain-commits-first rule cannot hold: the revoke
 	// has to read state the delete is about to cascade away, so the host is
 	// changed first. That makes every later failure path owe a compensating
@@ -381,6 +397,17 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 				}
 			}
 			restoreSSH()
+			// Accounts before bindings: a binding needs its account row.
+			for _, p := range mailAccounts {
+				if rbErr := s.store.CreateMailProvider(p); rbErr != nil {
+					slog.Error("rollback mail account failed", "user_id", targetID, "username", target.Username, "err", rbErr)
+				}
+			}
+			for _, b := range mailBindings {
+				if rbErr := s.store.SetInstanceMailBinding(b.InstanceID, b.ProviderID); rbErr != nil {
+					slog.Error("rollback mail binding failed", "user_id", targetID, "instance_id", b.InstanceID, "err", rbErr)
+				}
+			}
 		}
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
 		return nil, huma.Error502BadGateway("host-agent delete-user failed", err)

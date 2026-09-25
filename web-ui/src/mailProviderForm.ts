@@ -22,8 +22,8 @@ export type ProviderForm = {
 
 // The preset table is static server-side data, so it never needs refetching
 // within a session. Every caller shares it; Query dedupes them onto one request.
-// The endpoint is admin-only, so the install page passes `enabled` and fetches
-// only once an admin opens its add flow.
+// The install page passes `enabled` and fetches only once the user opens its
+// add flow, since most installs never need the list.
 export function useMailPresets(enabled?: Ref<boolean>) {
   return useQuery({
     queryKey: ["mail-presets"],
@@ -57,9 +57,9 @@ export function hostFor(p: MailPreset, region: string): string {
   return opt?.host ?? "";
 }
 
-// formFromPreset seeds a blank form from the preset the admin picked. The label
+// formFromPreset seeds a blank form from the preset the user picked. The label
 // defaults to the provider name so it stops being a field they must invent; a
-// duplicate surfaces the existing 409.
+// duplicate among the user's own accounts surfaces the existing 409.
 export function formFromPreset(p: MailPreset): ProviderForm {
   const f = emptyForm();
   f.provider_type = p.id;
