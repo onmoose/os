@@ -1,7 +1,7 @@
 package lifecycle
 
 // BYO outgoing mail (SERVICE_PROVISIONING.md # BYO outgoing mail). The brain
-// injects an admin-registered SMTP provider into a bound app's .env as
+// injects a user's SMTP account into a bound app's .env as
 // MOOSE_MAIL_* — writeEnv stamps it at install, RebindMail re-stamps it later.
 // No moose-run relay: the app dials the provider itself over its declared
 // internet permission.

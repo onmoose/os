@@ -21,6 +21,18 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-25 — Email accounts belong to a user, any user can add one, and add or edit needs no re-prompt
+
+**Previously:** outgoing email accounts belonged to the box. Only an admin could add, edit or delete one, every one of those was elevation-class (a password re-prompt, or the portal round trip on a hosted box), and every user could bind any account to their apps. Labels were unique per box.
+
+**Now:** an account belongs to the user who added it (`mail_providers.owner_user_id`). Any signed-in user can add one, in Settings or inline on the install setup page, and only that user can see it or bind an app to it. A household app installed by an admin sends through that admin's account. Another user's account id answers like a missing one, 404 or 422, so ids do not leak. Adding and editing your own account need no re-prompt; delete keeps it. Labels are unique per owner. Existing accounts moved to the founding admin, which on a hosted box is the only user. Deleting a user deletes their accounts, and apps bound to them fall back to unbound, as they already did when an account was deleted. Sharing an account with other users is left for later.
+
+**Why:** the install setup page (`INSTALL_SETUP.md` # 5) lets the user add an account without leaving the install. On a hosted box the re-prompt is a full-page trip to the portal, which throws the half-filled setup form away, so the inline add did not really work for the one user a hosted box has. The re-prompt also guarded little: an account is a credential the user types in themselves, and after this change it reaches only that user's own apps. Nothing another person owns is at stake, so a signed-in session is enough. Delete keeps the re-prompt because it cannot be undone and silently unbinds every app that used the account. Admin-only also stopped fitting once accounts became per user: a member who installs a personal app should send from their own account, not wait for an admin. The same owner model is planned for AI provider accounts, so email goes first and the two will match.
+
+**Affected docs:** `SERVICE_PROVISIONING.md` # BYO outgoing mail, `SETTINGS.md` (the Outgoing email row moves to My account, any user), `BRAIN_UI_PROTOCOL.md` # install-plan, `DASHBOARD.md` # Install authorization.
+
+---
+
 ## 2026-09-16 — The project is renamed from malmo to moose (#489)
 
 **Previously:** the project was called malmo. The hosted apex was `malmo.network`, the product site `malmo.com`, the GitHub org `malmoos`, the Go module `github.com/malmoos/malmo`, and every name on a box carried the word: `/var/lib/malmo`, `/etc/pam.d/malmo`, the `malmo-shared` group, the `malmo-ingress` network, the `malmo.instance_id` label, the `malmo_session` cookie, the `MALMO_*` env vars an app is given, and the `X-Malmo-User` header forward auth sets.

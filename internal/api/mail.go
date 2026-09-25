@@ -1,9 +1,15 @@
 package api
 
 // Outgoing-mail provider management (SERVICE_PROVISIONING.md # BYO outgoing
-// mail, SETTINGS.md). Provider CRUD is admin-only and elevation-class; the
-// per-app binding endpoint follows the stop/start authorization (a member may
-// rebind their own personal instance). Passwords are write-only: requests
+// mail, SETTINGS.md). Any signed-in user manages their own email accounts,
+// and only their own: every endpoint here is scoped to the caller, and
+// another user's account id answers 404, the same as an id that does not
+// exist, so ids do not leak. Adding and editing need no password re-prompt,
+// so a hosted owner can add an account from the install setup page without
+// the round trip to the portal that loses the form. Delete keeps the
+// re-prompt. The per-app binding endpoint follows the stop/start
+// authorization (a member may rebind their own personal instance) and binds
+// only to the caller's own accounts. Passwords are write-only: requests
 // carry them, responses never do.
 
 import (
@@ -35,47 +41,47 @@ const testMailTimeout = 15 * time.Second
 func (s *Server) registerMail(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "list-mail-providers", Method: "GET", Path: "/api/v1/mail-providers",
-		Summary: "List outgoing-mail providers (admin only)",
+		Summary: "List the caller's own outgoing-mail providers",
 	}, s.listMailProviders)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "create-mail-provider", Method: "POST", Path: "/api/v1/mail-providers",
-		Summary: "Register an outgoing-mail provider (admin only)",
+		Summary: "Add an outgoing-mail provider owned by the caller",
 	}, s.createMailProvider)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "update-mail-provider", Method: "PUT", Path: "/api/v1/mail-providers/{id}",
-		Summary: "Update an outgoing-mail provider (admin only)",
+		Summary: "Update one of the caller's outgoing-mail providers",
 	}, s.updateMailProvider)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-mail-provider", Method: "DELETE", Path: "/api/v1/mail-providers/{id}",
-		Summary: "Delete an outgoing-mail provider (admin only; bound apps fall back to unbound)", DefaultStatus: 204,
+		Summary: "Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound)", DefaultStatus: 204,
 	}, s.deleteMailProvider)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "verify-mail-provider-config", Method: "POST", Path: "/api/v1/mail-providers/verify",
-		Summary: "Check an unsaved provider config by connecting and authenticating (admin only)", DefaultStatus: 204,
+		Summary: "Check an unsaved provider config by connecting and authenticating", DefaultStatus: 204,
 	}, s.verifyMailProviderConfig)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "test-mail-provider", Method: "POST", Path: "/api/v1/mail-providers/{id}/test",
-		Summary: "Send a test email through a provider (admin only)", DefaultStatus: 204,
+		Summary: "Send a test email through one of the caller's providers", DefaultStatus: 204,
 	}, s.testMailProvider)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "list-mail-presets", Method: "GET", Path: "/api/v1/mail-presets",
-		Summary: "List built-in outgoing-mail provider presets (admin only)",
+		Summary: "List built-in outgoing-mail provider presets",
 	}, s.listMailPresets)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "list-mail-provider-options", Method: "GET", Path: "/api/v1/mail-providers/options",
-		Summary: "List provider picker options: id, label and provider type (any authenticated user)",
+		Summary: "List the caller's provider picker options: id, label and provider type",
 	}, s.listMailProviderOptions)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "set-app-mail-binding", Method: "PUT", Path: "/api/v1/apps/{id}/mail-binding",
-		Summary: "Bind an app to an outgoing-mail provider (empty provider_id unbinds)",
+		Summary: "Bind an app to one of the caller's outgoing-mail providers (empty provider_id unbinds)",
 	}, s.setAppMailBinding)
 }
 
@@ -89,7 +95,7 @@ type MailProviderDTO struct {
 	Username    string `json:"username"`
 	FromAddress string `json:"from_address"`
 	Encryption  string `json:"encryption" enum:"none,starttls,tls"`
-	// ProviderType is the preset the admin picked, or "custom". The UI uses
+	// ProviderType is the preset the user picked, or "custom". The UI uses
 	// it to label the row and to re-open the right form on edit.
 	ProviderType  string `json:"provider_type"`
 	ProviderLabel string `json:"provider_label"`
@@ -107,7 +113,7 @@ func mailProviderDTO(p store.MailProvider) MailProviderDTO {
 }
 
 // MailProviderBody is the create/update request shape. On update an empty
-// password keeps the stored one, so an admin can edit the host or label
+// password keeps the stored one, so the owner can edit the host or label
 // without re-entering the credential.
 type MailProviderBody struct {
 	Label       string `json:"label"`
@@ -216,15 +222,15 @@ func mailPresetDTO(p mailpreset.Preset) MailPresetDTO {
 }
 
 // listMailPresets serves the built-in provider table so the add-account form
-// can offer a picker instead of seven blank fields. Admin-only, matching
-// listMailProviders — only an admin can register a provider, so only an admin
-// needs the presets.
+// can offer a picker instead of seven blank fields. Any signed-in user may add
+// an account, so any signed-in user may read it. It is static and holds no
+// box state.
 func (s *Server) listMailPresets(ctx context.Context, _ *struct{}) (*struct {
 	Body struct {
 		Presets []MailPresetDTO `json:"presets"`
 	}
 }, error) {
-	if err := requireAdmin(ctx); err != nil {
+	if _, err := mailCaller(ctx); err != nil {
 		return nil, err
 	}
 	out := &struct {
@@ -239,15 +245,40 @@ func (s *Server) listMailPresets(ctx context.Context, _ *struct{}) (*struct {
 	return out, nil
 }
 
+// mailCaller returns the signed-in user every handler here acts for.
+func mailCaller(ctx context.Context) (auth.Identity, error) {
+	id, ok := auth.FromContext(ctx)
+	if !ok {
+		return auth.Identity{}, huma.Error401Unauthorized("unauthenticated")
+	}
+	return id, nil
+}
+
+// ownMailProvider loads a provider the caller owns. Another user's provider
+// is store.ErrNotFound, the same as a missing one, so a caller cannot learn
+// which ids exist. Only the account's owner may use it; sharing is not built
+// yet (INSTALL_SETUP.md # 5).
+func (s *Server) ownMailProvider(id auth.Identity, providerID string) (store.MailProvider, error) {
+	p, err := s.store.GetMailProvider(providerID)
+	if err != nil {
+		return store.MailProvider{}, err
+	}
+	if p.OwnerUserID != id.User.ID {
+		return store.MailProvider{}, store.ErrNotFound
+	}
+	return p, nil
+}
+
 func (s *Server) listMailProviders(ctx context.Context, _ *struct{}) (*struct {
 	Body struct {
 		Providers []MailProviderDTO `json:"providers"`
 	}
 }, error) {
-	if err := requireAdmin(ctx); err != nil {
+	id, err := mailCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
-	providers, err := s.store.ListMailProviders()
+	providers, err := s.store.ListMailProviders(id.User.ID)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("list mail providers failed", err)
 	}
@@ -263,20 +294,21 @@ func (s *Server) listMailProviders(ctx context.Context, _ *struct{}) (*struct {
 	return out, nil
 }
 
-// listMailProviderOptions is the non-admin sibling of listMailProviders: id,
-// label and provider type only, for the rebind picker on an app detail page (a
-// member may rebind their own personal instance, so the names must be readable
-// without admin).
-// The install dialog's picker rides the install plan instead.
+// listMailProviderOptions is the slim sibling of listMailProviders: id, label
+// and provider type only, for the rebind picker on an app's settings screen.
+// Like the full list it holds only the caller's own accounts, because those
+// are the only ones the caller can bind. The install setup page's picker
+// rides the install plan instead.
 func (s *Server) listMailProviderOptions(ctx context.Context, _ *struct{}) (*struct {
 	Body struct {
 		Providers []MailProviderOption `json:"providers"`
 	}
 }, error) {
-	if _, ok := auth.FromContext(ctx); !ok {
-		return nil, huma.Error401Unauthorized("unauthenticated")
+	id, err := mailCaller(ctx)
+	if err != nil {
+		return nil, err
 	}
-	providers, err := s.store.ListMailProviders()
+	providers, err := s.store.ListMailProviders(id.User.ID)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("list mail providers failed", err)
 	}
@@ -292,13 +324,16 @@ func (s *Server) listMailProviderOptions(ctx context.Context, _ *struct{}) (*str
 	return out, nil
 }
 
+// createMailProvider adds an account owned by the caller. No elevation: the
+// account is the caller's own, reachable only by the caller's own apps, so a
+// re-prompt guards nothing a signed-in session could not already do. It is
+// also what lets the install setup page add an account inline, since the
+// hosted owner's re-prompt is a full-page trip that loses the form.
 func (s *Server) createMailProvider(ctx context.Context, in *struct {
 	Body MailProviderBody
 }) (*struct{ Body MailProviderDTO }, error) {
-	if err := requireAdmin(ctx); err != nil {
-		return nil, err
-	}
-	if err := requireElevated(ctx); err != nil {
+	id, err := mailCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateMailProviderBody(&in.Body); err != nil {
@@ -306,7 +341,7 @@ func (s *Server) createMailProvider(ctx context.Context, in *struct {
 	}
 
 	p := store.MailProvider{
-		ID: newID(), Label: in.Body.Label, Host: in.Body.Host, Port: in.Body.Port,
+		ID: newID(), OwnerUserID: id.User.ID, Label: in.Body.Label, Host: in.Body.Host, Port: in.Body.Port,
 		Username: in.Body.Username, Password: in.Body.Password,
 		FromAddress: in.Body.FromAddress, Encryption: in.Body.Encryption,
 		ProviderType: in.Body.ProviderType,
@@ -316,7 +351,7 @@ func (s *Server) createMailProvider(ctx context.Context, in *struct {
 	if err := s.store.CreateMailProvider(p); err != nil {
 		s.auditor.Record(ctx, audit.ActionMailProviderCreate, audit.Target{Kind: "mail_provider"}, meta, false)
 		if errors.Is(err, store.ErrConflict) {
-			return nil, huma.Error409Conflict("a provider with that label already exists")
+			return nil, huma.Error409Conflict("you already have an account with that name")
 		}
 		return nil, huma.Error500InternalServerError("create mail provider failed", err)
 	}
@@ -324,25 +359,30 @@ func (s *Server) createMailProvider(ctx context.Context, in *struct {
 	return &struct{ Body MailProviderDTO }{Body: mailProviderDTO(p)}, nil
 }
 
+// updateMailProvider edits one of the caller's accounts. No elevation, for
+// the same reason as create.
 func (s *Server) updateMailProvider(ctx context.Context, in *struct {
 	ID   string `path:"id"`
 	Body MailProviderBody
 }) (*struct{ Body MailProviderDTO }, error) {
-	if err := requireAdmin(ctx); err != nil {
-		return nil, err
-	}
-	if err := requireElevated(ctx); err != nil {
+	id, err := mailCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateMailProviderBody(&in.Body); err != nil {
 		return nil, err
 	}
 
-	existing, err := s.store.GetMailProvider(in.ID)
+	tgt := audit.Target{Kind: "mail_provider", ID: in.ID}
+	existing, err := s.ownMailProvider(id, in.ID)
 	if errors.Is(err, store.ErrNotFound) {
+		// Audited: an edit aimed at someone else's account lands here, and
+		// the Activity view should be able to show the attempt.
+		s.auditor.Record(ctx, audit.ActionMailProviderUpdate, tgt, nil, false)
 		return nil, huma.Error404NotFound("no such mail provider")
 	}
 	if err != nil {
+		s.auditor.Record(ctx, audit.ActionMailProviderUpdate, tgt, nil, false)
 		return nil, huma.Error500InternalServerError("get mail provider failed", err)
 	}
 
@@ -353,12 +393,15 @@ func (s *Server) updateMailProvider(ctx context.Context, in *struct {
 	if in.Body.Password != "" {
 		p.Password = in.Body.Password
 	}
-	tgt := audit.Target{Kind: "mail_provider", ID: p.ID}
 	meta := map[string]any{"label": p.Label, "host": p.Host}
 	if err := s.store.UpdateMailProvider(p); err != nil {
 		s.auditor.Record(ctx, audit.ActionMailProviderUpdate, tgt, meta, false)
 		if errors.Is(err, store.ErrConflict) {
-			return nil, huma.Error409Conflict("a provider with that label already exists")
+			return nil, huma.Error409Conflict("you already have an account with that name")
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			// Deleted between the read and the write.
+			return nil, huma.Error404NotFound("no such mail provider")
 		}
 		return nil, huma.Error500InternalServerError("update mail provider failed", err)
 	}
@@ -370,10 +413,14 @@ func (s *Server) updateMailProvider(ctx context.Context, in *struct {
 	return &struct{ Body MailProviderDTO }{Body: mailProviderDTO(p)}, nil
 }
 
+// deleteMailProvider removes one of the caller's accounts. It keeps the
+// password re-prompt: unlike an edit it cannot be undone, and it silently
+// unbinds every app that sends through the account.
 func (s *Server) deleteMailProvider(ctx context.Context, in *struct {
 	ID string `path:"id"`
 }) (*struct{}, error) {
-	if err := requireAdmin(ctx); err != nil {
+	id, err := mailCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if err := requireElevated(ctx); err != nil {
@@ -381,8 +428,10 @@ func (s *Server) deleteMailProvider(ctx context.Context, in *struct {
 	}
 
 	tgt := audit.Target{Kind: "mail_provider", ID: in.ID}
-	if err := s.store.DeleteMailProvider(in.ID); err != nil {
+	if err := s.store.DeleteMailProvider(in.ID, id.User.ID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			// Audited: a delete aimed at someone else's account lands here.
+			s.auditor.Record(ctx, audit.ActionMailProviderDelete, tgt, nil, false)
 			return nil, huma.Error404NotFound("no such mail provider")
 		}
 		s.auditor.Record(ctx, audit.ActionMailProviderDelete, tgt, nil, false)
@@ -392,18 +441,18 @@ func (s *Server) deleteMailProvider(ctx context.Context, in *struct {
 	return nil, nil
 }
 
-// verifyMailProviderConfig checks a config the admin has not saved yet, so a
+// verifyMailProviderConfig checks a config the user has not saved yet, so a
 // provider that cannot connect is never created in the first place. It takes
 // the same body as create rather than an id for exactly that reason.
 //
-// Admin-only but not elevation-class: it stores nothing and sends nothing. It
-// does not audit for the same reason — nothing is mutated and no mail leaves
-// the box, which is what separates it from the test-send next door
-// (CLAUDE.md: pure reads don't audit).
+// Open to any signed-in user, like create. It stores nothing and sends
+// nothing, so it does not audit: nothing is mutated and no mail leaves the
+// box, which is what separates it from the test-send next door (CLAUDE.md:
+// pure reads don't audit).
 func (s *Server) verifyMailProviderConfig(ctx context.Context, in *struct {
 	Body MailProviderBody
 }) (*struct{}, error) {
-	if err := requireAdmin(ctx); err != nil {
+	if _, err := mailCaller(ctx); err != nil {
 		return nil, err
 	}
 	if err := validateMailProviderBody(&in.Body); err != nil {
@@ -430,7 +479,8 @@ func (s *Server) testMailProvider(ctx context.Context, in *struct {
 		To string `json:"to"`
 	}
 }) (*struct{}, error) {
-	if err := requireAdmin(ctx); err != nil {
+	id, err := mailCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	to := strings.TrimSpace(in.Body.To)
@@ -438,7 +488,7 @@ func (s *Server) testMailProvider(ctx context.Context, in *struct {
 		return nil, huma.Error422UnprocessableEntity("to must be an email address")
 	}
 
-	p, err := s.store.GetMailProvider(in.ID)
+	p, err := s.ownMailProvider(id, in.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, huma.Error404NotFound("no such mail provider")
 	}
@@ -469,6 +519,7 @@ func (s *Server) setAppMailBinding(ctx context.Context, in *struct {
 	if err != nil {
 		return nil, err
 	}
+	caller, _ := auth.FromContext(ctx) // authorizeAppMutation already required it
 	tgt := audit.Target{Kind: "app", ID: id}
 	providerID := in.Body.ProviderID
 	meta := map[string]any{"provider_id": providerID}
@@ -483,10 +534,15 @@ func (s *Server) setAppMailBinding(ctx context.Context, in *struct {
 			s.auditor.Record(ctx, audit.ActionAppMailRebind, tgt, meta, false)
 			return nil, huma.Error422UnprocessableEntity("this app does not support outgoing email")
 		}
-		if _, err := s.store.GetMailProvider(providerID); errors.Is(err, store.ErrNotFound) {
+		// Only the caller's own accounts can be bound, whoever owns the app: an
+		// admin rebinding a household app binds it to the admin's own account.
+		// Someone else's account reads as missing, so the answer does not say
+		// whether the id exists.
+		if _, err := s.ownMailProvider(caller, providerID); errors.Is(err, store.ErrNotFound) {
 			s.auditor.Record(ctx, audit.ActionAppMailRebind, tgt, meta, false)
 			return nil, huma.Error422UnprocessableEntity("no such mail provider")
 		} else if err != nil {
+			s.auditor.Record(ctx, audit.ActionAppMailRebind, tgt, meta, false)
 			return nil, huma.Error500InternalServerError("get mail provider failed", err)
 		}
 	}
@@ -593,7 +649,7 @@ func connectMail(ctx context.Context, p store.MailProvider) (*smtp.Client, error
 // verifyMailConfig checks a provider end to end short of delivering anything:
 // it connects and authenticates, then hangs up. This is what the "Test
 // configuration" checkbox on the add form runs, and it deliberately sends no
-// message — the admin is validating settings, not mailing someone. The
+// message: the user is validating settings, not mailing someone. The
 // test-send on a saved provider stays the stronger check, since only a
 // delivered message proves the from address is one the provider will accept.
 func verifyMailConfig(ctx context.Context, p store.MailProvider) error {

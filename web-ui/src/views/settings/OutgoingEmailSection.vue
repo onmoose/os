@@ -1,25 +1,25 @@
 <script setup lang="ts">
-// Settings → Outgoing email: admin-only SMTP provider management
-// (SERVICE_PROVISIONING.md # BYO outgoing mail, issues #122 and #426). Apps
-// that can send email bind to one of these providers at install time (or later
-// from their detail page); the brain injects the credentials as MOOSE_MAIL_*
-// env vars.
+// Settings → Outgoing email: the signed-in user's own SMTP accounts
+// (SERVICE_PROVISIONING.md # BYO outgoing mail, issues #122 and #426). Every
+// user has this screen, and it lists only the accounts they added. Only they
+// can bind an app to one, at install time or later from the app's settings
+// screen; the brain injects the credentials as MOOSE_MAIL_* env vars.
 //
 // This view is the account list. Adding one lives on its own two routes
 // (OutgoingEmailAddSection, /settings/mail/add) so the picker and the form are
 // real pages with working Back. Editing stays inline on the row it belongs to:
 // no navigation happens, so there is no Back to get wrong.
 //
-// Mirrors UsersSection: admin redirect as defence in depth, every mutation
-// wrapped in withElevation, guard rejections surface as inline errors. The
-// test-send is the one non-elevated action (it changes nothing).
-import { ref, computed, watch } from "vue";
-import { useRouter, RouterLink } from "vue-router";
+// Edit and test-send need no password re-prompt: the account is the user's
+// own. Delete keeps it, since it cannot be undone and unbinds every app that
+// uses the account, so it goes through withElevation. Rejections surface as
+// inline errors on the row.
+import { ref, computed } from "vue";
+import { RouterLink } from "vue-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
 import { Plus } from "lucide-vue-next";
 import { api, type MailProvider } from "@/api";
 import { withElevation } from "@/elevate";
-import { useAuth } from "@/auth";
 import Button from "@/components/ui/Button.vue";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
 import paperAirplane from "@/assets/paper-airplane.png";
@@ -29,18 +29,7 @@ import {
   type ProviderForm,
 } from "@/mailProviderForm";
 
-const router = useRouter();
 const qc = useQueryClient();
-const { currentUser } = useAuth();
-
-// Admin-only: redirect members immediately (mirrors UsersSection).
-watch(
-  currentUser,
-  (u) => {
-    if (u && u.role !== "admin") router.replace("/settings");
-  },
-  { immediate: true },
-);
 
 // ── provider list ───────────────────────────────────────────────────────────────
 const providers = useQuery({
@@ -120,7 +109,7 @@ function startTest(id: string) {
 const update = useMutation({
   mutationFn: (id: string) => {
     syncSameAsPassword(editForm.value, editPreset.value);
-    return withElevation(() => api.put<MailProvider>(`/mail-providers/${id}`, bodyOf(editForm.value)));
+    return api.put<MailProvider>(`/mail-providers/${id}`, bodyOf(editForm.value));
   },
   onSuccess: (_, id) => {
     clearRowError(id);
@@ -143,8 +132,7 @@ const deleteProvider = useMutation({
 
 // ── test send ────────────────────────────────────────────────────────────────────
 // Synchronous on the brain side (it dials the SMTP host), so this can take a
-// few seconds; the button shows "Sending…" meanwhile. No elevation: it
-// changes nothing.
+// few seconds; the button shows "Sending…" meanwhile.
 const sendTest = useMutation({
   mutationFn: ({ id, to }: { id: string; to: string }) =>
     api.post<void>(`/mail-providers/${id}/test`, { to }),
@@ -170,7 +158,7 @@ function fid(form: "new" | "edit", name: string, rowID = ""): string {
     <section class="space-y-3">
       <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Outgoing email</h2>
       <p class="text-sm text-muted-foreground">
-        Add an email account your apps can send from: password resets, reminders, invites. Apps choose an account when you install them.
+        Your email accounts. The apps you install can send from them: password resets, reminders, invites. Only you can see and use the accounts you add here.
       </p>
       <!-- With no accounts the call to action is the empty state below, so the
            header does not repeat it. -->
@@ -204,7 +192,7 @@ function fid(form: "new" | "edit", name: string, rowID = ""): string {
 
     <!-- Provider list -->
     <section v-else class="space-y-3">
-      <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Email accounts</h2>
+      <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Your accounts</h2>
       <p v-if="providers.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
       <ul v-else class="space-y-2">
         <li

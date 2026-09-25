@@ -12,15 +12,13 @@
 // The form fields themselves are not in the URL. A credential must never land
 // in history, so a reload re-seeds them from the preset.
 //
-// Admin-only, mirroring the list view: the redirect here is defence in depth
-// (the nav already hides the section) and the brain refuses a non-admin anyway.
+// Open to every user, like the list view. The new account belongs to whoever
+// adds it. Adding needs no password re-prompt (the account is the user's own).
 import { ref, computed, watch } from "vue";
 import { useRoute, useRouter, RouterLink } from "vue-router";
 import { useMutation, useQueryClient } from "@tanstack/vue-query";
 import { ArrowLeft } from "lucide-vue-next";
 import { api, type MailProvider, type MailPreset } from "@/api";
-import { withElevation } from "@/elevate";
-import { useAuth } from "@/auth";
 import Button from "@/components/ui/Button.vue";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
 import {
@@ -32,15 +30,6 @@ import {
 const route = useRoute();
 const router = useRouter();
 const qc = useQueryClient();
-const { currentUser } = useAuth();
-
-watch(
-  currentUser,
-  (u) => {
-    if (u && u.role !== "admin") router.replace("/settings");
-  },
-  { immediate: true },
-);
 
 const presets = useMailPresets();
 const presetList = computed(() => presets.data.value?.presets ?? []);
@@ -93,7 +82,7 @@ const create = useMutation({
     syncSameAsPassword(form.value, preset.value);
     const body = bodyOf(form.value);
     // Check before saving, not after: a config that cannot connect never
-    // becomes an account the admin then has to find and delete. The check
+    // becomes an account the user then has to find and delete. The check
     // connects and authenticates but sends nothing, so nobody gets a surprise
     // email from a form submission.
     if (testOnAdd.value) {
@@ -104,7 +93,7 @@ const create = useMutation({
         checking.value = false;
       }
     }
-    return withElevation(() => api.post<MailProvider>("/mail-providers", body));
+    return api.post<MailProvider>("/mail-providers", body);
   },
   onSuccess: () => {
     qc.invalidateQueries({ queryKey: ["mail-providers"] });

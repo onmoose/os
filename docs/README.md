@@ -28,7 +28,7 @@ the specs, cross-references are bare filenames, relative to `specs/`.
 Orientation:
 
 - **Start here:** `SPEC.md`, `CONTROL_PLANE.md`, `ENVIRONMENT.md` (the two environment profiles — `appliance` vs moose-operated `hosted` — and every hosted-specific delta).
-- **Apps:** `APP_LIFECYCLE.md`, `APP_MANIFEST.md`, `APP_STORE.md`, `APP_ISOLATION.md`, `SERVICE_PROVISIONING.md`, `CAPABILITIES.md` (the machine-readable ledger of shipped platform capabilities, so catalog curation stops depending on someone remembering — the manifest itself is [`dev/capabilities.yml`](dev/capabilities.yml)).
+- **Apps:** `APP_LIFECYCLE.md`, `APP_MANIFEST.md`, `APP_STORE.md`, `APP_ISOLATION.md`, `SERVICE_PROVISIONING.md`, `INSTALL_SETUP.md` (draft: the install page, provider accounts, and role-mapped env vars), `CAPABILITIES.md` (the machine-readable ledger of shipped platform capabilities, so catalog curation stops depending on someone remembering — the manifest itself is [`dev/capabilities.yml`](dev/capabilities.yml)).
 - **Protocols:** `BRAIN_UI_PROTOCOL.md`, `BRAIN_HOST_PROTOCOL.md` (Pattern C stream 1 — `journal_follow` per-app log tail — is now implemented; `journal_query` and `journal_export_range` remain deferred).
 - **Frontend:** `WEB_UI.md` (stack/deploy), `DASHBOARD.md` (logged-in IA + the owner-scoped apps model + install flows, incl. Door-2 custom-container), `SETTINGS.md` (Settings IA: My-account / Box-settings split, panel inventory, role gating), `FILES.md` (in-dashboard file manager).
 - **System:** `STORAGE.md`, `BOOT.md`, `DISCOVERY.md`, `MOOSE_NETWORK.md`, `TIME.md`, `USERS_AND_GROUPS.md`, `AUTH.md`.

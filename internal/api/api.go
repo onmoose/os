@@ -732,7 +732,10 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 	}
 	// Validate the mail-provider election authoritatively, like folder
 	// elections above: the app must declare mail support and the provider must
-	// exist. Same elevation-class rejection ⇒ audits success=false.
+	// be one the caller owns. A household app installed by an admin therefore
+	// sends through that admin's account. Someone else's account reads as
+	// missing, so the answer does not say whether the id exists. Same
+	// elevation-class rejection, so it audits success=false.
 	mailProviderID := in.Body.Config.MailProviderID
 	if mailProviderID != "" {
 		failMeta := map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}
@@ -740,10 +743,12 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
 			return nil, huma.Error422UnprocessableEntity("this app does not support outgoing email")
 		}
-		if _, err := s.store.GetMailProvider(mailProviderID); errors.Is(err, store.ErrNotFound) {
+		caller, _ := auth.FromContext(ctx) // resolveOwnerScope already required it
+		if _, err := s.ownMailProvider(caller, mailProviderID); errors.Is(err, store.ErrNotFound) {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
 			return nil, huma.Error422UnprocessableEntity("no such mail provider")
 		} else if err != nil {
+			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
 			slog.Error("install: mail provider lookup failed", "manifest_id", manifestID, "err", err)
 			return nil, huma.Error500InternalServerError("mail provider lookup failed")
 		}
