@@ -18,8 +18,10 @@ const props = withDefaults(
     id: string;
     label: string;
     // card: the picker tile, logo above the name. inline: next to a heading or
-    // in a list row, where a wide wordmark has to stay narrow.
-    size?: "card" | "inline";
+    // in a list row, where a wide wordmark has to stay narrow. icon: the 40px
+    // icon square of an OptionCards card; the logo is scaled down to fit inside
+    // it, so a wide wordmark gets small rather than spilling out.
+    size?: "card" | "inline" | "icon";
   }>(),
   { size: "card" },
 );
@@ -55,18 +57,21 @@ const letter = computed(() => letters[props.id]);
 // A fixed-height box with object-contain, never a fixed square: the folder
 // holds both square icons and wide wordmarks, and whatever gets dropped in
 // later has to render without being stretched or cropped.
-const boxClass = computed(() =>
-  props.size === "card" ? "h-9 max-w-[8rem] object-contain" : "h-6 max-w-20 object-contain",
-);
-const tileClass = computed(() =>
-  props.size === "card"
-    ? "flex h-9 w-9 items-center justify-center rounded-lg bg-muted text-xs font-semibold text-muted-foreground"
-    : "flex h-6 w-6 items-center justify-center rounded-md bg-muted text-[0.625rem] font-semibold text-muted-foreground",
-);
+const boxClass = computed(() => {
+  if (props.size === "card") return "h-9 max-w-[8rem] object-contain";
+  if (props.size === "icon") return "max-h-10 max-w-10 object-contain";
+  return "h-6 max-w-20 object-contain";
+});
+const tileClass = computed(() => {
+  if (props.size === "card" || props.size === "icon") {
+    return "flex h-9 w-9 items-center justify-center rounded-lg bg-muted text-xs font-semibold text-muted-foreground";
+  }
+  return "flex h-6 w-6 items-center justify-center rounded-md bg-muted text-[0.625rem] font-semibold text-muted-foreground";
+});
 </script>
 
 <template>
   <img v-if="src" :src="src" :alt="label" :class="boxClass" loading="lazy" decoding="async" />
   <span v-else-if="letter" :class="tileClass" role="img" :aria-label="label">{{ letter }}</span>
-  <Server v-else :class="size === 'card' ? 'size-8 stroke-[1.5]' : 'size-5 stroke-[1.5]'" aria-hidden="true" />
+  <Server v-else :class="size === 'inline' ? 'size-5 stroke-[1.5]' : 'size-8 stroke-[1.5]'" aria-hidden="true" />
 </template>

@@ -144,7 +144,7 @@ const inputClass =
         >
           <MailX class="size-5 stroke-[1.5]" aria-hidden="true" />
         </span>
-        <MailProviderLogo v-else :id="typeOf(option.id)" :label="option.label" size="inline" />
+        <MailProviderLogo v-else :id="typeOf(option.id)" :label="option.label" size="icon" />
       </template>
       <template v-if="!adding" #extra>
         <button
@@ -172,7 +172,7 @@ const inputClass =
         </div>
         <OptionCards v-else label="Email provider" :options="presetOptions" :selected="[]" @pick="pickPreset">
           <template #icon="{ option }">
-            <MailProviderLogo :id="option.id" :label="option.label" size="inline" />
+            <MailProviderLogo :id="option.id" :label="option.label" size="icon" />
           </template>
         </OptionCards>
         <Button size="sm" variant="ghost" @click="cancelAdd">Cancel</Button>
