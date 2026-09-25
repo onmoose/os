@@ -153,8 +153,15 @@ type snapshot struct {
 	// cats is the authored category vocabulary carried verbatim from the payload
 	// (a curated categories.yml via the sync tool), in authored order.
 	cats []wireCategory
+	// providers is the AI provider data, already cleaned by readAIProviders,
+	// in authored order. providerByID indexes it for the logo routes.
+	providers    []wireAIProvider
+	providerByID map[string]*wireAIProvider
 }
 
+// newSnapshot indexes one verified payload. It is also where the AI provider
+// data is read, so what the box drops from it is logged once per load, not
+// once per request.
 func newSnapshot(f catalogFile) *snapshot {
 	s := &snapshot{
 		apps: append([]wireApp(nil), f.Apps...),
@@ -165,6 +172,19 @@ func newSnapshot(f catalogFile) *snapshot {
 	sort.Slice(s.apps, func(i, j int) bool { return s.apps[i].Name < s.apps[j].Name })
 	for i := range s.apps {
 		s.byID[s.apps[i].ID] = &s.apps[i]
+	}
+	var dropped []string
+	s.providers, dropped = readAIProviders(f.AIProviders)
+	s.providerByID = make(map[string]*wireAIProvider, len(s.providers))
+	for i := range s.providers {
+		s.providerByID[s.providers[i].ID] = &s.providers[i]
+	}
+	if len(dropped) > 0 {
+		shown := dropped
+		if len(shown) > maxLoggedDrops {
+			shown = shown[:maxLoggedDrops]
+		}
+		slog.Info("catalog: skipped AI provider data this box cannot read", "count", len(dropped), "dropped", shown)
 	}
 	return s
 }
@@ -453,6 +473,43 @@ func (r *remoteSource) categories() ([]Category, error) {
 		out = append(out, Category{ID: c.ID, Label: c.Label})
 	}
 	return out, nil
+}
+
+// aiProviders returns the payload's AI provider data in authored order. A
+// never-synced box, or a payload without the field, has none.
+func (r *remoteSource) aiProviders() ([]AIProvider, error) {
+	snap := r.current()
+	if snap == nil {
+		return nil, nil
+	}
+	out := make([]AIProvider, 0, len(snap.providers))
+	for i := range snap.providers {
+		out = append(out, aiProviderOf(&snap.providers[i]))
+	}
+	return out, nil
+}
+
+// aiProviderLogoPath returns a local file path to a provider's logo (or its
+// dark variant), proxied and cached exactly like an app icon. The cache lives
+// under ai-providers/<id>, so it cannot be mixed up with an app's assets.
+// ErrNotFound when the provider is unknown or has no such logo.
+func (r *remoteSource) aiProviderLogoPath(id string, dark bool) (string, error) {
+	snap := r.current()
+	if snap == nil {
+		return "", fmt.Errorf("%w: ai provider %q", ErrNotFound, id)
+	}
+	p, ok := snap.providerByID[id]
+	if !ok {
+		return "", fmt.Errorf("%w: ai provider %q", ErrNotFound, id)
+	}
+	ref := p.LogoURL
+	if dark {
+		ref = p.LogoDarkURL
+	}
+	if ref == "" {
+		return "", fmt.Errorf("%w: ai provider %q has no such logo", ErrNotFound, id)
+	}
+	return r.cachedAsset("ai-providers/"+id, ref)
 }
 
 // rankOf reads an app's curated rank, treating an absent rank as last so a

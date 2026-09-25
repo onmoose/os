@@ -87,6 +87,15 @@ func (d *diskSource) home() (*Entry, []HomeGroupView, error) { return nil, nil, 
 // back to a readable form of each id, exactly as it does for a never-synced box.
 func (d *diskSource) categories() ([]Category, error) { return nil, nil }
 
+// aiProviders / aiProviderLogoPath: AI provider data is published on the
+// snapshot only, so a disk tree has none, and the setup page shows an app's AI
+// fields as plain fields.
+func (d *diskSource) aiProviders() ([]AIProvider, error) { return nil, nil }
+
+func (d *diskSource) aiProviderLogoPath(id string, _ bool) (string, error) {
+	return "", fmt.Errorf("%w: ai provider %q", ErrNotFound, id)
+}
+
 // Entry returns the grid summary for one app by id, honestly — it does *not*
 // apply the store-visibility filter, so an unlisted-but-installed app still
 // resolves its card metadata. ErrNotFound when the manifest doesn't exist; other

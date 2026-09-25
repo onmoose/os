@@ -21,6 +21,7 @@ import { useQuery } from "@tanstack/vue-query";
 import { ArrowLeft, TriangleAlert } from "lucide-vue-next";
 import {
   api,
+  type AIProvider,
   type CatalogDetail,
   type FolderElection,
   type InstallPlan,
@@ -31,7 +32,7 @@ import {
 import { useAuth } from "../auth";
 import { useInstallSubmit } from "../useInstall";
 import { formatSize } from "../utils";
-import { aiSlots, claimedEnvs, fieldValues, type AIChoice } from "../aiProviders";
+import { aiSlots, claimedEnvs, fieldValues, fillableSlots, findProvider, type AIChoice } from "../aiProviders";
 import AppGlyph from "../components/AppGlyph.vue";
 import HealthGated from "../components/HealthGated.vue";
 import Button from "../components/ui/Button.vue";
@@ -62,6 +63,18 @@ const detailQuery = useQuery({
   queryFn: () => api.get<CatalogDetail>(`/catalog/${encodeURIComponent(manifestId.value)}`),
 });
 const brokenIcon = ref(false);
+
+// AI provider data from the catalog (INSTALL_SETUP.md # 4). It changes rarely,
+// so it is cached for a while. A failed fetch is not shown as an error: the
+// page falls back to plain fields, so an install is never blocked by it.
+const providersQuery = useQuery({
+  queryKey: ["ai-providers"],
+  queryFn: () => api.get<{ providers: AIProvider[] | null }>("/ai-providers"),
+  staleTime: 5 * 60_000,
+  retry: 1,
+  refetchOnWindowFocus: false,
+});
+const providers = computed(() => providersQuery.data.value?.providers ?? []);
 
 const { submit, confirmDuplicate, dismissDuplicate, submitError, duplicateInfo, pending } =
   useInstallSubmit(manifestId);
@@ -152,8 +165,17 @@ const noPermissions = computed(
 
 // ── AI and plain settings ───────────────────────────────────────────────────
 // The AI row takes the fields the temporary lookup in aiProviders.ts
-// recognises. Every other field stays a plain input in the Settings row.
-const slots = computed(() => aiSlots(configFields.value));
+// recognises, when some provider can fill them. Every other field stays a
+// plain input in the Settings row. With no provider data (the catalog is not
+// reachable, or serves none) there is no AI row at all, and every field is a
+// plain input.
+const candidateSlots = computed(() => aiSlots(configFields.value));
+const slots = computed(() =>
+  providers.value.length > 0 ? fillableSlots(candidateSlots.value, providers.value) : [],
+);
+// Wait for the provider data before drawing the form of an app with AI
+// fields, so the fields do not jump from Settings to the AI row mid-typing.
+const providersLoading = computed(() => candidateSlots.value.length > 0 && providersQuery.isPending.value);
 const claimed = computed(() => claimedEnvs(slots.value));
 const plainFields = computed(() => configFields.value.filter((f) => !claimed.value.has(f.app_env)));
 
@@ -164,7 +186,7 @@ const fieldAnswers = computed<Record<string, string>>(() => {
   for (const f of plainFields.value) out[f.app_env] = configValues.value[f.app_env] ?? "";
   for (const s of slots.value) {
     const c = aiChoices.value[s.id];
-    if (c) Object.assign(out, fieldValues(s, c));
+    if (c) Object.assign(out, fieldValues(s, c, findProvider(providers.value, c.provider)));
   }
   return out;
 });
@@ -220,7 +242,7 @@ const ddClass = "mt-2 text-sm/6 text-foreground sm:col-span-2 sm:mt-0";
       <ArrowLeft class="size-4" aria-hidden="true" /> {{ plan?.name ?? "Back" }}
     </RouterLink>
 
-    <p v-if="planQuery.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
+    <p v-if="planQuery.isLoading.value || providersLoading" class="text-sm text-muted-foreground">Loading…</p>
     <div v-else-if="planQuery.isError.value" class="space-y-2">
       <p class="text-sm text-destructive">
         Couldn't load what this app needs. {{ (planQuery.error.value as Error)?.message }}
@@ -333,7 +355,7 @@ const ddClass = "mt-2 text-sm/6 text-foreground sm:col-span-2 sm:mt-0";
           <div v-if="slots.length > 0" :class="rowClass">
             <dt :class="dtClass">AI providers</dt>
             <dd :class="ddClass">
-              <AIProviderSection v-model="aiChoices" :slots="slots" :app-name="plan.name" />
+              <AIProviderSection v-model="aiChoices" :slots="slots" :providers="providers" :app-name="plan.name" />
             </dd>
           </div>
 

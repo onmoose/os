@@ -117,6 +117,10 @@ export type FolderSources = Schemas["FolderSources"];
 export type MailProvider = Schemas["MailProviderDTO"];
 export type MailProviderOption = Schemas["MailProviderOption"];
 export type MailPreset = Schemas["MailPresetDTO"];
+// AIProvider is one AI provider from the catalog (GET /api/v1/ai-providers,
+// INSTALL_SETUP.md # 4), in display order. Logo URLs are box routes.
+export type AIProvider = Schemas["AIProvider"];
+export type AIModel = Schemas["AIModel"];
 export type MailPresetRegionOption = Schemas["MailPresetRegionOptionDTO"];
 export type SystemStorage = Schemas["SystemStorageDTO"];
 export type SystemVersion = Schemas["SystemVersionDTO"];

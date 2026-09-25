@@ -3,36 +3,71 @@
 // user picks a provider tile, types its key (and a model or URL where the app
 // has a field for it), and saves. Saving fills every field of the slot the
 // provider lands in; the parent turns the choices into app_env values with
-// fieldValues(). Which slot a provider lands in, and which tiles show at all,
-// comes from aiProviders.ts, which is temporary until manifest roles land.
+// fieldValues(). The providers come from the catalog (the parent fetches
+// them); which slot a provider lands in, and which tiles show at all, comes
+// from aiProviders.ts.
 //
 // An app can take several providers at once (Anthropic and OpenAI in openclaw),
 // one per slot. A compatible slot holds one provider, so saving a second one
 // there replaces the first, and the editor says so before it happens.
 import { computed, ref } from "vue";
-import { ExternalLink } from "lucide-vue-next";
+import { Bot, ExternalLink, Server } from "lucide-vue-next";
+import type { AIProvider } from "../../api";
 import Button from "../ui/Button.vue";
 import OptionCards, { type Option } from "./OptionCards.vue";
 import {
-  PROVIDERS,
+  withOther,
+  findProvider,
+  isOther,
+  chatModels,
+  suggestedModel,
+  keyLooksWrong,
   slotFor,
   asksForUrl,
   modelRequired,
   choiceComplete,
   type AIChoice,
-  type AIProvider,
   type AISlot,
 } from "../../aiProviders";
 
-const props = defineProps<{ slots: AISlot[]; appName: string }>();
+const props = defineProps<{ slots: AISlot[]; providers: AIProvider[]; appName: string }>();
 // choices is keyed by slot id.
 const choices = defineModel<Record<string, AIChoice>>({ required: true });
 
-// Only providers this app can use get a tile.
-const offered = computed(() => PROVIDERS.filter((p) => slotFor(p, props.slots)));
+// Only providers this app can use get a tile, in the catalog's order, with
+// Other last.
+const offered = computed(() => withOther(props.providers).filter((p) => slotFor(p, props.slots)));
 
 function providerOf(id: string): AIProvider | undefined {
-  return PROVIDERS.find((p) => p.id === id);
+  return findProvider(props.providers, id);
+}
+
+// ── Logos ───────────────────────────────────────────────────────────────────
+// The dashboard has a light theme only today. When a dark theme lands it will
+// put the `dark` class on <html> (the Tailwind convention), and the dark logo
+// is used then. Following the OS setting instead would draw a light logo on
+// the light page for anyone whose OS is dark.
+const darkTheme = document.documentElement.classList.contains("dark");
+// A logo that fails to load falls back to the icon, like an app icon does.
+const brokenLogos = ref(new Set<string>());
+function logoOf(p: AIProvider | undefined): string | undefined {
+  if (!p || brokenLogos.value.has(p.id)) return undefined;
+  return (darkTheme && p.logo_dark_url) || p.logo_url;
+}
+function logoFailed(id: string) {
+  brokenLogos.value = new Set(brokenLogos.value).add(id);
+}
+function fallbackIcon(p: AIProvider | undefined) {
+  return p && isOther(p) ? Server : Bot;
+}
+
+// The key link is catalog data, so only a plain web address becomes a link.
+function isWebLink(u: string | undefined): boolean {
+  return !!u && /^https?:\/\//i.test(u);
+}
+
+function modelName(p: AIProvider | undefined, id: string): string {
+  return p?.models?.find((m) => m.id === id)?.name ?? id;
 }
 
 const added = computed(() => Object.values(choices.value).map((c) => c.provider));
@@ -42,8 +77,8 @@ const tileOptions = computed(() =>
     const c = Object.values(choices.value).find((x) => x.provider === p.id);
     return {
       id: p.id,
-      label: p.label,
-      description: c ? (c.model ? `Added, uses ${c.model}` : "Added") : undefined,
+      label: p.name,
+      description: c ? (c.model ? `Added, uses ${modelName(p, c.model)}` : "Added") : undefined,
     };
   }),
 );
@@ -51,6 +86,13 @@ const tileOptions = computed(() =>
 // ── Editor ──────────────────────────────────────────────────────────────────
 type Editing = { slot: AISlot; provider: AIProvider; draft: AIChoice };
 const editing = ref<Editing | null>(null);
+
+// A tile shows as selected once its provider is added, and also while its
+// editor is open, so the user sees which tile they are filling in.
+const selectedTiles = computed(() => {
+  const open = editing.value?.provider.id;
+  return open && !added.value.includes(open) ? [...added.value, open] : added.value;
+});
 
 function pick(id: string) {
   // A second click on the provider being edited closes its editor.
@@ -69,9 +111,9 @@ function pick(id: string) {
           provider: id,
           key: "",
           baseUrl: "",
-          // A required model starts on the provider's first suggestion. An
+          // A required model starts on the provider's suggested chat model. An
           // optional one starts blank, which leaves the app on its default.
-          model: slot.fields.model && modelRequired(slot) ? (provider.models[0] ?? "") : "",
+          model: slot.fields.model && modelRequired(slot) ? suggestedModel(provider) : "",
         };
   editing.value = { slot, provider, draft };
 }
@@ -81,14 +123,18 @@ const replaces = computed(() => {
   if (!editing.value) return null;
   const current = choices.value[editing.value.slot.id];
   if (!current || current.provider === editing.value.provider.id) return null;
-  return providerOf(current.provider)?.label ?? null;
+  return providerOf(current.provider)?.name ?? null;
 });
 
 const isAdded = computed(
   () => !!editing.value && choices.value[editing.value.slot.id]?.provider === editing.value.provider.id,
 );
 
-const canSave = computed(() => !!editing.value && choiceComplete(editing.value.slot, editing.value.draft));
+const canSave = computed(
+  () => !!editing.value && choiceComplete(editing.value.slot, editing.value.draft, editing.value.provider),
+);
+
+const keyWarning = computed(() => !!editing.value && keyLooksWrong(editing.value.provider, editing.value.draft.key));
 
 function save() {
   if (!editing.value || !canSave.value) return;
@@ -104,12 +150,19 @@ function remove() {
   editing.value = null;
 }
 
+// The chat models the picker offers, suggested one first.
+const editingModels = computed(() => (editing.value ? chatModels(editing.value.provider) : []));
+
 // The model picker uses a sentinel id for "the app's own default", because the
 // real value for it is an empty string.
 const APP_DEFAULT = "__app_default";
 const modelOptions = computed<Option[]>(() => {
   if (!editing.value) return [];
-  const opts: Option[] = editing.value.provider.models.map((m) => ({ id: m, label: m }));
+  const suggested = editing.value.provider.defaults?.chat;
+  const opts: Option[] = editingModels.value.map((m) => {
+    const notes = [m.id === suggested ? "Suggested" : "", m.name !== m.id ? m.id : ""].filter(Boolean);
+    return { id: m.id, label: m.name, description: notes.join(" · ") || undefined };
+  });
   if (!modelRequired(editing.value.slot)) {
     opts.unshift({ id: APP_DEFAULT, label: "App default", description: `Let ${props.appName} choose` });
   }
@@ -130,7 +183,7 @@ function pickModel(id: string) {
 const otherModel = computed({
   get: () => {
     const m = editing.value?.draft.model ?? "";
-    return editing.value?.provider.models.includes(m) ? "" : m;
+    return editingModels.value.some((x) => x.id === m) ? "" : m;
   },
   set: (v: string) => {
     if (editing.value) editing.value.draft.model = v;
@@ -150,16 +203,17 @@ const inputClass =
       <template v-if="slots.length > 1">You can add more than one.</template>
     </p>
 
-    <OptionCards label="AI provider" :options="tileOptions" :selected="added" multiple @pick="pick">
+    <OptionCards label="AI provider" :options="tileOptions" :selected="selectedTiles" multiple @pick="pick">
       <template #icon="{ option }">
         <span class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <img
-            v-if="providerOf(option.id)?.logo"
-            :src="providerOf(option.id)!.logo"
+            v-if="logoOf(providerOf(option.id))"
+            :src="logoOf(providerOf(option.id))"
             :alt="option.label"
             class="size-6 object-contain"
+            @error="logoFailed(option.id)"
           />
-          <component :is="providerOf(option.id)?.icon" v-else class="size-5 stroke-[1.5]" aria-hidden="true" />
+          <component :is="fallbackIcon(providerOf(option.id))" v-else class="size-5 stroke-[1.5]" aria-hidden="true" />
         </span>
       </template>
     </OptionCards>
@@ -168,9 +222,16 @@ const inputClass =
     <div v-if="editing" class="space-y-4 rounded-lg border border-border bg-card p-4">
       <div class="flex items-center gap-2.5">
         <span class="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-          <component :is="editing.provider.icon" class="size-4 stroke-[1.5]" aria-hidden="true" />
+          <img
+            v-if="logoOf(editing.provider)"
+            :src="logoOf(editing.provider)"
+            alt=""
+            class="size-5 object-contain"
+            @error="logoFailed(editing.provider.id)"
+          />
+          <component :is="fallbackIcon(editing.provider)" v-else class="size-4 stroke-[1.5]" aria-hidden="true" />
         </span>
-        <h4 class="text-sm font-semibold text-foreground">{{ editing.provider.label }}</h4>
+        <h4 class="text-sm font-semibold text-foreground">{{ editing.provider.name }}</h4>
       </div>
 
       <p v-if="replaces" class="rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
@@ -179,7 +240,7 @@ const inputClass =
 
       <div v-if="editing.slot.fields.api_key">
         <label for="ai-key" class="block text-sm/6 font-medium text-foreground">
-          API key<span v-if="!editing.provider.needsKey" class="font-normal text-muted-foreground"> (optional)</span>
+          API key<span v-if="isOther(editing.provider)" class="font-normal text-muted-foreground"> (optional)</span>
         </label>
         <div class="mt-2">
           <input
@@ -190,15 +251,22 @@ const inputClass =
             :class="inputClass"
           />
         </div>
+        <p v-if="keyWarning" class="mt-2 text-sm text-warning">
+          Keys from {{ editing.provider.name }} usually start with {{ editing.provider.key_prefix }}. Check that you
+          copied the whole key.
+        </p>
         <p class="mt-2 text-sm text-muted-foreground">
-          <a
-            v-if="editing.provider.keyUrl"
-            :href="editing.provider.keyUrl"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="inline-flex items-center gap-1 underline hover:text-foreground"
-          >Get a key from {{ editing.provider.label }} <ExternalLink class="size-3.5" aria-hidden="true" /></a>
-          <template v-else>Only needed if your server asks for one.</template>
+          <template v-if="isOther(editing.provider)">Only needed if your server asks for one.</template>
+          <template v-else>
+            <template v-if="editing.provider.help">{{ editing.provider.help }} </template>
+            <a
+              v-if="isWebLink(editing.provider.key_url)"
+              :href="editing.provider.key_url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-1 underline hover:text-foreground"
+            >Get a key from {{ editing.provider.name }} <ExternalLink class="size-3.5" aria-hidden="true" /></a>
+          </template>
         </p>
       </div>
 
@@ -224,7 +292,7 @@ const inputClass =
           Model<span v-if="modelRequired(editing.slot)" class="text-destructive"> *</span>
         </p>
         <OptionCards
-          v-if="editing.provider.models.length > 0"
+          v-if="editingModels.length > 0"
           label="Model"
           :options="modelOptions"
           :selected="selectedModel"
@@ -232,8 +300,8 @@ const inputClass =
         />
         <input
           v-model="otherModel"
-          :aria-label="editing.provider.models.length > 0 ? 'Other model' : 'Model'"
-          :placeholder="editing.provider.models.length > 0 ? 'Or type another model name' : 'Model name'"
+          :aria-label="editingModels.length > 0 ? 'Other model' : 'Model'"
+          :placeholder="editingModels.length > 0 ? 'Or type another model name' : 'Model name'"
           autocomplete="off"
           :class="inputClass"
         />

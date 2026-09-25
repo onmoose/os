@@ -15,7 +15,7 @@ import (
 // distribution from the box. The box fetches browse data and install payloads on
 // two different routes:
 //
-//	GET /catalog?env=<environment>   browse records, home, categories, version
+//	GET /catalog?env=<environment>   browse records, home, categories, AI providers, version
 //	GET /catalog/apps/{id}/manifest  verbatim manifest.yml, application/yaml
 //	GET /catalog/apps/{id}/compose   verbatim compose.yml, application/yaml
 //
@@ -44,9 +44,9 @@ import (
 const wireSchemaVersion = 2
 
 // catalogFile is the browse payload served by GET /catalog?env=<environment>:
-// the app records this box's surface may show, the curated landing page, and the
-// category vocabulary. It carries no install payloads — those are two separate
-// routes per app (see wireApp.ManifestURL / ComposeURL).
+// the app records this box's surface may show, the curated landing page, the
+// category vocabulary, and the AI provider data. It carries no install payloads
+// (those are two separate routes per app, see wireApp.ManifestURL / ComposeURL).
 type catalogFile struct {
 	SchemaVersion int       `json:"schema_version"`
 	GeneratedAt   time.Time `json:"generated_at"`
@@ -68,6 +68,45 @@ type catalogFile struct {
 	// invented display text from the id ("developer-tools" -> "developer tools",
 	// "ai" -> "ai") and disagreed with the other store surface doing the same.
 	Categories []wireCategory `json:"categories"`
+	// AIProviders is the AI provider data the install setup page draws as
+	// tiles (INSTALL_SETUP.md # 4): a list of wireAIProvider, in display order.
+	// It stays raw here so a bad entry can never refuse the snapshot: the
+	// catalog is how a box gets its apps, and provider data is a helper on one
+	// page. readAIProviders decodes it leniently when the snapshot is loaded.
+	// Absent on an older catalog, which reads as an empty list.
+	AIProviders json.RawMessage `json:"ai_providers,omitempty"`
+}
+
+// wireAIProvider is one AI provider as the catalog service publishes it. Only
+// id and name are required. key_prefix is a hint the UI may warn on, never a
+// rule. native_protocol names the API an app's native slot speaks
+// (anthropic, openai, ...); a provider without one is reachable only through
+// an OpenAI-compatible slot, at openai_base_url. Logo URLs are opaque, like
+// every published URL (resolveURL).
+type wireAIProvider struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	LogoURL        string `json:"logo_url,omitempty"`
+	LogoDarkURL    string `json:"logo_dark_url,omitempty"`
+	KeyURL         string `json:"key_url,omitempty"`
+	Help           string `json:"help,omitempty"`
+	KeyPrefix      string `json:"key_prefix,omitempty"`
+	NativeProtocol string `json:"native_protocol,omitempty"`
+	OpenAIBaseURL  string `json:"openai_base_url,omitempty"`
+	Checked        string `json:"checked,omitempty"`
+	// Defaults maps a model type to the model id to suggest first for it.
+	Defaults map[string]string `json:"defaults,omitempty"`
+	Models   []wireAIModel     `json:"models,omitempty"`
+}
+
+// wireAIModel is one model of a provider. Types and flags come from closed
+// lists the box knows (aiModelTypes, aiModelFlags); a value outside them is
+// dropped when the snapshot is loaded, so the store can add one first.
+type wireAIModel struct {
+	ID    string   `json:"id"`
+	Name  string   `json:"name"`
+	Types []string `json:"types"`
+	Flags []string `json:"flags,omitempty"`
 }
 
 // wireCategory is one entry of the authored category vocabulary. Mirror of the
@@ -230,11 +269,15 @@ type (
 	SnapshotHome      = wireHomePage
 	SnapshotHomeGroup = wireHomeGroup
 	SnapshotCategory  = wireCategory
+	// SnapshotAIProvider and SnapshotAIModel let a seed builder carry AI
+	// provider data in the same shape the box reads.
+	SnapshotAIProvider = wireAIProvider
+	SnapshotAIModel    = wireAIModel
 )
 
 // BuildSnapshot assembles a GET /catalog-shaped browse payload from already-built
-// apps (and an optional curated landing page) and marshals it to the exact bytes a
-// box can parse: it stamps SchemaVersion, GeneratedAt, StoreRef and Version, and
+// apps (and an optional curated landing page and AI provider list) and marshals
+// it to the exact bytes a box can parse: it stamps SchemaVersion, GeneratedAt, StoreRef and Version, and
 // marshals the whole thing. This is the one seam a snapshot-building tool needs —
 // it builds SnapshotApp values from its own source (a manifest+compose pair, a
 // home.yml) and calls this once, instead of re-declaring the wire shape.
@@ -242,10 +285,16 @@ type (
 // A tool building a snapshot for the local seed seam (dev/mkcatalog) inlines each
 // app's Manifest/Compose, because there is no catalog service behind a staged
 // file to serve the two document routes.
-func BuildSnapshot(apps []SnapshotApp, home SnapshotHome, cats []SnapshotCategory, storeRef string) ([]byte, error) {
+func BuildSnapshot(apps []SnapshotApp, home SnapshotHome, cats []SnapshotCategory, providers []SnapshotAIProvider, storeRef string) ([]byte, error) {
 	version, err := contentToken(apps)
 	if err != nil {
 		return nil, err
+	}
+	var rawProviders json.RawMessage
+	if len(providers) > 0 {
+		if rawProviders, err = json.Marshal(providers); err != nil {
+			return nil, fmt.Errorf("marshal ai providers: %w", err)
+		}
 	}
 	f := catalogFile{
 		SchemaVersion: wireSchemaVersion,
@@ -255,6 +304,7 @@ func BuildSnapshot(apps []SnapshotApp, home SnapshotHome, cats []SnapshotCategor
 		Apps:          apps,
 		Home:          home,
 		Categories:    cats,
+		AIProviders:   rawProviders,
 	}
 	b, err := json.Marshal(f)
 	if err != nil {

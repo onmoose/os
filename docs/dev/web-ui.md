@@ -62,8 +62,9 @@ web-ui/
     ├── useInstall.ts       # catalog-app install flow: which copies the caller has
     │                       #   (detail-page button state) and the POST with its
     │                       #   409/422 branches; see "Install flow" below
-    ├── aiProviders.ts      # TEMPORARY AI provider list + env-name lookup for the
-    │                       #   install setup page, until manifest roles land
+    ├── aiProviders.ts      # AI provider tiles and field values for the install
+    │                       #   setup page; its env-name lookup is TEMPORARY,
+    │                       #   until manifest roles land
     │
     ├── views/              # one component per route (lazy-loaded)
     │   ├── HomeView.vue        # installed-app grid
@@ -138,7 +139,7 @@ A catalog install spans three pages. The detail page's Install button (and the s
 
 The progress page folds the brain's ~15 lifecycle steps into four phases in the order the brain runs them: Preparing, Downloading (`resolving_digests`, which pulls the images), Setting up, Starting. The phase never goes back, and an unknown step keeps the last known phase. The wording stays in the view.
 
-The setup page's rows live in `components/install/`. `OptionCards` is the shared card grid (about five cards, then a "More" divider button that shows the rest with a search box, and an optional "use what I typed" card for model ids). The Email row reuses `mailProviderForm.ts` for its inline add, the same rules as the Settings add flow; `useMailPresets` takes an `enabled` ref there so the presets load only when the user opens the add flow. The AI providers row gets its provider list and its env-name lookup from `aiProviders.ts`. That module is **temporary**: it guesses what a field means from its `app_env` name (`ANTHROPIC_API_KEY`, `<APP>_CUSTOM_BASE_URL`, and so on) until manifest roles land (`INSTALL_SETUP.md` step 4), and nothing outside it should learn env names. Fields it recognises leave the Settings row; every other field renders through `ConfigFieldInput`.
+The setup page's rows live in `components/install/`. `OptionCards` is the shared card grid (about five cards, then a "More" divider button that shows the rest with a search box, and an optional "use what I typed" card for model ids). The Email row reuses `mailProviderForm.ts` for its inline add, the same rules as the Settings add flow; `useMailPresets` takes an `enabled` ref there so the presets load only when the user opens the add flow. The AI providers row gets its provider list from `GET /api/v1/ai-providers` (query key `["ai-providers"]`, fetched by the setup page), plus the "Other (OpenAI-compatible)" tile, which the UI owns. A tile fills a native slot when its `native_protocol` matches, not its id. `aiProviders.ts` holds the tile logic and the env-name lookup. The lookup is **temporary**: it guesses what a field means from its `app_env` name (`ANTHROPIC_API_KEY`, `<APP>_CUSTOM_BASE_URL`, and so on) until manifest roles land (`INSTALL_SETUP.md` step 4), and nothing outside it should learn env names. Fields it recognises leave the Settings row when some provider can fill them; every other field renders through `ConfigFieldInput`. An empty provider list (the catalog is not reachable, or serves none) means no AI row: every field is a plain input, so an install is never blocked on provider data.
 
 ## Styling
 

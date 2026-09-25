@@ -113,5 +113,59 @@
       "id": "productivity",
       "label": "Productivity"
     }
+  ],
+  "ai_providers": [
+    {
+      "id": "alpha-ai",
+      "name": "Alpha AI",
+      "logo_url": "https://assets.example.invalid/ai-providers/alpha-ai/logo.svg",
+      "logo_dark_url": "https://assets.example.invalid/ai-providers/alpha-ai/logo-dark.svg",
+      "key_url": "https://example.invalid/alpha-ai/keys",
+      "help": "Make a key on the Alpha AI keys page.",
+      "key_prefix": "sk-alpha-",
+      "native_protocol": "alpha",
+      "openai_base_url": "https://api.example.invalid/alpha-ai/v1/",
+      "checked": "2026-09-25",
+      "defaults": {
+        "chat": "alpha-chat-large",
+        "embedding": "alpha-embed"
+      },
+      "models": [
+        {
+          "id": "alpha-chat-large",
+          "name": "Alpha Chat Large",
+          "types": [
+            "chat"
+          ],
+          "flags": [
+            "vision",
+            "tools",
+            "reasoning"
+          ]
+        },
+        {
+          "id": "alpha-embed",
+          "name": "Alpha Embed",
+          "types": [
+            "embedding"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "beta-ai",
+      "name": "Beta AI",
+      "key_url": "https://example.invalid/beta-ai/keys",
+      "openai_base_url": "https://api.example.invalid/beta-ai/v1",
+      "models": [
+        {
+          "id": "beta-small",
+          "name": "Beta Small",
+          "types": [
+            "chat"
+          ]
+        }
+      ]
+    }
   ]
 }

@@ -1,6 +1,137 @@
 {
   "components": {
     "schemas": {
+      "AIModel": {
+        "additionalProperties": false,
+        "properties": {
+          "flags": {
+            "items": {
+              "enum": [
+                "vision",
+                "tools",
+                "reasoning"
+              ],
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "types": {
+            "items": {
+              "enum": [
+                "chat",
+                "embedding",
+                "image",
+                "speech_to_text",
+                "text_to_speech",
+                "rerank"
+              ],
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "types"
+        ],
+        "type": "object"
+      },
+      "AIProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "checked": {
+            "type": "string"
+          },
+          "defaults": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "help": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "key_prefix": {
+            "type": "string"
+          },
+          "key_url": {
+            "type": "string"
+          },
+          "logo_dark_url": {
+            "type": "string"
+          },
+          "logo_url": {
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/AIModel"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "native_protocol": {
+            "type": "string"
+          },
+          "openai_base_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "models"
+        ],
+        "type": "object"
+      },
+      "AiProvidersOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/AiProvidersOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/AIProvider"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "type": "object"
+      },
       "AppConfigDTO": {
         "additionalProperties": false,
         "properties": {
@@ -3075,6 +3206,34 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/ai-providers": {
+      "get": {
+        "operationId": "list-ai-providers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiProvidersOutputBody"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "AI providers and their models, in display order"
+      }
+    },
     "/api/v1/apps": {
       "get": {
         "operationId": "list-apps",

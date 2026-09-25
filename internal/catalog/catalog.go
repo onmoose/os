@@ -66,6 +66,12 @@ type source interface {
 	// List: the remote source reads it from the synced browse payload's home
 	// block; the disk source has no curation and returns nothing.
 	home() (*Entry, []HomeGroupView, error)
+	// aiProviders returns the AI provider data in authored order, or nil when
+	// the source has none (the disk source, a never-synced remote, or a catalog
+	// without the field). aiProviderLogoPath resolves one provider's logo, or
+	// its dark variant, to a local file, the way IconPath does for an app.
+	aiProviders() ([]AIProvider, error)
+	aiProviderLogoPath(id string, dark bool) (string, error)
 }
 
 // Catalog is the brain-facing catalog handle. It is a thin facade over a source;

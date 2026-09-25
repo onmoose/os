@@ -196,6 +196,9 @@ func (s *Server) Handler() http.Handler {
 	// directly in <img> tags (APP_STORE.md # Catalog schema).
 	mux.HandleFunc("GET /api/v1/catalog/{id}/icon", s.catalogIcon)
 	mux.HandleFunc("GET /api/v1/catalog/{id}/screenshots/{n}", s.catalogScreenshot)
+	// AI provider logos, the same way: proxied and cached like an app icon.
+	mux.HandleFunc("GET /api/v1/ai-providers/{id}/logo", s.aiProviderLogo)
+	mux.HandleFunc("GET /api/v1/ai-providers/{id}/logo-dark", s.aiProviderLogoDark)
 
 	// Portal-to-box SSO landing (hosted only): the portal redirects the owner's
 	// browser here with a signed ownership assertion; the handler verifies it,
@@ -234,6 +237,7 @@ func (s *Server) registerAll(api huma.API) {
 	s.registerHealth(api)
 	s.registerNotifications(api)
 	s.registerMail(api)
+	s.registerAIProviders(api)
 	s.registerSystem(api)
 	s.registerSystemUpdate(api)
 	s.registerFirstRun(api)
