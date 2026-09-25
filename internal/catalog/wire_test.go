@@ -253,6 +253,35 @@ func TestNoUnmodeledFields(t *testing.T) {
 			checkNested(id, "links", li, knownLinks)
 		}
 	}
+
+	// ai_providers is a list of objects of its own, so its keys are checked
+	// the same way as an app's. defaults is keyed by model type, which is data,
+	// not shape, so its keys are not checked.
+	providersRaw, _ := raw["ai_providers"].([]any)
+	knownProvider := jsonKeys(reflect.TypeOf(wireAIProvider{}))
+	knownModel := jsonKeys(reflect.TypeOf(wireAIModel{}))
+	for _, p := range providersRaw {
+		prov, ok := p.(map[string]any)
+		if !ok {
+			t.Fatal("the pinned fixture: an \"ai_providers\" entry is not an object")
+		}
+		id, _ := prov["id"].(string)
+		checkKeys := func(label string, obj map[string]any, known map[string]bool) {
+			for key := range obj {
+				if !known[key] {
+					t.Errorf("ai provider %q: %s has key %q that its wire type (internal/catalog/wire.go) does not "+
+						"model: add the field, or record why it's ignored", id, label, key)
+				}
+			}
+		}
+		checkKeys("the provider", prov, knownProvider)
+		models, _ := prov["models"].([]any)
+		for _, m := range models {
+			if mo, ok := m.(map[string]any); ok {
+				checkKeys("a model", mo, knownModel)
+			}
+		}
+	}
 }
 
 // TestExternalCostsProjectOntoDetail checks the newest display field survives the
@@ -312,8 +341,12 @@ func TestBuildSnapshotRoundTrips(t *testing.T) {
 		ID: "alpha", Name: "Alpha", Version: "1.0",
 		Manifest: "id: alpha\n", Compose: "services: {}\n",
 	}}
+	providers := []SnapshotAIProvider{{
+		ID: "acme-ai", Name: "Acme AI",
+		Models: []SnapshotAIModel{{ID: "acme-1", Name: "Acme 1", Types: []string{"chat"}}},
+	}}
 	b, err := BuildSnapshot(apps, SnapshotHome{Spotlight: "alpha"},
-		[]SnapshotCategory{{ID: "tools", Label: "Tools"}}, "abc123")
+		[]SnapshotCategory{{ID: "tools", Label: "Tools"}}, providers, "abc123")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,11 +363,14 @@ func TestBuildSnapshotRoundTrips(t *testing.T) {
 	if f.StoreRef != "abc123" || f.Home.Spotlight != "alpha" || len(f.Categories) != 1 {
 		t.Errorf("built snapshot lost its curation: %+v", f)
 	}
+	if got, dropped := readAIProviders(f.AIProviders); len(got) != 1 || got[0].ID != "acme-ai" || len(dropped) != 0 {
+		t.Errorf("built snapshot lost its AI providers: %+v (dropped %v)", got, dropped)
+	}
 
 	// The token is content-derived on the build side, so an unchanged catalog
 	// stamps an unchanged version and a seeded box reads a rebuild as a no-op.
 	again, err := BuildSnapshot(apps, SnapshotHome{Spotlight: "alpha"},
-		[]SnapshotCategory{{ID: "tools", Label: "Tools"}}, "abc123")
+		[]SnapshotCategory{{ID: "tools", Label: "Tools"}}, providers, "abc123")
 	if err != nil {
 		t.Fatal(err)
 	}

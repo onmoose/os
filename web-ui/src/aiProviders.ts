@@ -1,187 +1,89 @@
 // AI providers for the install setup page (docs/specs/INSTALL_SETUP.md).
 //
-// TEMPORARY. Everything in this file is a stand-in until plan step 4 lands:
-// manifest `role`s on config fields, and provider data published by the
-// catalog service. Until then:
+// The provider list comes from the catalog (GET /api/v1/ai-providers, plan
+// step 3), so it can change without an OS update. This module turns that list
+// and an app's config fields into tiles and field values.
 //
-//   - PROVIDERS is a hand-written list in the UI. It will come from the catalog
-//     service, so it can change without an OS update.
-//   - aiSlots() guesses what a config field means from its app_env name
-//     (ANTHROPIC_API_KEY and so on). With roles, the manifest says it.
-//
-// Step 4 replaces this whole module. Keep every guess about env names in here,
-// so nothing else in the dashboard learns them.
+// TEMPORARY: the env-name lookup. aiSlots() guesses what a config field means
+// from its app_env name (ANTHROPIC_API_KEY and so on). With manifest `role`s
+// (plan step 4) the manifest says it, and NATIVE_ENV, CUSTOM_ENV and aiSlots()
+// go. Keep every guess about env names in here, so nothing else in the
+// dashboard learns them.
 //
 // The words follow the plan. A **slot** is one set of the app's fields that one
 // provider fills together (a key, and maybe a base URL and a model). A slot is
-// either **native** to one provider (ANTHROPIC_API_KEY is Anthropic's) or
-// **compatible**: it takes any provider with an OpenAI-compatible endpoint (the
-// `<APP>_CUSTOM_*` triple, or OPENAI_API_KEY next to OPENAI_BASE_URL).
-import type { Component } from "vue";
-import { Bot, BrainCircuit, Cpu, Flame, Gauge, Globe, Server, Sparkles, Waypoints, Wind, Zap } from "lucide-vue-next";
-import type { InstallPlanConfigField } from "./api";
+// either **native** to one protocol (ANTHROPIC_API_KEY speaks the anthropic
+// protocol) or **compatible**: it takes any provider with an OpenAI-compatible
+// endpoint (the `<APP>_CUSTOM_*` triple, or OPENAI_API_KEY next to
+// OPENAI_BASE_URL). A provider fills a native slot when its native_protocol
+// matches, whatever its id.
+import type { AIModel, AIProvider, InstallPlanConfigField } from "./api";
 
-export type AIProvider = {
-  id: string;
-  label: string;
-  // logo is a bundled image URL. None ship yet, so every tile draws `icon`.
-  logo?: string;
-  icon: Component;
-  // keyUrl is where the user makes a key. Absent for a server that needs none.
-  keyUrl?: string;
-  // baseUrl is the provider's OpenAI-compatible endpoint. A provider without
-  // one (a self-hosted server) asks the user to type it.
-  baseUrl?: string;
-  // needsKey is false for a server the user runs, which may take no key.
-  needsKey: boolean;
-  // models are suggestions, first one is the default. The picker also takes a
-  // typed model id, so a model missing here never blocks the user.
-  models: string[];
-};
+// OTHER is the "Other (OpenAI-compatible)" tile. It is the UI's own, not
+// catalog data: it has no URL and no models, the user types the server's
+// address, and the key is optional because a server the user runs may not
+// ask for one. Its id is one no catalog provider is expected to use; if one
+// did, Other would win the lookup.
+export const OTHER_ID = "__other";
+export const OTHER: AIProvider = { id: OTHER_ID, name: "Other (OpenAI-compatible)", models: [] };
 
-// Order is the featured order: the setup page shows the first five, and the
-// rest behind "More".
-//
-// Checked against each provider's own docs on 2026-09-25: the model ids of
-// Anthropic, OpenAI, Gemini, Groq, Mistral, DeepSeek, xAI and Cerebras; the
-// base URLs of Anthropic, Gemini, OpenRouter, Mistral, DeepSeek and xAI; the
-// key pages of Anthropic and DeepSeek. Everything else here (the other key
-// pages and base URLs, most OpenRouter models, and the Together and
-// Fireworks entries) was not checked.
-//
-// No Ollama tile: Ollama runs on the user's own computer, which a hosted box
-// cannot reach. "Other" covers a server the box can reach, since the user
-// types its address.
-export const PROVIDERS: AIProvider[] = [
-  {
-    id: "anthropic",
-    label: "Anthropic",
-    icon: Sparkles,
-    keyUrl: "https://platform.claude.com/settings/keys",
-    baseUrl: "https://api.anthropic.com/v1/",
-    needsKey: true,
-    models: ["claude-sonnet-5", "claude-opus-5-5", "claude-haiku-4-5", "claude-fable-5-1"],
-  },
-  {
-    id: "openai",
-    label: "OpenAI",
-    icon: BrainCircuit,
-    keyUrl: "https://platform.openai.com/api-keys",
-    baseUrl: "https://api.openai.com/v1",
-    needsKey: true,
-    models: ["gpt-6-sol", "gpt-6-astra", "gpt-6-luna"],
-  },
-  {
-    id: "gemini",
-    label: "Google Gemini",
-    icon: Globe,
-    keyUrl: "https://aistudio.google.com/apikey",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
-    needsKey: true,
-    models: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-2.5-pro"],
-  },
-  {
-    id: "openrouter",
-    label: "OpenRouter",
-    icon: Waypoints,
-    keyUrl: "https://openrouter.ai/keys",
-    baseUrl: "https://openrouter.ai/api/v1",
-    needsKey: true,
-    // "~openai/gpt-sol-latest" is the id OpenRouter's own quickstart uses. The
-    // others follow its vendor/model naming but were not checked.
-    models: ["~openai/gpt-sol-latest", "anthropic/claude-sonnet-5", "google/gemini-3.8-flash"],
-  },
-  {
-    id: "groq",
-    label: "Groq",
-    icon: Zap,
-    keyUrl: "https://console.groq.com/keys",
-    baseUrl: "https://api.groq.com/openai/v1",
-    needsKey: true,
-    models: ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "llama-3.1-8b-instant"],
-  },
-  {
-    id: "mistral",
-    label: "Mistral",
-    icon: Wind,
-    keyUrl: "https://console.mistral.ai/api-keys",
-    baseUrl: "https://api.mistral.ai/v1",
-    needsKey: true,
-    models: ["mistral-large-latest", "mistral-small-latest"],
-  },
-  {
-    id: "deepseek",
-    label: "DeepSeek",
-    icon: Bot,
-    keyUrl: "https://platform.deepseek.com/api_keys",
-    baseUrl: "https://api.deepseek.com",
-    needsKey: true,
-    models: ["deepseek-flash", "deepseek-v4-pro"],
-  },
-  {
-    id: "xai",
-    label: "xAI",
-    icon: Bot,
-    keyUrl: "https://console.x.ai",
-    baseUrl: "https://api.x.ai/v1",
-    needsKey: true,
-    models: ["grok-4.7", "grok-4.6"],
-  },
-  {
-    id: "together",
-    label: "Together AI",
-    icon: Cpu,
-    keyUrl: "https://api.together.ai/settings/api-keys",
-    baseUrl: "https://api.together.xyz/v1",
-    needsKey: true,
-    models: ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct-Turbo"],
-  },
-  {
-    id: "fireworks",
-    label: "Fireworks AI",
-    icon: Flame,
-    keyUrl: "https://fireworks.ai/account/api-keys",
-    baseUrl: "https://api.fireworks.ai/inference/v1",
-    needsKey: true,
-    models: ["accounts/fireworks/models/llama-v3p3-70b-instruct", "accounts/fireworks/models/deepseek-v3"],
-  },
-  {
-    id: "cerebras",
-    label: "Cerebras",
-    icon: Gauge,
-    keyUrl: "https://cloud.cerebras.ai",
-    baseUrl: "https://api.cerebras.ai/v1",
-    needsKey: true,
-    models: ["gpt-oss-120b", "qwen-3.8-27b"],
-  },
-  {
-    id: "custom",
-    label: "Other (OpenAI-compatible)",
-    icon: Server,
-    needsKey: false,
-    models: [],
-  },
-];
+export function isOther(p: AIProvider): boolean {
+  return p.id === OTHER_ID;
+}
+
+// withOther is the tile list: the catalog's providers in their order, then
+// Other.
+export function withOther(providers: AIProvider[]): AIProvider[] {
+  return [...providers, OTHER];
+}
+
+export function findProvider(providers: AIProvider[], id: string): AIProvider | undefined {
+  return id === OTHER_ID ? OTHER : providers.find((p) => p.id === id);
+}
+
+// chatModels is what the model picker offers: the provider's chat models, with
+// its suggested chat model first. The picker also takes a typed model id, so a
+// model missing here never blocks the user.
+export function chatModels(p: AIProvider): AIModel[] {
+  const chat = (p.models ?? []).filter((m) => (m.types ?? []).includes("chat"));
+  const first = p.defaults?.chat;
+  const i = chat.findIndex((m) => m.id === first);
+  if (i > 0) chat.unshift(...chat.splice(i, 1));
+  return chat;
+}
+
+// suggestedModel is the model a required model field starts on.
+export function suggestedModel(p: AIProvider): string {
+  return chatModels(p)[0]?.id ?? "";
+}
+
+// keyLooksWrong is a soft check against the provider's key prefix. It is a
+// hint for a pasted key that is cut short or from another provider, never a
+// reason to block the save.
+export function keyLooksWrong(p: AIProvider, key: string): boolean {
+  const k = key.trim();
+  return !!p.key_prefix && k !== "" && !k.startsWith(p.key_prefix);
+}
 
 export type AIAttr = "api_key" | "base_url" | "model";
 
 export type AISlot = {
-  // id is the provider id for a native slot, or "custom:<PREFIX>" for a
+  // id is the protocol for a native slot, or "custom:<PREFIX>" for a
   // `<PREFIX>_CUSTOM_*` triple.
   id: string;
-  // native is the provider this slot belongs to, if any.
-  native?: string;
+  // protocol is the native protocol this slot speaks, if any.
+  protocol?: string;
   // compatible: the slot takes any OpenAI-compatible provider.
   compatible: boolean;
   fields: Partial<Record<AIAttr, InstallPlanConfigField>>;
 };
 
-// Exact env names we recognise, and what they mean. A name that is not here
-// stays a plain field in the Settings section.
+// Exact env names we recognise, and the native protocol and part each one is.
+// A name that is not here stays a plain field in the Settings section.
 //
 // A bare MODEL is left out on purpose: its value format is the app's own (one
 // app wants "provider/model"), and a name alone cannot tell us which.
-const NATIVE_ENV: Record<string, [provider: string, attr: AIAttr]> = {
+const NATIVE_ENV: Record<string, [protocol: string, attr: AIAttr]> = {
   ANTHROPIC_API_KEY: ["anthropic", "api_key"],
   OPENAI_API_KEY: ["openai", "api_key"],
   OPENAI_BASE_URL: ["openai", "base_url"],
@@ -208,30 +110,38 @@ export function aiSlots(fields: InstallPlanConfigField[]): AISlot[] {
     const custom = CUSTOM_ENV.exec(f.app_env);
     let id: string;
     let attr: AIAttr;
-    let nativeId: string | undefined;
+    let protocol: string | undefined;
     if (native) {
-      [nativeId, attr] = native;
-      id = nativeId;
+      [protocol, attr] = native;
+      id = protocol;
     } else if (custom) {
       id = `custom:${custom[1]}`;
       attr = CUSTOM_ATTR[custom[2]!]!;
     } else {
       continue;
     }
-    const slot = byId.get(id) ?? { id, native: nativeId, compatible: !nativeId, fields: {} };
+    const slot = byId.get(id) ?? { id, protocol, compatible: !protocol, fields: {} };
     slot.fields[attr] = f;
     byId.set(id, slot);
   }
   const slots: AISlot[] = [];
   for (const s of byId.values()) {
-    if (s.native && !s.fields.api_key) continue;
-    if (!s.native && !s.fields.base_url) continue;
+    if (s.protocol && !s.fields.api_key) continue;
+    if (!s.protocol && !s.fields.base_url) continue;
     // OPENAI_API_KEY next to OPENAI_BASE_URL is how many apps say "any
     // OpenAI-compatible server", so that slot takes other providers too.
-    if (s.native === "openai" && s.fields.base_url) s.compatible = true;
+    if (s.protocol === "openai" && s.fields.base_url) s.compatible = true;
     slots.push(s);
   }
   return slots;
+}
+
+// fillableSlots keeps the slots some tile can fill. A compatible slot can
+// always take Other. A native slot needs a provider that speaks its protocol;
+// without one its fields go back to the Settings section, so the user can
+// still type them.
+export function fillableSlots(slots: AISlot[], providers: AIProvider[]): AISlot[] {
+  return slots.filter((s) => s.compatible || providers.some((p) => p.native_protocol === s.protocol));
 }
 
 // claimedEnvs is every app_env the AI section fills, so the Settings section
@@ -242,34 +152,38 @@ export function claimedEnvs(slots: AISlot[]): Set<string> {
   return out;
 }
 
-// slotFor picks where a provider goes, in the plan's order: the provider's own
-// native slot first, then a slot that takes any OpenAI-compatible provider. A
-// custom triple wins over OPENAI_* with a base URL, so picking Groq never
-// takes over the app's OpenAI key. Undefined means the app cannot use this
-// provider, and its tile is hidden.
+// slotFor picks where a provider goes, in the plan's order: a slot that speaks
+// the provider's native protocol first, then a slot that takes any
+// OpenAI-compatible provider, if the provider has such an endpoint (Other
+// always does, since the user types it). A custom triple wins over OPENAI_*
+// with a base URL, so picking Groq never takes over the app's OpenAI key.
+// Undefined means the app cannot use this provider, and its tile is hidden.
 export function slotFor(p: AIProvider, slots: AISlot[]): AISlot | undefined {
-  const native = slots.find((s) => s.native === p.id);
-  if (native) return native;
+  if (p.native_protocol) {
+    const native = slots.find((s) => s.protocol === p.native_protocol);
+    if (native) return native;
+  }
+  if (!p.openai_base_url && !isOther(p)) return undefined;
   const compatible = slots.filter((s) => s.compatible);
-  return compatible.find((s) => !s.native) ?? compatible[0];
+  return compatible.find((s) => !s.protocol) ?? compatible[0];
 }
 
-// usedAsCompatible: the provider fills a slot that is not its own, so the
-// slot's base URL field must point at the provider.
+// usedAsCompatible: the provider fills a slot that is not its native one, so
+// the slot's base URL field must point at the provider.
 export function usedAsCompatible(p: AIProvider, slot: AISlot): boolean {
-  return slot.native !== p.id;
+  return !p.native_protocol || slot.protocol !== p.native_protocol;
 }
 
-// A provider without a fixed endpoint ("Other") asks for its URL.
+// Other has no fixed endpoint, so it asks for the server's address.
 export function asksForUrl(p: AIProvider, slot: AISlot): boolean {
-  return usedAsCompatible(p, slot) && !p.baseUrl;
+  return usedAsCompatible(p, slot) && !p.openai_base_url;
 }
 
 // A custom triple needs a model: the apps that declare one say the model is
 // required once a base URL is set. A native model field is optional, and blank
 // means the app's own default.
 export function modelRequired(slot: AISlot): boolean {
-  return !slot.native && !!slot.fields.model;
+  return !slot.protocol && !!slot.fields.model;
 }
 
 export type AIChoice = {
@@ -282,23 +196,22 @@ export type AIChoice = {
 // fieldValues turns one slot's choice into app_env values. Every field of the
 // slot gets a value, empty when unused, so switching a slot from one provider
 // to another never leaves the old one's URL behind.
-export function fieldValues(slot: AISlot, c: AIChoice): Record<string, string> {
-  const p = PROVIDERS.find((x) => x.id === c.provider);
+export function fieldValues(slot: AISlot, c: AIChoice, p: AIProvider | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   const { api_key, base_url, model } = slot.fields;
   if (api_key) out[api_key.app_env] = c.key.trim();
   if (base_url) {
-    out[base_url.app_env] = p && usedAsCompatible(p, slot) ? (p.baseUrl ?? c.baseUrl.trim()) : "";
+    out[base_url.app_env] = p && usedAsCompatible(p, slot) ? (p.openai_base_url ?? c.baseUrl.trim()) : "";
   }
   if (model) out[model.app_env] = c.model.trim();
   return out;
 }
 
-// choiceComplete says whether a choice can be saved into its slot.
-export function choiceComplete(slot: AISlot, c: AIChoice): boolean {
-  const p = PROVIDERS.find((x) => x.id === c.provider);
+// choiceComplete says whether a choice can be saved into its slot. The key is
+// optional only for Other.
+export function choiceComplete(slot: AISlot, c: AIChoice, p: AIProvider | undefined): boolean {
   if (!p) return false;
-  if (slot.fields.api_key && p.needsKey && !c.key.trim()) return false;
+  if (slot.fields.api_key && !isOther(p) && !c.key.trim()) return false;
   if (asksForUrl(p, slot) && !/^https?:\/\/\S+$/.test(c.baseUrl.trim())) return false;
   if (modelRequired(slot) && !c.model.trim()) return false;
   return true;

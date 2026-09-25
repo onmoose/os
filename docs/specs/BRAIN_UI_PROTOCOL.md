@@ -38,6 +38,9 @@ GET  /api/v1/catalog/:id                    → detail page: the browse fields p
 GET  /api/v1/catalog/:id/icon               → app icon image bytes (raw; not JSON)
 GET  /api/v1/catalog/:id/screenshots/:n     → n-th screenshot image bytes, manifest order, 0-based (raw; not JSON)
 GET  /api/v1/catalog/:id/install-plan      → permission/scope plan for installing a catalog app (see below)
+GET  /api/v1/ai-providers                  → AI provider data for the install setup page, in display order (see below)
+GET  /api/v1/ai-providers/:id/logo         → provider logo image bytes (raw; not JSON)
+GET  /api/v1/ai-providers/:id/logo-dark    → provider logo for dark backgrounds (raw; not JSON)
 POST /api/v1/files/list                    → directory listing (see Files below)
 POST /api/v1/files/mkdir | move | copy | delete  → file operations (see Files below)
 ```
@@ -49,6 +52,14 @@ Plain HTTP. Errors: HTTP status + `{ "code": "...", "message": "...", "details":
 `GET /api/v1/catalog` returns the browse grid — one `Entry` per app with just what a card needs (`APP_STORE.md` # Catalog schema): id, name, version, `short_description`, `categories`, `icon_url`, the optional `icon_glyph` fallback, and the coarse `footprint`. `GET /api/v1/catalog/:id` returns the detail view: the same `Entry` fields embedded, plus `long_description` (markdown), `screenshot_urls`, `author`, `license`, `links`, and `changelog_url`. Both require an authenticated session (401 if absent); unknown id → 404; a malformed catalog entry → 500 (same integrity posture as install-plan).
 
 `icon_url` and the `screenshot_urls` entries point at `GET /api/v1/catalog/:id/icon` and `/screenshots/:n` — they serve **raw image bytes**, not JSON, so the store loads them directly in `<img>` tags (and they stay out of the OpenAPI surface). `icon_url` is present only when the manifest declares an icon, so the store renders a glyph fallback without ever requesting a 404 — the manifest's optional `icon_glyph` (a Lucide name, returned as a plain JSON string on the `Entry`) picks that fallback glyph; absent ⇒ a generic glyph. **As built (#420) the brain proxies these; it does not read them off disk.** No catalog is baked into the box, and the box keeps none (`APP_STORE.md`). On the first request for an asset the brain fetches it from the URL the catalog published (today an object-storage origin) and caches the bytes under `MOOSE_CATALOG_CACHE_DIR`. That cache is per app and expires after 24 hours. It is not a catalog directory. So what the endpoint serves is the last good copy of a remote file, and a box that has never synced serves nothing. These all return 404: an unknown app, an app with no icon, an index that is out of range, and a non-numeric `:n`.
+
+#### AI provider data
+
+`GET /api/v1/ai-providers` returns `{ "providers": [...] }`: the AI provider data from the synced catalog (`INSTALL_SETUP.md` # 4), in the order the store authored it, which is the display order. Any signed-in user may read it (401 if absent), like the catalog browse routes. Each provider carries `id`, `name`, `models` (each with `id`, `name`, `types` and optional `flags`), and optionally `logo_url`, `logo_dark_url`, `key_url`, `help`, `key_prefix`, `native_protocol`, `openai_base_url`, `checked`, and `defaults` (model type to model id). The box has already dropped what it does not understand (an unknown model type or flag, a default naming a missing model), so every value here is one the UI knows.
+
+No catalog synced yet, or a catalog without the data, is **200 with an empty list**, never an error. The setup page reads an empty list as "no provider data" and shows the app's AI fields as plain fields.
+
+`logo_url` and `logo_dark_url` point at `GET /api/v1/ai-providers/:id/logo` and `/logo-dark`, never at the asset origin. Each is present only when the provider has that logo. The two routes serve **raw image bytes**, proxied and cached exactly like an app icon (# Catalog browse, detail, and assets): fetched from the published URL on first request, cached under `MOOSE_CATALOG_CACHE_DIR` for 24 hours. An unknown provider, or a logo the provider does not have, is 404.
 
 #### GET /api/v1/catalog/:id/install-plan
 

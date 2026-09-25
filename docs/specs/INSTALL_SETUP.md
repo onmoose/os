@@ -44,6 +44,14 @@ Two ideas carry this:
 | 2026-09-25 | Step 1 (the setup page and the progress page) is built first, UI only, on its own branch. The layout uses Tailwind Plus patterns: a left-aligned description list for the page, horizontal link cards for the options, and a divider with a "More" button under each option list. |
 | 2026-09-25 | The generic `openai_compatible` slot holds one provider. A model list that spans several providers is not supported for now. |
 | 2026-09-25 | Models for an installed app are edited on the app's settings screen. A redesign of that screen comes later. |
+| 2026-09-25 | The provider data shape is the one in # 4: a top-level `ai_providers` list on the catalog snapshot, one entry per provider with id, name, logos, key link, help, key prefix, native protocol, OpenAI-compatible base URL, a checked date, per-type defaults, and the models with their types and flags. |
+| 2026-09-25 | Display order is file order. The setup page shows the first five and the rest behind "More". There is no separate featured rank. |
+| 2026-09-25 | "Other (OpenAI-compatible)" is a UI tile, not provider data. It has no URL and no models; the user types the address, and the key is optional. |
+| 2026-09-25 | `needs_key` is dropped until a keyless provider is in the data. Today only "Other" may take no key, and the UI owns it. |
+| 2026-09-25 | A provider may carry a second logo for dark backgrounds, `logo_dark_url`. |
+| 2026-09-25 | The box reads the data leniently: an unknown model type or flag is dropped, not refused, so the store can add one before the fleet understands it. Nothing in `ai_providers` can make a box refuse the snapshot. |
+| 2026-09-25 | Logos are proxied through the box, like app icons. The UI never loads them from the asset origin. |
+| 2026-09-25 | The snapshot version covers `ai_providers`. `onmoose/store#133` made it cover the home page and the categories; the store change for step 3 adds `ai_providers` to it. |
 
 ## Design
 
@@ -117,17 +125,46 @@ The third known case, "model is required when a custom base URL is set", goes aw
 
 ### 4. Provider data
 
-Per provider, moose stores:
+The catalog snapshot (`GET /catalog?env=`) carries a top-level `ai_providers` list. The list is in display order: the setup page shows the first five providers and the rest behind "More". There is no separate featured rank. Each entry:
 
-- id, display name, logo URL, a link to where the user gets a key, a short help text, and an optional key format hint (for example the `sk-ant-` prefix)
-- which native protocol it speaks, and its OpenAI-compatible base URL if it has one
-- whether it needs a key at all (a local Ollama or vLLM server needs only a URL, which the user types)
-- a **model list**: id, display name, types, capability flags, and a "recommended default" per type
-- a featured rank, so the UI can show the top five
+```json
+{
+  "id": "anthropic",
+  "name": "Anthropic",
+  "logo_url": "https://assets.example/ai-providers/anthropic/logo.svg",
+  "logo_dark_url": "https://assets.example/ai-providers/anthropic/logo-dark.svg",
+  "key_url": "https://platform.claude.com/settings/keys",
+  "help": "Make a key in the Claude Console, under Settings, API keys.",
+  "key_prefix": "sk-ant-",
+  "native_protocol": "anthropic",
+  "openai_base_url": "https://api.anthropic.com/v1/",
+  "checked": "2026-09-25",
+  "defaults": { "chat": "claude-sonnet-5" },
+  "models": [
+    { "id": "claude-sonnet-5", "name": "Claude Sonnet 5", "types": ["chat"], "flags": ["vision", "tools", "reasoning"] }
+  ]
+}
+```
 
-The data is authored in `onmoose/store` and published by the catalog service. The brain fetches it at runtime and holds it in memory, the same way it holds the catalog today (`internal/catalog`). The brain needs it, not only the UI, because the brain fills the slot (section 5). Values are written into the app when it is installed, so a later outage of the catalog service does not affect a running app.
+- **Required:** `id`, `name`, and per model `id`, `name` and `types`. Everything else is optional.
+- **`logo_url`, `logo_dark_url`** are absolute URLs on the asset origin, followed as given (a relative one resolves against the catalog base, like an app icon). The dark one is for dark backgrounds.
+- **`key_url`** is the provider's page for making a key, and **`help`** a short text shown next to it.
+- **`key_prefix`** is a hint. A key that does not start with it gets a soft warning on the setup page, never a block.
+- **`native_protocol`** is the API an app's native slot speaks (`anthropic`, `openai`, `gemini`, ...). A native slot matches a provider by this field, not by the provider id. A provider without it is reachable only through an OpenAI-compatible slot.
+- **`openai_base_url`** is the provider's OpenAI-compatible endpoint, if it has one.
+- **`checked`** is the date the entry was last checked against the provider's own docs.
+- **`defaults`** maps a model type to the model to suggest first for that type.
+- **Model `types`** come from a closed list: `chat`, `embedding`, `image`, `speech_to_text`, `text_to_speech`, `rerank`. **`flags`** come from `vision`, `tools`, `reasoning`.
 
-**Rollout to boxes on older versions.** The catalog wire format ignores unknown keys, but a box refuses the whole snapshot if `schema_version` is one it does not know (`internal/catalog/wire.go`). So the provider data is either added to the current snapshot without bumping `schema_version`, or the catalog service serves a **new snapshot version next to the old one**, and each box asks for the version it can read. Bumping the version in place is the one thing to avoid: every older box would lose its whole store.
+"Other (OpenAI-compatible)" is not in the data. It is a tile the UI owns: no URL, no models, the user types the server's address, and the key is optional. A `needs_key` field is left out until a provider that needs no key is in the data.
+
+**How the box reads it** (`internal/catalog/aiproviders.go`). The box reads leniently, so the store can grow the data without a new snapshot version. An unknown model type or flag is dropped. A model left with no known type is dropped. A `defaults` entry that names a missing model, a model without that type, or an unknown type is dropped. A provider with no id or name is dropped, and a repeated provider id keeps the first. The box logs what it dropped once per load. Nothing in `ai_providers` can make the box refuse the snapshot: a value it cannot read at all is an empty list. A box on an older catalog, or on a snapshot without the field, has an empty list too.
+
+**How the box serves it.** `GET /api/v1/ai-providers` returns the list in order to any signed-in user (`BRAIN_UI_PROTOCOL.md` # Pattern A). Logo URLs in the answer point at the box, `GET /api/v1/ai-providers/{id}/logo` and `/logo-dark`, which proxy and cache the image like an app icon. When the list is empty, the setup page draws no AI section and shows the AI fields as plain fields, so an install is never blocked by missing provider data.
+
+The data is authored in `onmoose/store` and published by the catalog service. The brain fetches it at runtime and holds it in memory with the rest of the snapshot (`internal/catalog`). The brain needs it, not only the UI, because the brain fills the slot (section 5). Values are written into the app when it is installed, so a later outage of the catalog service does not affect a running app.
+
+**Rollout to boxes on older versions.** The catalog wire format ignores unknown keys, but a box refuses the whole snapshot if `schema_version` is one it does not know (`internal/catalog/wire.go`). So the provider data is either added to the current snapshot without bumping `schema_version`, or the catalog service serves a **new snapshot version next to the old one**, and each box asks for the version it can read. Bumping the version in place is the one thing to avoid: every older box would lose its whole store. **As built, `ai_providers` is added to the current snapshot, and `schema_version` stays 2.** An older box ignores the key, and a newer box reads it leniently, so neither refuses the snapshot over it.
 
 **The shape is not frozen yet.** Roles, `requires` and the provider data shape may still change while we build this. Serving versions side by side is what keeps that cheap: a change the old shape cannot absorb goes into a new version, and older boxes keep reading the old one. The same goes for manifests: older boxes parse them leniently, so `role`, `separator` and `requires` are ignored there and the fields show as plain form fields, as today. Store manifests can be tagged before the whole fleet is updated.
 
