@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// Settings → Outgoing email → add an account. Two real routes, so the two steps
+// Settings → Integrations → Email → add an account. Two real routes, so the two steps
 // of the flow are two pages and the browser Back button does what it looks like
 // it should:
 //
-//   /settings/mail/add           pick a provider
-//   /settings/mail/add/:preset   fill in what that preset cannot know
+//   /settings/email/add           pick a provider
+//   /settings/email/add/:preset   fill in what that preset cannot know
 //
 // The picked preset is read from the route, not held in local state. That is the
 // whole point: Back from the form returns to the picker, Back from the picker
@@ -45,7 +45,7 @@ const preset = computed<MailPreset | undefined>(() =>
 // query, since presets are empty on the first tick.
 watch([presetID, presetList], ([id, list]) => {
   if (id && list.length > 0 && !list.some((p) => p.id === id)) {
-    router.replace("/settings/mail/add");
+    router.replace("/settings/email/add");
   }
 });
 
@@ -99,7 +99,7 @@ const create = useMutation({
     qc.invalidateQueries({ queryKey: ["mail-providers"] });
     // Back to the list, and replace so Back from there does not re-open the
     // form for an account that now exists.
-    router.replace("/settings/mail");
+    router.replace("/settings/email");
   },
   onError: (e) => {
     createError.value = errorMessage(e);
@@ -117,7 +117,7 @@ function fid(name: string): string {
     <!-- Step 1: pick a provider -->
     <section v-if="!presetID" class="space-y-3">
       <RouterLink
-        to="/settings/mail"
+        to="/settings/email"
         class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft class="size-4" /> Email accounts
@@ -140,7 +140,7 @@ function fid(name: string): string {
           <RouterLink
             v-for="p in presetList"
             :key="p.id"
-            :to="`/settings/mail/add/${p.id}`"
+            :to="`/settings/email/add/${p.id}`"
             class="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-border bg-background px-3 py-5 text-center transition-colors hover:border-accent hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-card active:scale-[0.98]"
           >
             <span class="flex h-9 items-center justify-center">
@@ -156,7 +156,7 @@ function fid(name: string): string {
          with its own label and, where the name alone is not enough, a hint. -->
     <section v-else-if="preset" class="space-y-3">
       <RouterLink
-        to="/settings/mail/add"
+        to="/settings/email/add"
         class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft class="size-4" /> Choose a different provider
@@ -307,7 +307,7 @@ function fid(name: string): string {
           <Button :disabled="create.isPending.value || !formValid(form)" @click="create.mutate()">
             {{ checking ? "Testing…" : create.isPending.value ? "Adding…" : "Add account" }}
           </Button>
-          <Button variant="ghost" :as="RouterLink" to="/settings/mail">Cancel</Button>
+          <Button variant="ghost" :as="RouterLink" to="/settings/email">Cancel</Button>
           <p v-if="createError" class="text-xs text-destructive">{{ createError }}</p>
         </div>
       </div>

@@ -115,6 +115,7 @@ export type AppConfigField = Schemas["AppConfigFieldDTO"];
 export type SourceMenu = Schemas["SourceMenu"];
 export type FolderSources = Schemas["FolderSources"];
 export type MailProvider = Schemas["MailProviderDTO"];
+export type MailProviderSaved = Schemas["MailProviderSavedDTO"];
 export type MailProviderOption = Schemas["MailProviderOption"];
 export type MailPreset = Schemas["MailPresetDTO"];
 // AIProvider is one AI provider from the catalog (GET /api/v1/ai-providers,
@@ -126,8 +127,22 @@ export type AIModel = Schemas["AIModel"];
 // is stored.
 export type AIAccount = Schemas["AIAccountDTO"];
 export type AIAccountBody = Schemas["AIAccountBody"];
-// AIBinding fills one AI slot of an app from one account, on POST /api/v1/apps.
+// AIAccountSaved is the answer to an account edit: the account, plus job_id
+// when the edit updates and restarts the apps that use it.
+export type AIAccountSaved = Schemas["AIAccountSavedDTO"];
+// AppUse names one app that uses an account (used_by on the account lists).
+export type AppUse = Schemas["AppUseDTO"];
+// AccountDeleted is the 200 answer to deleting an account that apps used: the
+// job that updates and restarts them. A delete no app felt answers 204.
+export type AccountDeleted = Schemas["AccountDeletedDTO"];
+// AIBinding fills one AI slot of an app from one account, on POST /api/v1/apps
+// and on PUT /api/v1/apps/{id}/config (an empty account_id clears the slot).
 export type AIBinding = Schemas["AIBindingBody"];
+// AppAIBinding is one AI slot of an installed app and the account filling it,
+// on GET /api/v1/apps/{id}/config. mine is false for another user's account,
+// which comes without its label.
+export type AppAIBinding = Schemas["AppAIBindingDTO"];
+export type AppConfigUpdate = Schemas["AppConfigUpdateBody"];
 export type RequiresGroup = Schemas["RequiresGroupDTO"];
 export type MailPresetRegionOption = Schemas["MailPresetRegionOptionDTO"];
 export type SystemStorage = Schemas["SystemStorageDTO"];
@@ -225,4 +240,22 @@ export async function waitForJob(jobId: string, onPoll?: (job: Job) => void): Pr
     onPoll?.(job);
     await new Promise((r) => setTimeout(r, 600));
   }
+}
+
+// waitForJobOk polls a job to its end and throws with the job's own message
+// when it failed. For the jobs an account edit or delete starts to update the
+// apps that use the account: the save already happened, so the caller shows
+// the failure next to the account, not as a failed save.
+export async function waitForJobOk(jobId: string): Promise<Job> {
+  const done = await waitForJob(jobId);
+  if (done.status === "failed") throw new Error(done.error?.message || "Some apps could not be updated.");
+  return done;
+}
+
+// appNames joins the names of the apps that use an account for a sentence:
+// "Paperless", "Paperless and Immich", "Paperless, Immich and Kimai".
+export function appNames(uses: { name: string }[] | null | undefined): string {
+  const names = (uses ?? []).map((u) => u.name);
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }

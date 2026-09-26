@@ -1,12 +1,12 @@
 <script setup lang="ts">
-// Settings → Outgoing email: the signed-in user's own SMTP accounts
+// Settings → Integrations → Email: the signed-in user's own SMTP accounts
 // (SERVICE_PROVISIONING.md # BYO outgoing mail, issues #122 and #426). Every
 // user has this screen, and it lists only the accounts they added. Only they
 // can bind an app to one, at install time or later from the app's settings
 // screen; the brain injects the credentials as MOOSE_MAIL_* env vars.
 //
 // This view is the account list. Adding one lives on its own two routes
-// (OutgoingEmailAddSection, /settings/mail/add) so the picker and the form are
+// (EmailAddSection, /settings/email/add) so the picker and the form are
 // real pages with working Back. Editing stays inline on the row it belongs to:
 // no navigation happens, so there is no Back to get wrong.
 //
@@ -14,11 +14,16 @@
 // own. Delete keeps it, since it cannot be undone and unbinds every app that
 // uses the account, so it goes through withElevation. Rejections surface as
 // inline errors on the row.
+//
+// Each row names the apps that use the account (used_by). An edit that
+// changes what those apps are given, and a delete, restart them in a job the
+// brain starts (DECISIONS.md 2026-09-26). The edit form and the delete
+// confirmation name the apps first, and the row shows how the job went.
 import { ref, computed } from "vue";
 import { RouterLink } from "vue-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
 import { Plus } from "lucide-vue-next";
-import { api, type MailProvider } from "@/api";
+import { api, appNames, waitForJobOk, type AccountDeleted, type MailProvider, type MailProviderSaved } from "@/api";
 import { withElevation } from "@/elevate";
 import Button from "@/components/ui/Button.vue";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
@@ -57,6 +62,10 @@ const testTo = ref("");
 const testSent = ref<Record<string, string>>({}); // id → "sent to <addr>" confirmation
 const confirmDeleteFor = ref<string | null>(null);
 const rowError = ref<Record<string, string>>({});
+// rowNotice says how the job that updates the apps went, per account.
+const rowNotice = ref<Record<string, string>>({});
+// deleteNotice is the same for an account that no longer has a row.
+const deleteNotice = ref("");
 
 const editPreset = computed(() => presetList.value.find((p) => p.id === editForm.value.provider_type));
 
@@ -105,29 +114,63 @@ function startTest(id: string) {
   testTo.value = "";
 }
 
+// followJob waits for the job that updates the apps and says how it went.
+// The account change is already saved, so a failure here is about the apps.
+async function followJob(jobId: string, count: number, say: (msg: string) => void) {
+  say(count === 1 ? "Updating the app that uses this account…" : "Updating the apps that use this account…");
+  try {
+    await waitForJobOk(jobId);
+    say(count === 1 ? "The app was updated and restarted." : "The apps were updated and restarted.");
+  } catch (e) {
+    say(`Saved, but ${e instanceof Error ? e.message : "some apps could not be updated"}.`);
+  } finally {
+    qc.invalidateQueries({ queryKey: ["apps"] });
+    qc.invalidateQueries({ queryKey: ["app-config"] });
+  }
+}
+
+// changesApps: would saving the edit form restart the apps? The same rule as
+// the brain: anything the apps are given, not the name or the preset. A typed
+// password counts, since the brain cannot know it is the same one.
+function changesApps(p: MailProvider): boolean {
+  const f = editForm.value;
+  return (
+    f.password !== "" || f.host !== p.host || f.port !== p.port || f.username !== p.username ||
+    f.from_address !== p.from_address || f.encryption !== p.encryption
+  );
+}
+
 // ── update ───────────────────────────────────────────────────────────────────────
 const update = useMutation({
   mutationFn: (id: string) => {
     syncSameAsPassword(editForm.value, editPreset.value);
-    return api.put<MailProvider>(`/mail-providers/${id}`, bodyOf(editForm.value));
+    return api.put<MailProviderSaved>(`/mail-providers/${id}`, bodyOf(editForm.value));
   },
-  onSuccess: (_, id) => {
+  onSuccess: (saved, id) => {
     clearRowError(id);
     editFor.value = null;
     qc.invalidateQueries({ queryKey: ["mail-providers"] });
+    if (saved.job_id) {
+      void followJob(saved.job_id, saved.used_by?.length ?? 0, (msg) => (rowNotice.value = { ...rowNotice.value, [id]: msg }));
+    }
   },
   onError: (e, id) => setRowError(id, e),
 });
 
 // ── delete ───────────────────────────────────────────────────────────────────────
 const deleteProvider = useMutation({
-  mutationFn: (id: string) => withElevation(() => api.del<void>(`/mail-providers/${id}`)),
-  onSuccess: (_, id) => {
-    clearRowError(id);
+  mutationFn: (p: MailProvider) =>
+    withElevation(() => api.del<AccountDeleted | undefined>(`/mail-providers/${p.id}`)),
+  onSuccess: (done, p) => {
+    clearRowError(p.id);
     confirmDeleteFor.value = null;
     qc.invalidateQueries({ queryKey: ["mail-providers"] });
+    qc.invalidateQueries({ queryKey: ["mail-provider-options"] });
+    if (done?.job_id) {
+      void followJob(done.job_id, p.used_by?.length ?? 0, (msg) => (deleteNotice.value = msg));
+    }
   },
-  onError: (e, id) => setRowError(id, e),
+  onError: (e, p) => setRowError(p.id, e),
 });
 
 // ── test send ────────────────────────────────────────────────────────────────────
@@ -156,16 +199,18 @@ function fid(form: "new" | "edit", name: string, rowID = ""): string {
   <div class="space-y-6">
     <!-- Header: the account list is the section; adding lives on its own route. -->
     <section class="space-y-3">
-      <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Outgoing email</h2>
+      <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Email</h2>
       <p class="text-sm text-muted-foreground">
         Your email accounts. The apps you install can send from them: password resets, reminders, invites. Only you can see and use the accounts you add here.
       </p>
       <!-- With no accounts the call to action is the empty state below, so the
            header does not repeat it. -->
-      <Button v-if="!isEmpty" :as="RouterLink" to="/settings/mail/add">
+      <Button v-if="!isEmpty" :as="RouterLink" to="/settings/email/add">
         <Plus class="size-4" /> Add account
       </Button>
     </section>
+
+    <p v-if="deleteNotice" class="text-sm text-muted-foreground">{{ deleteNotice }}</p>
 
     <!-- Empty state: the whole main area, with the airplane sitting in the
          bottom-right corner behind it. A positioned <img> rather than a CSS
@@ -183,7 +228,7 @@ function fid(form: "new" | "edit", name: string, rowID = ""): string {
           Add the account your apps will send from, and they can start sending password resets, reminders and invites.
         </p>
         <div class="mt-6">
-          <Button :as="RouterLink" to="/settings/mail/add">
+          <Button :as="RouterLink" to="/settings/email/add">
             <Plus class="size-4" /> Add account
           </Button>
         </div>
@@ -211,6 +256,7 @@ function fid(form: "new" | "edit", name: string, rowID = ""): string {
                 {{ p.from_address }} via
                 {{ p.provider_type === "custom" ? `${p.host}:${p.port}` : p.provider_label }}
               </div>
+              <div v-if="p.used_by?.length" class="text-xs text-muted-foreground">Used by {{ appNames(p.used_by) }}</div>
             </div>
             <Button variant="secondary" size="sm" :disabled="sendTest.isPending.value" @click="startTest(p.id)">
               Send test
@@ -232,13 +278,17 @@ function fid(form: "new" | "edit", name: string, rowID = ""): string {
             v-if="confirmDeleteFor === p.id"
             class="flex flex-wrap items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2"
           >
-            <span class="text-sm">Delete <strong>{{ p.label }}</strong>? Apps using it will stop sending email until you pick another account for them.</span>
+            <span v-if="p.used_by?.length" class="text-sm">
+              Delete <strong>{{ p.label }}</strong>? {{ appNames(p.used_by) }} will stop sending email and restart.
+              You can pick another account for {{ p.used_by.length === 1 ? "it" : "them" }} later.
+            </span>
+            <span v-else class="text-sm">Delete <strong>{{ p.label }}</strong>? No app uses it.</span>
             <Button
               variant="secondary"
               size="sm"
               class="border-destructive text-destructive hover:bg-destructive/10"
               :disabled="deleteProvider.isPending.value"
-              @click="deleteProvider.mutate(p.id)"
+              @click="deleteProvider.mutate(p)"
             >
               Delete
             </Button>
@@ -396,8 +446,8 @@ function fid(form: "new" | "edit", name: string, rowID = ""): string {
             </details>
 
             <p v-if="portWarning(editForm)" class="text-xs text-destructive">{{ portWarning(editForm) }}</p>
-            <p class="text-xs text-muted-foreground">
-              Apps already using this account pick up changes the next time they restart or rebind.
+            <p v-if="p.used_by?.length && changesApps(p)" class="rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">
+              Saving restarts {{ appNames(p.used_by) }}, so {{ p.used_by.length === 1 ? "it sends" : "they send" }} with the new settings.
             </p>
             <div class="flex gap-2">
               <Button :disabled="update.isPending.value || !formValid(editForm)" @click="update.mutate(p.id)">
@@ -411,6 +461,7 @@ function fid(form: "new" | "edit", name: string, rowID = ""): string {
           <p v-if="testSent[p.id]" class="text-xs text-muted-foreground">
             Test email sent to {{ testSent[p.id] }}. Check that inbox.
           </p>
+          <p v-if="rowNotice[p.id]" class="text-xs text-muted-foreground">{{ rowNotice[p.id] }}</p>
           <p v-if="rowError[p.id]" class="text-xs text-destructive">{{ rowError[p.id] }}</p>
         </li>
       </ul>

@@ -1,10 +1,18 @@
 <script setup lang="ts">
-// The AI providers row of the install setup page (INSTALL_SETUP.md # 6). The
-// user picks a provider tile, then one of their accounts for that provider (or
-// adds one right here), then the models, and saves. Saving fills the slot the
-// provider lands in; the parent sends it as a binding, and the brain fills the
-// app's fields from the account. Which slot a provider lands in, and which
-// tiles show at all, comes from aiProviders.ts.
+// The LLM provider picker for an app's AI slots (INSTALL_SETUP.md # 6 and
+// piece 4). One component serves the install setup page and the app's
+// settings screen. The user picks a provider tile, then one of their accounts
+// for that provider (or adds one right here), then the models, and saves.
+// Saving fills the slot the provider lands in; the parent sends it as a
+// binding, and the brain fills the app's fields from the account. Which slot a
+// provider lands in, and which tiles show at all, comes from aiProviders.ts.
+//
+// The UI says "LLM provider"; the code and the API say `ai`.
+//
+// On the settings screen a slot can be filled from another user's account (an
+// admin's household app, rebound by another admin). That account is not in
+// the caller's list, so its tile says "Someone else's account", and the
+// editor asks the user to pick one of their own to replace it.
 //
 // An app can take several providers at once (Anthropic and OpenAI in openclaw),
 // one per slot. A compatible slot holds one provider, so saving a second one
@@ -15,9 +23,9 @@
 import { computed, ref, watch } from "vue";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { Bot, ExternalLink, KeyRound, Plus, Server } from "lucide-vue-next";
-import { api, ApiError, type AIAccount, type AIAccountBody, type AIProvider } from "../../api";
-import Button from "../ui/Button.vue";
-import OptionCards, { type Option } from "./OptionCards.vue";
+import { api, ApiError, type AIAccount, type AIAccountBody, type AIProvider } from "../api";
+import Button from "./ui/Button.vue";
+import OptionCards, { type Option } from "./install/OptionCards.vue";
 import {
   withOther,
   findProvider,
@@ -34,7 +42,7 @@ import {
   type AIChoice,
   type AISlot,
   type ModelSetting,
-} from "../../aiProviders";
+} from "../aiProviders";
 
 const props = defineProps<{ slots: AISlot[]; providers: AIProvider[]; appName: string }>();
 // choices is keyed by slot id.
@@ -89,15 +97,20 @@ function modelName(p: AIProvider | undefined, id: string): string {
 
 const added = computed(() => Object.values(choices.value).map((c) => c.provider));
 
+// foreign: the account is not one of the caller's. Only a list that loaded
+// can say so; while it loads, or after it failed, nothing is foreign.
+function foreign(accountId: string): boolean {
+  return !!accountId && accountsQuery.isSuccess.value && !accounts.value.some((a) => a.id === accountId);
+}
+
 const tileOptions = computed(() =>
   offered.value.map((p) => {
     const c = Object.values(choices.value).find((x) => x.provider === p.id);
     const first = c ? Object.values(c.models).flat()[0] : undefined;
-    return {
-      id: p.id,
-      label: p.name,
-      description: c ? (first ? `Added, uses ${modelName(p, first)}` : "Added") : undefined,
-    };
+    let description: string | undefined;
+    if (c && foreign(c.accountId)) description = "Someone else's account";
+    else if (c) description = first ? `Added, uses ${modelName(p, first)}` : "Added";
+    return { id: p.id, label: p.name, description };
   }),
 );
 
@@ -369,11 +382,11 @@ const inputClass =
 <template>
   <div class="space-y-4">
     <p class="text-sm text-muted-foreground">
-      {{ appName }} uses an AI provider. Pick one, then pick or add your account for it.
+      {{ appName }} uses an LLM provider. Pick one, then pick or add your account for it.
       <template v-if="slots.length > 1">You can add more than one.</template>
     </p>
 
-    <OptionCards label="AI provider" :options="tileOptions" :selected="selectedTiles" multiple @pick="pick">
+    <OptionCards label="LLM provider" :options="tileOptions" :selected="selectedTiles" multiple @pick="pick">
       <template #icon="{ option }">
         <span class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <img
@@ -411,6 +424,9 @@ const inputClass =
       <!-- Which account. -->
       <div class="space-y-2">
         <p class="text-sm/6 font-medium text-foreground">Account</p>
+        <p v-if="foreign(editing.draft.accountId)" class="rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+          {{ appName }} uses someone else's account here. Pick one of yours to replace it.
+        </p>
         <p v-if="accountsQuery.isPending.value && !accountsQuery.isError.value" class="text-sm text-muted-foreground">
           Loading your accounts…
         </p>

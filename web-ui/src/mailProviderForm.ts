@@ -1,6 +1,6 @@
 // Shared shape and helpers for the outgoing-email provider form
 // (SERVICE_PROVISIONING.md # BYO outgoing mail). Three places consume it: the
-// add flow at /settings/mail/add/:preset, the inline edit form on the account
+// add flow at /settings/email/add/:preset, the inline edit form on the account
 // list, and the inline add on the install setup page. They must agree field for
 // field: the same preset rules decide what is shown and what is sent on all.
 import type { Ref } from "vue";

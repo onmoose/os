@@ -47,6 +47,9 @@ const attentionIDs = computed(() => {
 type StatusDot = "green" | "gray" | "amber";
 
 function status(app: Instance): { dot: StatusDot; label: string } {
+  // Needs setup (INSTALL_SETUP.md piece 4): a required setting is empty or the
+  // app has no LLM provider. A failure still reads as Failed.
+  if (app.needs_setup && app.state !== "failed") return { dot: "amber", label: "Needs setup" };
   if (app.state === "running") {
     return attentionIDs.value.has(app.id)
       ? { dot: "amber", label: "Needs attention" }
