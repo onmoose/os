@@ -24,8 +24,8 @@ import {
   SelectItemText,
   SelectItemIndicator,
 } from "reka-ui";
-import { api, waitForJob, type Instance, type CatalogDetail, type Job, type MailProviderOption, type AppSecrets, type AppSecret, type AppConfig, type AppConfigField, type AppConfigUpdate, type AIBinding, type AIProvider, type Exposure } from "@/api";
-import { aiSlots, bindingOf, choiceFromBinding, claimedEnvs, fillableSlots, sameBinding, type AIChoice, type AISlot } from "@/aiProviders";
+import { api, waitForJob, type Instance, type CatalogDetail, type Job, type MailProviderOption, type AppSecrets, type AppSecret, type AppConfig, type AppConfigField, type AppConfigUpdate, type AIBinding, type AppAIBinding, type AIProvider, type Exposure } from "@/api";
+import { COMPATIBLE, aiSlots, bindingOf, choiceFromBinding, claimedEnvs, fillableSlots, sameBinding, type AIChoice, type AISlot } from "@/aiProviders";
 import AISlotPicker from "@/components/AISlotPicker.vue";
 import { useAuth, isHosted } from "@/auth";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
@@ -245,9 +245,16 @@ const configFields = computed<AppConfigField[]>(() => configQuery.data.value?.fi
 // page (AISlotPicker), not as raw fields. A slot that has values but no
 // binding (typed by hand, or installed before roles) stays raw fields, marked
 // "set by hand", with a way to pick an account instead. With no provider data
-// every field is a plain field, as on the setup page. Picking, changing or
-// removing a provider is saved with the fields in one request, so a swap is
-// one restart.
+// every unbound field is a plain field, as on the setup page. Picking,
+// changing or removing a provider is saved with the fields in one request, so
+// a swap is one restart.
+//
+// A bound slot always shows, even when its provider has left the provider
+// data (or the data did not load): the user must be able to repair it. Such a
+// binding gets its own card with the account, a line saying the provider is
+// not listed, and Remove, which sends the account_id "" clear. When another
+// provider fits the slot, the pickers are there too, so the user can pick a
+// new account instead.
 const providersQuery = useQuery({
   queryKey: ["ai-providers"],
   queryFn: () => api.get<{ providers: AIProvider[] | null }>("/ai-providers"),
@@ -258,8 +265,9 @@ const providersQuery = useQuery({
 });
 const providers = computed(() => providersQuery.data.value?.providers ?? []);
 const aiBindings = computed(() => configQuery.data.value?.ai_bindings ?? []);
+const candidateSlots = computed(() => aiSlots(configFields.value));
 const slots = computed(() =>
-  providers.value.length > 0 ? fillableSlots(aiSlots(configFields.value), providers.value) : [],
+  providers.value.length > 0 ? fillableSlots(candidateSlots.value, providers.value) : [],
 );
 
 function slotHasValues(slot: AISlot): boolean {
@@ -269,14 +277,34 @@ function isBound(slot: AISlot): boolean {
   return aiBindings.value.some((b) => b.slot === slot.id);
 }
 
+// providerListed: the binding's provider still has a tile. An
+// openai_compatible account is the Other tile, which is always there.
+function providerListed(b: AppAIBinding): boolean {
+  return b.provider_id === COMPATIBLE || providers.value.some((p) => p.id === b.provider_id);
+}
+
+// orphans are the bindings whose provider has no tile now. They get their
+// own card, and their fields are never raw inputs (the brain refuses a typed
+// value for a bound slot).
+const orphans = computed(() => aiBindings.value.filter((b) => !providerListed(b)));
+const orphanFields = computed(() => {
+  const out = new Set<string>();
+  for (const b of orphans.value) {
+    for (const f of candidateSlots.value.find((x) => x.id === b.slot)?.fields ?? []) out.add(f.app_env);
+  }
+  return out;
+});
+
 // pickInstead holds the "set by hand" slots the user asked to fill from an
 // account instead.
 const pickInstead = ref(new Set<string>());
+// clearing holds the orphan slots the user asked to remove on save.
+const clearing = ref(new Set<string>());
 const pickerSlots = computed(() =>
   slots.value.filter((s) => isBound(s) || !slotHasValues(s) || pickInstead.value.has(s.id)),
 );
 const handSlots = computed(() => slots.value.filter((s) => !pickerSlots.value.includes(s)));
-const claimed = computed(() => claimedEnvs(pickerSlots.value));
+const claimed = computed(() => new Set([...claimedEnvs(pickerSlots.value), ...orphanFields.value]));
 const plainFields = computed(() => configFields.value.filter((f) => !claimed.value.has(f.app_env)));
 
 // fieldBlocks draws the raw fields: one block per "set by hand" slot, then
@@ -296,36 +324,70 @@ function pickAccountInstead(slot: AISlot) {
   pickInstead.value = new Set(pickInstead.value).add(slot.id);
 }
 
+function toggleClear(slot: string) {
+  const next = new Set(clearing.value);
+  if (next.has(slot)) next.delete(slot);
+  else next.add(slot);
+  clearing.value = next;
+}
+
+// orphanAccount names the account of a binding whose provider is gone.
+function orphanAccount(b: AppAIBinding): string {
+  return b.mine ? b.account_label || "Your account" : "Someone else's account";
+}
+
 // aiChoices is the pickers' state, keyed by slot, seeded from the bindings.
+// It is seeded when the page opens an app, and again only when the user has
+// no unsaved choice, or right after a save. A background refetch must not
+// throw away what the user picked.
 const aiChoices = ref<Record<string, AIChoice>>({});
+let seededJSON = "";
+let seededFor = "";
+let reseedAfterSave = false;
+const pickersDirty = () =>
+  JSON.stringify(aiChoices.value) !== seededJSON || pickInstead.value.size > 0 || clearing.value.size > 0;
 watch(
-  [aiBindings, slots],
+  [aiBindings, slots, id],
   () => {
+    if (seededFor === id.value && !reseedAfterSave && pickersDirty()) return;
     const next: Record<string, AIChoice> = {};
     for (const b of aiBindings.value) {
       if (slots.value.some((s) => s.id === b.slot)) next[b.slot] = choiceFromBinding(b);
     }
     aiChoices.value = next;
+    seededJSON = JSON.stringify(next);
+    seededFor = id.value;
+    reseedAfterSave = false;
     pickInstead.value = new Set();
+    clearing.value = new Set();
   },
   { immediate: true },
 );
 
 // bindingChanges is the ai_bindings part of the save: a slot whose account or
-// models changed, and a bound slot whose provider was removed (a clear). A
-// "set by hand" slot the user switched to pickers but left empty keeps its
-// values, so it is not sent.
+// models changed, a bound slot whose provider was removed in the pickers, and
+// an orphan binding the user removed (each a clear). A "set by hand" slot the
+// user switched to pickers but left empty keeps its values, so it is not
+// sent.
 function bindingChanges(): AIBinding[] {
   const out: AIBinding[] = [];
+  const sent = new Set<string>();
   for (const s of pickerSlots.value) {
     const c = aiChoices.value[s.id];
     const orig = aiBindings.value.find((b) => b.slot === s.id);
     if (c) {
       const next = bindingOf(s, c);
-      if (!orig || !sameBinding(s, orig, next)) out.push(next);
+      if (!orig || !sameBinding(s, orig, next)) {
+        out.push(next);
+        sent.add(s.id);
+      }
     } else if (orig) {
       out.push({ slot: s.id, account_id: "" });
+      sent.add(s.id);
     }
+  }
+  for (const slot of clearing.value) {
+    if (!sent.has(slot)) out.push({ slot, account_id: "" });
   }
   return out;
 }
@@ -394,6 +456,10 @@ const saveConfig = useMutation({
     const bindings = bindingChanges();
     if (bindings.length > 0) body.ai_bindings = bindings;
     return awaitJob(await api.put<Job>(`/apps/${id.value}/config`, body));
+  },
+  onSuccess: () => {
+    // The saved choices are the new starting point, so the refetch may seed.
+    reseedAfterSave = true;
   },
   onSettled: () => {
     invalidate();
@@ -698,6 +764,31 @@ const saveConfig = useMutation({
             <p class="font-medium">{{ app.name }} needs setup.</p>
             <p v-for="m in setupMissing" :key="m">{{ m }}</p>
           </div>
+        </div>
+
+        <!-- Bindings whose provider has left the provider data. -->
+        <div
+          v-for="b in orphans"
+          :key="`orphan-${b.slot}`"
+          class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
+        >
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">{{ orphanAccount(b) }}</div>
+            <div class="text-xs text-muted-foreground">
+              <template v-if="clearing.has(b.slot)">This LLM provider is removed from {{ app.name }} when you save.</template>
+              <template v-else-if="providers.length === 0">
+                The list of LLM providers did not load, so this account cannot be changed here now. You can remove it.
+              </template>
+              <template v-else>
+                Its LLM provider ({{ b.provider_id }}) is no longer listed. Remove it<template
+                  v-if="pickerSlots.some((s) => s.id === b.slot)"
+                >, or pick another account below</template>.
+              </template>
+            </div>
+          </div>
+          <Button type="button" variant="secondary" size="sm" @click="toggleClear(b.slot)">
+            {{ clearing.has(b.slot) ? "Keep" : "Remove" }}
+          </Button>
         </div>
 
         <div v-if="pickerSlots.length" class="space-y-2 rounded-xl border border-border bg-card px-4 py-3">
