@@ -278,3 +278,106 @@ func (s *Store) listAIBindings(where string, args ...any) ([]AIBinding, error) {
 	}
 	return out, rows.Err()
 }
+
+// SetInstanceConfigAndAIBindings writes an instance's config values and the
+// AI bindings of some of its slots in one transaction, so the values an app
+// gets and the bindings that explain them never disagree (INSTALL_SETUP.md #
+// 5, piece 4). cfg replaces every config value, as SetInstanceConfig does.
+// Each slot in slots loses its binding row, and then bindings are written. A
+// slot not in slots keeps its binding. A missing account fails the foreign
+// key and nothing is written.
+func (s *Store) SetInstanceConfigAndAIBindings(instanceID string, cfg []InstanceConfig, slots []string, bindings []AIBinding) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := replaceInstanceConfig(tx, instanceID, cfg); err != nil {
+		return err
+	}
+	for _, slot := range slots {
+		if _, err := tx.Exec(`DELETE FROM instance_ai_bindings WHERE instance_id=? AND slot=?`, instanceID, slot); err != nil {
+			return err
+		}
+	}
+	for _, b := range bindings {
+		b.InstanceID = instanceID
+		if err := putAIBinding(tx, b); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// DeleteAIAccountAndValues removes an account ownerID owns and, in the same
+// transaction, the config values its bindings gave each app. clear maps an
+// instance id to the app_env names to remove. The binding rows go with the
+// account by cascade. Doing both at once means a deleted key never stays in
+// the store, even if the brain stops before the apps are restarted. Returns
+// ErrNotFound when that owner has no such account; nothing is removed then.
+func (s *Store) DeleteAIAccountAndValues(id, ownerID string, clear map[string][]string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM ai_accounts WHERE id=? AND owner_user_id=?`, id, ownerID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	for instanceID, envs := range clear {
+		for _, env := range envs {
+			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, instanceID, env); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// AppUse names one app that uses an account: its instance id and its name.
+type AppUse struct {
+	InstanceID string
+	Name       string
+}
+
+// AIAccountUsage maps each of ownerID's AI accounts to the apps bound to it,
+// each app once, ordered by name. An account no app uses is absent.
+func (s *Store) AIAccountUsage(ownerID string) (map[string][]AppUse, error) {
+	return s.accountUsage(
+		`SELECT DISTINCT b.account_id, i.id, i.name FROM instance_ai_bindings b
+		 JOIN ai_accounts a ON a.id = b.account_id
+		 JOIN instances i ON i.id = b.instance_id
+		 WHERE a.owner_user_id=? ORDER BY i.name, i.id`, ownerID)
+}
+
+// MailProviderUsage maps each of ownerID's email accounts to the apps bound to
+// it, ordered by name. An account no app uses is absent.
+func (s *Store) MailProviderUsage(ownerID string) (map[string][]AppUse, error) {
+	return s.accountUsage(
+		`SELECT b.provider_id, i.id, i.name FROM instance_mail_bindings b
+		 JOIN mail_providers p ON p.id = b.provider_id
+		 JOIN instances i ON i.id = b.instance_id
+		 WHERE p.owner_user_id=? ORDER BY i.name, i.id`, ownerID)
+}
+
+func (s *Store) accountUsage(query string, args ...any) (map[string][]AppUse, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]AppUse{}
+	for rows.Next() {
+		var account string
+		var u AppUse
+		if err := rows.Scan(&account, &u.InstanceID, &u.Name); err != nil {
+			return nil, err
+		}
+		out[account] = append(out[account], u)
+	}
+	return out, rows.Err()
+}
