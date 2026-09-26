@@ -323,7 +323,11 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 	}
 
 	meta := aiAccountMeta(a)
-	if err := s.store.UpdateAIAccount(a); err != nil {
+	// Send the key only when the request carries one. An empty key tells the
+	// store to keep the stored one, so a concurrent key change is not undone.
+	upd := a
+	upd.APIKey = in.Body.APIKey
+	if err := s.store.UpdateAIAccount(upd); err != nil {
 		s.auditor.Record(ctx, audit.ActionAIAccountUpdate, tgt, meta, false)
 		if errors.Is(err, store.ErrConflict) {
 			return nil, huma.Error409Conflict("you already have an account with that name")

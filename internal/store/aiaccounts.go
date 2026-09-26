@@ -116,12 +116,16 @@ func (s *Store) listAIAccounts(where string, args ...any) ([]AIAccount, error) {
 // created_at never change. Returns ErrNotFound when that owner has no such
 // account and ErrConflict when the new label collides with another of the
 // owner's accounts.
+//
+// An empty a.APIKey keeps the stored key. The key is kept in the same
+// statement, not read and written back, so an edit that sends no key cannot
+// undo a key change made by another request at the same time.
 func (s *Store) UpdateAIAccount(a AIAccount) error {
 	if a.ProviderID == "" {
 		return errors.New("ai account has no provider")
 	}
 	res, err := s.db.Exec(
-		`UPDATE ai_accounts SET provider_id=?, label=?, api_key=?, base_url=?, updated_at=?
+		`UPDATE ai_accounts SET provider_id=?, label=?, api_key=COALESCE(NULLIF(?, ''), api_key), base_url=?, updated_at=?
 		 WHERE id=? AND owner_user_id=?`,
 		a.ProviderID, a.Label, a.APIKey, a.BaseURL, a.UpdatedAt.Unix(), a.ID, a.OwnerUserID)
 	if err != nil {

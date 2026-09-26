@@ -62,6 +62,16 @@ func TestAIAccountCRUD(t *testing.T) {
 		got.UpdatedAt.Unix() != 1_700_000_500 || got.CreatedAt.Unix() != 1_700_000_000 {
 		t.Fatalf("update roundtrip: got %+v", got)
 	}
+	// An empty key keeps the stored one, so an edit that sends no key never
+	// writes back a key it read earlier.
+	a.Label, a.APIKey = "Work 3", ""
+	if err := s.UpdateAIAccount(a); err != nil {
+		t.Fatalf("update without key: %v", err)
+	}
+	got, _ = s.GetAIAccount("ai_1")
+	if got.Label != "Work 3" || got.APIKey != "sk-ant-new" {
+		t.Fatalf("update without key: got %+v, want the stored key kept", got)
+	}
 	a.Label = "Home"
 	if err := s.UpdateAIAccount(a); !errors.Is(err, ErrConflict) {
 		t.Fatalf("update to taken label: got %v, want ErrConflict", err)

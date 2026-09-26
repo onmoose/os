@@ -47,6 +47,7 @@ Realizes the 2026-09-26 `INSTALL_SETUP.md` rows "AI provider accounts (piece 2)"
 - **A key cannot be cleared.** An empty `api_key` on edit keeps the stored key, like a mail password. So an `openai_compatible` account that has a key cannot be made keyless except by deleting it and adding it again.
 - **Choices the brief left open.** The key also refuses inner spaces, not only line breaks and control characters. Mail has no label length limit, so 100 characters was picked. An edit checks `provider_id` against the provider data only when it changes, so a rename works while the catalog has not loaded. A delete refused for missing elevation does not audit, the same as mail's.
 - **Not tried against a running brain.** `make check` passes. Only the API tests exercise the routes.
+- **A failed user delete restores the accounts as they were read before the delete.** If the user edits or deletes an account in the moment between that read and a host failure, the rollback brings back the earlier state. Mail accounts and SSH keys roll back the same way. Raised by Greptile on #506 and left as is, because it needs three things to happen at once.
 
 ## What's next
 
