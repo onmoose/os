@@ -263,6 +263,11 @@ const addValid = computed(() => {
 const create = useMutation({
   mutationFn: (body: AIAccountBody) => api.post<AIAccount>("/ai-accounts", body),
   onSuccess: async (created) => {
+    // Put the new account in the shared list at once, so the requires gate
+    // counts it even if the refetch below fails.
+    qc.setQueryData<{ accounts: AIAccount[] | null }>(["ai-accounts"], (old) => ({
+      accounts: [...(old?.accounts ?? []).filter((a) => a.id !== created.id), created],
+    }));
     await qc.invalidateQueries({ queryKey: ["ai-accounts"] });
     if (editing.value) editing.value.draft.accountId = created.id;
     cancelAdd();

@@ -53,6 +53,7 @@ Realizes the five piece 3 rows of the `INSTALL_SETUP.md` decisions table and the
 - **The UI's `requires` gate mirrors the brain's rule in TypeScript** (`filledEnvs`), so the two can drift if one changes. The brain still checks on install.
 - **A slot fits by protocol and model types only.** A listed provider without an `openai_base_url` never fits the compatible slot, even when its account has a base URL of its own, because the decision row names the provider's endpoint. Only a provider that has left the data falls back to the account's base URL.
 - **Choices the brief left open.** The stored model ids include the defaults the brain applied, so piece 4 can show exactly what the app got. An empty typed value on a bound slot's field is treated like no value, not a clash. A present `models` key with no ids is a 422, not "use the default". No length limit on a model id beyond the request size.
+- **An add form the page opened by itself closes when the account list later arrives with accounts**, even if the user has started typing. This needs the list to change under the page, for example from another tab. Raised by Greptile on #507 and left as is.
 
 ## What's next
 

@@ -211,7 +211,10 @@ export function modelIdProblem(id: string, separator?: string): string {
 export function modelProblem(m: ModelSetting, ids: string[], p: AIProvider): string {
   const clean = ids.map((x) => x.trim()).filter((x) => x !== "");
   if (clean.length === 0) {
-    return !isOther(p) && p.defaults?.[m.type] ? "" : `Pick a model for ${m.field.title}.`;
+    // The brain checks the default like a chosen id, so check it here too.
+    const def = isOther(p) ? undefined : p.defaults?.[m.type];
+    if (!def) return `Pick a model for ${m.field.title}.`;
+    return modelIdProblem(def, m.multiple ? m.separator : undefined);
   }
   if (!m.multiple && clean.length > 1) return `Pick one model for ${m.field.title}.`;
   for (const id of clean) {
