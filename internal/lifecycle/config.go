@@ -11,7 +11,6 @@ package lifecycle
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -99,31 +98,7 @@ func (m *Manager) configEnvByService(id string, man *manifest.Manifest) (map[str
 // (the already-up path retries the recreate while the marker is set, #268). The
 // caller (API) validates the values against the manifest before this runs.
 func (m *Manager) SetConfig(ctx context.Context, id string, cfg []store.InstanceConfig) error {
-	defer m.lockInstance(id)()
-	inst, err := m.store.Get(id)
-	if err != nil {
-		return err
-	}
-	man, err := m.loadInstanceManifest(id)
-	if err != nil {
-		return fmt.Errorf("load manifest: %w", err)
-	}
-	if err := m.store.SetInstanceConfig(id, cfg); err != nil {
-		return fmt.Errorf("persist config: %w", err)
-	}
-	if err := m.restampConfigEnv(id, man); err != nil {
-		return fmt.Errorf("rewrite override: %w", err)
-	}
-	if inst.State != "running" {
-		slog.Info("app config updated (applies at next start)",
-			"instance_id", id, "name", inst.Name)
-		return nil
-	}
-	if err := m.recreateRunning(ctx, inst); err != nil {
-		return err
-	}
-	slog.Info("app config updated", "instance_id", id, "name", inst.Name)
-	return nil
+	return m.SetConfigAndAIBindings(ctx, id, cfg, nil, nil)
 }
 
 // restampConfigEnv patches an instance's compose.override.yml so each service's
