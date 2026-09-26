@@ -196,6 +196,15 @@ export function suggestedModels(p: AIProvider, slot: AISlot): Record<string, str
   return out;
 }
 
+// modelIdProblem says why one model id cannot be used, or "": the brain's rule
+// for an id. No line breaks or control characters, and in a list no
+// separator, since the app would split the id in two.
+export function modelIdProblem(id: string, separator?: string): string {
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(id)) return "A model name cannot contain line breaks or control characters.";
+  if (separator && id.includes(separator)) return `A model name cannot contain "${separator}" here.`;
+  return "";
+}
+
 // modelProblem says why one model setting cannot be saved yet, or "". A
 // listed provider with a default may leave it empty, and the brain then uses
 // the default; the pickers start on it anyway.
@@ -205,9 +214,9 @@ export function modelProblem(m: ModelSetting, ids: string[], p: AIProvider): str
     return !isOther(p) && p.defaults?.[m.type] ? "" : `Pick a model for ${m.field.title}.`;
   }
   if (!m.multiple && clean.length > 1) return `Pick one model for ${m.field.title}.`;
-  if (m.multiple) {
-    const bad = clean.find((x) => x.includes(m.separator));
-    if (bad) return `A model name cannot contain "${m.separator}" here.`;
+  for (const id of clean) {
+    const problem = modelIdProblem(id, m.multiple ? m.separator : undefined);
+    if (problem) return problem;
   }
   return "";
 }
@@ -233,6 +242,23 @@ export function bindingOf(slot: AISlot, c: AIChoice): AIBinding {
   return b;
 }
 
+// filledEnvs lists the fields of a bound slot that the brain will really give
+// a value, the same rule as its resolution: the key only when the account has
+// one; a compatible base URL always (the account's, or the provider's
+// OpenAI-compatible address); a native base URL only from the account's own
+// base URL. Model fields are left out, because they never count for
+// `requires`. Without the account (the list has not loaded) nothing counts.
+export function filledEnvs(slot: AISlot, account: AIAccount | undefined): string[] {
+  if (!account) return [];
+  const out: string[] = [];
+  for (const f of slot.fields) {
+    const attr = parseRole(f.role)?.attribute;
+    if (attr === "api_key" && account.key_set) out.push(f.app_env);
+    if (attr === "base_url" && (slot.compatible || account.base_url)) out.push(f.app_env);
+  }
+  return out;
+}
+
 // ── Requires ────────────────────────────────────────────────────────────────
 
 // fieldCounts mirrors the brain's rule for a requires member: a kind (`ai`)
@@ -252,16 +278,16 @@ export function groupFields(fields: InstallPlanConfigField[], group: RequiresGro
 }
 
 // unmetGroups returns the requires groups nothing fills yet. A field counts as
-// filled when it has a typed value, or when it belongs to a slot bound to an
-// account. The brain checks the same groups again on install.
+// filled when it has a typed value, or when a binding fills it (filledEnvs).
+// The brain checks the same groups again on install.
 export function unmetGroups(
   groups: RequiresGroup[],
   fields: InstallPlanConfigField[],
   values: Record<string, string>,
-  boundEnvs: Set<string>,
+  filled: Set<string>,
 ): RequiresGroup[] {
   return groups.filter(
-    (g) => !groupFields(fields, g).some((f) => boundEnvs.has(f.app_env) || (values[f.app_env] ?? "").trim() !== ""),
+    (g) => !groupFields(fields, g).some((f) => filled.has(f.app_env) || (values[f.app_env] ?? "").trim() !== ""),
   );
 }
 

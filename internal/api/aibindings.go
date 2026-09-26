@@ -217,20 +217,22 @@ func resolveSlot(slot string, fields []slotField, chosen map[string][]string, ac
 	return out, nil
 }
 
-// slotModels returns the model ids for one model field: the chosen ones,
-// checked, or else the provider's default for the field's type. Only a listed
-// provider has defaults; an openai_compatible account, or a provider that has
-// left the data, has none.
+// slotModels returns the model ids for one model field: the chosen ones, or
+// else the provider's default for the field's type, checked the same way.
+// Only a listed provider has defaults; an openai_compatible account, or a
+// provider that has left the data, has none.
 func slotModels(sf slotField, chosen map[string][]string, prov *catalog.AIProvider) ([]string, error) {
 	title := sf.field.Title
 	key := modelKey(sf.role)
 	list := sf.role.Attribute == manifest.AttrModels
 	raw, given := chosen[key]
 	if !given {
-		if prov != nil && prov.Defaults[sf.role.ModelType] != "" {
-			return []string{prov.Defaults[sf.role.ModelType]}, nil
+		if prov == nil || prov.Defaults[sf.role.ModelType] == "" {
+			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: pick a model for %s", title))
 		}
-		return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: pick a model for %s", title))
+		// The default goes through the same checks as a chosen id, so a default
+		// that holds the app's separator is refused, not split into a list.
+		raw = []string{prov.Defaults[sf.role.ModelType]}
 	}
 	sep := sf.field.EffectiveSeparator()
 	ids := make([]string, 0, len(raw))

@@ -12,7 +12,7 @@
 //
 // Adding an account needs no password re-prompt, like an email account. The
 // account belongs to the user who adds it, and the list shows only their own.
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { Bot, ExternalLink, KeyRound, Plus, Server } from "lucide-vue-next";
 import { api, ApiError, type AIAccount, type AIAccountBody, type AIProvider } from "../../api";
@@ -27,6 +27,7 @@ import {
   modelsOfType,
   suggestedModels,
   modelProblem,
+  modelIdProblem,
   keyLooksWrong,
   slotFor,
   choiceComplete,
@@ -133,10 +134,34 @@ function pick(id: string) {
         };
   editing.value = { slot, provider, draft };
   typed.value = {};
-  // With no account yet, the add form is the only way on, so it starts open.
-  if (own.length === 0) startAdd(provider);
-  else cancelAdd();
+  cancelAdd();
+  openAddIfNone();
 }
+
+// With no account yet, the add form is the only way on, so it starts open.
+// That needs a list known to be empty: while it loads, or after it failed, the
+// user may well have accounts, so the form waits (they can still open it).
+function openAddIfNone() {
+  if (!editing.value || !accountsQuery.isSuccess.value) return;
+  // A form already open keeps what the user typed in it.
+  if (editingAccounts.value.length === 0) {
+    if (!adding.value) startAdd(editing.value.provider);
+  }
+  else if (autoAdd.value) cancelAdd();
+}
+
+// When the list arrives after the editor opened, open the form if it is
+// empty, close a form this opened on its own if it is not, and preselect a
+// sole account as pick() would have.
+watch(
+  () => accountsQuery.data.value,
+  () => {
+    const d = editing.value?.draft;
+    if (!d) return;
+    if (!d.accountId && editingAccounts.value.length === 1) d.accountId = editingAccounts.value[0]?.id ?? "";
+    openAddIfNone();
+  },
+);
 
 // replaces names the provider a save would push out of a shared slot.
 const replaces = computed(() => {
@@ -150,14 +175,28 @@ const isAdded = computed(
   () => !!editing.value && choices.value[editing.value.slot.id]?.provider === editing.value.provider.id,
 );
 
-const canSave = computed(
-  () => !!editing.value && choiceComplete(editing.value.slot, editing.value.draft, editing.value.provider),
-);
+// withPending is the draft's models plus any id still typed in a list's text
+// box but not yet added, so Save does not drop it.
+function withPending(e: Editing): Record<string, string[]> {
+  const out = { ...e.draft.models };
+  for (const m of e.slot.models) {
+    const id = (typed.value[m.key] ?? "").trim();
+    if (m.multiple && id !== "" && !(out[m.key] ?? []).includes(id)) out[m.key] = [...(out[m.key] ?? []), id];
+  }
+  return out;
+}
+
+const canSave = computed(() => {
+  const e = editing.value;
+  if (!e) return false;
+  return choiceComplete(e.slot, { ...e.draft, models: withPending(e) }, e.provider);
+});
 
 function save() {
   if (!editing.value || !canSave.value) return;
-  const d = editing.value.draft;
-  choices.value = { ...choices.value, [editing.value.slot.id]: { ...d, models: { ...d.models } } };
+  const d = { ...editing.value.draft, models: withPending(editing.value) };
+  typed.value = {};
+  choices.value = { ...choices.value, [editing.value.slot.id]: d };
   editing.value = null;
   cancelAdd();
 }
@@ -188,13 +227,16 @@ function pickAccount(id: string) {
 
 // ── Inline add ──────────────────────────────────────────────────────────────
 const adding = ref(false);
+// autoAdd: the form was opened by the page (an empty list), not by the user.
+const autoAdd = ref(false);
 const addLabel = ref("");
 const addKey = ref("");
 const addUrl = ref("");
 const addError = ref("");
 
-function startAdd(p: AIProvider) {
+function startAdd(p: AIProvider, byUser = false) {
   adding.value = true;
+  autoAdd.value = !byUser;
   // The provider's name is a fine first name for a first account.
   addLabel.value = accountsFor(p, accounts.value).length === 0 && !isOther(p) ? p.name : "";
   addKey.value = "";
@@ -204,6 +246,7 @@ function startAdd(p: AIProvider) {
 
 function cancelAdd() {
   adding.value = false;
+  autoAdd.value = false;
   addError.value = "";
 }
 
@@ -298,13 +341,14 @@ function onTyped(m: ModelSetting, v: string) {
 
 function addTyped(m: ModelSetting) {
   const id = (typed.value[m.key] ?? "").trim();
-  if (id === "" || id.includes(m.separator)) return;
+  if (id === "" || typedProblem(m)) return;
   if (!idsOf(m).includes(id)) setIds(m, [...idsOf(m), id]);
   typed.value = { ...typed.value, [m.key]: "" };
 }
 
-function typedHasSeparator(m: ModelSetting): boolean {
-  return m.multiple && (typed.value[m.key] ?? "").includes(m.separator);
+// typedProblem checks the text box of a list before its id is added.
+function typedProblem(m: ModelSetting): string {
+  return m.multiple ? modelIdProblem((typed.value[m.key] ?? "").trim(), m.separator) : "";
 }
 
 function problemOf(m: ModelSetting): string {
@@ -362,7 +406,16 @@ const inputClass =
       <!-- Which account. -->
       <div class="space-y-2">
         <p class="text-sm/6 font-medium text-foreground">Account</p>
-        <p v-if="accountsQuery.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
+        <p v-if="accountsQuery.isPending.value && !accountsQuery.isError.value" class="text-sm text-muted-foreground">
+          Loading your accounts…
+        </p>
+        <div v-else-if="accountsQuery.isError.value" class="flex flex-wrap items-center gap-2">
+          <p class="text-sm text-destructive">Could not load your accounts.</p>
+          <Button size="sm" variant="secondary" @click="accountsQuery.refetch()">Try again</Button>
+          <Button v-if="!adding" size="sm" variant="ghost" @click="startAdd(editing.provider, true)">
+            Add an account
+          </Button>
+        </div>
         <OptionCards
           v-else-if="editingAccounts.length > 0"
           label="Account"
@@ -379,7 +432,7 @@ const inputClass =
             <button
               type="button"
               class="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border px-4 py-3.5 text-left hover:border-olive-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              @click="startAdd(editing.provider)"
+              @click="startAdd(editing.provider, true)"
             >
               <span class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
                 <Plus class="size-5" aria-hidden="true" />
@@ -453,7 +506,14 @@ const inputClass =
             <Button size="sm" :disabled="create.isPending.value || !addValid" @click="addAccount">
               {{ create.isPending.value ? "Adding…" : "Add account" }}
             </Button>
-            <Button v-if="editingAccounts.length > 0" size="sm" variant="ghost" @click="cancelAdd">Cancel</Button>
+            <Button
+              v-if="editingAccounts.length > 0 || !accountsQuery.isSuccess.value"
+              size="sm"
+              variant="ghost"
+              @click="cancelAdd"
+            >
+              Cancel
+            </Button>
           </div>
           <p v-if="addError" class="text-sm text-destructive">{{ addError }}</p>
         </div>
@@ -487,15 +547,13 @@ const inputClass =
             v-if="m.multiple"
             size="sm"
             variant="secondary"
-            :disabled="!(typed[m.key] ?? '').trim() || typedHasSeparator(m)"
+            :disabled="!(typed[m.key] ?? '').trim() || !!typedProblem(m)"
             @click="addTyped(m)"
           >
             Add
           </Button>
         </div>
-        <p v-if="typedHasSeparator(m)" class="text-sm text-destructive">
-          A model name cannot contain "{{ m.separator }}" here.
-        </p>
+        <p v-if="typedProblem(m)" class="text-sm text-destructive">{{ typedProblem(m) }}</p>
         <p v-if="problemOf(m) && editing.draft.accountId" class="text-sm text-muted-foreground">{{ problemOf(m) }}</p>
       </div>
 

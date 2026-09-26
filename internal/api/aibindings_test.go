@@ -287,6 +287,21 @@ func TestResolveAIBindings_422(t *testing.T) {
 	}
 }
 
+// A provider default goes through the same checks as a chosen id: a default
+// that holds the app's separator is a 422, not a list split in two.
+func TestResolveAIBindings_DefaultChecked(t *testing.T) {
+	providers := testAIProviders()
+	providers[0].Defaults = map[string]string{"chat": "vendor;model", "embedding": "acme-embed"}
+	_, _, err := resolveInstallWithAI(parseAIAppManifest(t), nil,
+		[]AIBindingBody{{Slot: "ai.openai_compatible", AccountID: "a_acme"}}, lookupTestAccount, providers)
+	assert422(t, err, `config.ai_bindings: model "vendor;model" for Custom models contains ";", which this app uses to separate models`)
+
+	providers[0].Defaults["chat"] = "bad\nid"
+	_, _, err = resolveInstallWithAI(parseAIAppManifest(t), nil,
+		[]AIBindingBody{{Slot: "ai.acme", AccountID: "a_acme"}}, lookupTestAccount, providers)
+	assert422(t, err, "config.ai_bindings: a model name for Acme model must not contain line breaks or control characters")
+}
+
 // A separator inside a single-model id is fine: only a list is split.
 func TestResolveAIBindings_SeparatorOnlyForLists(t *testing.T) {
 	got, _, err := resolveTest(t, nil, AIBindingBody{Slot: "ai.openai_compatible", AccountID: "a_acme",

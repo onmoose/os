@@ -23,6 +23,7 @@ import { useQuery } from "@tanstack/vue-query";
 import { ArrowLeft, TriangleAlert } from "lucide-vue-next";
 import {
   api,
+  type AIAccount,
   type AIProvider,
   type CatalogDetail,
   type FolderElection,
@@ -38,6 +39,7 @@ import {
   aiSlots,
   bindingOf,
   claimedEnvs,
+  filledEnvs,
   fillableSlots,
   groupNeed,
   unmetGroups,
@@ -197,19 +199,38 @@ const fieldAnswers = computed<Record<string, string>>(() => {
   return out;
 });
 const boundSlots = computed(() => slots.value.filter((s) => aiChoices.value[s.id]));
-const boundEnvs = computed(() => claimedEnvs(boundSlots.value));
+
+// The caller's AI accounts, the same query the AI row uses. The gate below
+// reads key_set and base_url from it to know which fields a binding fills.
+const aiAccountsQuery = useQuery({
+  queryKey: ["ai-accounts"],
+  queryFn: () => api.get<{ accounts: AIAccount[] | null }>("/ai-accounts"),
+  enabled: computed(() => slots.value.length > 0),
+  refetchOnWindowFocus: false,
+});
+
+// filled is every field a binding will really give a value, by the brain's
+// rule (filledEnvs in aiProviders.ts).
+const filled = computed(() => {
+  const accounts = aiAccountsQuery.data.value?.accounts ?? [];
+  const out = new Set<string>();
+  for (const s of boundSlots.value) {
+    const account = accounts.find((a) => a.id === aiChoices.value[s.id]?.accountId);
+    for (const env of filledEnvs(s, account)) out.add(env);
+  }
+  return out;
+});
 
 // Install stays disabled until every required field has a value, and every
 // requires group has a filled member: an app missing a required token would
-// install straight into a crash loop. A field in a bound slot counts as
-// filled. The brain checks both again.
+// install straight into a crash loop. The brain checks both again.
 const missing = computed(() =>
   configFields.value.filter(
-    (f) => f.required && !boundEnvs.value.has(f.app_env) && (fieldAnswers.value[f.app_env] ?? "").trim() === "",
+    (f) => f.required && !filled.value.has(f.app_env) && (fieldAnswers.value[f.app_env] ?? "").trim() === "",
   ),
 );
 const unmet = computed(() =>
-  unmetGroups(plan.value?.requires ?? [], configFields.value, fieldAnswers.value, boundEnvs.value),
+  unmetGroups(plan.value?.requires ?? [], configFields.value, fieldAnswers.value, filled.value),
 );
 const stillNeeded = computed(() => [
   ...missing.value.map((f) => f.title),
