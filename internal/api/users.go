@@ -345,6 +345,13 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
 		return nil, huma.Error500InternalServerError("read mail bindings failed", err)
 	}
+	// The user's AI provider accounts cascade with the user row too, and are
+	// read first for the same reason.
+	aiAccounts, err := s.store.ListAIAccounts(targetID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
+		return nil, huma.Error500InternalServerError("read ai accounts failed", err)
+	}
 
 	// This is the one place the brain-commits-first rule cannot hold: the revoke
 	// has to read state the delete is about to cascade away, so the host is
@@ -406,6 +413,11 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 			for _, b := range mailBindings {
 				if rbErr := s.store.SetInstanceMailBinding(b.InstanceID, b.ProviderID); rbErr != nil {
 					slog.Error("rollback mail binding failed", "user_id", targetID, "instance_id", b.InstanceID, "err", rbErr)
+				}
+			}
+			for _, a := range aiAccounts {
+				if rbErr := s.store.CreateAIAccount(a); rbErr != nil {
+					slog.Error("rollback ai account failed", "user_id", targetID, "username", target.Username, "err", rbErr)
 				}
 			}
 		}

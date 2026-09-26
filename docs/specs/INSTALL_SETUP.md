@@ -62,6 +62,10 @@ Two ideas carry this:
 | 2026-09-26 | Editing an installed app's settings may not make a satisfied `requires` group unsatisfied. A group that already fails (an app installed before `requires`, or after its account was deleted) does not block unrelated edits. |
 | 2026-09-26 | `moose manifest lint` takes an optional `--ai-providers <path>` and then warns about a native protocol that no provider offers. |
 | 2026-09-26 | Known limits, deferred to a later version: a field that says which provider to use (openmuse `MODEL=provider/model`) stays a plain field, and an app gets one slot per protocol, so separate OpenAI-compatible endpoints per job (upstream open-webui) cannot be expressed. |
+| 2026-09-26 | AI provider accounts (piece 2) follow email accounts: a table with `owner_user_id` (cascade on user delete), labels unique per owner, owner-scoped store methods, API at `/api/v1/ai-accounts` open to any signed-in user, add and edit without elevation, delete with elevation, failures audited like email, and the user-delete rollback restores them. |
+| 2026-09-26 | An AI account has a provider id, a label, a key and an optional base URL. The provider id must be in the current provider data, or be `openai_compatible` for the "Other" tile. For "Other" the base URL is required and the key is optional. For a listed provider the key is required and the base URL is an optional override. A base URL is an absolute `http` or `https` URL, because a LAN server may have no TLS. |
+| 2026-09-26 | The key is never returned. A read says only whether a key is set. Piece 2 makes no outbound call: there is no "check key" endpoint yet. |
+| 2026-09-26 | Piece 2 is brain only. The setup page adds accounts inline in piece 3. The Settings screen for AI accounts, and what deleting an account in use does, come in piece 4. |
 
 ## Design
 
@@ -196,6 +200,8 @@ A **provider account** is a saved key for one provider: provider id, a label, th
 - The **brain resolves** each binding into the role-tagged `app_env` values when it writes the compose override. It must be the brain, because secrets are never returned to the UI.
 - When an account's key changes, the brain re-writes every app bound to it, the way `RebindMail` does for email.
 - After install, the app's settings screen shows the account and model pickers for a role-tagged slot, not the raw fields. This is also where the user adds or removes models for an app that takes a list. A change restarts the app. How that screen is laid out overall is left for later.
+
+**As built (AI accounts, piece 2).** The `ai_accounts` table (`internal/store/aiaccounts.go`) and `GET`/`POST /api/v1/ai-accounts` and `PUT`/`DELETE /api/v1/ai-accounts/{id}` (`internal/api/aiaccounts.go`) follow the 2026-09-26 rows above. `SERVICE_PROVISIONING.md` # AI provider accounts has the rules and `BRAIN_UI_PROTOCOL.md` # AI provider accounts the wire shape. No UI reads them yet, and nothing binds an app to an account yet.
 
 ### 6. The setup page and the progress page
 

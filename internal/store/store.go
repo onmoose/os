@@ -396,6 +396,11 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(mailProvidersDDL("IF NOT EXISTS mail_providers")); err != nil {
 		return err
 	}
+	// AI provider accounts (aiaccounts.go). A new table, so a box that
+	// predates it just gets it created here.
+	if _, err := s.db.Exec(aiAccountsDDL); err != nil {
+		return err
+	}
 
 	// Idempotent migrations: add new columns when an older DB predates them.
 	// SQLite doesn't support IF NOT EXISTS on ALTER TABLE; we detect existence

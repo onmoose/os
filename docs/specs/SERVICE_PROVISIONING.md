@@ -236,6 +236,28 @@ Every preset is **STARTTLS**, and every port is one a hosted box can reach (see 
 
 **Explicitly not in v1** (deferral, not rejection — `NEXT.md` # Outgoing mail): no moose-run relay/smarthost, no per-app rate limiting or queue, no inbound mail anything. If email grows more surface (a default box-wide provider, brain-sent notification email riding the same providers), this section promotes to its own `OUTGOING_MAIL.md`.
 
+## AI provider accounts
+
+> Store and API built 2026-09-26 (`docs/progress/ai-accounts.md`). No UI yet, and no app is filled from an account yet (`INSTALL_SETUP.md` # Suggested order, step 4).
+
+Many apps talk to an AI provider and want a key for it. moose runs no model and no proxy: **each user brings their own provider account**, and later the brain fills the app's role-tagged fields from it (`INSTALL_SETUP.md` # 1 and # 5). An AI account works like an email account above:
+
+- **It belongs to the user who added it** (`ai_accounts.owner_user_id`). Any signed-in user can add one. Each user sees and uses only their own. Another user's account is invisible on the list and answers 404 on edit and delete, the same as an id that does not exist. Sharing an account with other users is not built yet.
+- **Labels are unique per owner**, not per box. A duplicate is `409 you already have an account with that name`.
+- **Add and edit need no password re-prompt; delete keeps it** (`USERS_AND_GROUPS.md` # Elevation in the UI). Create, edit and delete audit success and failure (`LOGGING.md`, `ai.account.*`).
+- **When a user is deleted, their accounts go with them.** If the host step of the delete fails and the user row is put back, their accounts are put back too.
+
+An account has a **provider id**, a **label**, a **key** and an optional **base URL**:
+
+- The provider id is an id from the AI provider data the box holds (`INSTALL_SETUP.md` # 4, `GET /api/v1/ai-providers`), or `openai_compatible` for the "Other" tile: a server the user names by its address. When the box has no provider data yet (the catalog has not loaded), a listed id cannot be checked, so it is refused with a plain 422 that says the list is not loaded yet. `openai_compatible` still works then. An edit checks the provider id only when it changes, so an existing account can be renamed while the data is missing.
+- For a listed provider the key is required and the base URL is an optional override. For `openai_compatible` the base URL is required and the key is optional.
+- The base URL is an absolute `http` or `https` URL with a host. Plain `http` is allowed because a server on the home network may have no TLS. It may not carry a user name, password, query or fragment.
+- The key may not contain spaces, line breaks or control characters, because it will be written into an app's `.env`, one value per line. Label, key and base URL are trimmed and have length limits (100, 4096 and 2048 characters).
+
+**The key is write-only.** Requests carry it; no response carries it, and neither do audit rows or log lines. A read says only whether a key is set (`key_set`). On edit, an empty key keeps the stored one. At rest the key is plaintext in the brain's SQLite, the same status as a mail password (`NEXT.md` # App-secret injection hardening). The box makes no call to the provider when an account is saved: there is no "check key" step yet.
+
+Nothing binds an app to an AI account yet, so deleting an account changes no app today. What a delete does to an app that uses the account is open (`INSTALL_SETUP.md` # Open questions 1).
+
 ---
 
 ## Tier 2 — OS integrations (v1)

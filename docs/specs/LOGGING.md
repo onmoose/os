@@ -174,6 +174,9 @@ The following `action` strings are the pinned v1 set. Defined as exported consts
 | `ssh.access.set` | A Save on the SSH screen (`PUT /api/v1/me/ssh`) turned SSH on or off, or changed the password choice. Also written for a Save that changes nothing, so every request leaves a line. Success and failure both audited. Metadata carries `enabled` and `require_password` as asked, plus `require_password_applied` on success. |
 | `ssh.key.add` | A Save on the SSH screen added an SSH public key. One record per key added. Metadata carries the fingerprint, never the key. |
 | `ssh.key.delete` | A Save on the SSH screen removed an SSH public key. One record per key removed. Metadata carries the fingerprint. |
+| `ai.account.create` | A user added an AI provider account (`POST /api/v1/ai-accounts`). Success and failure both audited. Target kind `ai_account`. Metadata carries `label` and `provider_id`, never the key. |
+| `ai.account.update` | A user edited one of their AI provider accounts (`PUT /api/v1/ai-accounts/:id`). Success and failure both audited, including an edit aimed at another user's account. Metadata as for create. |
+| `ai.account.delete` | A user deleted one of their AI provider accounts (`DELETE /api/v1/ai-accounts/:id`). Success and failure both audited, including a delete aimed at another user's account. |
 | `health.issue.raised` | A typed health issue transitioned from cleared to active. One record per issue, system actor, `target_kind: health_issue`. |
 | `health.issue.cleared` | A typed health issue transitioned from active to cleared. One record per issue, system actor, `target_kind: health_issue`. |
 

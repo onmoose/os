@@ -95,6 +95,9 @@ const ACTION_LABELS: Record<string, string> = {
   "auth.elevate.failure": "Failed elevation attempt",
   "health.issue.raised": "Health issue detected",
   "health.issue.cleared": "Health issue resolved",
+  "ai.account.create": "AI account added",
+  "ai.account.update": "AI account changed",
+  "ai.account.delete": "AI account deleted",
 };
 function actionLabel(a: string): string {
   return ACTION_LABELS[a] ?? a;
