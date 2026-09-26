@@ -12,12 +12,15 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
+	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
 )
@@ -59,6 +62,31 @@ type AppConfigFieldDTO struct {
 type AppConfigDTO struct {
 	Fields   []AppConfigFieldDTO `json:"fields"`
 	Requires []RequiresGroupDTO  `json:"requires,omitempty"`
+	// AIBindings are the app's AI slots filled from an account, ordered by
+	// slot. A slot with values but no binding (typed by hand) is not here.
+	AIBindings []AppAIBindingDTO `json:"ai_bindings"`
+	// NeedsSetup is true when a required field has no value or a requires
+	// group is unmet. Missing says what, one plain sentence per item.
+	NeedsSetup bool     `json:"needs_setup"`
+	Missing    []string `json:"missing"`
+}
+
+// AppAIBindingDTO is one AI slot of an installed app and the account that
+// fills it (INSTALL_SETUP.md piece 4).
+type AppAIBindingDTO struct {
+	// Slot is kind.protocol from the manifest, e.g. ai.anthropic.
+	Slot      string `json:"slot"`
+	AccountID string `json:"account_id"`
+	// Mine is true when the account is the caller's. Another user's account
+	// comes without its label, and the UI calls it "Someone else's account"
+	// until the caller picks one of their own.
+	Mine         bool   `json:"mine"`
+	AccountLabel string `json:"account_label,omitempty"`
+	// ProviderID is the account's provider, or openai_compatible.
+	ProviderID string `json:"provider_id"`
+	// Models are the model ids the app was given, by model setting
+	// (model.chat, models.embedding).
+	Models map[string][]string `json:"models,omitempty"`
 }
 
 // RequiresGroupDTO is one "at least one of" group the brain checks
@@ -98,6 +126,7 @@ func (s *Server) getAppConfig(ctx context.Context, in *struct {
 	if _, err := s.authorizeAppMutation(ctx, in.ID); err != nil {
 		return nil, err
 	}
+	caller, _ := auth.FromContext(ctx) // authorizeAppMutation already required it
 	man, err := s.life.InstanceManifest(in.ID)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("load manifest failed", err)
@@ -134,19 +163,113 @@ func (s *Server) getAppConfig(ctx context.Context, in *struct {
 		}
 		out.Body.Fields = append(out.Body.Fields, dto)
 	}
+	out.Body.Missing = setupMissing(man, valueByEnv)
+	out.Body.NeedsSetup = len(out.Body.Missing) > 0
+	bindings, err := s.appAIBindings(caller, in.ID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("read ai bindings failed", err)
+	}
+	out.Body.AIBindings = bindings
 	return out, nil
+}
+
+// appAIBindings projects an app's stored bindings for the caller. The label of
+// another user's account is left out, so the answer does not show what other
+// users call their accounts.
+func (s *Server) appAIBindings(caller auth.Identity, instanceID string) ([]AppAIBindingDTO, error) {
+	stored, err := s.store.ListInstanceAIBindings(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AppAIBindingDTO, 0, len(stored))
+	for _, b := range stored {
+		acct, err := s.store.GetAIAccount(b.AccountID)
+		if err != nil {
+			// The foreign key keeps a binding's account alive, so a miss here
+			// is a real read error.
+			return nil, err
+		}
+		dto := AppAIBindingDTO{Slot: b.Slot, AccountID: b.AccountID, ProviderID: acct.ProviderID, Models: b.Models}
+		if acct.OwnerUserID == caller.User.ID {
+			dto.Mine = true
+			dto.AccountLabel = acct.Label
+		}
+		out = append(out, dto)
+	}
+	return out, nil
+}
+
+// setupMissing lists what an installed app still needs, one plain sentence
+// per item: each required field with no value, and each unmet requires group
+// (INSTALL_SETUP.md piece 4, "needs setup"). The wording follows the install
+// 422s. A group made only of AI kinds and slots is "an LLM provider", which is
+// what the user reads on the app's page. values maps app_env to value.
+func setupMissing(man *manifest.Manifest, values map[string]string) []string {
+	out := []string{}
+	for _, f := range man.Config {
+		if f.Required && values[f.AppEnv] == "" {
+			out = append(out, "Fill in "+f.Title+".")
+		}
+	}
+	for _, g := range man.EffectiveRequires() {
+		if man.GroupSatisfied(g, values) {
+			continue
+		}
+		if isAIGroup(g) {
+			out = append(out, "Pick at least one LLM provider.")
+			continue
+		}
+		out = append(out, "Fill in at least one of: "+groupTitles(man, g)+".")
+	}
+	return out
+}
+
+// isAIGroup reports whether every member of a requires group is the ai kind
+// or an ai slot, so the group reads as "an LLM provider".
+func isAIGroup(group []string) bool {
+	for _, m := range group {
+		if m != "ai" && !strings.HasPrefix(m, "ai.") {
+			return false
+		}
+	}
+	return len(group) > 0
+}
+
+// instanceNeedsSetup is setupMissing for the app lists: true when the app's
+// own manifest copy says something is missing from its stored values. An app
+// whose manifest copy cannot be read is not flagged: the list must still
+// render, as for withPublicPaths.
+func (s *Server) instanceNeedsSetup(id string) bool {
+	man, err := s.life.InstanceManifest(id)
+	if err != nil || (len(man.Config) == 0 && len(man.Requires) == 0) {
+		return false
+	}
+	stored, err := s.store.GetInstanceConfig(id)
+	if err != nil {
+		slog.Warn("read config for needs-setup failed", "instance_id", id, "err", err)
+		return false
+	}
+	return len(setupMissing(man, configValues(stored))) > 0
+}
+
+// AppConfigUpdateBody is the PUT /apps/{id}/config request. Fields is a
+// partial update of typed values. AIBindings changes AI slots in the install
+// shape: a listed slot is replaced, a slot with an empty account_id is
+// cleared, and a slot not listed is left alone (INSTALL_SETUP.md piece 4).
+type AppConfigUpdateBody struct {
+	Fields     map[string]string `json:"fields,omitempty"`
+	AIBindings []AIBindingBody   `json:"ai_bindings,omitempty"`
 }
 
 func (s *Server) updateAppConfig(ctx context.Context, in *struct {
 	ID   string `path:"id"`
-	Body struct {
-		Fields map[string]string `json:"fields"`
-	}
+	Body AppConfigUpdateBody
 }) (*struct{ Body Job }, error) {
 	id := in.ID
 	if _, err := s.authorizeAppMutation(ctx, id); err != nil {
 		return nil, err
 	}
+	caller, _ := auth.FromContext(ctx) // authorizeAppMutation already required it
 	tgt := audit.Target{Kind: "app", ID: id}
 	man, err := s.life.InstanceManifest(id)
 	if err != nil {
@@ -158,7 +281,22 @@ func (s *Server) updateAppConfig(ctx context.Context, in *struct {
 		s.auditor.Record(ctx, audit.ActionAppConfigUpdate, tgt, nil, false)
 		return nil, huma.Error500InternalServerError("read config failed", err)
 	}
-	resolved, err := resolvePutConfig(man, current, in.Body.Fields)
+	currentBindings, err := s.store.ListInstanceAIBindings(id)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionAppConfigUpdate, tgt, nil, false)
+		return nil, huma.Error500InternalServerError("read ai bindings failed", err)
+	}
+	// The provider data is read only when the edit carries bindings, as at
+	// install, so a plain field edit never waits on the catalog.
+	var providers []catalog.AIProvider
+	if len(in.Body.AIBindings) > 0 {
+		if providers, err = s.catalog.AIProviders(); err != nil {
+			s.auditor.Record(ctx, audit.ActionAppConfigUpdate, tgt, nil, false)
+			return nil, huma.Error500InternalServerError("catalog read failed", err)
+		}
+	}
+	account := func(accountID string) (store.AIAccount, error) { return s.ownAIAccount(caller, accountID) }
+	res, err := resolvePutWithAI(man, current, currentBindings, in.Body.Fields, in.Body.AIBindings, account, providers)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionAppConfigUpdate, tgt, nil, false)
 		return nil, err
@@ -166,7 +304,7 @@ func (s *Server) updateAppConfig(ctx context.Context, in *struct {
 	jobCtx := ctx
 	job := s.jobs.run("app-config-update", func(job *Job) (map[string]any, error) {
 		job.setStep("updating_config")
-		err := s.life.SetConfig(context.Background(), id, resolved)
+		err := s.life.SetConfigAndAIBindings(context.Background(), id, res.cfg, res.slots, res.bindings)
 		s.auditor.Record(jobCtx, audit.ActionAppConfigUpdate, tgt, nil, err == nil)
 		if err != nil {
 			return nil, err

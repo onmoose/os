@@ -397,6 +397,11 @@ type InstanceDTO struct {
 	// narrower app than Caddy is actually serving. Empty ⇒ the access toggle means
 	// exactly what it says.
 	PublicPaths []string `json:"public_paths,omitempty"`
+	// NeedsSetup is true when a required config field has no value or a
+	// requires group is unmet (INSTALL_SETUP.md piece 4), for example after
+	// the AI account the app used was deleted. The home tile and the
+	// installed-apps list show it. GET /apps/{id}/config says what is missing.
+	NeedsSetup bool `json:"needs_setup"`
 }
 
 func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
@@ -606,6 +611,7 @@ func (s *Server) listApps(ctx context.Context, _ *struct{}) (*struct {
 		// Costs one manifest read per app; best-effort, so a missing copy just
 		// leaves the field empty.
 		s.withPublicPaths(&dto)
+		dto.NeedsSetup = s.instanceNeedsSetup(i.ID)
 		out.Body.Apps = append(out.Body.Apps, dto)
 	}
 	return out, nil
@@ -642,6 +648,7 @@ func (s *Server) getApp(ctx context.Context, in *struct {
 	}
 	dto := s.toDTO(i, owner.Username, catEntry)
 	s.withPublicPaths(&dto)
+	dto.NeedsSetup = s.instanceNeedsSetup(i.ID)
 	// Mail enrichment for the rebind picker. The manifest comes from the
 	// INSTANCE's own copy, the one the installer persisted (#434): the app is
 	// already installed, so asking the catalog service would put a routine page

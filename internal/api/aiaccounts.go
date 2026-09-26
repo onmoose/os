@@ -8,12 +8,20 @@ package api
 // password re-prompt; delete keeps it. The key is write-only: requests carry
 // it, and no response or log line ever holds it.
 //
-// Nothing binds an app to an account yet. That comes with slot filling.
+// An install binds an app's AI slots to the installer's accounts
+// (aibindings.go). An edit of the key or base URL, and a delete, reach those
+// apps: their values are rewritten or cleared and the running ones restart,
+// in one background job whose id the response carries (INSTALL_SETUP.md
+// piece 4, DECISIONS.md 2026-09-26).
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -57,7 +65,12 @@ func (s *Server) registerAIAccounts(api huma.API) {
 
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-ai-account", Method: "DELETE", Path: "/api/v1/ai-accounts/{id}",
-		Summary: "Delete one of the caller's AI provider accounts (elevation required)", DefaultStatus: 204,
+		Summary: "Delete one of the caller's AI provider accounts and clear it from the apps that use it (elevation required)", DefaultStatus: 200,
+		Responses: map[string]*huma.Response{
+			"204": {Description: "Deleted. No app used the account, so nothing else changes."},
+		},
+		// Listed because the 204 above stops huma adding its default error.
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusInternalServerError},
 	}, s.deleteAIAccount)
 }
 
@@ -72,14 +85,48 @@ type AIAccountDTO struct {
 	KeySet    bool   `json:"key_set"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
+	// UsedBy lists the apps that use the account, each once, ordered by
+	// name. An edit of the key or base URL restarts them, and a delete clears
+	// the account from them, so the UI names them before the user confirms.
+	UsedBy []AppUseDTO `json:"used_by"`
 }
 
-func aiAccountDTO(a store.AIAccount) AIAccountDTO {
+// AppUseDTO names one app that uses an account.
+type AppUseDTO struct {
+	InstanceID string `json:"instance_id"`
+	Name       string `json:"name"`
+}
+
+func appUseDTOs(uses []store.AppUse) []AppUseDTO {
+	out := make([]AppUseDTO, 0, len(uses))
+	for _, u := range uses {
+		out = append(out, AppUseDTO{InstanceID: u.InstanceID, Name: u.Name})
+	}
+	return out
+}
+
+func aiAccountDTO(a store.AIAccount, uses []store.AppUse) AIAccountDTO {
 	return AIAccountDTO{
 		ID: a.ID, ProviderID: a.ProviderID, Label: a.Label, BaseURL: a.BaseURL,
 		KeySet:    a.APIKey != "",
 		CreatedAt: a.CreatedAt.Unix(), UpdatedAt: a.UpdatedAt.Unix(),
+		UsedBy: appUseDTOs(uses),
 	}
+}
+
+// AIAccountSavedDTO is the answer to an edit: the account, plus the id of
+// the job that updates and restarts the apps using it. JobID is empty when
+// the edit reaches no app (a label change, or an account no app uses).
+type AIAccountSavedDTO struct {
+	AIAccountDTO
+	JobID string `json:"job_id,omitempty"`
+}
+
+// AccountDeletedDTO is the answer to deleting an account that apps used: the
+// id of the job that updates and restarts them. A delete that reaches no app
+// answers 204 with no body.
+type AccountDeletedDTO struct {
+	JobID string `json:"job_id"`
 }
 
 // AIAccountBody is the create and update request shape. On update an empty
@@ -228,6 +275,10 @@ func (s *Server) listAIAccounts(ctx context.Context, _ *struct{}) (*struct {
 	if err != nil {
 		return nil, huma.Error500InternalServerError("list ai accounts failed", err)
 	}
+	usage, err := s.store.AIAccountUsage(id.User.ID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("list ai account usage failed", err)
+	}
 	out := &struct {
 		Body struct {
 			Accounts []AIAccountDTO `json:"accounts"`
@@ -235,7 +286,7 @@ func (s *Server) listAIAccounts(ctx context.Context, _ *struct{}) (*struct {
 	}{}
 	out.Body.Accounts = []AIAccountDTO{}
 	for _, a := range accounts {
-		out.Body.Accounts = append(out.Body.Accounts, aiAccountDTO(a))
+		out.Body.Accounts = append(out.Body.Accounts, aiAccountDTO(a, usage[a.ID]))
 	}
 	return out, nil
 }
@@ -274,7 +325,7 @@ func (s *Server) createAIAccount(ctx context.Context, in *struct {
 		return nil, huma.Error500InternalServerError("create ai account failed", err)
 	}
 	s.auditor.Record(ctx, audit.ActionAIAccountCreate, audit.Target{Kind: auditTargetAIAccount, ID: a.ID}, meta, true)
-	return &struct{ Body AIAccountDTO }{Body: aiAccountDTO(a)}, nil
+	return &struct{ Body AIAccountDTO }{Body: aiAccountDTO(a, nil)}, nil
 }
 
 // updateAIAccount edits one of the caller's accounts. No elevation, for the
@@ -282,11 +333,18 @@ func (s *Server) createAIAccount(ctx context.Context, in *struct {
 //
 // The provider id is checked against the provider data only when it changes.
 // A rename should not fail because the catalog has not loaded, or because the
-// store has since dropped the provider the account was made for.
+// store has since dropped the provider the account was made for. It cannot
+// change while an app uses the account (409): the app's slot may not fit the
+// new provider, so the user adds a new account instead.
+//
+// When the key or the base URL changes, every app bound to the account gets
+// its values again and the running ones restart, in one background job
+// (INSTALL_SETUP.md piece 4). The save itself does not wait for it. A label
+// change restarts nothing.
 func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 	ID   string `path:"id"`
 	Body AIAccountBody
-}) (*struct{ Body AIAccountDTO }, error) {
+}) (*struct{ Body AIAccountSavedDTO }, error) {
 	id, err := mailCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -313,7 +371,18 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 		a.APIKey = in.Body.APIKey
 	}
 	a.UpdatedAt = time.Now()
+	meta := aiAccountMeta(a)
+
+	bindings, err := s.store.ListAIBindingsForAccount(a.ID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionAIAccountUpdate, tgt, meta, false)
+		return nil, huma.Error500InternalServerError("list ai bindings failed", err)
+	}
 	if a.ProviderID != existing.ProviderID {
+		if len(bindings) > 0 {
+			s.auditor.Record(ctx, audit.ActionAIAccountUpdate, tgt, meta, false)
+			return nil, huma.Error409Conflict("apps use this account, so its provider cannot change. Add a new account for the other provider instead")
+		}
 		if err := s.checkAIProvider(ctx, audit.ActionAIAccountUpdate, tgt, a.ProviderID); err != nil {
 			return nil, err
 		}
@@ -322,7 +391,6 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 		return nil, err
 	}
 
-	meta := aiAccountMeta(a)
 	// Send the key only when the request carries one. An empty key tells the
 	// store to keep the stored one, so a concurrent key change is not undone.
 	upd := a
@@ -339,14 +407,70 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 		return nil, huma.Error500InternalServerError("update ai account failed", err)
 	}
 	s.auditor.Record(ctx, audit.ActionAIAccountUpdate, tgt, meta, true)
-	return &struct{ Body AIAccountDTO }{Body: aiAccountDTO(a)}, nil
+
+	usage, err := s.store.AIAccountUsage(id.User.ID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("list ai account usage failed", err)
+	}
+	out := &struct{ Body AIAccountSavedDTO }{Body: AIAccountSavedDTO{AIAccountDTO: aiAccountDTO(a, usage[a.ID])}}
+	reaches := a.APIKey != existing.APIKey || a.BaseURL != existing.BaseURL
+	if reaches && len(bindings) > 0 {
+		out.Body.JobID = s.restampAIAccountJob(a, bindings).ID
+	}
+	return out, nil
+}
+
+// restampAIAccountJob starts the job that gives every app bound to an account
+// its values again, from the account as it is now, and restarts the running
+// ones. A binding that no longer resolves is logged and reported with the
+// others; it does not stop them.
+func (s *Server) restampAIAccountJob(acct store.AIAccount, bindings []store.AIBinding) *Job {
+	return s.jobs.run("ai-account-restamp", func(job *Job) (map[string]any, error) {
+		job.setStep("updating_apps")
+		providers, err := s.catalog.AIProviders()
+		if err != nil {
+			return nil, fmt.Errorf("the list of AI providers could not be read, so no app was updated")
+		}
+		updates, failed := resolveAccountSlots(acct, bindings, s.life.InstanceManifest, providers)
+		var names []string
+		for instanceID, ferr := range failed {
+			name := instanceID
+			if inst, err := s.store.Get(instanceID); err == nil {
+				name = inst.Name
+			}
+			slog.Error("resolve ai binding after account change failed",
+				"instance_id", instanceID, "name", name, "err", ferr)
+			names = append(names, name)
+		}
+		restampErr := s.life.RestampAIAccount(context.Background(), acct.ID, updates)
+		if len(names) > 0 {
+			slices.Sort(names)
+			msg := "could not update " + strings.Join(names, ", ") + ". Pick an account for them again on their settings screen"
+			if restampErr != nil {
+				msg += ". " + restampErr.Error()
+			}
+			return nil, errors.New(msg)
+		}
+		if restampErr != nil {
+			return nil, restampErr
+		}
+		return map[string]any{"account_id": acct.ID}, nil
+	})
 }
 
 // deleteAIAccount removes one of the caller's accounts. It keeps the password
 // re-prompt, like an email account: a delete cannot be undone.
+//
+// The values the account gave each app are removed in the same store
+// transaction as the account, so a deleted key never stays in the brain's
+// state. Then a background job rewrites those apps and restarts the running
+// ones; its id is the answer. A delete that reaches no app answers 204.
 func (s *Server) deleteAIAccount(ctx context.Context, in *struct {
 	ID string `path:"id"`
-}) (*struct{}, error) {
+}) (*struct {
+	Status int
+	Body   *AccountDeletedDTO
+}, error) {
 	id, err := mailCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -356,14 +480,71 @@ func (s *Server) deleteAIAccount(ctx context.Context, in *struct {
 	}
 
 	tgt := audit.Target{Kind: auditTargetAIAccount, ID: in.ID}
-	if err := s.store.DeleteAIAccount(in.ID, id.User.ID); err != nil {
+	if _, err := s.ownAIAccount(id, in.ID); err != nil {
 		s.auditor.Record(ctx, audit.ActionAIAccountDelete, tgt, nil, false)
 		if errors.Is(err, store.ErrNotFound) {
 			// Audited: a delete aimed at someone else's account lands here.
 			return nil, huma.Error404NotFound("no such AI account")
 		}
+		return nil, huma.Error500InternalServerError("get ai account failed", err)
+	}
+	bindings, err := s.store.ListAIBindingsForAccount(in.ID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionAIAccountDelete, tgt, nil, false)
+		return nil, huma.Error500InternalServerError("list ai bindings failed", err)
+	}
+	clear, ids := s.boundSlotEnvs(bindings)
+	if err := s.store.DeleteAIAccountAndValues(in.ID, id.User.ID, clear); err != nil {
+		s.auditor.Record(ctx, audit.ActionAIAccountDelete, tgt, nil, false)
+		if errors.Is(err, store.ErrNotFound) {
+			// Deleted between the read and the write.
+			return nil, huma.Error404NotFound("no such AI account")
+		}
 		return nil, huma.Error500InternalServerError("delete ai account failed", err)
 	}
 	s.auditor.Record(ctx, audit.ActionAIAccountDelete, tgt, nil, true)
-	return nil, nil
+
+	out := &struct {
+		Status int
+		Body   *AccountDeletedDTO
+	}{Status: http.StatusNoContent}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	job := s.jobs.run("ai-account-delete", func(job *Job) (map[string]any, error) {
+		job.setStep("updating_apps")
+		if err := s.life.RestampConfig(context.Background(), ids); err != nil {
+			return nil, err
+		}
+		return map[string]any{"account_id": in.ID}, nil
+	})
+	out.Status = http.StatusOK
+	out.Body = &AccountDeletedDTO{JobID: job.ID}
+	return out, nil
+}
+
+// boundSlotEnvs maps each bound app to the app_env names of its bound slots,
+// the values a deleted account gave it, and lists the apps once each in the
+// order of the bindings. An app whose manifest copy cannot be read keeps its
+// values (there is no way to know which fields the slot had); that is logged,
+// and the app is still re-stamped and restarted.
+func (s *Server) boundSlotEnvs(bindings []store.AIBinding) (map[string][]string, []string) {
+	clear := map[string][]string{}
+	var ids []string
+	for _, b := range bindings {
+		if _, seen := clear[b.InstanceID]; !seen {
+			clear[b.InstanceID] = nil
+			ids = append(ids, b.InstanceID)
+		}
+		man, err := s.life.InstanceManifest(b.InstanceID)
+		if err != nil {
+			slog.Error("read manifest to clear a deleted AI account failed",
+				"instance_id", b.InstanceID, "err", err)
+			continue
+		}
+		for _, sf := range fillableSlots(man)[b.Slot] {
+			clear[b.InstanceID] = append(clear[b.InstanceID], sf.field.AppEnv)
+		}
+	}
+	return clear, ids
 }
