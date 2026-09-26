@@ -60,6 +60,13 @@ const (
 	ActionMailProviderTest   = "mail.provider.test"
 	ActionAppMailRebind      = "app.mail.rebind"
 
+	// AI provider accounts (SERVICE_PROVISIONING.md # AI provider accounts).
+	// An account holds a key, so its create, update and delete audit success
+	// and failure, like an email account. The target kind is "ai_account".
+	ActionAIAccountCreate = "ai.account.create"
+	ActionAIAccountUpdate = "ai.account.update"
+	ActionAIAccountDelete = "ai.account.delete"
+
 	// User-supplied app config update (APP_MANIFEST.md # D4). Changing a config
 	// value (an API token, a connection string) is elevation-class, so it audits
 	// success and failure.

@@ -4,6 +4,42 @@
  */
 
 export interface paths {
+    "/api/v1/ai-accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's own AI provider accounts */
+        get: operations["list-ai-accounts"];
+        put?: never;
+        /** Add an AI provider account owned by the caller */
+        post: operations["create-ai-account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ai-accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update one of the caller's AI provider accounts (an empty api_key keeps the stored one) */
+        put: operations["update-ai-account"];
+        post?: never;
+        /** Delete one of the caller's AI provider accounts (elevation required) */
+        delete: operations["delete-ai-account"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ai-providers": {
         parameters: {
             query?: never;
@@ -1003,6 +1039,35 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AIAccountBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/AIAccountBody.json
+             */
+            readonly $schema?: string;
+            api_key?: string;
+            base_url?: string;
+            label: string;
+            provider_id: string;
+        };
+        AIAccountDTO: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/AIAccountDTO.json
+             */
+            readonly $schema?: string;
+            base_url: string;
+            /** Format: int64 */
+            created_at: number;
+            id: string;
+            key_set: boolean;
+            label: string;
+            provider_id: string;
+            /** Format: int64 */
+            updated_at: number;
+        };
         AIModel: {
             flags?: ("vision" | "tools" | "reasoning")[] | null;
             id: string;
@@ -1540,6 +1605,15 @@ export interface components {
             source?: string;
             support?: string;
         };
+        "List-ai-accountsResponse": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/List-ai-accountsResponse.json
+             */
+            readonly $schema?: string;
+            accounts: components["schemas"]["AIAccountDTO"][] | null;
+        };
         "List-appsResponse": {
             /**
              * Format: uri
@@ -2072,6 +2146,132 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "list-ai-accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["List-ai-accountsResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "create-ai-account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIAccountBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIAccountDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "update-ai-account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIAccountBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIAccountDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "delete-ai-account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "list-ai-providers": {
         parameters: {
             query?: never;

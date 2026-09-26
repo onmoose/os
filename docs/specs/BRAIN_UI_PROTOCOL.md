@@ -41,6 +41,10 @@ GET  /api/v1/catalog/:id/install-plan      → permission/scope plan for install
 GET  /api/v1/ai-providers                  → AI provider data for the install setup page, in display order (see below)
 GET  /api/v1/ai-providers/:id/logo         → provider logo image bytes (raw; not JSON)
 GET  /api/v1/ai-providers/:id/logo-dark    → provider logo for dark backgrounds (raw; not JSON)
+GET  /api/v1/ai-accounts                   → the caller's own AI provider accounts (see below)
+POST /api/v1/ai-accounts                   → add an AI provider account owned by the caller
+PUT  /api/v1/ai-accounts/:id               → edit one of the caller's AI accounts (an empty api_key keeps the stored key)
+DELETE /api/v1/ai-accounts/:id             → delete one of the caller's AI accounts (elevation required)
 POST /api/v1/files/list                    → directory listing (see Files below)
 POST /api/v1/files/mkdir | move | copy | delete  → file operations (see Files below)
 ```
@@ -60,6 +64,19 @@ Plain HTTP. Errors: HTTP status + `{ "code": "...", "message": "...", "details":
 No catalog synced yet, or a catalog without the data, is **200 with an empty list**, never an error. The setup page reads an empty list as "no provider data" and shows the app's AI fields as plain fields.
 
 `logo_url` and `logo_dark_url` point at `GET /api/v1/ai-providers/:id/logo` and `/logo-dark`, never at the asset origin. Each is present only when the provider has that logo. The two routes serve **raw image bytes**, proxied and cached exactly like an app icon (# Catalog browse, detail, and assets): fetched from the published URL on first request, cached under `MOOSE_CATALOG_CACHE_DIR` for 24 hours. An unknown provider, or a logo the provider does not have, is 404.
+
+#### AI provider accounts
+
+An AI account is a saved key for one AI provider (`SERVICE_PROVISIONING.md` # AI provider accounts). Every route is open to any signed-in user (401 if absent) and scoped to the caller: another user's account id answers 404 `no such AI account`, the same as a missing one, and an edit or delete aimed at it audits a failure.
+
+- `GET /api/v1/ai-accounts` returns `{ "accounts": [...] }`, the caller's own accounts ordered by label. An empty list is `[]`, never `null`.
+- `POST /api/v1/ai-accounts` takes `{ provider_id, label, api_key?, base_url? }` and returns the new account. No elevation.
+- `PUT /api/v1/ai-accounts/:id` takes the same body and returns the account. No elevation. An empty or missing `api_key` keeps the stored key.
+- `DELETE /api/v1/ai-accounts/:id` is 204. It needs elevation (403 `elevation_required` without it).
+
+An account reads as `{ id, provider_id, label, base_url, key_set, created_at, updated_at }`. **The key is never in a response**: `key_set` says only whether one is stored. `base_url` is `""` when the account uses the provider's own address. Times are Unix seconds.
+
+`provider_id` is an id from `GET /api/v1/ai-providers` or `openai_compatible`. For a listed provider `api_key` is required; for `openai_compatible` `base_url` is required. A bad body is a 422 with a plain message, for example `unknown AI provider`, `api_key is required for this provider`, `base_url is required for an OpenAI-compatible server`, or `base_url must be a full http or https address, like https://example.com/v1`. With no provider data on the box, a listed `provider_id` is `422 the list of AI providers is not loaded yet. Try again in a few minutes, or add an OpenAI-compatible server`; an edit checks `provider_id` only when it changes. A label the caller already uses is `409 you already have an account with that name`.
 
 #### GET /api/v1/catalog/:id/install-plan
 
