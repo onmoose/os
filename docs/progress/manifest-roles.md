@@ -32,7 +32,7 @@ The first piece of step 4 of the install setup plan (`INSTALL_SETUP.md` # Sugges
 
 **Brain** (`internal/api/appconfig.go`, `internal/api/install_plan.go`).
 
-- `POST /api/v1/apps`: after the answers are resolved, the first unmet group is a 422: `config.fields: pick at least one AI provider` for a group that is exactly `ai`, else `config.fields: fill in at least one of: <titles>`. The check is inside `resolveInstallConfig`, so it audits `app.install` with `success=false` like the other rejected elections.
+- `POST /api/v1/apps`: after the answers are resolved, the first unmet group is a 422: `config.fields: pick at least one AI provider` for a group that is exactly `ai`, else `config.fields: fill in at least one of: <titles>`. The check is inside `resolveInstallConfig`. Its caller in `internal/api/api.go` audits `app.install` with `success=false` on that error, like the other rejected elections.
 - `PUT /api/v1/apps/{id}/config`: a group met before the edit and unmet after it is a 422, `config.fields: keep at least one AI provider` or `config.fields: keep at least one of these filled in: <titles>`. An already-unmet group does not block. It audits `app.config.update` failure like the other 422s there.
 - The install plan and the config DTO gain, additively, per field `role` (only when fillable) and `separator` (only on a fillable `models` field), and a top-level `requires` (the effective groups). The OpenAPI spec and `web-ui/src/generated/openapi.ts` are regenerated. No Vue component changed.
 
