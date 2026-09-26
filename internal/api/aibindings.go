@@ -109,10 +109,14 @@ func resolveAIBindings(man *manifest.Manifest, bindings []AIBindingBody, account
 		for env, v := range bound.values {
 			res.values[env] = v
 		}
+		envs := make([]string, 0, len(fields))
 		for _, sf := range fields {
 			res.claimed[sf.field.AppEnv] = true
+			envs = append(envs, sf.field.AppEnv)
 		}
-		res.bindings = append(res.bindings, store.AIBinding{Slot: slot, AccountID: acct.ID, Models: bound.models})
+		// Envs records every field of the slot, so an account delete can
+		// clear them without the manifest.
+		res.bindings = append(res.bindings, store.AIBinding{Slot: slot, AccountID: acct.ID, Models: bound.models, Envs: envs})
 	}
 	return res, nil
 }
@@ -407,25 +411,80 @@ func resolvePutWithAI(man *manifest.Manifest, current []store.InstanceConfig, cu
 	return putAIResolution{cfg: cfg, slots: order, bindings: res.bindings}, nil
 }
 
-// accountSlotResolver is the lifecycle.SlotResolver for an account change
+// accountSlotResolver is the lifecycle.SlotResolver for an account edit
 // (INSTALL_SETUP.md piece 4). Lifecycle calls it under each app's lock, and
 // it reads the account row then, through account, so the values come from
 // the account as it is at commit time, not as it was when the edit started.
-// Each binding keeps the model ids it has.
+//
+// It fills the slot from what the edit can change, and needs no provider
+// data for that, so a key change still reaches the apps right after a boot
+// or while the catalog service is down:
+//   - api_key gets the account's key (nothing for a keyless account).
+//   - base_url gets the account's base URL when it has one. Without one, a
+//     native slot's base URL is left blank (the decision row), and the
+//     compatible slot takes the provider's openai_base_url from the data if
+//     the data has it, else keeps the value it has now.
+//   - a model field gets the stored model ids, joined with the field's
+//     separator, else keeps the value it has now.
+//
+// The provider does not have to fit the slot again: the binding was checked
+// when it was made, and the provider id of a bound account cannot change.
 func accountSlotResolver(account func(id string) (store.AIAccount, error), providers []catalog.AIProvider) lifecycle.SlotResolver {
-	return func(man *manifest.Manifest, b store.AIBinding) (map[string]string, error) {
+	return func(man *manifest.Manifest, b store.AIBinding, current map[string]string) (map[string]string, error) {
 		acct, err := account(b.AccountID)
 		if err != nil {
 			return nil, fmt.Errorf("read account: %w", err)
 		}
 		fields, ok := fillableSlots(man)[b.Slot]
 		if !ok {
-			return nil, fmt.Errorf("the app has no AI slot %s now", b.Slot)
+			return nil, fmt.Errorf("the app has no LLM provider setting %s now", b.Slot)
 		}
-		bound, err := resolveSlot(b.Slot, fields, b.Models, acct, providers)
-		if err != nil {
-			return nil, err
-		}
-		return bound.values, nil
+		return restampSlot(fields, b, acct, providers, current), nil
 	}
+}
+
+// restampSlot is the values of one bound slot after its account changed.
+// See accountSlotResolver for the rules.
+func restampSlot(fields []slotField, b store.AIBinding, acct store.AIAccount, providers []catalog.AIProvider, current map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, sf := range fields {
+		env := sf.field.AppEnv
+		switch sf.role.Attribute {
+		case manifest.AttrAPIKey:
+			if acct.APIKey != "" {
+				out[env] = acct.APIKey
+			}
+		case manifest.AttrBaseURL:
+			switch {
+			case acct.BaseURL != "":
+				out[env] = acct.BaseURL
+			case sf.role.Protocol != manifest.ProtocolOpenAICompatible:
+				// A native base URL comes only from the account.
+			default:
+				if u := providerBaseURL(providers, acct.ProviderID); u != "" {
+					out[env] = u
+				} else if v := current[env]; v != "" {
+					out[env] = v
+				}
+			}
+		case manifest.AttrModel, manifest.AttrModels:
+			if ids := b.Models[modelKey(sf.role)]; len(ids) > 0 {
+				out[env] = strings.Join(ids, sf.field.EffectiveSeparator())
+			} else if v := current[env]; v != "" {
+				out[env] = v
+			}
+		}
+	}
+	return out
+}
+
+// providerBaseURL is a listed provider's OpenAI-compatible endpoint, or ""
+// when the provider is not in the data (or the data is empty).
+func providerBaseURL(providers []catalog.AIProvider, id string) string {
+	for _, p := range providers {
+		if p.ID == id {
+			return p.OpenAIBaseURL
+		}
+	}
+	return ""
 }

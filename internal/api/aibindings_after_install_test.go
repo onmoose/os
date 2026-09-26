@@ -533,7 +533,7 @@ func TestAIAccountDeleteAfterRebindKeepsNewValues(t *testing.T) {
 	// Rebound to fresh just before the delete.
 	if err := h.st.SetInstanceConfigAndAIBindings("i_ai", []store.InstanceConfig{
 		{AppEnv: "ACME_API_KEY", Value: "sk-fresh", Secret: true}, {AppEnv: "ACME_MODEL", Value: "acme-1"},
-	}, []string{"ai.acme"}, []store.AIBinding{{Slot: "ai.acme", AccountID: fresh.ID}}); err != nil {
+	}, []string{"ai.acme"}, []store.AIBinding{{Slot: "ai.acme", AccountID: fresh.ID}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	h.elevate("pass1")
@@ -557,7 +557,7 @@ func TestAIAccountDeleteRefusedWhenManifestUnreadable(t *testing.T) {
 	}
 	h.elevate("pass1")
 	code, raw := h.doRaw("DELETE", "/api/v1/ai-accounts/"+acct.ID, nil)
-	if code != http.StatusInternalServerError || !strings.Contains(string(raw), "the settings of Broken App could not be read") {
+	if code != http.StatusInternalServerError || !strings.Contains(string(raw), "the LLM provider settings of Broken App could not be found") {
 		t.Fatalf("delete = %d %s", code, raw)
 	}
 	if _, err := h.st.GetAIAccount(acct.ID); err != nil {
@@ -568,5 +568,110 @@ func TestAIAccountDeleteRefusedWhenManifestUnreadable(t *testing.T) {
 	}
 	if !h.hasAuditEvent(audit.ActionAIAccountDelete, acct.ID, false) {
 		t.Fatal("refused delete was not audited")
+	}
+}
+
+// --- account changes that need no provider data ---------------------------
+
+// A key change reaches the apps even when the box has no provider data (right
+// after a boot, or with the catalog service down): the key, the stored model
+// and an account base URL need none.
+func TestAIAccountKeyChangeWithoutProviderData(t *testing.T) {
+	h := newHarness(t) // a disk catalog: the provider list is empty
+	admin := h.setupAdmin("alice", "pass1")
+	now := time.Now()
+	if err := h.st.CreateAIAccount(store.AIAccount{ID: "ai_1", OwnerUserID: admin.ID, ProviderID: "acme", Label: "Work", APIKey: testAIKey, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	h.seedAIApp("i_ai", "AI Demo", admin.ID, "ai_1")
+
+	code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_1", map[string]any{"provider_id": "acme", "label": "Work", "api_key": "sk-new-key"})
+	if code != http.StatusOK {
+		t.Fatalf("key change = %d %s", code, raw)
+	}
+	saved := decodeRaw[AIAccountSavedDTO](t, raw)
+	if done := awaitJob(t, h.apiSrv, saved.JobID); done.Status != "completed" {
+		t.Fatalf("job = %s %+v", done.Status, done.Error)
+	}
+	if v := h.storedValues("i_ai"); v["ACME_API_KEY"] != "sk-new-key" || v["ACME_MODEL"] != "acme-1" || v["SEARCH_KEY"] != "s" {
+		t.Fatalf("values = %v", v)
+	}
+	if _, ok := h.storedValues("i_ai")["ACME_BASE_URL"]; ok {
+		t.Fatal("a native base URL was filled without an account base URL")
+	}
+}
+
+func TestRestampSlotRules(t *testing.T) {
+	man := parseAIAppManifest(t)
+	slots := fillableSlots(man)
+	b := store.AIBinding{Slot: "ai.openai_compatible", Models: map[string][]string{"models.chat": {"a", "b"}}}
+	cur := map[string]string{"CUSTOM_BASE_URL": "https://kept.invalid/v1", "CUSTOM_EMBED": "kept-embed"}
+
+	// No provider data, no account base URL: the stored base URL and the
+	// stored embedding value are kept, the model list comes from the binding.
+	got := restampSlot(slots["ai.openai_compatible"], b, testAccounts["a_acme"], nil, cur)
+	assertValues(t, got, map[string]string{"CUSTOM_API_KEY": "sk-acme", "CUSTOM_BASE_URL": "https://kept.invalid/v1", "CUSTOM_MODELS": "a;b", "CUSTOM_EMBED": "kept-embed"})
+
+	// With provider data the provider's endpoint wins over the stored one.
+	got = restampSlot(slots["ai.openai_compatible"], b, testAccounts["a_acme"], testAIProviders(), cur)
+	if got["CUSTOM_BASE_URL"] != "https://api.acme.invalid/v1" {
+		t.Fatalf("values = %v", got)
+	}
+	// An account base URL wins over both.
+	got = restampSlot(slots["ai.openai_compatible"], b, testAccounts["a_acme_proxy"], testAIProviders(), cur)
+	if got["CUSTOM_BASE_URL"] != "https://proxy.invalid/v1" {
+		t.Fatalf("values = %v", got)
+	}
+	// A native slot's base URL stays blank without an account base URL.
+	got = restampSlot(slots["ai.acme"], store.AIBinding{Slot: "ai.acme"}, testAccounts["a_acme"], nil, map[string]string{"ACME_BASE_URL": "https://old.invalid", "ACME_MODEL": "m"})
+	assertValues(t, got, map[string]string{"ACME_API_KEY": "sk-acme", "ACME_MODEL": "m"})
+}
+
+// A binding that recorded its fields is cleared by those names, so the
+// delete needs no manifest. A binding from before that record, whose manifest
+// no longer has the slot, refuses the delete.
+func TestAIAccountDeleteUsesRecordedFields(t *testing.T) {
+	h, _ := aiHarness(t)
+	admin := h.setupAdmin("alice", "pass1")
+	acct := h.createAIAccount(aiAccountBody("Work"))
+	legacy := h.createAIAccount(aiAccountBody("Legacy"))
+	h.seedAIApp("i_new", "Recorded", admin.ID, "")
+	if err := h.st.SetInstanceAIBindings("i_new", []store.AIBinding{{Slot: "ai.acme", AccountID: acct.ID, Envs: []string{"ACME_API_KEY", "ACME_BASE_URL", "ACME_MODEL"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.stateDir, "instances", "i_new", "manifest.yml")); err != nil {
+		t.Fatal(err)
+	}
+	h.elevate("pass1")
+	code, raw := h.doRaw("DELETE", "/api/v1/ai-accounts/"+acct.ID, nil)
+	if code != http.StatusOK {
+		t.Fatalf("delete = %d %s", code, raw)
+	}
+	if v := h.storedValues("i_new"); len(v) != 1 || v["SEARCH_KEY"] != "s" {
+		t.Fatalf("values = %v", v)
+	}
+
+	// A legacy row (no recorded fields) on an app whose manifest lost the slot.
+	h.seedAIApp("i_old", "Updated App", admin.ID, "")
+	if err := h.st.SetInstanceAIBindings("i_old", []store.AIBinding{{Slot: "ai.gone", AccountID: legacy.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	code, raw = h.doRaw("DELETE", "/api/v1/ai-accounts/"+legacy.ID, nil)
+	if code != http.StatusInternalServerError || !strings.Contains(string(raw), "settings of Updated App could not be found") {
+		t.Fatalf("delete = %d %s", code, raw)
+	}
+	if _, err := h.st.GetAIAccount(legacy.ID); err != nil {
+		t.Fatalf("the account was deleted anyway: %v", err)
+	}
+}
+
+// An install and a config save record the fields each binding fills.
+func TestBindingsRecordTheirFields(t *testing.T) {
+	_, res, err := putTest(t, nil, nil, nil, AIBindingBody{Slot: "ai.acme", AccountID: "a_acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := res.bindings[0].Envs; len(e) != 3 || e[0] != "ACME_API_KEY" || e[2] != "ACME_MODEL" {
+		t.Fatalf("recorded envs = %v", e)
 	}
 }

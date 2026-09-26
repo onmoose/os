@@ -434,10 +434,12 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 func (s *Server) restampAIAccountJob(accountID string, ids []string) *Job {
 	return s.jobs.run("ai-account-restamp", func(job *Job) (map[string]any, error) {
 		job.setStep("updating_apps")
+		// The provider data is only a fallback here (restampSlot), so a read
+		// error is logged and the re-stamp goes on without it.
 		providers, err := s.catalog.AIProviders()
 		if err != nil {
-			slog.Error("read ai providers for account re-stamp failed", "err", err)
-			return nil, errors.New("the list of LLM providers could not be read, so no app was updated")
+			slog.Warn("read ai providers for account re-stamp failed", "err", err)
+			providers = nil
 		}
 		resolve := accountSlotResolver(s.store.GetAIAccount, providers)
 		if err := s.life.RestampAIAccount(context.Background(), accountID, ids, resolve); err != nil {
@@ -478,16 +480,22 @@ func (s *Server) deleteAIAccount(ctx context.Context, in *struct {
 		return nil, huma.Error500InternalServerError("get ai account failed", err)
 	}
 	// The bindings are read inside the delete transaction, so a slot rebound
-	// to another account a moment ago keeps its new values. The fields of each
-	// slot come from the app's own manifest copy. If one cannot be read, the
-	// delete is refused: a deleted key must never stay in an app.
+	// to another account a moment ago keeps its new values. Each binding
+	// clears the fields it recorded. Only a binding from before that record
+	// needs the app's manifest copy to name its fields. If the copy cannot
+	// be read, or no longer has the slot, the delete is refused: a deleted
+	// key must never stay in an app.
 	slotFields := func(instanceID, slot string) ([]string, error) {
 		man, err := s.life.InstanceManifest(instanceID)
 		if err != nil {
 			return nil, err
 		}
-		var envs []string
-		for _, sf := range fillableSlots(man)[slot] {
+		fields := fillableSlots(man)[slot]
+		if len(fields) == 0 {
+			return nil, fmt.Errorf("the manifest has no slot %s", slot)
+		}
+		envs := make([]string, 0, len(fields))
+		for _, sf := range fields {
 			envs = append(envs, sf.field.AppEnv)
 		}
 		return envs, nil
@@ -505,10 +513,10 @@ func (s *Server) deleteAIAccount(ctx context.Context, in *struct {
 			if inst, gerr := s.store.Get(sfe.InstanceID); gerr == nil {
 				name = inst.Name
 			}
-			slog.Error("delete ai account refused: app manifest unreadable",
+			slog.Error("delete ai account refused: cannot name the fields to clear",
 				"instance_id", sfe.InstanceID, "name", name, "err", sfe.Err)
 			return nil, huma.Error500InternalServerError(fmt.Sprintf(
-				"the settings of %s could not be read, so its key could not be removed. The account was not deleted. Try again, or uninstall %s first", name, name))
+				"the LLM provider settings of %s could not be found, so its key could not be removed. The account was not deleted. Try again, or uninstall %s first", name, name))
 		}
 		return nil, huma.Error500InternalServerError("delete ai account failed", err)
 	}

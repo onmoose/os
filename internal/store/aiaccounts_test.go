@@ -283,7 +283,8 @@ func TestSetInstanceConfigAndAIBindings(t *testing.T) {
 	// Replace ai.anthropic with ai_2, clear nothing else; ai.openai is not listed.
 	cfg := []InstanceConfig{{AppEnv: "ANTHROPIC_API_KEY", Value: "sk-2", Secret: true}}
 	if err := s.SetInstanceConfigAndAIBindings("a", cfg, []string{"ai.anthropic"},
-		[]AIBinding{{Slot: "ai.anthropic", AccountID: "ai_2", Models: map[string][]string{"model.chat": {"m"}}}}); err != nil {
+		[]AIBinding{{Slot: "ai.anthropic", AccountID: "ai_2", Models: map[string][]string{"model.chat": {"m"}}, Envs: []string{"ANTHROPIC_API_KEY"}}},
+		[]AIBinding{{Slot: "ai.openai", AccountID: "ai_1"}}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	if got := configMap(t, s, "a"); len(got) != 1 || got["ANTHROPIC_API_KEY"] != "sk-2" {
@@ -293,9 +294,21 @@ func TestSetInstanceConfigAndAIBindings(t *testing.T) {
 	if len(got) != 2 || got[0].Slot != "ai.anthropic" || got[0].AccountID != "ai_2" || got[1].Slot != "ai.openai" || got[1].AccountID != "ai_1" {
 		t.Fatalf("bindings = %+v", got)
 	}
+	if len(got[0].Envs) != 1 || got[0].Envs[0] != "ANTHROPIC_API_KEY" || got[1].Envs != nil {
+		t.Fatalf("recorded envs = %v and %v", got[0].Envs, got[1].Envs)
+	}
+
+	// A kept binding that changed since it was read refuses the write.
+	if err := s.SetInstanceConfigAndAIBindings("a", []InstanceConfig{{AppEnv: "X", Value: "x"}}, nil, nil,
+		[]AIBinding{{Slot: "ai.openai", AccountID: "ai_2"}}); !errors.Is(err, ErrBindingGone) {
+		t.Fatalf("stale keep: got %v, want ErrBindingGone", err)
+	}
+	if got := configMap(t, s, "a"); got["X"] != "" {
+		t.Fatalf("refused write changed the config: %v", got)
+	}
 
 	// A cleared slot is listed with no new binding.
-	if err := s.SetInstanceConfigAndAIBindings("a", nil, []string{"ai.openai"}, nil); err != nil {
+	if err := s.SetInstanceConfigAndAIBindings("a", nil, []string{"ai.openai"}, nil, nil); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if got, _ := s.ListInstanceAIBindings("a"); len(got) != 1 || got[0].Slot != "ai.anthropic" {
@@ -304,8 +317,8 @@ func TestSetInstanceConfigAndAIBindings(t *testing.T) {
 
 	// A missing account rolls back the values too.
 	if err := s.SetInstanceConfigAndAIBindings("a", []InstanceConfig{{AppEnv: "NEW", Value: "y"}},
-		[]string{"ai.anthropic"}, []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_ghost"}}); err == nil {
-		t.Fatal("binding to a missing account must fail")
+		[]string{"ai.anthropic"}, []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_ghost"}}, nil); !errors.Is(err, ErrBindingGone) {
+		t.Fatalf("binding to a missing account: got %v, want ErrBindingGone", err)
 	}
 	if got := configMap(t, s, "a"); len(got) != 0 {
 		t.Fatalf("failed write changed the config: %v", got)
@@ -447,5 +460,78 @@ func TestAccountUsage(t *testing.T) {
 	}
 	if ids, _ := s.ListMailBindingsForProvider("mp_2"); len(ids) != 0 {
 		t.Fatalf("unused provider has bindings: %v", ids)
+	}
+}
+
+// ApplyAISlotValues writes a slot only while it is still bound to the
+// account, touches no other value, and records the slot's fields.
+func TestApplyAISlotValues(t *testing.T) {
+	s := openWithOwner(t)
+	if err := s.Create(sample("a", "app-a")); err != nil {
+		t.Fatal(err)
+	}
+	for _, acct := range []AIAccount{sampleAIAccount("ai_1", "Work"), sampleAIAccount("ai_2", "Home")} {
+		if err := s.CreateAIAccount(acct); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetInstanceAIBindings("a", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_1"}, {Slot: "ai.openai", AccountID: "ai_2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInstanceConfig("a", []InstanceConfig{{AppEnv: "ANTHROPIC_API_KEY", Value: "old"}, {AppEnv: "ANTHROPIC_MODEL", Value: "m"}, {AppEnv: "PLAIN", Value: "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	writes := []SlotWrite{
+		{Slot: "ai.anthropic", Envs: []string{"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"}, Values: []InstanceConfig{{AppEnv: "ANTHROPIC_API_KEY", Value: "new", Secret: true}}},
+		{Slot: "ai.openai", Envs: []string{"OPENAI_API_KEY"}, Values: []InstanceConfig{{AppEnv: "OPENAI_API_KEY", Value: "not-mine"}}},
+	}
+	n, err := s.ApplyAISlotValues("a", "ai_1", writes)
+	if err != nil || n != 1 {
+		t.Fatalf("applied = %d (%v); want 1", n, err)
+	}
+	if got := configMap(t, s, "a"); len(got) != 2 || got["ANTHROPIC_API_KEY"] != "new" || got["PLAIN"] != "keep" {
+		t.Fatalf("config = %v", got)
+	}
+	if got, _ := s.ListInstanceAIBindings("a"); len(got[0].Envs) != 2 || got[1].Envs != nil {
+		t.Fatalf("recorded envs = %v, %v", got[0].Envs, got[1].Envs)
+	}
+
+	// After the account is gone, nothing is written.
+	if err := s.DeleteAIAccount("ai_1", mailOwner); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.ApplyAISlotValues("a", "ai_1", writes[:1]); err != nil || n != 0 {
+		t.Fatalf("applied after delete = %d (%v); want 0", n, err)
+	}
+	if got := configMap(t, s, "a"); got["ANTHROPIC_API_KEY"] != "new" {
+		t.Fatalf("config = %v", got)
+	}
+}
+
+// A binding that recorded its fields is cleared by them; slotFields is not
+// asked.
+func TestDeleteAIAccountAndValuesRecordedEnvs(t *testing.T) {
+	s := openWithOwner(t)
+	if err := s.Create(sample("a", "app-a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAIAccount(sampleAIAccount("ai_1", "Work")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInstanceAIBindings("a", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_1", Envs: []string{"K"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInstanceConfig("a", []InstanceConfig{{AppEnv: "K", Value: "sk"}, {AppEnv: "P", Value: "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.DeleteAIAccountAndValues("ai_1", mailOwner, func(string, string) ([]string, error) {
+		t.Fatal("slotFields asked for a binding with recorded fields")
+		return nil, nil
+	})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("delete = %v (%v)", ids, err)
+	}
+	if got := configMap(t, s, "a"); len(got) != 1 || got["P"] != "keep" {
+		t.Fatalf("config = %v", got)
 	}
 }

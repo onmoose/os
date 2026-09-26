@@ -110,7 +110,7 @@ func TestUpdateConfigStoresValuesAndBindings(t *testing.T) {
 // keyResolver resolves a binding the way the API does for this manifest:
 // the account's key as it is in the store now, and the stored model.
 func keyResolver(e *testEnv) SlotResolver {
-	return func(_ *manifest.Manifest, b store.AIBinding) (map[string]string, error) {
+	return func(_ *manifest.Manifest, b store.AIBinding, _ map[string]string) (map[string]string, error) {
 		acct, err := e.store.GetAIAccount(b.AccountID)
 		if err != nil {
 			return nil, err
@@ -307,5 +307,68 @@ func TestRestampMailWithoutManifest(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(dir, ".env"))
 	if strings.Contains(string(raw), "MOOSE_MAIL_") {
 		t.Fatalf(".env still has mail lines:\n%s", raw)
+	}
+}
+
+// deleteAccount deletes an AI account and the values its bindings gave, as
+// the API's delete does, naming the fields of this test's one slot.
+func deleteAccount(t *testing.T, e *testEnv, id string) {
+	t.Helper()
+	fields := func(string, string) ([]string, error) { return []string{"OPENAI_API_KEY", "OPENAI_MODEL"}, nil }
+	if _, err := e.store.DeleteAIAccountAndValues(id, "u_admin", fields); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An account delete that lands after a re-stamp read the account and before
+// it writes does not get the deleted key written back.
+func TestRestampAIAccountDeleteBetweenReadAndWrite(t *testing.T) {
+	e := newTestEnv(t)
+	e.createAIAccount(t, "ai_1")
+	inst := installAIApp(t, e, "aiapp")
+	read := keyResolver(e)
+	racing := func(man *manifest.Manifest, b store.AIBinding, cur map[string]string) (map[string]string, error) {
+		vals, err := read(man, b, cur)
+		deleteAccount(t, e, "ai_1") // the delete commits before the write
+		return vals, err
+	}
+	if err := e.m.RestampAIAccount(context.Background(), "ai_1", []string{inst.ID}, racing); err != nil {
+		t.Fatalf("restamp: %v", err)
+	}
+	cfg, _ := e.store.GetInstanceConfig(inst.ID)
+	for _, c := range cfg {
+		if c.AppEnv == "OPENAI_API_KEY" {
+			t.Fatalf("the deleted key came back: %+v", cfg)
+		}
+	}
+}
+
+// A config save whose unchanged slot lost its account while it ran writes
+// nothing and fails with a plain message, so the deleted key stays gone.
+func TestUpdateConfigDeleteBetweenReadAndWrite(t *testing.T) {
+	e := newTestEnv(t)
+	e.createAIAccount(t, "ai_1")
+	inst := installAIApp(t, e, "aiapp")
+	edit := func(_ *manifest.Manifest, current []store.InstanceConfig, _ []store.AIBinding) (ConfigChange, error) {
+		// A plain field edit; the slot's values ride along from current.
+		out := []store.InstanceConfig{}
+		for _, c := range current {
+			if c.AppEnv == "PLAIN" {
+				c.Value = "changed"
+			}
+			out = append(out, c)
+		}
+		deleteAccount(t, e, "ai_1") // the delete commits before the write
+		return ConfigChange{Values: out}, nil
+	}
+	err := e.m.UpdateConfig(context.Background(), inst.ID, edit)
+	if err == nil || !strings.Contains(err.Error(), "was deleted while saving") {
+		t.Fatalf("err = %v; want the plain deleted-while-saving message", err)
+	}
+	cfg, _ := e.store.GetInstanceConfig(inst.ID)
+	for _, c := range cfg {
+		if c.AppEnv == "OPENAI_API_KEY" || c.Value == "changed" {
+			t.Fatalf("a refused save wrote values: %+v", cfg)
+		}
 	}
 }

@@ -73,7 +73,23 @@ func (m *Manager) UpdateConfig(ctx context.Context, id string, resolve ConfigRes
 	if err != nil {
 		return err
 	}
-	if err := m.store.SetInstanceConfigAndAIBindings(id, change.Values, change.Slots, change.Bindings); err != nil {
+	// The bindings the edit leaves alone must still be there when it commits:
+	// the values for their slots came from them, and an account delete does
+	// not take this lock.
+	listed := map[string]bool{}
+	for _, slot := range change.Slots {
+		listed[slot] = true
+	}
+	var keep []store.AIBinding
+	for _, b := range bound {
+		if !listed[b.Slot] {
+			keep = append(keep, b)
+		}
+	}
+	if err := m.store.SetInstanceConfigAndAIBindings(id, change.Values, change.Slots, change.Bindings, keep); err != nil {
+		if errors.Is(err, store.ErrBindingGone) {
+			return errBindingGone
+		}
 		return fmt.Errorf("persist config: %w", err)
 	}
 	if err := m.restampConfigEnv(id, man); err != nil {
@@ -91,10 +107,15 @@ func (m *Manager) UpdateConfig(ctx context.Context, id string, resolve ConfigRes
 	return nil
 }
 
+// errBindingGone is the job error when an LLM provider account the save
+// relied on was deleted while it ran. Nothing was written.
+var errBindingGone = errors.New("an LLM provider account this app uses was deleted while saving, so nothing was changed. Check the settings and save again")
+
 // SlotResolver resolves one AI binding of an app into the values of its
-// slot, from the account as it is now. Values maps app_env to value for the
-// fields that get one; every other field of the slot is cleared.
-type SlotResolver func(man *manifest.Manifest, b store.AIBinding) (map[string]string, error)
+// slot, from the account as it is now. current is the app's stored values,
+// for a field the resolver keeps as it is. The result maps app_env to value
+// for the fields that get one; every other field of the slot is cleared.
+type SlotResolver func(man *manifest.Manifest, b store.AIBinding, current map[string]string) (map[string]string, error)
 
 // RestampAIAccount gives the apps bound to accountID their values again and
 // restarts the running ones. It runs after an account's key or base URL
@@ -121,39 +142,40 @@ func (m *Manager) RestampAIAccount(ctx context.Context, accountID string, ids []
 			values[c.AppEnv] = c.Value
 		}
 		roles := man.FillableRoles()
-		changed := false
+		var writes []store.SlotWrite
 		for _, b := range bound {
 			if b.AccountID != accountID {
 				continue
 			}
-			slotValues, err := resolve(man, b)
+			slotValues, err := resolve(man, b, values)
 			if err != nil {
 				return false, fmt.Errorf("resolve %s: %w", b.Slot, err)
 			}
+			w := store.SlotWrite{Slot: b.Slot, Envs: []string{}}
 			for _, f := range man.Config {
 				r, ok := roles[f.AppEnv]
 				if !ok || r.Slot() != b.Slot {
 					continue
 				}
+				w.Envs = append(w.Envs, f.AppEnv)
 				if v := slotValues[f.AppEnv]; v != "" {
-					values[f.AppEnv] = v
-				} else {
-					delete(values, f.AppEnv)
+					w.Values = append(w.Values, store.InstanceConfig{AppEnv: f.AppEnv, Value: v, Secret: f.Secret})
 				}
-				changed = true
 			}
+			writes = append(writes, w)
 		}
-		if !changed {
+		if len(writes) == 0 {
 			return false, nil
 		}
-		var cfg []store.InstanceConfig
-		for _, f := range man.Config {
-			if v, ok := values[f.AppEnv]; ok {
-				cfg = append(cfg, store.InstanceConfig{AppEnv: f.AppEnv, Value: v, Secret: f.Secret})
-			}
-		}
-		if err := m.store.SetInstanceConfig(inst.ID, cfg); err != nil {
+		// The store writes a slot only if it is still bound to accountID when
+		// the transaction runs, so an account deleted since the read above
+		// does not get its key written back.
+		applied, err := m.store.ApplyAISlotValues(inst.ID, accountID, writes)
+		if err != nil {
 			return false, fmt.Errorf("persist config: %w", err)
+		}
+		if applied == 0 {
+			return false, nil
 		}
 		if err := m.restampConfigEnv(inst.ID, man); err != nil {
 			return false, fmt.Errorf("rewrite override: %w", err)
