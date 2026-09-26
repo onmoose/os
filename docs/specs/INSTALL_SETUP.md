@@ -52,6 +52,16 @@ Two ideas carry this:
 | 2026-09-25 | The box reads the data leniently: an unknown model type or flag is dropped, not refused, so the store can add one before the fleet understands it. Nothing in `ai_providers` can make a box refuse the snapshot. |
 | 2026-09-25 | Logos are proxied through the box, like app icons. The UI never loads them from the asset origin. |
 | 2026-09-25 | The snapshot version covers `ai_providers`. `onmoose/store#133` made it cover the home page and the categories; the store change for step 3 adds `ai_providers` to it. |
+| 2026-09-26 | Role vocabulary: `<kind>.<protocol>.<attribute>`, lowercase segments. Kind is a closed list in Go, `ai` only for now: a kind is added when moose can fill it (email and Google OAuth are the likely next ones). Protocol is open: `openai_compatible` is reserved, and any other value is a native protocol matched against a provider's `native_protocol`. Attribute is closed: `api_key`, `base_url`, `model.<type>`, `models.<type>`, with the model types of # 4. |
+| 2026-09-26 | `separator` is valid only on a `models.<type>` field. Default `,`, 1 to 4 printable characters, no newline, `=` or quote. |
+| 2026-09-26 | A `requires` member is a kind (`ai`), a slot (`ai.anthropic`) or a plain field by its `app_env`, told apart by case. A group is satisfied when at least one matched field has a value after the brain resolves the install. Model fields do not count. The check needs no knowledge of the vocabulary. |
+| 2026-09-26 | A native `base_url` is filled only from the account's own base URL. Otherwise it is left blank and the app uses its built-in default. |
+| 2026-09-26 | `manifest.Parse` stays lenient: every new rule is in the `moose manifest` lint, never in `Parse`. The box shows a field it cannot fill as a plain field, drops a `requires` member that matches no field, and drops a group left empty. It never refuses a manifest over `role`, `separator` or `requires`. |
+| 2026-09-26 | `manifest_version` stays 1 and the snapshot `schema_version` stays 2. The new keys are optional, and older boxes ignore them. |
+| 2026-09-26 | openclaw and hermes-agent get `requires: one_of: [ai]`, so their install is gated on a provider. Today they install with none. |
+| 2026-09-26 | Editing an installed app's settings may not make a satisfied `requires` group unsatisfied. A group that already fails (an app installed before `requires`, or after its account was deleted) does not block unrelated edits. |
+| 2026-09-26 | `moose manifest lint` takes an optional `--ai-providers <path>` and then warns about a native protocol that no provider offers. |
+| 2026-09-26 | Known limits, deferred to a later version: a field that says which provider to use (openmuse `MODEL=provider/model`) stays a plain field, and an app gets one slot per protocol, so separate OpenAI-compatible endpoints per job (upstream open-webui) cannot be expressed. |
 
 ## Design
 
@@ -86,6 +96,8 @@ Fields that share `kind.protocol` form a **slot**. The setup page draws a slot a
 3. Else P is not offered for this app, and its tile is hidden.
 
 Most providers offer an OpenAI-compatible endpoint, including Anthropic and Gemini, so an app with only the generic slot can still use almost all of them. An app can fill several slots, for example Anthropic and OpenAI together in openclaw. The generic `openai_compatible` slot holds one provider, because it is one set of env vars.
+
+**As built (roles in the schema).** `role` and `separator` are on `ConfigField`, and the vocabulary is in `internal/manifest/roles.go` (`ParseRole`, `FillableRoles`, `EffectiveSeparator`). The box reads them leniently and the `moose manifest` lint strictly (`internal/manifest/lint.go`); `APP_MANIFEST.md` # D4 # Roles and requires has the schema. The install plan and the config endpoint send each fillable field's `role` and `separator`. Filling a slot from a provider account, and matching a native slot against provider data, are not built yet (step 4, later pieces).
 
 ### 2. Models
 
@@ -122,6 +134,8 @@ The third known case, "model is required when a custom base URL is set", goes aw
 - **A slot can need a model type that a provider lacks.** If a slot has `model.embedding`, a provider with no embedding models (Anthropic today) must not show as a tile for that slot. Otherwise the user picks it and the app fails. Tiles are filtered by the model types the slot declares.
 - **`one_of: [ai]` is too coarse when an app needs two things.** An app that needs a chat provider *and* an embedding provider must list slots in two groups, not write `one_of: [ai]`. The authoring guide says so, and the lint warns when a kind-level group covers slots with different model types.
 - **`required: true` inside a `one_of` group contradicts the group.** The lint rejects a field that is both `required` and a member of a group.
+
+**As built (requires).** `requires` is on the manifest, read leniently (`Manifest.EffectiveRequires`, `GroupFields`, `GroupSatisfied` in `internal/manifest/roles.go`). The brain checks it on `POST /api/v1/apps` and, as "no worse", on `PUT /api/v1/apps/{id}/config` (`internal/api/appconfig.go`). The install plan and the config endpoint send the groups. The lint rules and warnings above are in `internal/manifest/lint.go`.
 
 ### 4. Provider data
 

@@ -41,6 +41,10 @@ type InstallPlanDTO struct {
 	// present only when the manifest declares a config: block. Schema only — never
 	// a value (a secret field has none; defaults/options are part of the schema).
 	Config []InstallPlanConfigField `json:"config,omitempty"`
+	// Requires lists the "at least one of" groups over Config (INSTALL_SETUP.md
+	// # 3). POST /api/v1/apps answers 422 while a group has no filled member.
+	// Omitted when the manifest declares none the box can use.
+	Requires []RequiresGroupDTO `json:"requires,omitempty"`
 }
 
 // InstallPlanConfigField is one user-supplied config field's form schema
@@ -55,6 +59,13 @@ type InstallPlanConfigField struct {
 	Type        string   `json:"type"`
 	Options     []string `json:"options,omitempty"`
 	Default     string   `json:"default,omitempty"`
+	// Role says what the field means, e.g. ai.anthropic.api_key
+	// (INSTALL_SETUP.md # 1). Present only when the box can fill the field;
+	// otherwise the field is a plain field.
+	Role string `json:"role,omitempty"`
+	// Separator joins a models.<type> list: the declared one or ",". Present
+	// only on a fillable models field.
+	Separator string `json:"separator,omitempty"`
 }
 
 // InstallPlanMail is the outgoing-mail picker block, present only when the
@@ -203,7 +214,9 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 	}
 
 	config := make([]InstallPlanConfigField, 0, len(man.Config))
+	roles := man.FillableRoles()
 	for _, c := range man.Config {
+		role, sep := fieldRole(roles, &c)
 		config = append(config, InstallPlanConfigField{
 			AppEnv:      c.AppEnv,
 			Title:       c.Title,
@@ -213,6 +226,8 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 			Type:        c.Type,
 			Options:     c.Options,
 			Default:     c.Default,
+			Role:        role,
+			Separator:   sep,
 		})
 	}
 
@@ -229,7 +244,8 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 			Devices:  devices,
 			Folders:  folders,
 		},
-		Config: config,
+		Config:   config,
+		Requires: requiresDTO(man),
 	}
 }
 

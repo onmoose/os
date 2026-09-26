@@ -48,12 +48,48 @@ type AppConfigFieldDTO struct {
 	Default     string   `json:"default,omitempty"`
 	Value       string   `json:"value"`
 	Set         bool     `json:"set"`
+	// Role and Separator are as on InstallPlanConfigField.
+	Role      string `json:"role,omitempty"`
+	Separator string `json:"separator,omitempty"`
 }
 
 // AppConfigDTO is the config editor's view: the field list in manifest order.
 // Empty when the app declares no config: block (the UI hides the section).
+// Requires is as on InstallPlanDTO.
 type AppConfigDTO struct {
-	Fields []AppConfigFieldDTO `json:"fields"`
+	Fields   []AppConfigFieldDTO `json:"fields"`
+	Requires []RequiresGroupDTO  `json:"requires,omitempty"`
+}
+
+// RequiresGroupDTO is one "at least one of" group the brain checks
+// (INSTALL_SETUP.md # 3): members are a kind (ai), a slot (ai.anthropic) or a
+// plain field's app_env. Only the groups the box can use are sent: a member
+// that matches no field, and a group left empty, are dropped (manifest
+// EffectiveRequires).
+type RequiresGroupDTO struct {
+	OneOf []string `json:"one_of"`
+}
+
+// requiresDTO projects the manifest's effective requires groups.
+func requiresDTO(man *manifest.Manifest) []RequiresGroupDTO {
+	var out []RequiresGroupDTO
+	for _, g := range man.EffectiveRequires() {
+		out = append(out, RequiresGroupDTO{OneOf: g})
+	}
+	return out
+}
+
+// fieldRole returns the role and separator a DTO shows for one field: the role
+// only when the box can fill it, and the separator only on a models field.
+func fieldRole(roles map[string]manifest.Role, f *manifest.ConfigField) (role, separator string) {
+	r, ok := roles[f.AppEnv]
+	if !ok {
+		return "", ""
+	}
+	if r.Attribute == manifest.AttrModels {
+		separator = f.EffectiveSeparator()
+	}
+	return r.String(), separator
 }
 
 func (s *Server) getAppConfig(ctx context.Context, in *struct {
@@ -78,12 +114,15 @@ func (s *Server) getAppConfig(ctx context.Context, in *struct {
 	}
 	out := &struct{ Body AppConfigDTO }{}
 	out.Body.Fields = make([]AppConfigFieldDTO, 0, len(man.Config))
+	out.Body.Requires = requiresDTO(man)
+	roles := man.FillableRoles()
 	for _, f := range man.Config {
 		dto := AppConfigFieldDTO{
 			AppEnv: f.AppEnv, Title: f.Title, Description: f.Description,
 			Secret: f.Secret, Required: f.Required, Type: f.Type,
 			Options: f.Options, Default: f.Default, Set: setByEnv[f.AppEnv],
 		}
+		dto.Role, dto.Separator = fieldRole(roles, &f)
 		// A secret value is never returned — only whether one is set. A non-secret
 		// field shows its stored value, or the manifest default if never set.
 		if !f.Secret {
@@ -191,7 +230,41 @@ func resolveInstallConfig(man *manifest.Manifest, fields map[string]string) ([]s
 		}
 		out = append(out, store.InstanceConfig{AppEnv: f.AppEnv, Value: v, Secret: f.Secret})
 	}
+	values := configValues(out)
+	for _, g := range man.EffectiveRequires() {
+		if !man.GroupSatisfied(g, values) {
+			if isKindGroup(g, "ai") {
+				return nil, huma.Error422UnprocessableEntity("config.fields: pick at least one AI provider")
+			}
+			return nil, huma.Error422UnprocessableEntity("config.fields: fill in at least one of: " + groupTitles(man, g))
+		}
+	}
 	return out, nil
+}
+
+// configValues maps app_env to value, the shape the requires check reads.
+func configValues(cfg []store.InstanceConfig) map[string]string {
+	out := make(map[string]string, len(cfg))
+	for _, c := range cfg {
+		out[c.AppEnv] = c.Value
+	}
+	return out
+}
+
+// isKindGroup reports whether a requires group is exactly one kind member, so
+// the 422 can name the kind ("an AI provider") rather than list its fields.
+func isKindGroup(group []string, kind string) bool {
+	return len(group) == 1 && group[0] == kind
+}
+
+// groupTitles lists the titles of the fields that can satisfy a group, for a
+// 422 the user can act on.
+func groupTitles(man *manifest.Manifest, group []string) string {
+	var titles []string
+	for _, f := range man.GroupFields(group) {
+		titles = append(titles, f.Title)
+	}
+	return strings.Join(titles, ", ")
 }
 
 // resolvePutConfig applies a partial post-install update to the current stored
@@ -200,6 +273,10 @@ func resolveInstallConfig(man *manifest.Manifest, fields map[string]string) ([]s
 // (optional fields only). required is validated against the resulting state, so
 // an already-stored value satisfies it and a required secret can be replaced but
 // never blanked.
+//
+// The requires groups are checked as "no worse": an edit may not leave a group
+// unmet that was met before it. A group that was already unmet (an app
+// installed before requires existed) does not block an unrelated edit.
 func resolvePutConfig(man *manifest.Manifest, current []store.InstanceConfig, fields map[string]string) ([]store.InstanceConfig, error) {
 	byEnv, err := configFieldsByEnv(man, fields)
 	if err != nil {
@@ -233,6 +310,15 @@ func resolvePutConfig(man *manifest.Manifest, current []store.InstanceConfig, fi
 			continue
 		}
 		out = append(out, store.InstanceConfig{AppEnv: f.AppEnv, Value: v, Secret: f.Secret})
+	}
+	before, after := configValues(current), configValues(out)
+	for _, g := range man.EffectiveRequires() {
+		if man.GroupSatisfied(g, before) && !man.GroupSatisfied(g, after) {
+			if isKindGroup(g, "ai") {
+				return nil, huma.Error422UnprocessableEntity("config.fields: keep at least one AI provider")
+			}
+			return nil, huma.Error422UnprocessableEntity("config.fields: keep at least one of these filled in: " + groupTitles(man, g))
+		}
 	}
 	return out, nil
 }
