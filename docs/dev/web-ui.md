@@ -82,8 +82,10 @@ web-ui/
     │       ├── InstalledAppsSection.vue  # manage/uninstall/logs list
     │       ├── ActivitySection.vue       # audit-log browser (all users)
     │       ├── UsersSection.vue          # admin-only user management
-    │       ├── OutgoingEmailSection.vue  # the user's own SMTP account list
-    │       ├── OutgoingEmailAddSection.vue # /mail/add + /mail/add/:preset
+    │       ├── InstalledAppDetailSection.vue # one app: controls, email, secrets, settings + LLM pickers, logs
+    │       ├── LLMProvidersSection.vue   # Integrations → LLM providers: the user's own AI accounts
+    │       ├── EmailSection.vue          # Integrations → Email: the user's own SMTP account list
+    │       ├── EmailAddSection.vue       # /email/add + /email/add/:preset (/settings/mail/* redirect here)
     │       └── AboutSection.vue          # product identity
     │
     └── components/         # reusable chrome + dialogs
@@ -94,15 +96,17 @@ web-ui/
         ├── AppGlyph.vue        # icon-less fallback: manifest icon_glyph → Lucide icon, else AppWindow
         ├── MailProviderLogo.vue # provider mark from assets/mail-providers/, by preset id
         │                        #   (that folder's README is the how-to for adding one)
+        ├── AIProviderLogo.vue   # LLM provider logo (box-proxied), icon fallback
+        ├── AISlotPicker.vue     # LLM provider row: tiles, account pick + inline add,
+        │                        #   model pickers; shared by the setup page and the
+        │                        #   app's settings screen
         ├── SplitButton.vue
         ├── ElevateDialog.vue
         ├── ToastHost.vue
         └── install/            # the rows of the install setup page
             ├── OptionCards.vue       # selectable card grid + "More" divider + search
             ├── ConfigFieldInput.vue  # one config field (text / secret / enum / bool)
-            ├── MailAccountSection.vue # Email row, with inline account add for any user
-            └── AIProviderSection.vue  # AI providers row: tiles, account pick + inline
-                                       #   add, model pickers
+            └── MailAccountSection.vue # Email row, with inline account add for any user
 ```
 
 A handful of top-level `.vue` files (`Login.vue`, `Setup.vue`, `NotificationBell.vue`, `LiveResources.vue`) sit directly in `src/` rather than `components/` — they're the pre-shell / standalone surfaces. New reusable components go in `components/`; new routed screens go in `views/`.
@@ -140,7 +144,9 @@ A catalog install spans three pages. The detail page's Install button (and the s
 
 The progress page folds the brain's ~15 lifecycle steps into four phases in the order the brain runs them: Preparing, Downloading (`resolving_digests`, which pulls the images), Setting up, Starting. The phase never goes back, and an unknown step keeps the last known phase. The wording stays in the view.
 
-The setup page's rows live in `components/install/`. `OptionCards` is the shared card grid (about five cards, then a "More" divider button that shows the rest with a search box, and an optional "use what I typed" card for model ids). The Email row reuses `mailProviderForm.ts` for its inline add, the same rules as the Settings add flow; `useMailPresets` takes an `enabled` ref there so the presets load only when the user opens the add flow. The AI providers row gets its provider list from `GET /api/v1/ai-providers` (query key `["ai-providers"]`, fetched by the setup page), plus the "Other (OpenAI-compatible)" tile, which the UI owns and whose accounts carry provider id `openai_compatible`. `aiProviders.ts` is the one module that turns roles and provider data into tiles. It groups the fields that have a `role` of kind `ai` into slots by `kind.protocol`. A tile goes to the app's native slot when its `native_protocol` matches, else to the compatible slot when it has an `openai_base_url` (Other always fits), and it is hidden for a slot when the provider has no model of a type the slot declares. A native slot that no provider fits keeps its fields in the Settings row. Picking a tile lists the user's accounts for it (`GET /api/v1/ai-accounts`, query key `["ai-accounts"]`, owned by `AIProviderSection`) with an inline add that posts `/ai-accounts` and picks the new account, then one picker per model setting: single for `model.<type>`, multi for `models.<type>`, the provider's default first and chosen, plus a typed id. A saved choice becomes a `config.ai_bindings` entry (`bindingOf`), and the slot's fields are not sent in `config.fields`. The Install button also waits for the plan's `requires` groups (`unmetGroups`, `groupNeed`), counting a bound slot as filled. An empty provider list (the catalog is not reachable, or serves none) means no AI row: every field is a plain input, so an install is never blocked on provider data.
+The setup page's rows live in `components/install/`. `OptionCards` is the shared card grid (about five cards, then a "More" divider button that shows the rest with a search box, and an optional "use what I typed" card for model ids). The Email row reuses `mailProviderForm.ts` for its inline add, the same rules as the Settings add flow; `useMailPresets` takes an `enabled` ref there so the presets load only when the user opens the add flow. The AI providers row gets its provider list from `GET /api/v1/ai-providers` (query key `["ai-providers"]`, fetched by the setup page), plus the "Other (OpenAI-compatible)" tile, which the UI owns and whose accounts carry provider id `openai_compatible`. `aiProviders.ts` is the one module that turns roles and provider data into tiles. It groups the fields that have a `role` of kind `ai` into slots by `kind.protocol`. A tile goes to the app's native slot when its `native_protocol` matches, else to the compatible slot when it has an `openai_base_url` (Other always fits), and it is hidden for a slot when the provider has no model of a type the slot declares. A native slot that no provider fits keeps its fields in the Settings row. Picking a tile lists the user's accounts for it (`GET /api/v1/ai-accounts`, query key `["ai-accounts"]`, owned by `AISlotPicker`) with an inline add that posts `/ai-accounts` and picks the new account, then one picker per model setting: single for `model.<type>`, multi for `models.<type>`, the provider's default first and chosen, plus a typed id. A saved choice becomes a `config.ai_bindings` entry (`bindingOf`), and the slot's fields are not sent in `config.fields`. The Install button also waits for the plan's `requires` groups (`unmetGroups`, `groupNeed`), counting a bound slot as filled. An empty provider list (the catalog is not reachable, or serves none) means no AI row: every field is a plain input, so an install is never blocked on provider data.
+
+The same `AISlotPicker` draws the app's settings screen (`InstalledAppDetailSection.vue`, `INSTALL_SETUP.md` piece 4). There the choices start from the `ai_bindings` of `GET /apps/{id}/config` (`choiceFromBinding`), a slot with values and no binding stays raw fields under "set by hand" until the user asks to pick an account, and Save sends the changed fields plus the changed slots (`bindingChanges`: a new or changed binding, or `account_id: ""` for a removed one) in one `PUT`. A choice whose account is not in the caller's `["ai-accounts"]` list is another user's, and the picker says "Someone else's account". User-facing text says "LLM provider"; code and API names keep `ai`. An account edit or delete may answer with a `job_id` for the apps it restarts: the Settings screens follow it with `waitForJobOk` (`api.ts`) and then invalidate `["apps"]` and `["app-config"]`, so tiles and the settings screen pick up `needs_setup`.
 
 ## Styling
 
