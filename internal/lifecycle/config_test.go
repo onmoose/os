@@ -87,7 +87,7 @@ func installConfigApp(t *testing.T, e *testEnv) store.Instance {
 		{AppEnv: "WORKER_TOKEN", Value: "wt-123"},
 	}
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "configapp"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", cfg, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -229,7 +229,7 @@ config:
 	e.docker.digests[testImage] = testDigest
 	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "badcfg"),
 		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "",
-		[]store.InstanceConfig{{AppEnv: "TOKEN", Value: "x"}}, nil)
+		[]store.InstanceConfig{{AppEnv: "TOKEN", Value: "x"}}, nil, nil)
 	if err == nil {
 		t.Fatal("install accepted a config field targeting an unknown service")
 	}

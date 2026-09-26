@@ -72,6 +72,7 @@ const STEP_PHASE: Record<string, number> = {
   generating_secrets: 2,
   provisioning_services: 2,
   binding_mail_provider: 2,
+  binding_ai_accounts: 2,
   generating_override: 2,
   creating_network: 2,
   publishing_mdns: 2,

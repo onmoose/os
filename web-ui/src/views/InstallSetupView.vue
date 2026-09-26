@@ -4,7 +4,9 @@
 // Install authorization): permissions, folder sources and subfolders, the
 // storage estimate and its not-enough-space warning, the required-field gate,
 // inline 422 errors, and the 409 duplicate warning with confirm-and-retry. It
-// adds an Email row with an inline "add an account", and an AI providers row.
+// adds an Email row with an inline "add an account", an AI providers row that
+// fills the app's AI slots from the user's AI accounts, and a gate on the
+// app's `requires` groups.
 //
 // Driven by GET /api/v1/catalog/:id/install-plan (advisory; the brain checks
 // everything again on POST /api/v1/apps). Scope comes from the URL:
@@ -32,7 +34,15 @@ import {
 import { useAuth } from "../auth";
 import { useInstallSubmit } from "../useInstall";
 import { formatSize } from "../utils";
-import { aiSlots, claimedEnvs, fieldValues, fillableSlots, findProvider, type AIChoice } from "../aiProviders";
+import {
+  aiSlots,
+  bindingOf,
+  claimedEnvs,
+  fillableSlots,
+  groupNeed,
+  unmetGroups,
+  type AIChoice,
+} from "../aiProviders";
 import AppGlyph from "../components/AppGlyph.vue";
 import HealthGated from "../components/HealthGated.vue";
 import Button from "../components/ui/Button.vue";
@@ -164,8 +174,8 @@ const noPermissions = computed(
 );
 
 // ── AI and plain settings ───────────────────────────────────────────────────
-// The AI row takes the fields the temporary lookup in aiProviders.ts
-// recognises, when some provider can fill them. Every other field stays a
+// The AI row takes the fields whose role puts them in an AI slot, when some
+// provider can fill that slot (aiProviders.ts). Every other field stays a
 // plain input in the Settings row. With no provider data (the catalog is not
 // reachable, or serves none) there is no AI row at all, and every field is a
 // plain input.
@@ -179,23 +189,32 @@ const providersLoading = computed(() => candidateSlots.value.length > 0 && provi
 const claimed = computed(() => claimedEnvs(slots.value));
 const plainFields = computed(() => configFields.value.filter((f) => !claimed.value.has(f.app_env)));
 
-// fieldAnswers is what the app gets: the plain inputs, overlaid with the
-// values each saved AI choice fills.
+// fieldAnswers is the plain inputs. A slot the user filled is sent as a
+// binding instead, and the brain fills its fields from the account.
 const fieldAnswers = computed<Record<string, string>>(() => {
   const out: Record<string, string> = {};
   for (const f of plainFields.value) out[f.app_env] = configValues.value[f.app_env] ?? "";
-  for (const s of slots.value) {
-    const c = aiChoices.value[s.id];
-    if (c) Object.assign(out, fieldValues(s, c, findProvider(providers.value, c.provider)));
-  }
   return out;
 });
+const boundSlots = computed(() => slots.value.filter((s) => aiChoices.value[s.id]));
+const boundEnvs = computed(() => claimedEnvs(boundSlots.value));
 
-// Install stays disabled until every required field has a value: an app
-// missing a required token would install straight into a crash loop.
+// Install stays disabled until every required field has a value, and every
+// requires group has a filled member: an app missing a required token would
+// install straight into a crash loop. A field in a bound slot counts as
+// filled. The brain checks both again.
 const missing = computed(() =>
-  configFields.value.filter((f) => f.required && (fieldAnswers.value[f.app_env] ?? "").trim() === ""),
+  configFields.value.filter(
+    (f) => f.required && !boundEnvs.value.has(f.app_env) && (fieldAnswers.value[f.app_env] ?? "").trim() === "",
+  ),
 );
+const unmet = computed(() =>
+  unmetGroups(plan.value?.requires ?? [], configFields.value, fieldAnswers.value, boundEnvs.value),
+);
+const stillNeeded = computed(() => [
+  ...missing.value.map((f) => f.title),
+  ...unmet.value.map((g) => groupNeed(configFields.value, g)),
+]);
 
 // ── Submit ──────────────────────────────────────────────────────────────────
 function buildRequest(p: InstallPlan): InstallRequest {
@@ -215,11 +234,13 @@ function buildRequest(p: InstallPlan): InstallRequest {
   const fields: Record<string, string> = {};
   for (const [k, v] of Object.entries(fieldAnswers.value)) if (v !== "") fields[k] = v;
   if (Object.keys(fields).length > 0) req.config!.fields = fields;
+  const bindings = boundSlots.value.map((s) => bindingOf(s, aiChoices.value[s.id]!));
+  if (bindings.length > 0) req.config!.ai_bindings = bindings;
   return req;
 }
 
 function onInstall() {
-  if (!plan.value || missing.value.length > 0 || pending.value) return;
+  if (!plan.value || stillNeeded.value.length > 0 || pending.value) return;
   submit(buildRequest(plan.value));
 }
 
@@ -403,13 +424,13 @@ const ddClass = "mt-2 text-sm/6 text-foreground sm:col-span-2 sm:mt-0";
       </p>
 
       <div class="flex flex-col-reverse gap-3 border-t border-border px-4 pt-6 sm:flex-row sm:items-center sm:justify-end sm:px-0">
-        <p v-if="missing.length > 0" class="text-sm text-muted-foreground sm:mr-auto">
-          Still needed: {{ missing.map((f) => f.title).join(", ") }}.
+        <p v-if="stillNeeded.length > 0" class="text-sm text-muted-foreground sm:mr-auto">
+          Still needed: {{ stillNeeded.join("; ") }}.
         </p>
         <div class="flex gap-2">
           <Button variant="ghost" :as="RouterLink" :to="`/store/${manifestId}`">Cancel</Button>
           <HealthGated blocks="apps">
-            <Button :disabled="missing.length > 0 || pending || !!duplicateInfo" @click="onInstall">
+            <Button :disabled="stillNeeded.length > 0 || pending || !!duplicateInfo" @click="onInstall">
               {{ pending ? "Starting…" : "Install" }}
             </Button>
           </HealthGated>

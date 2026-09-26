@@ -47,7 +47,7 @@ func TestInstallOfflineTrustsPromisedDigest(t *testing.T) {
 	e.docker.pullErrAll = fmt.Errorf("dial tcp: registry unreachable")
 	e.docker.loaded[testImage] = true
 
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("offline install: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestInstallOfflineMissingImageFails(t *testing.T) {
 	e.docker.pullErrAll = fmt.Errorf("dial tcp: registry unreachable")
 	// loaded NOT set → ImageInspect errors → genuinely absent.
 
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatalf("want hard-fail when image neither pullable nor present locally")
 	}
@@ -108,7 +108,7 @@ func TestInstallOfflineNoPromiseFails(t *testing.T) {
 	e.docker.pullErrAll = fmt.Errorf("dial tcp: registry unreachable")
 	e.docker.loaded[testImage] = true
 
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatalf("want failure: offline install cannot pin an image with no catalog-promised digest")
 	}
@@ -127,7 +127,7 @@ func TestInstallPullFailureFatalWhenOnline(t *testing.T) {
 	e.docker.pullErrAll = fmt.Errorf("dial tcp: registry unreachable")
 	e.docker.loaded[testImage] = true // present locally, but it must not matter
 
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatalf("online pull failure must be fatal regardless of local presence")
 	}
@@ -145,7 +145,7 @@ func TestInstallOfflineModePullSucceedsPinsDigest(t *testing.T) {
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(testDigest))
 	// Pull succeeds (no pullErrAll): the registry serves the promised digest.
 
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}

@@ -3,11 +3,13 @@ package store
 // AI provider accounts (INSTALL_SETUP.md # 5, SERVICE_PROVISIONING.md # AI
 // provider accounts). A user saves a key for one AI provider once, and later
 // picks the account when an app needs a provider. Each account belongs to the
-// user who added it, the same model as email accounts (mail.go). Nothing binds
-// an app to an account yet: that comes with slot filling.
+// user who added it, the same model as email accounts (mail.go). An install
+// binds an app's AI slot to one of the installer's accounts
+// (instance_ai_bindings, below).
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -166,4 +168,113 @@ func scanAIAccount(row scanner) (AIAccount, error) {
 	a.CreatedAt = time.Unix(created, 0)
 	a.UpdatedAt = time.Unix(updated, 0)
 	return a, nil
+}
+
+// AIBinding is one app slot filled from one AI account (INSTALL_SETUP.md # 5).
+// Slot is the manifest's kind.protocol, for example ai.anthropic. Models maps a
+// model attribute the slot declares (model.chat, models.embedding) to the model
+// ids the app was given, after defaults are applied. The values the binding
+// resolved to are stored as the instance's config values too, so the compose
+// override does not read this table. It is kept so the app's settings screen
+// can show the pickers, and so a key change can rewrite the app (piece 4).
+type AIBinding struct {
+	InstanceID string
+	Slot       string
+	AccountID  string
+	Models     map[string][]string
+}
+
+// aiBindingsDDL creates the instance_ai_bindings table. One row per instance
+// and slot. It cascades with the instance, so an uninstall removes it, and
+// with the account, so deleting an account removes its bindings. The app keeps
+// its stored config values until its next write; what it shows then is piece 4.
+// models is a JSON object, never NULL: '{}' when the slot takes no model.
+const aiBindingsDDL = `CREATE TABLE IF NOT EXISTS instance_ai_bindings (
+	instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+	slot        TEXT NOT NULL,
+	account_id  TEXT NOT NULL REFERENCES ai_accounts(id) ON DELETE CASCADE,
+	models      TEXT NOT NULL DEFAULT '{}',
+	PRIMARY KEY (instance_id, slot)
+)`
+
+// SetInstanceAIBindings replaces every binding of an instance with bs, in one
+// transaction. The InstanceID on each binding is ignored; instanceID is used.
+// An empty bs removes them all. A missing account fails the foreign key.
+func (s *Store) SetInstanceAIBindings(instanceID string, bs []AIBinding) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM instance_ai_bindings WHERE instance_id=?`, instanceID); err != nil {
+		return err
+	}
+	for _, b := range bs {
+		b.InstanceID = instanceID
+		if err := putAIBinding(tx, b); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// PutAIBinding writes one binding, replacing the row for the same instance and
+// slot. deleteUser uses it to put back the bindings a failed delete cascaded
+// away, without touching the instance's other slots.
+func (s *Store) PutAIBinding(b AIBinding) error {
+	return putAIBinding(s.db, b)
+}
+
+// execer is the part of *sql.DB and *sql.Tx that putAIBinding needs.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func putAIBinding(db execer, b AIBinding) error {
+	models := b.Models
+	if models == nil {
+		models = map[string][]string{}
+	}
+	raw, err := json.Marshal(models)
+	if err != nil {
+		return fmt.Errorf("encode ai binding models: %w", err)
+	}
+	_, err = db.Exec(
+		`INSERT OR REPLACE INTO instance_ai_bindings (instance_id, slot, account_id, models) VALUES (?,?,?,?)`,
+		b.InstanceID, b.Slot, b.AccountID, string(raw))
+	return err
+}
+
+// ListInstanceAIBindings returns an instance's bindings, ordered by slot.
+func (s *Store) ListInstanceAIBindings(instanceID string) ([]AIBinding, error) {
+	return s.listAIBindings(`WHERE instance_id=? ORDER BY slot`, instanceID)
+}
+
+// ListAIBindingsForAccount returns every binding to one account, ordered by
+// instance and slot: the apps a key change must rewrite, or a delete touches.
+func (s *Store) ListAIBindingsForAccount(accountID string) ([]AIBinding, error) {
+	return s.listAIBindings(`WHERE account_id=? ORDER BY instance_id, slot`, accountID)
+}
+
+func (s *Store) listAIBindings(where string, args ...any) ([]AIBinding, error) {
+	rows, err := s.db.Query(`SELECT instance_id, slot, account_id, models FROM instance_ai_bindings `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AIBinding
+	for rows.Next() {
+		var (
+			b   AIBinding
+			raw string
+		)
+		if err := rows.Scan(&b.InstanceID, &b.Slot, &b.AccountID, &raw); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(raw), &b.Models); err != nil {
+			return nil, fmt.Errorf("decode ai binding models: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }

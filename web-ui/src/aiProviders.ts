@@ -1,29 +1,32 @@
-// AI providers for the install setup page (docs/specs/INSTALL_SETUP.md).
+// AI providers for the install setup page (docs/specs/INSTALL_SETUP.md # 1 to
+// # 3, and # 6).
 //
-// The provider list comes from the catalog (GET /api/v1/ai-providers, plan
-// step 3), so it can change without an OS update. This module turns that list
-// and an app's config fields into tiles and field values.
+// This is the one module that turns an app's roles and the provider data into
+// tiles, model pickers and bindings. The provider list comes from the catalog
+// (GET /api/v1/ai-providers), so it can change without an OS update. The app's
+// fields say what they mean with a `role` (`ai.anthropic.api_key`,
+// `ai.openai_compatible.models.chat`), sent on the install plan.
 //
-// TEMPORARY: the env-name lookup. aiSlots() guesses what a config field means
-// from its app_env name (ANTHROPIC_API_KEY and so on). With manifest `role`s
-// (plan step 4) the manifest says it, and NATIVE_ENV, CUSTOM_ENV and aiSlots()
-// go. Keep every guess about env names in here, so nothing else in the
-// dashboard learns them.
+// The words follow the plan. A **slot** is the set of an app's fields that
+// share `kind.protocol` (`ai.anthropic`): one provider account fills all of
+// them at once. A slot is **native** to one protocol, or **compatible**
+// (`openai_compatible`): it takes any provider with an OpenAI-compatible
+// endpoint. A provider fills a native slot when its native_protocol matches,
+// whatever its id.
 //
-// The words follow the plan. A **slot** is one set of the app's fields that one
-// provider fills together (a key, and maybe a base URL and a model). A slot is
-// either **native** to one protocol (ANTHROPIC_API_KEY speaks the anthropic
-// protocol) or **compatible**: it takes any provider with an OpenAI-compatible
-// endpoint (the `<APP>_CUSTOM_*` triple, or OPENAI_API_KEY next to
-// OPENAI_BASE_URL). A provider fills a native slot when its native_protocol
-// matches, whatever its id.
-import type { AIModel, AIProvider, InstallPlanConfigField } from "./api";
+// The page sends one binding per filled slot (account and model ids), and the
+// brain turns it into the app's values. The page never sees a key again after
+// the account is saved.
+import type { AIAccount, AIBinding, AIModel, AIProvider, InstallPlanConfigField, RequiresGroup } from "./api";
+
+// COMPATIBLE is the reserved protocol of the generic slot, and the provider id
+// of an account made with the Other tile.
+export const COMPATIBLE = "openai_compatible";
 
 // OTHER is the "Other (OpenAI-compatible)" tile. It is the UI's own, not
 // catalog data: it has no URL and no models, the user types the server's
 // address, and the key is optional because a server the user runs may not
-// ask for one. Its id is one no catalog provider is expected to use; if one
-// did, Other would win the lookup.
+// ask for one. Its accounts are saved with provider id `openai_compatible`.
 export const OTHER_ID = "__other";
 export const OTHER: AIProvider = { id: OTHER_ID, name: "Other (OpenAI-compatible)", models: [] };
 
@@ -41,20 +44,15 @@ export function findProvider(providers: AIProvider[], id: string): AIProvider | 
   return id === OTHER_ID ? OTHER : providers.find((p) => p.id === id);
 }
 
-// chatModels is what the model picker offers: the provider's chat models, with
-// its suggested chat model first. The picker also takes a typed model id, so a
-// model missing here never blocks the user.
-export function chatModels(p: AIProvider): AIModel[] {
-  const chat = (p.models ?? []).filter((m) => (m.types ?? []).includes("chat"));
-  const first = p.defaults?.chat;
-  const i = chat.findIndex((m) => m.id === first);
-  if (i > 0) chat.unshift(...chat.splice(i, 1));
-  return chat;
+// accountProviderId is the provider id an account for this tile carries.
+export function accountProviderId(p: AIProvider): string {
+  return isOther(p) ? COMPATIBLE : p.id;
 }
 
-// suggestedModel is the model a required model field starts on.
-export function suggestedModel(p: AIProvider): string {
-  return chatModels(p)[0]?.id ?? "";
+// accountsFor lists the user's accounts a tile can use.
+export function accountsFor(p: AIProvider, accounts: AIAccount[]): AIAccount[] {
+  const id = accountProviderId(p);
+  return accounts.filter((a) => a.provider_id === id);
 }
 
 // keyLooksWrong is a soft check against the provider's key prefix. It is a
@@ -65,154 +63,215 @@ export function keyLooksWrong(p: AIProvider, key: string): boolean {
   return !!p.key_prefix && k !== "" && !k.startsWith(p.key_prefix);
 }
 
-export type AIAttr = "api_key" | "base_url" | "model";
+// ── Roles and slots ─────────────────────────────────────────────────────────
+
+type Role = { kind: string; protocol: string; attribute: string; modelType?: string };
+
+// parseRole splits a role the brain sent. The brain sends a role only when it
+// can fill the field, so the shape is already checked there.
+function parseRole(role: string | undefined): Role | undefined {
+  if (!role) return undefined;
+  const [kind, protocol, attribute, modelType] = role.split(".");
+  if (!kind || !protocol || !attribute) return undefined;
+  return { kind, protocol, attribute, modelType };
+}
+
+// A model setting the slot declares: `model.chat` takes one id, and
+// `models.chat` a list joined with the field's separator.
+export type ModelSetting = {
+  key: string; // model.chat, models.embedding: the key in a binding's models
+  type: string;
+  multiple: boolean;
+  separator: string;
+  field: InstallPlanConfigField;
+};
 
 export type AISlot = {
-  // id is the protocol for a native slot, or "custom:<PREFIX>" for a
-  // `<PREFIX>_CUSTOM_*` triple.
-  id: string;
-  // protocol is the native protocol this slot speaks, if any.
-  protocol?: string;
-  // compatible: the slot takes any OpenAI-compatible provider.
+  id: string; // kind.protocol, e.g. ai.anthropic
+  protocol: string;
   compatible: boolean;
-  fields: Partial<Record<AIAttr, InstallPlanConfigField>>;
+  fields: InstallPlanConfigField[]; // every field of the slot, in manifest order
+  hasKey: boolean;
+  models: ModelSetting[];
 };
 
-// Exact env names we recognise, and the native protocol and part each one is.
-// A name that is not here stays a plain field in the Settings section.
-//
-// A bare MODEL is left out on purpose: its value format is the app's own (one
-// app wants "provider/model"), and a name alone cannot tell us which.
-const NATIVE_ENV: Record<string, [protocol: string, attr: AIAttr]> = {
-  ANTHROPIC_API_KEY: ["anthropic", "api_key"],
-  OPENAI_API_KEY: ["openai", "api_key"],
-  OPENAI_BASE_URL: ["openai", "base_url"],
-  OPENAI_MODEL: ["openai", "model"],
-  GEMINI_API_KEY: ["gemini", "api_key"],
-  OPENROUTER_API_KEY: ["openrouter", "api_key"],
-  OPENROUTER_MODEL: ["openrouter", "model"],
-  GROQ_API_KEY: ["groq", "api_key"],
-  MISTRAL_API_KEY: ["mistral", "api_key"],
-  DEEPSEEK_API_KEY: ["deepseek", "api_key"],
-  XAI_API_KEY: ["xai", "api_key"],
-};
-
-const CUSTOM_ENV = /^([A-Z0-9_]+)_CUSTOM_(BASE_URL|MODEL|API_KEY)$/;
-const CUSTOM_ATTR: Record<string, AIAttr> = { BASE_URL: "base_url", MODEL: "model", API_KEY: "api_key" };
-
-// aiSlots reads an app's config fields and returns the AI slots it recognises.
-// A native slot counts only with a key field, and a custom triple only with a
-// base URL field. Anything else is left for the Settings section.
+// aiSlots groups an app's AI role fields into slots, in manifest order. Only
+// kind `ai` is drawn on the setup page. A field without a role is a plain
+// field.
 export function aiSlots(fields: InstallPlanConfigField[]): AISlot[] {
   const byId = new Map<string, AISlot>();
   for (const f of fields) {
-    const native = NATIVE_ENV[f.app_env];
-    const custom = CUSTOM_ENV.exec(f.app_env);
-    let id: string;
-    let attr: AIAttr;
-    let protocol: string | undefined;
-    if (native) {
-      [protocol, attr] = native;
-      id = protocol;
-    } else if (custom) {
-      id = `custom:${custom[1]}`;
-      attr = CUSTOM_ATTR[custom[2]!]!;
-    } else {
-      continue;
+    const r = parseRole(f.role);
+    if (!r || r.kind !== "ai") continue;
+    const id = `${r.kind}.${r.protocol}`;
+    let slot = byId.get(id);
+    if (!slot) {
+      slot = { id, protocol: r.protocol, compatible: r.protocol === COMPATIBLE, fields: [], hasKey: false, models: [] };
+      byId.set(id, slot);
     }
-    const slot = byId.get(id) ?? { id, protocol, compatible: !protocol, fields: {} };
-    slot.fields[attr] = f;
-    byId.set(id, slot);
+    slot.fields.push(f);
+    if (r.attribute === "api_key") slot.hasKey = true;
+    if ((r.attribute === "model" || r.attribute === "models") && r.modelType) {
+      slot.models.push({
+        key: `${r.attribute}.${r.modelType}`,
+        type: r.modelType,
+        multiple: r.attribute === "models",
+        separator: f.separator || ",",
+        field: f,
+      });
+    }
   }
-  const slots: AISlot[] = [];
-  for (const s of byId.values()) {
-    if (s.protocol && !s.fields.api_key) continue;
-    if (!s.protocol && !s.fields.base_url) continue;
-    // OPENAI_API_KEY next to OPENAI_BASE_URL is how many apps say "any
-    // OpenAI-compatible server", so that slot takes other providers too.
-    if (s.protocol === "openai" && s.fields.base_url) s.compatible = true;
-    slots.push(s);
-  }
-  return slots;
+  return [...byId.values()];
 }
 
-// fillableSlots keeps the slots some tile can fill. A compatible slot can
-// always take Other. A native slot needs a provider that speaks its protocol;
-// without one its fields go back to the Settings section, so the user can
-// still type them.
+// modelsOfType is what a model picker offers: the provider's models of that
+// type, with its suggested one first. The picker also takes a typed id, so a
+// model missing here never blocks the user.
+export function modelsOfType(p: AIProvider, type: string): AIModel[] {
+  const list = (p.models ?? []).filter((m) => (m.types ?? []).some((t) => t === type));
+  const first = p.defaults?.[type];
+  const i = list.findIndex((m) => m.id === first);
+  if (i > 0) list.unshift(...list.splice(i, 1));
+  return list;
+}
+
+// hasModelTypes: a listed provider can fill a slot only when it has a model of
+// every type the slot declares. Otherwise the user would pick it and the app
+// would have no model to use. Other has no list; the user types the ids.
+export function hasModelTypes(p: AIProvider, slot: AISlot): boolean {
+  return isOther(p) || slot.models.every((m) => modelsOfType(p, m.type).length > 0);
+}
+
+// fits says whether a provider can fill a slot at all: a native slot takes a
+// provider whose native_protocol matches, and the compatible slot takes one
+// with an OpenAI-compatible endpoint, or Other.
+export function fits(p: AIProvider, slot: AISlot): boolean {
+  if (!hasModelTypes(p, slot)) return false;
+  if (slot.compatible) return isOther(p) || !!p.openai_base_url;
+  return !isOther(p) && p.native_protocol === slot.protocol;
+}
+
+// slotFor picks where a provider's tile goes, in the plan's order (# 1): the
+// app's slot for the provider's native protocol first, then the compatible
+// slot. Undefined means the app cannot use this provider, and its tile is
+// hidden.
+export function slotFor(p: AIProvider, slots: AISlot[]): AISlot | undefined {
+  const native = slots.find((s) => !s.compatible && fits(p, s));
+  return native ?? slots.find((s) => s.compatible && fits(p, s));
+}
+
+// fillableSlots keeps the slots some tile can fill. The compatible slot can
+// always take Other. A native slot needs a listed provider that fits it;
+// without one its fields stay plain fields, so the user can still type them.
 export function fillableSlots(slots: AISlot[], providers: AIProvider[]): AISlot[] {
-  return slots.filter((s) => s.compatible || providers.some((p) => p.native_protocol === s.protocol));
+  return slots.filter((s) => s.compatible || providers.some((p) => fits(p, s)));
 }
 
-// claimedEnvs is every app_env the AI section fills, so the Settings section
-// can leave them out.
+// claimedEnvs is every app_env the AI row fills, so the Settings row can
+// leave them out.
 export function claimedEnvs(slots: AISlot[]): Set<string> {
   const out = new Set<string>();
-  for (const s of slots) for (const f of Object.values(s.fields)) if (f) out.add(f.app_env);
+  for (const s of slots) for (const f of s.fields) out.add(f.app_env);
   return out;
 }
 
-// slotFor picks where a provider goes, in the plan's order: a slot that speaks
-// the provider's native protocol first, then a slot that takes any
-// OpenAI-compatible provider, if the provider has such an endpoint (Other
-// always does, since the user types it). A custom triple wins over OPENAI_*
-// with a base URL, so picking Groq never takes over the app's OpenAI key.
-// Undefined means the app cannot use this provider, and its tile is hidden.
-export function slotFor(p: AIProvider, slots: AISlot[]): AISlot | undefined {
-  if (p.native_protocol) {
-    const native = slots.find((s) => s.protocol === p.native_protocol);
-    if (native) return native;
-  }
-  if (!p.openai_base_url && !isOther(p)) return undefined;
-  const compatible = slots.filter((s) => s.compatible);
-  return compatible.find((s) => !s.protocol) ?? compatible[0];
-}
+// ── Choices and bindings ────────────────────────────────────────────────────
 
-// usedAsCompatible: the provider fills a slot that is not its native one, so
-// the slot's base URL field must point at the provider.
-export function usedAsCompatible(p: AIProvider, slot: AISlot): boolean {
-  return !p.native_protocol || slot.protocol !== p.native_protocol;
-}
-
-// Other has no fixed endpoint, so it asks for the server's address.
-export function asksForUrl(p: AIProvider, slot: AISlot): boolean {
-  return usedAsCompatible(p, slot) && !p.openai_base_url;
-}
-
-// A custom triple needs a model: the apps that declare one say the model is
-// required once a base URL is set. A native model field is optional, and blank
-// means the app's own default.
-export function modelRequired(slot: AISlot): boolean {
-  return !slot.protocol && !!slot.fields.model;
-}
-
+// AIChoice is what the user picked for one slot: a tile, one of their accounts
+// for it, and model ids per model setting.
 export type AIChoice = {
-  provider: string;
-  key: string;
-  baseUrl: string;
-  model: string;
+  provider: string; // tile id: a provider id, or OTHER_ID
+  accountId: string;
+  models: Record<string, string[]>;
 };
 
-// fieldValues turns one slot's choice into app_env values. Every field of the
-// slot gets a value, empty when unused, so switching a slot from one provider
-// to another never leaves the old one's URL behind.
-export function fieldValues(slot: AISlot, c: AIChoice, p: AIProvider | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  const { api_key, base_url, model } = slot.fields;
-  if (api_key) out[api_key.app_env] = c.key.trim();
-  if (base_url) {
-    out[base_url.app_env] = p && usedAsCompatible(p, slot) ? (p.openai_base_url ?? c.baseUrl.trim()) : "";
+// suggestedModels is where the pickers start: each setting on the provider's
+// default for its type. Other has no defaults, so it starts empty.
+export function suggestedModels(p: AIProvider, slot: AISlot): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const m of slot.models) {
+    const d = modelsOfType(p, m.type)[0]?.id;
+    out[m.key] = d ? [d] : [];
   }
-  if (model) out[model.app_env] = c.model.trim();
   return out;
 }
 
-// choiceComplete says whether a choice can be saved into its slot. The key is
-// optional only for Other.
+// modelProblem says why one model setting cannot be saved yet, or "". A
+// listed provider with a default may leave it empty, and the brain then uses
+// the default; the pickers start on it anyway.
+export function modelProblem(m: ModelSetting, ids: string[], p: AIProvider): string {
+  const clean = ids.map((x) => x.trim()).filter((x) => x !== "");
+  if (clean.length === 0) {
+    return !isOther(p) && p.defaults?.[m.type] ? "" : `Pick a model for ${m.field.title}.`;
+  }
+  if (!m.multiple && clean.length > 1) return `Pick one model for ${m.field.title}.`;
+  if (m.multiple) {
+    const bad = clean.find((x) => x.includes(m.separator));
+    if (bad) return `A model name cannot contain "${m.separator}" here.`;
+  }
+  return "";
+}
+
+// choiceComplete says whether a choice can be saved into its slot: an account
+// is picked, and every model setting has what it needs.
 export function choiceComplete(slot: AISlot, c: AIChoice, p: AIProvider | undefined): boolean {
-  if (!p) return false;
-  if (slot.fields.api_key && !isOther(p) && !c.key.trim()) return false;
-  if (asksForUrl(p, slot) && !/^https?:\/\/\S+$/.test(c.baseUrl.trim())) return false;
-  if (modelRequired(slot) && !c.model.trim()) return false;
-  return true;
+  if (!p || !c.accountId) return false;
+  return slot.models.every((m) => modelProblem(m, c.models[m.key] ?? [], p) === "");
+}
+
+// bindingOf is the POST /api/v1/apps binding for one saved choice. Settings
+// left empty are left out, so the brain uses the provider's default.
+export function bindingOf(slot: AISlot, c: AIChoice): AIBinding {
+  const models: Record<string, string[]> = {};
+  for (const m of slot.models) {
+    const seen = new Set<string>();
+    const ids = (c.models[m.key] ?? []).map((x) => x.trim()).filter((x) => x !== "" && !seen.has(x) && seen.add(x));
+    if (ids.length > 0) models[m.key] = ids;
+  }
+  const b: AIBinding = { slot: slot.id, account_id: c.accountId };
+  if (Object.keys(models).length > 0) b.models = models;
+  return b;
+}
+
+// ── Requires ────────────────────────────────────────────────────────────────
+
+// fieldCounts mirrors the brain's rule for a requires member: a kind (`ai`)
+// or slot (`ai.acme`) matches a field whose role starts with it, and any other
+// member is an app_env. A model field never counts.
+function fieldCounts(f: InstallPlanConfigField, member: string): boolean {
+  const r = parseRole(f.role);
+  if (r && (r.attribute === "model" || r.attribute === "models")) return false;
+  if (member === f.app_env) return true;
+  return !!f.role && f.role.startsWith(`${member}.`);
+}
+
+// groupFields lists the fields that can satisfy a requires group.
+export function groupFields(fields: InstallPlanConfigField[], group: RequiresGroup): InstallPlanConfigField[] {
+  const members = group.one_of ?? [];
+  return fields.filter((f) => members.some((m) => fieldCounts(f, m)));
+}
+
+// unmetGroups returns the requires groups nothing fills yet. A field counts as
+// filled when it has a typed value, or when it belongs to a slot bound to an
+// account. The brain checks the same groups again on install.
+export function unmetGroups(
+  groups: RequiresGroup[],
+  fields: InstallPlanConfigField[],
+  values: Record<string, string>,
+  boundEnvs: Set<string>,
+): RequiresGroup[] {
+  return groups.filter(
+    (g) => !groupFields(fields, g).some((f) => boundEnvs.has(f.app_env) || (values[f.app_env] ?? "").trim() !== ""),
+  );
+}
+
+// groupNeed names what one unmet group needs, for the "Still needed" line.
+export function groupNeed(fields: InstallPlanConfigField[], group: RequiresGroup): string {
+  const members = group.one_of ?? [];
+  // A group of AI kinds or slots is met by any tile the page shows for them.
+  if (members.every((m) => m === "ai" || /^ai\.[a-z0-9_]+$/.test(m))) return "an AI provider";
+  const titles = groupFields(fields, group).map((f) => f.title);
+  if (titles.length === 0) return members.join(", ");
+  if (titles.length === 1) return titles[0]!;
+  return `one of ${titles.slice(0, -1).join(", ")} or ${titles[titles.length - 1]}`;
 }

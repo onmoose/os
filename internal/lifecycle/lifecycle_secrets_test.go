@@ -43,7 +43,7 @@ func installSecretApp(t *testing.T, e *testEnv) (store.Instance, string) {
 	e.writeCatalogApp(t, "secretapp", secretsCompose, secretsManifest)
 	e.docker.digests[testImage] = testDigest
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "secretapp"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRevealSecretsReturnsOnlyOwnerVisible(t *testing.T) {
 	e.writeCatalogApp(t, "revealapp", secretsCompose, revealSecretsManifest)
 	e.docker.digests[testImage] = testDigest
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "revealapp"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}

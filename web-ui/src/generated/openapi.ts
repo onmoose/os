@@ -1068,6 +1068,13 @@ export interface components {
             /** Format: int64 */
             updated_at: number;
         };
+        AIBindingBody: {
+            account_id: string;
+            models?: {
+                [key: string]: string[] | null;
+            };
+            slot: string;
+        };
         AIModel: {
             flags?: ("vision" | "tools" | "reasoning")[] | null;
             id: string;
@@ -1219,6 +1226,7 @@ export interface components {
             first_run_complete: boolean;
         };
         ConfigStruct: {
+            ai_bindings?: components["schemas"]["AIBindingBody"][] | null;
             fields?: {
                 [key: string]: string;
             };

@@ -1,38 +1,54 @@
 <script setup lang="ts">
 // The AI providers row of the install setup page (INSTALL_SETUP.md # 6). The
-// user picks a provider tile, types its key (and a model or URL where the app
-// has a field for it), and saves. Saving fills every field of the slot the
-// provider lands in; the parent turns the choices into app_env values with
-// fieldValues(). The providers come from the catalog (the parent fetches
-// them); which slot a provider lands in, and which tiles show at all, comes
-// from aiProviders.ts.
+// user picks a provider tile, then one of their accounts for that provider (or
+// adds one right here), then the models, and saves. Saving fills the slot the
+// provider lands in; the parent sends it as a binding, and the brain fills the
+// app's fields from the account. Which slot a provider lands in, and which
+// tiles show at all, comes from aiProviders.ts.
 //
 // An app can take several providers at once (Anthropic and OpenAI in openclaw),
 // one per slot. A compatible slot holds one provider, so saving a second one
 // there replaces the first, and the editor says so before it happens.
+//
+// Adding an account needs no password re-prompt, like an email account. The
+// account belongs to the user who adds it, and the list shows only their own.
 import { computed, ref } from "vue";
-import { Bot, ExternalLink, Server } from "lucide-vue-next";
-import type { AIProvider } from "../../api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
+import { Bot, ExternalLink, KeyRound, Plus, Server } from "lucide-vue-next";
+import { api, ApiError, type AIAccount, type AIAccountBody, type AIProvider } from "../../api";
 import Button from "../ui/Button.vue";
 import OptionCards, { type Option } from "./OptionCards.vue";
 import {
   withOther,
   findProvider,
   isOther,
-  chatModels,
-  suggestedModel,
+  accountProviderId,
+  accountsFor,
+  modelsOfType,
+  suggestedModels,
+  modelProblem,
   keyLooksWrong,
   slotFor,
-  asksForUrl,
-  modelRequired,
   choiceComplete,
   type AIChoice,
   type AISlot,
+  type ModelSetting,
 } from "../../aiProviders";
 
 const props = defineProps<{ slots: AISlot[]; providers: AIProvider[]; appName: string }>();
 // choices is keyed by slot id.
 const choices = defineModel<Record<string, AIChoice>>({ required: true });
+
+const qc = useQueryClient();
+
+// The caller's own AI accounts. A failed read shows an empty list with the
+// add form, so the user can still go on.
+const accountsQuery = useQuery({
+  queryKey: ["ai-accounts"],
+  queryFn: () => api.get<{ accounts: AIAccount[] | null }>("/ai-accounts"),
+  refetchOnWindowFocus: false,
+});
+const accounts = computed(() => accountsQuery.data.value?.accounts ?? []);
 
 // Only providers this app can use get a tile, in the catalog's order, with
 // Other last.
@@ -75,10 +91,11 @@ const added = computed(() => Object.values(choices.value).map((c) => c.provider)
 const tileOptions = computed(() =>
   offered.value.map((p) => {
     const c = Object.values(choices.value).find((x) => x.provider === p.id);
+    const first = c ? Object.values(c.models).flat()[0] : undefined;
     return {
       id: p.id,
       label: p.name,
-      description: c ? (c.model ? `Added, uses ${modelName(p, c.model)}` : "Added") : undefined,
+      description: c ? (first ? `Added, uses ${modelName(p, first)}` : "Added") : undefined,
     };
   }),
 );
@@ -104,18 +121,21 @@ function pick(id: string) {
   const slot = provider && slotFor(provider, props.slots);
   if (!provider || !slot) return;
   const current = choices.value[slot.id];
+  const own = accountsFor(provider, accounts.value);
   const draft: AIChoice =
     current?.provider === id
-      ? { ...current }
+      ? { ...current, models: { ...current.models } }
       : {
           provider: id,
-          key: "",
-          baseUrl: "",
-          // A required model starts on the provider's suggested chat model. An
-          // optional one starts blank, which leaves the app on its default.
-          model: slot.fields.model && modelRequired(slot) ? suggestedModel(provider) : "",
+          // A sole account is the obvious intent, so it starts chosen.
+          accountId: own.length === 1 ? (own[0]?.id ?? "") : "",
+          models: suggestedModels(provider, slot),
         };
   editing.value = { slot, provider, draft };
+  typed.value = {};
+  // With no account yet, the add form is the only way on, so it starts open.
+  if (own.length === 0) startAdd(provider);
+  else cancelAdd();
 }
 
 // replaces names the provider a save would push out of a shared slot.
@@ -134,12 +154,12 @@ const canSave = computed(
   () => !!editing.value && choiceComplete(editing.value.slot, editing.value.draft, editing.value.provider),
 );
 
-const keyWarning = computed(() => !!editing.value && keyLooksWrong(editing.value.provider, editing.value.draft.key));
-
 function save() {
   if (!editing.value || !canSave.value) return;
-  choices.value = { ...choices.value, [editing.value.slot.id]: { ...editing.value.draft } };
+  const d = editing.value.draft;
+  choices.value = { ...choices.value, [editing.value.slot.id]: { ...d, models: { ...d.models } } };
   editing.value = null;
+  cancelAdd();
 }
 
 function remove() {
@@ -148,47 +168,148 @@ function remove() {
   delete next[editing.value.slot.id];
   choices.value = next;
   editing.value = null;
+  cancelAdd();
 }
 
-// The chat models the picker offers, suggested one first.
-const editingModels = computed(() => (editing.value ? chatModels(editing.value.provider) : []));
+// ── Account picker ──────────────────────────────────────────────────────────
+const editingAccounts = computed(() =>
+  editing.value ? accountsFor(editing.value.provider, accounts.value) : [],
+);
+const accountOptions = computed<Option[]>(() =>
+  editingAccounts.value.map((a) => ({
+    id: a.id,
+    label: a.label,
+    description: a.base_url || (a.key_set ? "Key saved" : "No key"),
+  })),
+);
+function pickAccount(id: string) {
+  if (editing.value) editing.value.draft.accountId = id;
+}
 
-// The model picker uses a sentinel id for "the app's own default", because the
-// real value for it is an empty string.
-const APP_DEFAULT = "__app_default";
-const modelOptions = computed<Option[]>(() => {
+// ── Inline add ──────────────────────────────────────────────────────────────
+const adding = ref(false);
+const addLabel = ref("");
+const addKey = ref("");
+const addUrl = ref("");
+const addError = ref("");
+
+function startAdd(p: AIProvider) {
+  adding.value = true;
+  // The provider's name is a fine first name for a first account.
+  addLabel.value = accountsFor(p, accounts.value).length === 0 && !isOther(p) ? p.name : "";
+  addKey.value = "";
+  addUrl.value = "";
+  addError.value = "";
+}
+
+function cancelAdd() {
+  adding.value = false;
+  addError.value = "";
+}
+
+const keyWarning = computed(() => !!editing.value && keyLooksWrong(editing.value.provider, addKey.value));
+
+// The brain checks every rule again; this only keeps Add off until the form
+// can pass. Other needs an address and no key; a listed provider a key.
+const addValid = computed(() => {
+  if (!editing.value || addLabel.value.trim() === "") return false;
+  if (isOther(editing.value.provider)) return /^https?:\/\/\S+$/.test(addUrl.value.trim());
+  return addKey.value.trim() !== "";
+});
+
+const create = useMutation({
+  mutationFn: (body: AIAccountBody) => api.post<AIAccount>("/ai-accounts", body),
+  onSuccess: async (created) => {
+    await qc.invalidateQueries({ queryKey: ["ai-accounts"] });
+    if (editing.value) editing.value.draft.accountId = created.id;
+    cancelAdd();
+  },
+  onError: (e) => {
+    addError.value = e instanceof ApiError ? e.message : "Something went wrong.";
+  },
+});
+
+function addAccount() {
+  if (!editing.value || !addValid.value) return;
+  const body: AIAccountBody = {
+    provider_id: accountProviderId(editing.value.provider),
+    label: addLabel.value.trim(),
+  };
+  if (addKey.value.trim()) body.api_key = addKey.value.trim();
+  if (addUrl.value.trim()) body.base_url = addUrl.value.trim();
+  create.mutate(body);
+}
+
+// ── Model pickers ───────────────────────────────────────────────────────────
+// One picker per model setting the slot declares: single choice for
+// model.<type>, several for models.<type>. The cards are the provider's models
+// of that type, suggested one first. A typed id is always possible, because
+// providers ship new models faster than the list changes.
+
+// typed holds the text box under each picker, by setting key.
+const typed = ref<Record<string, string>>({});
+
+function idsOf(m: ModelSetting): string[] {
+  return editing.value?.draft.models[m.key] ?? [];
+}
+
+function setIds(m: ModelSetting, ids: string[]) {
+  if (editing.value) editing.value.draft.models = { ...editing.value.draft.models, [m.key]: ids };
+}
+
+function modelOptions(m: ModelSetting): Option[] {
   if (!editing.value) return [];
-  const suggested = editing.value.provider.defaults?.chat;
-  const opts: Option[] = editingModels.value.map((m) => {
-    const notes = [m.id === suggested ? "Suggested" : "", m.name !== m.id ? m.id : ""].filter(Boolean);
-    return { id: m.id, label: m.name, description: notes.join(" · ") || undefined };
+  const p = editing.value.provider;
+  const suggested = p.defaults?.[m.type];
+  const opts: Option[] = modelsOfType(p, m.type).map((x) => {
+    const notes = [x.id === suggested ? "Suggested" : "", x.name !== x.id ? x.id : ""].filter(Boolean);
+    return { id: x.id, label: x.name, description: notes.join(" · ") || undefined };
   });
-  if (!modelRequired(editing.value.slot)) {
-    opts.unshift({ id: APP_DEFAULT, label: "App default", description: `Let ${props.appName} choose` });
+  // Typed ids in a list show as cards too, so they can be taken out again. For
+  // Other, which has no list, they are the only cards.
+  if (m.multiple) {
+    for (const id of idsOf(m)) if (!opts.some((o) => o.id === id)) opts.push({ id, label: id });
   }
   return opts;
-});
-const selectedModel = computed(() => {
-  const m = editing.value?.draft.model ?? "";
-  return [m === "" ? APP_DEFAULT : m];
-});
-function pickModel(id: string) {
-  if (editing.value) editing.value.draft.model = id === APP_DEFAULT ? "" : id;
 }
 
-// otherModel is the typed field under the model cards: a model id that is not
-// in our list. Providers ship new models faster than the list changes, so the
-// field is always there, never hidden behind "More". It shows the current
-// model only when that model is not one of the cards.
-const otherModel = computed({
-  get: () => {
-    const m = editing.value?.draft.model ?? "";
-    return editingModels.value.some((x) => x.id === m) ? "" : m;
-  },
-  set: (v: string) => {
-    if (editing.value) editing.value.draft.model = v;
-  },
-});
+function pickModel(m: ModelSetting, id: string) {
+  const ids = idsOf(m);
+  if (!m.multiple) {
+    setIds(m, [id]);
+    typed.value = { ...typed.value, [m.key]: "" };
+    return;
+  }
+  setIds(m, ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+}
+
+// For a single model, the text box is the choice itself when it holds a model
+// that is not a card. For a list, it adds one id at a time.
+function typedValue(m: ModelSetting): string {
+  if (m.multiple) return typed.value[m.key] ?? "";
+  const id = idsOf(m)[0] ?? "";
+  return modelOptions(m).some((o) => o.id === id) ? "" : id;
+}
+
+function onTyped(m: ModelSetting, v: string) {
+  if (m.multiple) typed.value = { ...typed.value, [m.key]: v };
+  else setIds(m, v.trim() === "" ? [] : [v]);
+}
+
+function addTyped(m: ModelSetting) {
+  const id = (typed.value[m.key] ?? "").trim();
+  if (id === "" || id.includes(m.separator)) return;
+  if (!idsOf(m).includes(id)) setIds(m, [...idsOf(m), id]);
+  typed.value = { ...typed.value, [m.key]: "" };
+}
+
+function typedHasSeparator(m: ModelSetting): boolean {
+  return m.multiple && (typed.value[m.key] ?? "").includes(m.separator);
+}
+
+function problemOf(m: ModelSetting): string {
+  return editing.value ? modelProblem(m, idsOf(m), editing.value.provider) : "";
+}
 
 const inputClass =
   "block w-full rounded-md bg-card px-3 py-1.5 text-base text-foreground outline-1 -outline-offset-1 " +
@@ -199,7 +320,7 @@ const inputClass =
 <template>
   <div class="space-y-4">
     <p class="text-sm text-muted-foreground">
-      {{ appName }} uses an AI provider. Pick one and paste its key.
+      {{ appName }} uses an AI provider. Pick one, then pick or add your account for it.
       <template v-if="slots.length > 1">You can add more than one.</template>
     </p>
 
@@ -219,7 +340,7 @@ const inputClass =
     </OptionCards>
 
     <!-- Editor for the picked provider. -->
-    <div v-if="editing" class="space-y-4 rounded-lg border border-border bg-card p-4">
+    <div v-if="editing" class="space-y-5 rounded-lg border border-border bg-card p-4">
       <div class="flex items-center gap-2.5">
         <span class="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <img
@@ -238,79 +359,150 @@ const inputClass =
         {{ appName }} takes only one provider of this kind. Saving replaces {{ replaces }}.
       </p>
 
-      <div v-if="editing.slot.fields.api_key">
-        <label for="ai-key" class="block text-sm/6 font-medium text-foreground">
-          API key<span v-if="isOther(editing.provider)" class="font-normal text-muted-foreground"> (optional)</span>
-        </label>
-        <div class="mt-2">
-          <input
-            id="ai-key"
-            v-model="editing.draft.key"
-            type="password"
-            autocomplete="new-password"
-            :class="inputClass"
-          />
-        </div>
-        <p v-if="keyWarning" class="mt-2 text-sm text-warning">
-          Keys from {{ editing.provider.name }} usually start with {{ editing.provider.key_prefix }}. Check that you
-          copied the whole key.
-        </p>
-        <p class="mt-2 text-sm text-muted-foreground">
-          <template v-if="isOther(editing.provider)">Only needed if your server asks for one.</template>
-          <template v-else>
-            <template v-if="editing.provider.help">{{ editing.provider.help }} </template>
-            <a
-              v-if="isWebLink(editing.provider.key_url)"
-              :href="editing.provider.key_url"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="inline-flex items-center gap-1 underline hover:text-foreground"
-            >Get a key from {{ editing.provider.name }} <ExternalLink class="size-3.5" aria-hidden="true" /></a>
+      <!-- Which account. -->
+      <div class="space-y-2">
+        <p class="text-sm/6 font-medium text-foreground">Account</p>
+        <p v-if="accountsQuery.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
+        <OptionCards
+          v-else-if="editingAccounts.length > 0"
+          label="Account"
+          :options="accountOptions"
+          :selected="editing.draft.accountId ? [editing.draft.accountId] : []"
+          @pick="pickAccount"
+        >
+          <template #icon>
+            <span class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <KeyRound class="size-5 stroke-[1.5]" aria-hidden="true" />
+            </span>
           </template>
-        </p>
-      </div>
+          <template v-if="!adding" #extra>
+            <button
+              type="button"
+              class="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border px-4 py-3.5 text-left hover:border-olive-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              @click="startAdd(editing.provider)"
+            >
+              <span class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                <Plus class="size-5" aria-hidden="true" />
+              </span>
+              <span class="text-sm font-medium text-foreground">Add an account</span>
+            </button>
+          </template>
+        </OptionCards>
 
-      <div v-if="asksForUrl(editing.provider, editing.slot)">
-        <label for="ai-url" class="block text-sm/6 font-medium text-foreground">Server address</label>
-        <div class="mt-2">
-          <input
-            id="ai-url"
-            v-model="editing.draft.baseUrl"
-            type="url"
-            placeholder="https://example.com/v1"
-            autocomplete="off"
-            :class="inputClass"
-          />
+        <!-- Inline add: the account is saved for the user, then picked. -->
+        <div v-if="adding" class="space-y-4 rounded-md border border-border p-4">
+          <p class="text-sm text-muted-foreground">
+            <template v-if="isOther(editing.provider)">
+              Add a server that speaks the OpenAI API. It is saved as your account, so other apps can use it too.
+            </template>
+            <template v-else>
+              Add your {{ editing.provider.name }} account. The key is saved on this box and never shown again.
+            </template>
+          </p>
+
+          <div>
+            <label for="ai-add-label" class="block text-sm/6 font-medium text-foreground">Account name</label>
+            <input id="ai-add-label" v-model="addLabel" autocomplete="off" :class="[inputClass, 'mt-2']" />
+            <p class="mt-2 text-sm text-muted-foreground">What you'll see when an app asks which account to use.</p>
+          </div>
+
+          <div v-if="isOther(editing.provider)">
+            <label for="ai-add-url" class="block text-sm/6 font-medium text-foreground">Server address</label>
+            <input
+              id="ai-add-url"
+              v-model="addUrl"
+              type="url"
+              placeholder="https://example.com/v1"
+              autocomplete="off"
+              :class="[inputClass, 'mt-2']"
+            />
+            <p class="mt-2 text-sm text-muted-foreground">It usually ends in /v1.</p>
+          </div>
+
+          <div>
+            <label for="ai-add-key" class="block text-sm/6 font-medium text-foreground">
+              API key<span v-if="isOther(editing.provider)" class="font-normal text-muted-foreground"> (optional)</span>
+            </label>
+            <input
+              id="ai-add-key"
+              v-model="addKey"
+              type="password"
+              autocomplete="new-password"
+              :class="[inputClass, 'mt-2']"
+            />
+            <p v-if="keyWarning" class="mt-2 text-sm text-warning">
+              Keys from {{ editing.provider.name }} usually start with {{ editing.provider.key_prefix }}. Check that you
+              copied the whole key.
+            </p>
+            <p class="mt-2 text-sm text-muted-foreground">
+              <template v-if="isOther(editing.provider)">Only needed if your server asks for one.</template>
+              <template v-else>
+                <template v-if="editing.provider.help">{{ editing.provider.help }} </template>
+                <a
+                  v-if="isWebLink(editing.provider.key_url)"
+                  :href="editing.provider.key_url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex items-center gap-1 underline hover:text-foreground"
+                >Get a key from {{ editing.provider.name }} <ExternalLink class="size-3.5" aria-hidden="true" /></a>
+              </template>
+            </p>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <Button size="sm" :disabled="create.isPending.value || !addValid" @click="addAccount">
+              {{ create.isPending.value ? "Adding…" : "Add account" }}
+            </Button>
+            <Button v-if="editingAccounts.length > 0" size="sm" variant="ghost" @click="cancelAdd">Cancel</Button>
+          </div>
+          <p v-if="addError" class="text-sm text-destructive">{{ addError }}</p>
         </div>
-        <p class="mt-2 text-sm text-muted-foreground">
-          The address of a server that speaks the OpenAI API. It usually ends in /v1.
-        </p>
       </div>
 
-      <div v-if="editing.slot.fields.model" class="space-y-2">
+      <!-- Models, one picker per model setting the app declares. -->
+      <div v-for="m in editing.slot.models" :key="m.key" class="space-y-2">
         <p class="text-sm/6 font-medium text-foreground">
-          Model<span v-if="modelRequired(editing.slot)" class="text-destructive"> *</span>
+          {{ m.field.title }}
+          <span v-if="m.multiple" class="font-normal text-muted-foreground"> (pick one or more)</span>
         </p>
         <OptionCards
-          v-if="editingModels.length > 0"
-          label="Model"
-          :options="modelOptions"
-          :selected="selectedModel"
-          @pick="pickModel"
+          v-if="modelOptions(m).length > 0"
+          :label="m.field.title"
+          :options="modelOptions(m)"
+          :selected="idsOf(m)"
+          :multiple="m.multiple"
+          @pick="(id) => pickModel(m, id)"
         />
-        <input
-          v-model="otherModel"
-          :aria-label="editingModels.length > 0 ? 'Other model' : 'Model'"
-          :placeholder="editingModels.length > 0 ? 'Or type another model name' : 'Model name'"
-          autocomplete="off"
-          :class="inputClass"
-        />
+        <div class="flex gap-2">
+          <input
+            :value="typedValue(m)"
+            :aria-label="modelOptions(m).length > 0 ? `Other model for ${m.field.title}` : m.field.title"
+            :placeholder="modelOptions(m).length > 0 ? 'Or type another model name' : 'Model name'"
+            autocomplete="off"
+            :class="inputClass"
+            @input="onTyped(m, ($event.target as HTMLInputElement).value)"
+            @keydown.enter.prevent="m.multiple && addTyped(m)"
+          />
+          <Button
+            v-if="m.multiple"
+            size="sm"
+            variant="secondary"
+            :disabled="!(typed[m.key] ?? '').trim() || typedHasSeparator(m)"
+            @click="addTyped(m)"
+          >
+            Add
+          </Button>
+        </div>
+        <p v-if="typedHasSeparator(m)" class="text-sm text-destructive">
+          A model name cannot contain "{{ m.separator }}" here.
+        </p>
+        <p v-if="problemOf(m) && editing.draft.accountId" class="text-sm text-muted-foreground">{{ problemOf(m) }}</p>
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
         <Button size="sm" :disabled="!canSave" @click="save">{{ isAdded ? "Save" : "Add" }}</Button>
         <Button v-if="isAdded" size="sm" variant="secondary" @click="remove">Remove</Button>
-        <Button size="sm" variant="ghost" @click="editing = null">Cancel</Button>
+        <Button size="sm" variant="ghost" @click="editing = null; cancelAdd()">Cancel</Button>
       </div>
     </div>
   </div>

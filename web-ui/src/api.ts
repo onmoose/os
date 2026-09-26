@@ -121,6 +121,14 @@ export type MailPreset = Schemas["MailPresetDTO"];
 // INSTALL_SETUP.md # 4), in display order. Logo URLs are box routes.
 export type AIProvider = Schemas["AIProvider"];
 export type AIModel = Schemas["AIModel"];
+// AIAccount is one of the caller's saved AI provider accounts
+// (GET /api/v1/ai-accounts). The key is never in it: key_set says whether one
+// is stored.
+export type AIAccount = Schemas["AIAccountDTO"];
+export type AIAccountBody = Schemas["AIAccountBody"];
+// AIBinding fills one AI slot of an app from one account, on POST /api/v1/apps.
+export type AIBinding = Schemas["AIBindingBody"];
+export type RequiresGroup = Schemas["RequiresGroupDTO"];
 export type MailPresetRegionOption = Schemas["MailPresetRegionOptionDTO"];
 export type SystemStorage = Schemas["SystemStorageDTO"];
 export type SystemVersion = Schemas["SystemVersionDTO"];

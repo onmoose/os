@@ -401,6 +401,11 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(aiAccountsDDL); err != nil {
 		return err
 	}
+	// Which AI account fills which slot of an app (aiaccounts.go). New too, and
+	// after ai_accounts, which it references.
+	if _, err := s.db.Exec(aiBindingsDDL); err != nil {
+		return err
+	}
 
 	// Idempotent migrations: add new columns when an older DB predates them.
 	// SQLite doesn't support IF NOT EXISTS on ALTER TABLE; we detect existence
