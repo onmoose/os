@@ -164,12 +164,16 @@ func hasControl(s string) bool {
 // data. openai_compatible is always accepted, since it needs no data. When
 // the data is empty (the catalog has not loaded, or has none), a listed id
 // cannot be checked, so it is refused with its own message.
-func (s *Server) checkAIProvider(providerID string) error {
+//
+// A failed catalog read is a 500 on a credential mutation, so it is audited
+// here as a failure of action. The 422s are validation and are not audited.
+func (s *Server) checkAIProvider(ctx context.Context, action string, tgt audit.Target, providerID string) error {
 	if providerID == manifest.ProtocolOpenAICompatible {
 		return nil
 	}
 	providers, err := s.catalog.AIProviders()
 	if err != nil {
+		s.auditor.Record(ctx, action, tgt, map[string]any{"provider_id": providerID}, false)
 		return huma.Error500InternalServerError("catalog read failed", err)
 	}
 	if len(providers) == 0 {
@@ -249,10 +253,10 @@ func (s *Server) createAIAccount(ctx context.Context, in *struct {
 	if err := validateAIAccountBody(&in.Body); err != nil {
 		return nil, err
 	}
-	if err := requireAIKey(in.Body.ProviderID, in.Body.APIKey); err != nil {
+	if err := s.checkAIProvider(ctx, audit.ActionAIAccountCreate, audit.Target{Kind: auditTargetAIAccount}, in.Body.ProviderID); err != nil {
 		return nil, err
 	}
-	if err := s.checkAIProvider(in.Body.ProviderID); err != nil {
+	if err := requireAIKey(in.Body.ProviderID, in.Body.APIKey); err != nil {
 		return nil, err
 	}
 
@@ -309,13 +313,13 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 		a.APIKey = in.Body.APIKey
 	}
 	a.UpdatedAt = time.Now()
-	if err := requireAIKey(a.ProviderID, a.APIKey); err != nil {
-		return nil, err
-	}
 	if a.ProviderID != existing.ProviderID {
-		if err := s.checkAIProvider(a.ProviderID); err != nil {
+		if err := s.checkAIProvider(ctx, audit.ActionAIAccountUpdate, tgt, a.ProviderID); err != nil {
 			return nil, err
 		}
+	}
+	if err := requireAIKey(a.ProviderID, a.APIKey); err != nil {
+		return nil, err
 	}
 
 	meta := aiAccountMeta(a)
