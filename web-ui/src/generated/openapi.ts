@@ -1042,6 +1042,7 @@ export interface components {
              */
             readonly $schema?: string;
             fields: components["schemas"]["AppConfigFieldDTO"][] | null;
+            requires?: components["schemas"]["RequiresGroupDTO"][] | null;
         };
         AppConfigFieldDTO: {
             app_env: string;
@@ -1049,7 +1050,9 @@ export interface components {
             description: string;
             options?: string[] | null;
             required: boolean;
+            role?: string;
             secret: boolean;
+            separator?: string;
             set: boolean;
             title: string;
             type: string;
@@ -1413,7 +1416,9 @@ export interface components {
             description: string;
             options?: string[] | null;
             required: boolean;
+            role?: string;
             secret: boolean;
+            separator?: string;
             title: string;
             type: string;
         };
@@ -1430,6 +1435,7 @@ export interface components {
             manifest_id: string;
             name: string;
             permissions: components["schemas"]["InstallPlanPermissions"];
+            requires?: components["schemas"]["RequiresGroupDTO"][] | null;
             scope_default: string;
             scope_options: string[] | null;
             version: string;
@@ -1789,6 +1795,9 @@ export interface components {
              */
             readonly $schema?: string;
             overlay: string;
+        };
+        RequiresGroupDTO: {
+            one_of: string[] | null;
         };
         "Reset-user-passwordRequest": {
             /**

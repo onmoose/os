@@ -152,6 +152,15 @@
               "array",
               "null"
             ]
+          },
+          "requires": {
+            "items": {
+              "$ref": "#/components/schemas/RequiresGroupDTO"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -183,8 +192,14 @@
           "required": {
             "type": "boolean"
           },
+          "role": {
+            "type": "string"
+          },
           "secret": {
             "type": "boolean"
+          },
+          "separator": {
+            "type": "string"
           },
           "set": {
             "type": "boolean"
@@ -1291,8 +1306,14 @@
           "required": {
             "type": "boolean"
           },
+          "role": {
+            "type": "string"
+          },
           "secret": {
             "type": "boolean"
+          },
+          "separator": {
+            "type": "string"
           },
           "title": {
             "type": "string"
@@ -1346,6 +1367,15 @@
           },
           "permissions": {
             "$ref": "#/components/schemas/InstallPlanPermissions"
+          },
+          "requires": {
+            "items": {
+              "$ref": "#/components/schemas/RequiresGroupDTO"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "scope_default": {
             "type": "string"
@@ -2472,6 +2502,24 @@
         },
         "required": [
           "overlay"
+        ],
+        "type": "object"
+      },
+      "RequiresGroupDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "one_of": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "one_of"
         ],
         "type": "object"
       },

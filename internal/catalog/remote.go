@@ -593,6 +593,11 @@ func (r *remoteSource) Load(ctx context.Context, id string) (*manifest.Manifest,
 	if err != nil {
 		return nil, nil, err
 	}
+	// Roles and requires are read leniently (manifest/roles.go): what this box
+	// cannot use is ignored, and said here so an author can find it.
+	if dropped := man.RoleDrops(); len(dropped) > 0 {
+		slog.Warn("catalog: manifest role or requires keys this box cannot use", "manifest_id", id, "count", len(dropped), "dropped", dropped)
+	}
 	return man, composeBytes, nil
 }
 

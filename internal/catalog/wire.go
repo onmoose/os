@@ -100,7 +100,7 @@ type wireAIProvider struct {
 }
 
 // wireAIModel is one model of a provider. Types and flags come from closed
-// lists the box knows (aiModelTypes, aiModelFlags); a value outside them is
+// lists the box knows (manifest.IsModelType, aiModelFlags); a value outside them is
 // dropped when the snapshot is loaded, so the store can add one first.
 type wireAIModel struct {
 	ID    string   `json:"id"`

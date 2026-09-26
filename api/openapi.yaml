@@ -108,6 +108,12 @@ components:
           type:
             - array
             - "null"
+        requires:
+          items:
+            $ref: "#/components/schemas/RequiresGroupDTO"
+          type:
+            - array
+            - "null"
       required:
         - fields
       type: object
@@ -128,8 +134,12 @@ components:
             - "null"
         required:
           type: boolean
+        role:
+          type: string
         secret:
           type: boolean
+        separator:
+          type: string
         set:
           type: boolean
         title:
@@ -907,8 +917,12 @@ components:
             - "null"
         required:
           type: boolean
+        role:
+          type: string
         secret:
           type: boolean
+        separator:
+          type: string
         title:
           type: string
         type:
@@ -947,6 +961,12 @@ components:
           type: string
         permissions:
           $ref: "#/components/schemas/InstallPlanPermissions"
+        requires:
+          items:
+            $ref: "#/components/schemas/RequiresGroupDTO"
+          type:
+            - array
+            - "null"
         scope_default:
           type: string
         scope_options:
@@ -1754,6 +1774,18 @@ components:
           type: string
       required:
         - overlay
+      type: object
+    RequiresGroupDTO:
+      additionalProperties: false
+      properties:
+        one_of:
+          items:
+            type: string
+          type:
+            - array
+            - "null"
+      required:
+        - one_of
       type: object
     Reset-user-passwordRequest:
       additionalProperties: false

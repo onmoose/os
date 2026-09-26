@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+
+	"github.com/onmoose/os/internal/manifest"
 )
 
 // aiproviders.go reads the AI provider data on the browse payload and projects
@@ -14,16 +16,12 @@ import (
 // field has an empty list, and the setup page then shows the app's AI fields as
 // plain fields.
 
-// aiModelTypes and aiModelFlags are the closed lists this box knows. A value
-// outside them is dropped when the snapshot is loaded, so the store can publish
-// a new type before the fleet understands it.
-var (
-	aiModelTypes = map[string]bool{
-		"chat": true, "embedding": true, "image": true,
-		"speech_to_text": true, "text_to_speech": true, "rerank": true,
-	}
-	aiModelFlags = map[string]bool{"vision": true, "tools": true, "reasoning": true}
-)
+// aiModelFlags is the closed list of model flags this box knows, and
+// manifest.IsModelType the closed list of model types, shared with the role
+// vocabulary on manifest fields. A value outside them is dropped when the
+// snapshot is loaded, so the store can publish a new type before the fleet
+// understands it.
+var aiModelFlags = map[string]bool{"vision": true, "tools": true, "reasoning": true}
 
 // maxLoggedDrops caps the drop list in the one log line per load. A new model
 // type in the store can touch every model at once, and the line should stay
@@ -138,7 +136,7 @@ func cleanAIModels(provider string, in []wireAIModel, dropped []string) ([]wireA
 		seen[m.ID] = true
 		var types, flags []string
 		for _, t := range m.Types {
-			if aiModelTypes[t] {
+			if manifest.IsModelType(t) {
 				types = append(types, t)
 			} else {
 				dropped = append(dropped, fmt.Sprintf("provider %q: model %q: unknown type %q", provider, m.ID, t))
@@ -170,7 +168,7 @@ func cleanAIDefaults(provider string, in map[string]string, models []wireAIModel
 	}
 	out := map[string]string{}
 	for typ, id := range in {
-		if !aiModelTypes[typ] {
+		if !manifest.IsModelType(typ) {
 			dropped = append(dropped, fmt.Sprintf("provider %q: default for unknown type %q", provider, typ))
 			continue
 		}
