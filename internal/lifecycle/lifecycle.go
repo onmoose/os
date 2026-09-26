@@ -404,8 +404,12 @@ func (m *Manager) LoadCatalogApp(ctx context.Context, manifestID string) (Catalo
 // Install runs the install transaction for an already-loaded catalog (Door-1)
 // app. It takes the payload rather than an id so the manifest it installs is
 // byte-for-byte the one the caller validated the elections against.
-func (m *Manager) Install(ctx context.Context, app CatalogApp, owner Owner, scope string, mounts []FolderMount, mailProviderID string, config []store.InstanceConfig, progress func(step string)) (store.Instance, error) {
-	return m.install(ctx, app.Manifest, app.Compose, owner, scope, mounts, mailProviderID, config, progress)
+//
+// aiBindings are the AI slots the API filled from the installer's accounts
+// (INSTALL_SETUP.md # 5). The values they resolved to are already in config;
+// the bindings are stored so a later edit knows which account fills which slot.
+func (m *Manager) Install(ctx context.Context, app CatalogApp, owner Owner, scope string, mounts []FolderMount, mailProviderID string, config []store.InstanceConfig, aiBindings []store.AIBinding, progress func(step string)) (store.Instance, error) {
+	return m.install(ctx, app.Manifest, app.Compose, owner, scope, mounts, mailProviderID, config, aiBindings, progress)
 }
 
 // CustomSpec is a user-pasted (Door-2) app: a raw compose plus the bits the
@@ -431,7 +435,7 @@ func (m *Manager) InstallCustom(ctx context.Context, spec CustomSpec, owner Owne
 		return store.Instance{}, err
 	}
 	// Door-2 pastes have no config: block (APP_MANIFEST.md # D4) — pass nil.
-	return m.install(ctx, man, composeBytes, owner, scope, customMounts(man.Permissions.Folders, scope), "", nil, progress)
+	return m.install(ctx, man, composeBytes, owner, scope, customMounts(man.Permissions.Folders, scope), "", nil, nil, progress)
 }
 
 // customMounts resolves a Door-2 manifest's folder grants into FolderMounts.
@@ -463,7 +467,7 @@ func customMounts(folders []manifest.Folder, scope string) []FolderMount {
 // the app's core function cannot run, so there is no "proceed anyway".
 var ErrNoGPU = errors.New("this app needs a GPU, and no usable GPU was detected on this box")
 
-func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBytes []byte, owner Owner, scope string, mounts []FolderMount, mailProviderID string, config []store.InstanceConfig, progress func(step string)) (store.Instance, error) {
+func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBytes []byte, owner Owner, scope string, mounts []FolderMount, mailProviderID string, config []store.InstanceConfig, aiBindings []store.AIBinding, progress func(step string)) (store.Instance, error) {
 	step := func(s string) {
 		if progress != nil {
 			progress(s)
@@ -634,6 +638,18 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		step("binding_mail_provider")
 		if err := m.store.SetInstanceMailBinding(id, mailProviderID); err != nil {
 			return rollback(fmt.Errorf("bind mail provider: %w", err))
+		}
+	}
+
+	// 5e. Record which AI account fills which slot (INSTALL_SETUP.md # 5). The
+	// resolved values were persisted with the config above; this row is what a
+	// later edit or key change reads. The FK catches an account deleted between
+	// the API's validation and here, and rollback's instance Delete cascades the
+	// rows away.
+	if len(aiBindings) > 0 {
+		step("binding_ai_accounts")
+		if err := m.store.SetInstanceAIBindings(id, aiBindings); err != nil {
+			return rollback(fmt.Errorf("bind ai accounts: %w", err))
 		}
 	}
 

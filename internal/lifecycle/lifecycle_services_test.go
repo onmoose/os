@@ -63,7 +63,7 @@ func installDBAppKind(t *testing.T, e *testEnv, id, kind, version string) store.
 	e.writeCatalogApp(t, id, dbCompose, man)
 	e.docker.digests[testImage] = testDigest
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, id),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install %s: %v", id, err)
 	}
@@ -402,7 +402,7 @@ func TestRedisProvisioningExecFailures(t *testing.T) {
 			e.writeCatalogApp(t, "cacheapp", dbCompose, man)
 			e.docker.digests[testImage] = testDigest
 			if _, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "cacheapp"),
-				Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil); err == nil {
+				Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil); err == nil {
 				t.Fatalf("install succeeded despite %s failure", fail)
 			}
 			// Rollback is clean: no instance row survives the failed provisioning.

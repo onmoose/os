@@ -163,3 +163,82 @@ func TestDeleteUserCascadesAIAccounts(t *testing.T) {
 		t.Fatalf("another user's account went with it: %v", err)
 	}
 }
+
+// Bindings round-trip their models, replace per instance, list by account, and
+// cascade with both the instance and the account.
+func TestInstanceAIBindings(t *testing.T) {
+	s := openWithOwner(t)
+	for _, id := range []string{"a", "b"} {
+		if err := s.Create(sample(id, "app-"+id)); err != nil {
+			t.Fatalf("create instance %s: %v", id, err)
+		}
+	}
+	for _, a := range []AIAccount{sampleAIAccount("ai_1", "Work"), sampleAIAccount("ai_2", "Home")} {
+		if err := s.CreateAIAccount(a); err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+	}
+
+	bs := []AIBinding{
+		{Slot: "ai.openai_compatible", AccountID: "ai_2", Models: map[string][]string{"models.chat": {"m1", "m2"}}},
+		{Slot: "ai.anthropic", AccountID: "ai_1"},
+	}
+	if err := s.SetInstanceAIBindings("a", bs); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := s.SetInstanceAIBindings("b", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_1"}}); err != nil {
+		t.Fatalf("set b: %v", err)
+	}
+	got, err := s.ListInstanceAIBindings("a")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("list a = %+v (%v)", got, err)
+	}
+	if got[0].Slot != "ai.anthropic" || got[0].InstanceID != "a" || len(got[0].Models) != 0 {
+		t.Fatalf("first binding = %+v", got[0])
+	}
+	if m := got[1].Models["models.chat"]; got[1].AccountID != "ai_2" || len(m) != 2 || m[0] != "m1" || m[1] != "m2" {
+		t.Fatalf("second binding = %+v", got[1])
+	}
+
+	byAcct, err := s.ListAIBindingsForAccount("ai_1")
+	if err != nil || len(byAcct) != 2 || byAcct[0].InstanceID != "a" || byAcct[1].InstanceID != "b" {
+		t.Fatalf("by account = %+v (%v)", byAcct, err)
+	}
+
+	// Set replaces the instance's whole set.
+	if err := s.SetInstanceAIBindings("a", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_2"}}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if got, _ := s.ListInstanceAIBindings("a"); len(got) != 1 || got[0].AccountID != "ai_2" {
+		t.Fatalf("after replace = %+v", got)
+	}
+	// A missing account fails the foreign key.
+	if err := s.SetInstanceAIBindings("a", []AIBinding{{Slot: "ai.x", AccountID: "ai_ghost"}}); err == nil {
+		t.Fatal("binding to a missing account must fail")
+	}
+
+	// Deleting the account removes its bindings; the instance survives.
+	if err := s.DeleteAIAccount("ai_1", mailOwner); err != nil {
+		t.Fatalf("delete account: %v", err)
+	}
+	if got, _ := s.ListInstanceAIBindings("b"); len(got) != 0 {
+		t.Fatalf("binding must cascade with the account: %+v", got)
+	}
+	if _, err := s.Get("b"); err != nil {
+		t.Fatalf("instance must survive account delete: %v", err)
+	}
+
+	// PutAIBinding adds one row, and deleting the instance cascades it away.
+	if err := s.PutAIBinding(AIBinding{InstanceID: "a", Slot: "ai.openai", AccountID: "ai_2"}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if got, _ := s.ListInstanceAIBindings("a"); len(got) != 2 {
+		t.Fatalf("after put = %+v", got)
+	}
+	if err := s.Delete("a"); err != nil {
+		t.Fatalf("delete instance: %v", err)
+	}
+	if got, _ := s.ListAIBindingsForAccount("ai_2"); len(got) != 0 {
+		t.Fatalf("binding must cascade with the instance: %+v", got)
+	}
+}

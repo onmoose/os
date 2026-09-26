@@ -57,6 +57,25 @@ components:
         - created_at
         - updated_at
       type: object
+    AIBindingBody:
+      additionalProperties: false
+      properties:
+        account_id:
+          type: string
+        models:
+          additionalProperties:
+            items:
+              type: string
+            type:
+              - array
+              - "null"
+          type: object
+        slot:
+          type: string
+      required:
+        - slot
+        - account_id
+      type: object
     AIModel:
       additionalProperties: false
       properties:
@@ -422,6 +441,12 @@ components:
     ConfigStruct:
       additionalProperties: false
       properties:
+        ai_bindings:
+          items:
+            $ref: "#/components/schemas/AIBindingBody"
+          type:
+            - array
+            - "null"
         fields:
           additionalProperties:
             type: string

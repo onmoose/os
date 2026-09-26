@@ -238,9 +238,9 @@ Every preset is **STARTTLS**, and every port is one a hosted box can reach (see 
 
 ## AI provider accounts
 
-> Store and API built 2026-09-26 (`docs/progress/ai-accounts.md`). No UI yet, and no app is filled from an account yet (`INSTALL_SETUP.md` # Suggested order, step 4).
+> Store and API built 2026-09-26 (`docs/progress/ai-accounts.md`). Install-time filling of an app from an account, and the inline add on the setup page, built 2026-09-26 (`docs/progress/ai-slot-filling.md`). The Settings screen for accounts, and rebinding an installed app, are not built yet (`INSTALL_SETUP.md` # Suggested order, step 4).
 
-Many apps talk to an AI provider and want a key for it. moose runs no model and no proxy: **each user brings their own provider account**, and later the brain fills the app's role-tagged fields from it (`INSTALL_SETUP.md` # 1 and # 5). An AI account works like an email account above:
+Many apps talk to an AI provider and want a key for it. moose runs no model and no proxy: **each user brings their own provider account**, and the brain fills the app's role-tagged fields from it (`INSTALL_SETUP.md` # 1 and # 5). An AI account works like an email account above:
 
 - **It belongs to the user who added it** (`ai_accounts.owner_user_id`). Any signed-in user can add one. Each user sees and uses only their own. Another user's account is invisible on the list and answers 404 on edit and delete, the same as an id that does not exist. Sharing an account with other users is not built yet.
 - **Labels are unique per owner**, not per box. A duplicate is `409 you already have an account with that name`.
@@ -256,7 +256,9 @@ An account has a **provider id**, a **label**, a **key** and an optional **base 
 
 **The key is write-only.** Requests carry it; no response carries it, and neither do audit rows or log lines. A read says only whether a key is set (`key_set`). On edit, an empty key keeps the stored one. At rest the key is plaintext in the brain's SQLite, the same status as a mail password (`NEXT.md` # App-secret injection hardening). The box makes no call to the provider when an account is saved: there is no "check key" step yet.
 
-Nothing binds an app to an AI account yet, so deleting an account changes no app today. What a delete does to an app that uses the account is open (`INSTALL_SETUP.md` # Open questions 1).
+**Bindings.** At install the user fills each AI slot of the app from one of their accounts (`INSTALL_SETUP.md` # 1 and # 5, `BRAIN_UI_PROTOCOL.md` # POST /api/v1/apps `config.ai_bindings`). The account must be the installer's own: a household app installed by an admin uses that admin's accounts. The brain resolves the binding into the slot's values (key, base URL, model ids), checks them like typed values, and stores them as the app's config values, so the compose override works as for typed values. It also stores the binding itself in `instance_ai_bindings` (instance, slot, account, model ids after defaults). A binding row goes with its app on uninstall and with its account on delete. A failed user delete puts the bindings back with the accounts.
+
+Deleting an account removes its bindings, but the app keeps the values it was given until its settings are next written. What the app's settings screen shows then, and rebinding an app when a key changes, are not built yet (`INSTALL_SETUP.md` # Open questions 1).
 
 ---
 

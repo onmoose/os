@@ -696,6 +696,11 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 			// (APP_MANIFEST.md # D4). Validated against the manifest; required fields
 			// must be present, optional-blank injects nothing.
 			Fields map[string]string `json:"fields,omitempty"`
+			// AIBindings fills the app's AI slots from the caller's AI accounts
+			// (INSTALL_SETUP.md # 5), one binding per slot. The brain resolves each
+			// into the slot's field values. A field a binding fills must not also
+			// be in Fields.
+			AIBindings []AIBindingBody `json:"ai_bindings,omitempty"`
 		} `json:"config,omitempty"` // per-folder source/subfolder elections (consent screen)
 	}
 }) (*struct{ Body Job }, error) {
@@ -759,9 +764,11 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 		}
 	}
 	// Resolve the user-supplied config answers against the manifest, like the
-	// folder/mail elections above. An invalid answer is an elevation-class
-	// rejection ⇒ audits success=false.
-	config, err := resolveInstallConfig(man, in.Body.Config.Fields)
+	// folder/mail elections above. AI bindings are resolved first, from the
+	// caller's own accounts: a household app installed by an admin uses that
+	// admin's accounts, and someone else's account reads as missing. An invalid
+	// answer is an elevation-class rejection ⇒ audits success=false.
+	config, aiBindings, err := s.resolveInstallAnswers(ctx, man, in.Body.Config.Fields, in.Body.Config.AIBindings)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"},
 			map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}, false)
@@ -772,7 +779,7 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 	}
 	jobCtx := ctx // capture for audit inside the job goroutine
 	job := s.jobs.run("app-install", func(job *Job) (map[string]any, error) {
-		inst, err := s.life.Install(context.Background(), app, owner, scope, mounts, mailProviderID, config, job.setStep)
+		inst, err := s.life.Install(context.Background(), app, owner, scope, mounts, mailProviderID, config, aiBindings, job.setStep)
 		target := audit.Target{Kind: "app"}
 		// confirm records a deliberate override of the duplicate-install warning,
 		// so the Activity view can see "installed a second copy on purpose".

@@ -23,7 +23,7 @@ func installWhoami(t *testing.T, e *testEnv) store.Instance {
 	t.Helper()
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(testDigest))
 	e.docker.digests[testImage] = testDigest
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -196,7 +196,7 @@ func installWhoamiWithPublicPaths(t *testing.T, e *testEnv, paths string) store.
 	man := whoamiManifest(testDigest) + "access:\n  public_paths: " + paths + "\n"
 	e.writeCatalogApp(t, "whoami", whoamiCompose, man)
 	e.docker.digests[testImage] = testDigest
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
