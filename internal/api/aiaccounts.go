@@ -21,7 +21,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -224,14 +223,14 @@ func (s *Server) checkAIProvider(ctx context.Context, action string, tgt audit.T
 		return huma.Error500InternalServerError("catalog read failed", err)
 	}
 	if len(providers) == 0 {
-		return huma.Error422UnprocessableEntity("the list of AI providers is not loaded yet. Try again in a few minutes, or add an OpenAI-compatible server")
+		return huma.Error422UnprocessableEntity("the list of LLM providers is not loaded yet. Try again in a few minutes, or add an OpenAI-compatible server")
 	}
 	for _, p := range providers {
 		if p.ID == providerID {
 			return nil
 		}
 	}
-	return huma.Error422UnprocessableEntity("unknown AI provider")
+	return huma.Error422UnprocessableEntity("unknown LLM provider")
 }
 
 // requireAIKey enforces the key rule once the final key is known: a listed
@@ -415,46 +414,36 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 	out := &struct{ Body AIAccountSavedDTO }{Body: AIAccountSavedDTO{AIAccountDTO: aiAccountDTO(a, usage[a.ID])}}
 	reaches := a.APIKey != existing.APIKey || a.BaseURL != existing.BaseURL
 	if reaches && len(bindings) > 0 {
-		out.Body.JobID = s.restampAIAccountJob(a, bindings).ID
+		var ids []string
+		for _, b := range bindings {
+			if len(ids) == 0 || ids[len(ids)-1] != b.InstanceID {
+				ids = append(ids, b.InstanceID)
+			}
+		}
+		out.Body.JobID = s.restampAIAccountJob(a.ID, ids).ID
 	}
 	return out, nil
 }
 
-// restampAIAccountJob starts the job that gives every app bound to an account
-// its values again, from the account as it is now, and restarts the running
-// ones. A binding that no longer resolves is logged and reported with the
-// others; it does not stop them.
-func (s *Server) restampAIAccountJob(acct store.AIAccount, bindings []store.AIBinding) *Job {
+// restampAIAccountJob starts the job that gives every app bound to an
+// account its values again and restarts the running ones. It carries only
+// the account id and the app ids: each app's values are resolved under its
+// lock from the account as it is then (accountSlotResolver), so two quick
+// edits end on the newer one whichever job finishes last. One app failing
+// does not stop the others.
+func (s *Server) restampAIAccountJob(accountID string, ids []string) *Job {
 	return s.jobs.run("ai-account-restamp", func(job *Job) (map[string]any, error) {
 		job.setStep("updating_apps")
 		providers, err := s.catalog.AIProviders()
 		if err != nil {
-			return nil, fmt.Errorf("the list of AI providers could not be read, so no app was updated")
+			slog.Error("read ai providers for account re-stamp failed", "err", err)
+			return nil, errors.New("the list of LLM providers could not be read, so no app was updated")
 		}
-		updates, failed := resolveAccountSlots(acct, bindings, s.life.InstanceManifest, providers)
-		var names []string
-		for instanceID, ferr := range failed {
-			name := instanceID
-			if inst, err := s.store.Get(instanceID); err == nil {
-				name = inst.Name
-			}
-			slog.Error("resolve ai binding after account change failed",
-				"instance_id", instanceID, "name", name, "err", ferr)
-			names = append(names, name)
+		resolve := accountSlotResolver(s.store.GetAIAccount, providers)
+		if err := s.life.RestampAIAccount(context.Background(), accountID, ids, resolve); err != nil {
+			return nil, err
 		}
-		restampErr := s.life.RestampAIAccount(context.Background(), acct.ID, updates)
-		if len(names) > 0 {
-			slices.Sort(names)
-			msg := "could not update " + strings.Join(names, ", ") + ". Pick an account for them again on their settings screen"
-			if restampErr != nil {
-				msg += ". " + restampErr.Error()
-			}
-			return nil, errors.New(msg)
-		}
-		if restampErr != nil {
-			return nil, restampErr
-		}
-		return map[string]any{"account_id": acct.ID}, nil
+		return map[string]any{"account_id": accountID}, nil
 	})
 }
 
@@ -488,17 +477,38 @@ func (s *Server) deleteAIAccount(ctx context.Context, in *struct {
 		}
 		return nil, huma.Error500InternalServerError("get ai account failed", err)
 	}
-	bindings, err := s.store.ListAIBindingsForAccount(in.ID)
+	// The bindings are read inside the delete transaction, so a slot rebound
+	// to another account a moment ago keeps its new values. The fields of each
+	// slot come from the app's own manifest copy. If one cannot be read, the
+	// delete is refused: a deleted key must never stay in an app.
+	slotFields := func(instanceID, slot string) ([]string, error) {
+		man, err := s.life.InstanceManifest(instanceID)
+		if err != nil {
+			return nil, err
+		}
+		var envs []string
+		for _, sf := range fillableSlots(man)[slot] {
+			envs = append(envs, sf.field.AppEnv)
+		}
+		return envs, nil
+	}
+	ids, err := s.store.DeleteAIAccountAndValues(in.ID, id.User.ID, slotFields)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionAIAccountDelete, tgt, nil, false)
-		return nil, huma.Error500InternalServerError("list ai bindings failed", err)
-	}
-	clear, ids := s.boundSlotEnvs(bindings)
-	if err := s.store.DeleteAIAccountAndValues(in.ID, id.User.ID, clear); err != nil {
-		s.auditor.Record(ctx, audit.ActionAIAccountDelete, tgt, nil, false)
-		if errors.Is(err, store.ErrNotFound) {
+		var sfe *store.SlotFieldsError
+		switch {
+		case errors.Is(err, store.ErrNotFound):
 			// Deleted between the read and the write.
 			return nil, huma.Error404NotFound("no such AI account")
+		case errors.As(err, &sfe):
+			name := sfe.InstanceID
+			if inst, gerr := s.store.Get(sfe.InstanceID); gerr == nil {
+				name = inst.Name
+			}
+			slog.Error("delete ai account refused: app manifest unreadable",
+				"instance_id", sfe.InstanceID, "name", name, "err", sfe.Err)
+			return nil, huma.Error500InternalServerError(fmt.Sprintf(
+				"the settings of %s could not be read, so its key could not be removed. The account was not deleted. Try again, or uninstall %s first", name, name))
 		}
 		return nil, huma.Error500InternalServerError("delete ai account failed", err)
 	}
@@ -521,30 +531,4 @@ func (s *Server) deleteAIAccount(ctx context.Context, in *struct {
 	out.Status = http.StatusOK
 	out.Body = &AccountDeletedDTO{JobID: job.ID}
 	return out, nil
-}
-
-// boundSlotEnvs maps each bound app to the app_env names of its bound slots,
-// the values a deleted account gave it, and lists the apps once each in the
-// order of the bindings. An app whose manifest copy cannot be read keeps its
-// values (there is no way to know which fields the slot had); that is logged,
-// and the app is still re-stamped and restarted.
-func (s *Server) boundSlotEnvs(bindings []store.AIBinding) (map[string][]string, []string) {
-	clear := map[string][]string{}
-	var ids []string
-	for _, b := range bindings {
-		if _, seen := clear[b.InstanceID]; !seen {
-			clear[b.InstanceID] = nil
-			ids = append(ids, b.InstanceID)
-		}
-		man, err := s.life.InstanceManifest(b.InstanceID)
-		if err != nil {
-			slog.Error("read manifest to clear a deleted AI account failed",
-				"instance_id", b.InstanceID, "err", err)
-			continue
-		}
-		for _, sf := range fillableSlots(man)[b.Slot] {
-			clear[b.InstanceID] = append(clear[b.InstanceID], sf.field.AppEnv)
-		}
-	}
-	return clear, ids
 }

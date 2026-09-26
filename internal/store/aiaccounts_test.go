@@ -316,39 +316,74 @@ func TestSetInstanceConfigAndAIBindings(t *testing.T) {
 }
 
 // Deleting an account clears the values it gave, in the same transaction,
-// and only those. Another owner's delete finds nothing and clears nothing.
+// and only for slots still bound to it: a slot rebound to another account
+// keeps its values. Another owner's delete finds and clears nothing, and a
+// slot whose fields cannot be named refuses the whole delete.
 func TestDeleteAIAccountAndValues(t *testing.T) {
 	s := openWithOwner(t)
-	if err := s.Create(sample("a", "app-a")); err != nil {
-		t.Fatal(err)
+	for _, inst := range []Instance{sample("a", "app-a"), sample("b", "app-b")} {
+		if err := s.Create(inst); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := s.CreateAIAccount(sampleAIAccount("ai_1", "Work")); err != nil {
-		t.Fatal(err)
+	for _, acct := range []AIAccount{sampleAIAccount("ai_1", "Work"), sampleAIAccount("ai_2", "Home")} {
+		if err := s.CreateAIAccount(acct); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := s.SetInstanceAIBindings("a", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_1"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetInstanceConfig("a", []InstanceConfig{
+	vals := []InstanceConfig{
 		{AppEnv: "ANTHROPIC_API_KEY", Value: "sk", Secret: true},
 		{AppEnv: "ANTHROPIC_MODEL", Value: "m"},
 		{AppEnv: "PLAIN", Value: "keep"},
-	}); err != nil {
+	}
+	for _, id := range []string{"a", "b"} {
+		if err := s.SetInstanceConfig(id, vals); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a is bound to ai_1; b was rebound to ai_2 just before the delete.
+	if err := s.SetInstanceAIBindings("a", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_1"}}); err != nil {
 		t.Fatal(err)
 	}
-	clear := map[string][]string{"a": {"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"}}
+	if err := s.SetInstanceAIBindings("b", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_2"}}); err != nil {
+		t.Fatal(err)
+	}
+	fields := func(instanceID, slot string) ([]string, error) {
+		if slot != "ai.anthropic" {
+			t.Fatalf("asked for slot %s", slot)
+		}
+		return []string{"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"}, nil
+	}
 
-	if err := s.DeleteAIAccountAndValues("ai_1", "u_other", clear); !errors.Is(err, ErrNotFound) {
+	if _, err := s.DeleteAIAccountAndValues("ai_1", "u_other", fields); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("delete as another owner: got %v, want ErrNotFound", err)
 	}
 	if got := configMap(t, s, "a"); len(got) != 3 {
 		t.Fatalf("a refused delete cleared values: %v", got)
 	}
 
-	if err := s.DeleteAIAccountAndValues("ai_1", mailOwner, clear); err != nil {
+	broken := errors.New("manifest unreadable")
+	_, err := s.DeleteAIAccountAndValues("ai_1", mailOwner, func(string, string) ([]string, error) { return nil, broken })
+	var sfe *SlotFieldsError
+	if !errors.As(err, &sfe) || sfe.InstanceID != "a" || !errors.Is(err, broken) {
+		t.Fatalf("delete with unreadable fields: got %v, want SlotFieldsError for a", err)
+	}
+	if _, err := s.GetAIAccount("ai_1"); err != nil {
+		t.Fatalf("a refused delete removed the account: %v", err)
+	}
+
+	ids, err := s.DeleteAIAccountAndValues("ai_1", mailOwner, fields)
+	if err != nil {
 		t.Fatalf("delete: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "a" {
+		t.Fatalf("affected = %v; want [a]", ids)
 	}
 	if got := configMap(t, s, "a"); len(got) != 1 || got["PLAIN"] != "keep" {
 		t.Fatalf("config after delete = %v", got)
+	}
+	if got := configMap(t, s, "b"); len(got) != 3 {
+		t.Fatalf("a slot rebound to another account lost its values: %v", got)
 	}
 	if got, _ := s.ListInstanceAIBindings("a"); len(got) != 0 {
 		t.Fatalf("bindings survived the account: %+v", got)

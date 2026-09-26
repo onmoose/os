@@ -21,6 +21,7 @@ import (
 	"github.com/onmoose/os/internal/audit"
 	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
 )
@@ -296,15 +297,21 @@ func (s *Server) updateAppConfig(ctx context.Context, in *struct {
 		}
 	}
 	account := func(accountID string) (store.AIAccount, error) { return s.ownAIAccount(caller, accountID) }
-	res, err := resolvePutWithAI(man, current, currentBindings, in.Body.Fields, in.Body.AIBindings, account, providers)
-	if err != nil {
+	// Resolve now for the 422s the user can act on. The job resolves again
+	// under the app's lock, from the values, bindings and account rows as they
+	// are at commit time, so an account edited or deleted in between cannot
+	// bring back an old key, and another save to the same app in between is
+	// not undone.
+	fields, bindings := in.Body.Fields, in.Body.AIBindings
+	if _, err := resolvePutWithAI(man, current, currentBindings, fields, bindings, account, providers); err != nil {
 		s.auditor.Record(ctx, audit.ActionAppConfigUpdate, tgt, nil, false)
 		return nil, err
 	}
+	resolve := configResolver(fields, bindings, account, providers)
 	jobCtx := ctx
 	job := s.jobs.run("app-config-update", func(job *Job) (map[string]any, error) {
 		job.setStep("updating_config")
-		err := s.life.SetConfigAndAIBindings(context.Background(), id, res.cfg, res.slots, res.bindings)
+		err := s.life.UpdateConfig(context.Background(), id, resolve)
 		s.auditor.Record(jobCtx, audit.ActionAppConfigUpdate, tgt, nil, err == nil)
 		if err != nil {
 			return nil, err
@@ -312,6 +319,24 @@ func (s *Server) updateAppConfig(ctx context.Context, in *struct {
 		return map[string]any{"instance_id": id}, nil
 	})
 	return &struct{ Body Job }{Body: job.snapshot()}, nil
+}
+
+// configResolver is the lifecycle.ConfigResolver of a config PUT. Lifecycle
+// calls it under the app's lock with the app's values and bindings as they
+// are then, and account reads the account rows then too. So the edit is
+// applied to the current state, and an account edited or deleted since the
+// request was checked cannot bring back an old key. A resolver error (for
+// example the account was deleted) fails the job with its plain message.
+func configResolver(fields map[string]string, bindings []AIBindingBody, account func(id string) (store.AIAccount, error), providers []catalog.AIProvider) lifecycle.ConfigResolver {
+	return func(man *manifest.Manifest, current []store.InstanceConfig, bound []store.AIBinding) (lifecycle.ConfigChange, error) {
+		res, err := resolvePutWithAI(man, current, bound, fields, bindings, account, providers)
+		if err != nil {
+			// A huma error's text is its plain message, so it reads well as
+			// the job's error.
+			return lifecycle.ConfigChange{}, err
+		}
+		return lifecycle.ConfigChange{Values: res.cfg, Slots: res.slots, Bindings: res.bindings}, nil
+	}
 }
 
 // validateConfigValue checks a single user-supplied value against its field's
@@ -372,7 +397,7 @@ func resolveInstallConfig(man *manifest.Manifest, fields map[string]string) ([]s
 	for _, g := range man.EffectiveRequires() {
 		if !man.GroupSatisfied(g, values) {
 			if isKindGroup(g, "ai") {
-				return nil, huma.Error422UnprocessableEntity("config.fields: pick at least one AI provider")
+				return nil, huma.Error422UnprocessableEntity("config.fields: pick at least one LLM provider")
 			}
 			return nil, huma.Error422UnprocessableEntity("config.fields: fill in at least one of: " + groupTitles(man, g))
 		}
@@ -390,7 +415,7 @@ func configValues(cfg []store.InstanceConfig) map[string]string {
 }
 
 // isKindGroup reports whether a requires group is exactly one kind member, so
-// the 422 can name the kind ("an AI provider") rather than list its fields.
+// the 422 can name the kind ("an LLM provider") rather than list its fields.
 func isKindGroup(group []string, kind string) bool {
 	return len(group) == 1 && group[0] == kind
 }
@@ -453,7 +478,7 @@ func resolvePutConfig(man *manifest.Manifest, current []store.InstanceConfig, fi
 	for _, g := range man.EffectiveRequires() {
 		if man.GroupSatisfied(g, before) && !man.GroupSatisfied(g, after) {
 			if isKindGroup(g, "ai") {
-				return nil, huma.Error422UnprocessableEntity("config.fields: keep at least one AI provider")
+				return nil, huma.Error422UnprocessableEntity("config.fields: keep at least one LLM provider")
 			}
 			return nil, huma.Error422UnprocessableEntity("config.fields: keep at least one of these filled in: " + groupTitles(man, g))
 		}

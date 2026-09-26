@@ -407,31 +407,25 @@ func resolvePutWithAI(man *manifest.Manifest, current []store.InstanceConfig, cu
 	return putAIResolution{cfg: cfg, slots: order, bindings: res.bindings}, nil
 }
 
-// resolveAccountSlots resolves again every binding to one account, after its
-// key or base URL changed (INSTALL_SETUP.md piece 4). Each binding keeps the
-// model ids it has. manifestOf loads an app's own manifest copy. A binding
-// that no longer resolves (the manifest cannot be read, or the provider data
-// changed under it) is returned in failed with the reason, and the other
-// bindings go on.
-func resolveAccountSlots(acct store.AIAccount, bindings []store.AIBinding, manifestOf func(id string) (*manifest.Manifest, error), providers []catalog.AIProvider) (ok []lifecycle.AISlotValues, failed map[string]error) {
-	failed = map[string]error{}
-	for _, b := range bindings {
-		man, err := manifestOf(b.InstanceID)
+// accountSlotResolver is the lifecycle.SlotResolver for an account change
+// (INSTALL_SETUP.md piece 4). Lifecycle calls it under each app's lock, and
+// it reads the account row then, through account, so the values come from
+// the account as it is at commit time, not as it was when the edit started.
+// Each binding keeps the model ids it has.
+func accountSlotResolver(account func(id string) (store.AIAccount, error), providers []catalog.AIProvider) lifecycle.SlotResolver {
+	return func(man *manifest.Manifest, b store.AIBinding) (map[string]string, error) {
+		acct, err := account(b.AccountID)
 		if err != nil {
-			failed[b.InstanceID] = fmt.Errorf("load manifest: %w", err)
-			continue
+			return nil, fmt.Errorf("read account: %w", err)
 		}
-		fields, found := fillableSlots(man)[b.Slot]
-		if !found {
-			failed[b.InstanceID] = fmt.Errorf("the app has no AI slot %s now", b.Slot)
-			continue
+		fields, ok := fillableSlots(man)[b.Slot]
+		if !ok {
+			return nil, fmt.Errorf("the app has no AI slot %s now", b.Slot)
 		}
 		bound, err := resolveSlot(b.Slot, fields, b.Models, acct, providers)
 		if err != nil {
-			failed[b.InstanceID] = err
-			continue
+			return nil, err
 		}
-		ok = append(ok, lifecycle.AISlotValues{InstanceID: b.InstanceID, Slot: b.Slot, Values: bound.values})
+		return bound.values, nil
 	}
-	return ok, failed
 }

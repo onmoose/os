@@ -309,33 +309,90 @@ func (s *Store) SetInstanceConfigAndAIBindings(instanceID string, cfg []Instance
 	return tx.Commit()
 }
 
+// SlotFieldsError says which app's slot fields could not be named during
+// DeleteAIAccountAndValues. The API needs the instance id to tell the user
+// which app is in the way.
+type SlotFieldsError struct {
+	InstanceID string
+	Err        error
+}
+
+func (e *SlotFieldsError) Error() string {
+	return fmt.Sprintf("fields of instance %s: %v", e.InstanceID, e.Err)
+}
+
+func (e *SlotFieldsError) Unwrap() error { return e.Err }
+
 // DeleteAIAccountAndValues removes an account ownerID owns and, in the same
-// transaction, the config values its bindings gave each app. clear maps an
-// instance id to the app_env names to remove. The binding rows go with the
-// account by cascade. Doing both at once means a deleted key never stays in
-// the store, even if the brain stops before the apps are restarted. Returns
-// ErrNotFound when that owner has no such account; nothing is removed then.
-func (s *Store) DeleteAIAccountAndValues(id, ownerID string, clear map[string][]string) error {
+// transaction, the config values its bindings gave each app. The bindings are
+// read inside the transaction, so a slot rebound to another account a moment
+// before is not touched: only slots still bound to this account lose their
+// values. slotFields names the app_env fields of one slot of one app (from
+// the app's manifest copy). It must not use the store: the store has one
+// connection, and the transaction holds it. If slotFields fails, nothing is
+// deleted and the error is a *SlotFieldsError, because a deleted key must
+// never stay in an app. The binding rows go with the account by cascade.
+//
+// It returns the ids of the apps whose values were cleared, each once, for
+// the job that rewrites them. ErrNotFound when that owner has no such
+// account; nothing is removed then.
+func (s *Store) DeleteAIAccountAndValues(id, ownerID string, slotFields func(instanceID, slot string) ([]string, error)) ([]string, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`DELETE FROM ai_accounts WHERE id=? AND owner_user_id=?`, id, ownerID)
+	var found int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM ai_accounts WHERE id=? AND owner_user_id=?`, id, ownerID).Scan(&found); err != nil {
+		return nil, err
+	}
+	if found == 0 {
+		return nil, ErrNotFound
+	}
+	rows, err := tx.Query(`SELECT instance_id, slot FROM instance_ai_bindings WHERE account_id=? ORDER BY instance_id, slot`, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+	type bound struct{ instanceID, slot string }
+	var bs []bound
+	for rows.Next() {
+		var b bound
+		if err := rows.Scan(&b.instanceID, &b.slot); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		bs = append(bs, b)
 	}
-	for instanceID, envs := range clear {
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	var ids []string
+	seen := map[string]bool{}
+	for _, b := range bs {
+		envs, err := slotFields(b.instanceID, b.slot)
+		if err != nil {
+			return nil, &SlotFieldsError{InstanceID: b.instanceID, Err: err}
+		}
 		for _, env := range envs {
-			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, instanceID, env); err != nil {
-				return err
+			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, b.instanceID, env); err != nil {
+				return nil, err
 			}
 		}
+		if !seen[b.instanceID] {
+			seen[b.instanceID] = true
+			ids = append(ids, b.instanceID)
+		}
 	}
-	return tx.Commit()
+	if _, err := tx.Exec(`DELETE FROM ai_accounts WHERE id=? AND owner_user_id=?`, id, ownerID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // AppUse names one app that uses an account: its instance id and its name.

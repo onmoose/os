@@ -101,7 +101,7 @@ func TestResolvePutWithAI(t *testing.T) {
 		bindings []AIBindingBody
 		want     string
 	}{
-		{"clearing the only provider", nil, []AIBindingBody{{Slot: "ai.acme"}}, "keep at least one AI provider"},
+		{"clearing the only provider", nil, []AIBindingBody{{Slot: "ai.acme"}}, "keep at least one LLM provider"},
 		{"typed value for a listed slot", map[string]string{"ACME_MODEL": "x"}, []AIBindingBody{{Slot: "ai.acme", AccountID: "a_acme"}}, "ACME_MODEL is filled from an AI account"},
 		{"typed value for a bound slot not listed", map[string]string{"ACME_API_KEY": "typed"}, nil, "ACME_API_KEY is filled from an AI account"},
 		{"slot twice", nil, []AIBindingBody{{Slot: "ai.acme", AccountID: "a_acme"}, {Slot: "ai.acme"}}, "given more than once"},
@@ -289,7 +289,7 @@ func TestAppConfigPutBinding(t *testing.T) {
 	code, raw = h.doRaw("PUT", "/api/v1/apps/i_ai/config", map[string]any{
 		"ai_bindings": []map[string]any{{"slot": "ai.acme", "account_id": ""}},
 	})
-	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "keep at least one AI provider") {
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "keep at least one LLM provider") {
 		t.Fatalf("clearing the only provider = %d %s", code, raw)
 	}
 	if !h.hasAuditEvent(audit.ActionAppConfigUpdate, "i_ai", false) {
@@ -442,5 +442,131 @@ func TestMailProviderEditAndDeleteReachApps(t *testing.T) {
 	}
 	if env := envOf(); strings.Contains(env, "MOOSE_MAIL_") || !strings.Contains(env, "MOOSE_APP_ID=i_mail") {
 		t.Fatalf(".env after delete:\n%s", env)
+	}
+}
+
+// --- ordering: values resolved at commit time -----------------------------
+
+// An older re-stamp job that runs after a newer edit writes the newer key,
+// because it reads the account when it commits.
+func TestAIAccountRestampJobUsesLatestKey(t *testing.T) {
+	h, _ := aiHarness(t)
+	admin := h.setupAdmin("alice", "pass1")
+	acct := h.createAIAccount(aiAccountBody("Work"))
+	h.seedAIApp("i_ai", "AI Demo", admin.ID, acct.ID)
+
+	// The newest edit is saved; then the job of an older edit runs.
+	stored, err := h.st.GetAIAccount(acct.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.APIKey = "sk-newest"
+	if err := h.st.UpdateAIAccount(stored); err != nil {
+		t.Fatal(err)
+	}
+	job := h.apiSrv.restampAIAccountJob(acct.ID, []string{"i_ai"})
+	if done := awaitJob(t, h.apiSrv, job.ID); done.Status != "completed" {
+		t.Fatalf("job = %s %+v", done.Status, done.Error)
+	}
+	if v := h.storedValues("i_ai"); v["ACME_API_KEY"] != "sk-newest" {
+		t.Fatalf("values = %v; want the newest key", v)
+	}
+}
+
+// A config save resolves its binding again when it commits, so an account
+// edited after the request was checked gives the app its new key.
+func TestConfigResolverUsesAccountAtCommit(t *testing.T) {
+	h, _ := aiHarness(t)
+	admin := h.setupAdmin("alice", "pass1")
+	work := h.createAIAccount(aiAccountBody("Work"))
+	other := h.createAIAccount(aiAccountBody("Other"))
+	h.seedAIApp("i_ai", "AI Demo", admin.ID, work.ID)
+	providers, err := h.apiSrv.catalog.AIProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := func(id string) (store.AIAccount, error) {
+		a, err := h.st.GetAIAccount(id)
+		if err == nil && a.OwnerUserID != admin.ID {
+			return store.AIAccount{}, store.ErrNotFound
+		}
+		return a, err
+	}
+	resolve := configResolver(nil, []AIBindingBody{{Slot: "ai.acme", AccountID: other.ID}}, account, providers)
+
+	// The request was checked; now the account is edited before the job commits.
+	stored, _ := h.st.GetAIAccount(other.ID)
+	stored.APIKey = "sk-edited-meanwhile"
+	if err := h.st.UpdateAIAccount(stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.apiSrv.life.UpdateConfig(t.Context(), "i_ai", resolve); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if v := h.storedValues("i_ai"); v["ACME_API_KEY"] != "sk-edited-meanwhile" {
+		t.Fatalf("values = %v; want the key the account has at commit", v)
+	}
+
+	// An account deleted in between fails the save with a plain message and
+	// writes nothing.
+	resolve = configResolver(nil, []AIBindingBody{{Slot: "ai.acme", AccountID: work.ID}}, account, providers)
+	if err := h.st.DeleteAIAccount(work.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	err = h.apiSrv.life.UpdateConfig(t.Context(), "i_ai", resolve)
+	if err == nil || err.Error() != "config.ai_bindings: no such AI account" {
+		t.Fatalf("err = %v; want the plain no such AI account", err)
+	}
+	if b, _ := h.st.ListInstanceAIBindings("i_ai"); len(b) != 1 || b[0].AccountID != other.ID {
+		t.Fatalf("bindings changed on a failed save: %+v", b)
+	}
+}
+
+// A delete after the slot was rebound to another account keeps the new
+// account's values, and answers 204 because no app still used the account.
+func TestAIAccountDeleteAfterRebindKeepsNewValues(t *testing.T) {
+	h, _ := aiHarness(t)
+	admin := h.setupAdmin("alice", "pass1")
+	old := h.createAIAccount(aiAccountBody("Old"))
+	fresh := h.createAIAccount(aiAccountBody("Fresh"))
+	h.seedAIApp("i_ai", "AI Demo", admin.ID, old.ID)
+	// Rebound to fresh just before the delete.
+	if err := h.st.SetInstanceConfigAndAIBindings("i_ai", []store.InstanceConfig{
+		{AppEnv: "ACME_API_KEY", Value: "sk-fresh", Secret: true}, {AppEnv: "ACME_MODEL", Value: "acme-1"},
+	}, []string{"ai.acme"}, []store.AIBinding{{Slot: "ai.acme", AccountID: fresh.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	h.elevate("pass1")
+	if code, raw := h.doRaw("DELETE", "/api/v1/ai-accounts/"+old.ID, nil); code != http.StatusNoContent {
+		t.Fatalf("delete = %d %s", code, raw)
+	}
+	if v := h.storedValues("i_ai"); v["ACME_API_KEY"] != "sk-fresh" || v["ACME_MODEL"] != "acme-1" {
+		t.Fatalf("values = %v; the new account's values must stay", v)
+	}
+}
+
+// A delete is refused, and audited as a failure, when a bound app's manifest
+// copy cannot be read: its key would otherwise stay in the app.
+func TestAIAccountDeleteRefusedWhenManifestUnreadable(t *testing.T) {
+	h, _ := aiHarness(t)
+	admin := h.setupAdmin("alice", "pass1")
+	acct := h.createAIAccount(aiAccountBody("Work"))
+	h.seedAIApp("i_ai", "Broken App", admin.ID, acct.ID)
+	if err := os.Remove(filepath.Join(h.stateDir, "instances", "i_ai", "manifest.yml")); err != nil {
+		t.Fatal(err)
+	}
+	h.elevate("pass1")
+	code, raw := h.doRaw("DELETE", "/api/v1/ai-accounts/"+acct.ID, nil)
+	if code != http.StatusInternalServerError || !strings.Contains(string(raw), "the settings of Broken App could not be read") {
+		t.Fatalf("delete = %d %s", code, raw)
+	}
+	if _, err := h.st.GetAIAccount(acct.ID); err != nil {
+		t.Fatalf("the account was deleted anyway: %v", err)
+	}
+	if v := h.storedValues("i_ai"); v["ACME_API_KEY"] != testAIKey {
+		t.Fatalf("values changed on a refused delete: %v", v)
+	}
+	if !h.hasAuditEvent(audit.ActionAIAccountDelete, acct.ID, false) {
+		t.Fatal("refused delete was not audited")
 	}
 }

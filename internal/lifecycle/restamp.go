@@ -8,6 +8,13 @@ package lifecycle
 // write the brain's state, rewrite the files, recreate the running
 // containers.
 //
+// Values that come from an account are resolved under the app's lock, from
+// the account rows as they are at that moment, never from values captured
+// before. Two quick edits of one account, or a config save racing an account
+// edit, then end on the latest account whichever job commits last. The
+// resolving itself stays in the API (it needs the provider data); lifecycle
+// calls it back under the lock.
+//
 // One app failing does not stop the others. Each failure is logged, and the
 // returned error names every app that could not be updated, so the job that
 // runs this reports failure in words the user can act on.
@@ -23,22 +30,28 @@ import (
 	"github.com/onmoose/os/internal/store"
 )
 
-// AISlotValues is the new values of one AI slot of one app, resolved again
-// from the account the slot is bound to. Values maps app_env to value for the
-// fields of the slot that get one; every other field of the slot is cleared.
-type AISlotValues struct {
-	InstanceID string
-	Slot       string
-	Values     map[string]string
+// ConfigChange is what a config edit writes: the app's full set of config
+// values, the slots whose binding is replaced or cleared, and the new binding
+// rows for them.
+type ConfigChange struct {
+	Values   []store.InstanceConfig
+	Slots    []string
+	Bindings []store.AIBinding
 }
 
-// SetConfigAndAIBindings is SetConfig for an edit that also changes AI
-// bindings (INSTALL_SETUP.md piece 4). The config values and the bindings of
-// the listed slots are written in one store transaction, before the override
-// is rewritten and the app recreated: brain commits first. Each slot in slots
-// loses its binding, and then bindings are stored. A slot not listed keeps
-// its binding. The caller (API) resolves and checks everything first.
-func (m *Manager) SetConfigAndAIBindings(ctx context.Context, id string, cfg []store.InstanceConfig, slots []string, bindings []store.AIBinding) error {
+// ConfigResolver works out a config edit from the app's manifest copy and its
+// current values and bindings. UpdateConfig calls it under the app's lock, so
+// what it reads is what the edit is applied to.
+type ConfigResolver func(man *manifest.Manifest, current []store.InstanceConfig, bindings []store.AIBinding) (ConfigChange, error)
+
+// UpdateConfig applies a config edit that may change AI bindings
+// (INSTALL_SETUP.md piece 4). Under the app's lock it reads the current
+// values and bindings, asks resolve for the change, and writes the values and
+// the listed slots' bindings in one store transaction before the override is
+// rewritten and the app recreated: brain commits first. A slot not listed
+// keeps its binding. An error from resolve is returned as it is and nothing
+// is written.
+func (m *Manager) UpdateConfig(ctx context.Context, id string, resolve ConfigResolver) error {
 	defer m.lockInstance(id)()
 	inst, err := m.store.Get(id)
 	if err != nil {
@@ -48,7 +61,19 @@ func (m *Manager) SetConfigAndAIBindings(ctx context.Context, id string, cfg []s
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
-	if err := m.store.SetInstanceConfigAndAIBindings(id, cfg, slots, bindings); err != nil {
+	current, err := m.store.GetInstanceConfig(id)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	bound, err := m.store.ListInstanceAIBindings(id)
+	if err != nil {
+		return fmt.Errorf("read bindings: %w", err)
+	}
+	change, err := resolve(man, current, bound)
+	if err != nil {
+		return err
+	}
+	if err := m.store.SetInstanceConfigAndAIBindings(id, change.Values, change.Slots, change.Bindings); err != nil {
 		return fmt.Errorf("persist config: %w", err)
 	}
 	if err := m.restampConfigEnv(id, man); err != nil {
@@ -66,30 +91,26 @@ func (m *Manager) SetConfigAndAIBindings(ctx context.Context, id string, cfg []s
 	return nil
 }
 
-// RestampAIAccount writes new slot values into the apps bound to accountID
-// and restarts the running ones. It runs after an account's key or base URL
-// changed. Under each app's lock it checks that the slot is still bound to
-// accountID, so a slot the user rebound in the meantime is left alone. The
-// other fields of the app keep their values.
-func (m *Manager) RestampAIAccount(ctx context.Context, accountID string, updates []AISlotValues) error {
-	byInstance := map[string][]AISlotValues{}
-	var ids []string
-	for _, u := range updates {
-		if _, ok := byInstance[u.InstanceID]; !ok {
-			ids = append(ids, u.InstanceID)
+// SlotResolver resolves one AI binding of an app into the values of its
+// slot, from the account as it is now. Values maps app_env to value for the
+// fields that get one; every other field of the slot is cleared.
+type SlotResolver func(man *manifest.Manifest, b store.AIBinding) (map[string]string, error)
+
+// RestampAIAccount gives the apps bound to accountID their values again and
+// restarts the running ones. It runs after an account's key or base URL
+// changed. Under each app's lock it reads the app's bindings, and resolve
+// reads the account, so an older job that runs after a newer edit still
+// writes the newer key. A slot bound to another account by then is left
+// alone. The other fields of the app keep their values.
+func (m *Manager) RestampAIAccount(ctx context.Context, accountID string, ids []string, resolve SlotResolver) error {
+	return m.restampEach(ctx, ids, "update app after AI account change failed", func(inst store.Instance) (bool, error) {
+		man, err := m.loadInstanceManifest(inst.ID)
+		if err != nil {
+			return false, fmt.Errorf("load manifest: %w", err)
 		}
-		byInstance[u.InstanceID] = append(byInstance[u.InstanceID], u)
-	}
-	return m.restampEach(ctx, ids, "update app after AI account change failed", func(inst store.Instance, man *manifest.Manifest) (bool, error) {
 		bound, err := m.store.ListInstanceAIBindings(inst.ID)
 		if err != nil {
 			return false, fmt.Errorf("read bindings: %w", err)
-		}
-		stillBound := map[string]bool{}
-		for _, b := range bound {
-			if b.AccountID == accountID {
-				stillBound[b.Slot] = true
-			}
 		}
 		current, err := m.store.GetInstanceConfig(inst.ID)
 		if err != nil {
@@ -101,16 +122,20 @@ func (m *Manager) RestampAIAccount(ctx context.Context, accountID string, update
 		}
 		roles := man.FillableRoles()
 		changed := false
-		for _, u := range byInstance[inst.ID] {
-			if !stillBound[u.Slot] {
+		for _, b := range bound {
+			if b.AccountID != accountID {
 				continue
+			}
+			slotValues, err := resolve(man, b)
+			if err != nil {
+				return false, fmt.Errorf("resolve %s: %w", b.Slot, err)
 			}
 			for _, f := range man.Config {
 				r, ok := roles[f.AppEnv]
-				if !ok || r.Slot() != u.Slot {
+				if !ok || r.Slot() != b.Slot {
 					continue
 				}
-				if v, ok := u.Values[f.AppEnv]; ok && v != "" {
+				if v := slotValues[f.AppEnv]; v != "" {
 					values[f.AppEnv] = v
 				} else {
 					delete(values, f.AppEnv)
@@ -143,7 +168,11 @@ func (m *Manager) RestampAIAccount(ctx context.Context, accountID string, update
 // the account (store.DeleteAIAccountAndValues), and this makes the files and
 // the containers follow.
 func (m *Manager) RestampConfig(ctx context.Context, ids []string) error {
-	return m.restampEach(ctx, ids, "update app after AI account delete failed", func(inst store.Instance, man *manifest.Manifest) (bool, error) {
+	return m.restampEach(ctx, ids, "update app after AI account delete failed", func(inst store.Instance) (bool, error) {
+		man, err := m.loadInstanceManifest(inst.ID)
+		if err != nil {
+			return false, fmt.Errorf("load manifest: %w", err)
+		}
 		if err := m.restampConfigEnv(inst.ID, man); err != nil {
 			return false, fmt.Errorf("rewrite override: %w", err)
 		}
@@ -154,9 +183,11 @@ func (m *Manager) RestampConfig(ctx context.Context, ids []string) error {
 // RestampMail rewrites each app's MOOSE_MAIL_* lines from its current binding
 // and restarts the running ones. It runs after an email account was edited
 // (the lines change) or deleted (the binding went with the account, so the
-// lines are dropped).
+// lines are dropped). It needs only the binding and the .env, not the
+// manifest, so a deleted account's credentials leave an app even when its
+// manifest copy cannot be read.
 func (m *Manager) RestampMail(ctx context.Context, ids []string) error {
-	return m.restampEach(ctx, ids, "update app after email account change failed", func(inst store.Instance, _ *manifest.Manifest) (bool, error) {
+	return m.restampEach(ctx, ids, "update app after email account change failed", func(inst store.Instance) (bool, error) {
 		if err := m.rewriteEnvMail(inst.ID); err != nil {
 			return false, fmt.Errorf("rewrite env: %w", err)
 		}
@@ -170,7 +201,7 @@ func (m *Manager) RestampMail(ctx context.Context, ids []string) error {
 // error at the end names the apps that failed. A failed recreate leaves the
 // app marked pending-recreate (recreateRunning), so the reconcile pass
 // retries it.
-func (m *Manager) restampEach(ctx context.Context, ids []string, failMsg string, apply func(store.Instance, *manifest.Manifest) (bool, error)) error {
+func (m *Manager) restampEach(ctx context.Context, ids []string, failMsg string, apply func(store.Instance) (bool, error)) error {
 	var failed []string
 	for _, id := range ids {
 		name, err := m.restampOne(ctx, id, apply)
@@ -191,7 +222,7 @@ func (m *Manager) restampEach(ctx context.Context, ids []string, failMsg string,
 
 // restampOne is one app of restampEach. It returns the app's name for the
 // error message, empty when the app could not be read.
-func (m *Manager) restampOne(ctx context.Context, id string, apply func(store.Instance, *manifest.Manifest) (bool, error)) (string, error) {
+func (m *Manager) restampOne(ctx context.Context, id string, apply func(store.Instance) (bool, error)) (string, error) {
 	defer m.lockInstance(id)()
 	inst, err := m.store.Get(id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -200,11 +231,7 @@ func (m *Manager) restampOne(ctx context.Context, id string, apply func(store.In
 	if err != nil {
 		return "", err
 	}
-	man, err := m.loadInstanceManifest(id)
-	if err != nil {
-		return inst.Name, fmt.Errorf("load manifest: %w", err)
-	}
-	changed, err := apply(inst, man)
+	changed, err := apply(inst)
 	if err != nil {
 		return inst.Name, err
 	}

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
 )
 
@@ -80,7 +81,7 @@ func composeUps(e *testEnv, id string) int {
 	return n
 }
 
-func TestSetConfigAndAIBindingsStoresBoth(t *testing.T) {
+func TestUpdateConfigStoresValuesAndBindings(t *testing.T) {
 	e := newTestEnv(t)
 	e.createAIAccount(t, "ai_1")
 	inst := installAIApp(t, e, "aiapp")
@@ -88,7 +89,10 @@ func TestSetConfigAndAIBindingsStoresBoth(t *testing.T) {
 
 	// Clear the slot: no binding, no slot values, the plain value stays.
 	cfg := []store.InstanceConfig{{AppEnv: "PLAIN", Value: "keep"}}
-	if err := e.m.SetConfigAndAIBindings(context.Background(), inst.ID, cfg, []string{"ai.openai"}, nil); err != nil {
+	clear := func(*manifest.Manifest, []store.InstanceConfig, []store.AIBinding) (ConfigChange, error) {
+		return ConfigChange{Values: cfg, Slots: []string{"ai.openai"}}, nil
+	}
+	if err := e.m.UpdateConfig(context.Background(), inst.ID, clear); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	if got, _ := e.store.ListInstanceAIBindings(inst.ID); len(got) != 0 {
@@ -100,6 +104,35 @@ func TestSetConfigAndAIBindingsStoresBoth(t *testing.T) {
 	}
 	if composeUps(e, inst.ID) != before+1 {
 		t.Fatalf("a running app must be recreated once")
+	}
+}
+
+// keyResolver resolves a binding the way the API does for this manifest:
+// the account's key as it is in the store now, and the stored model.
+func keyResolver(e *testEnv) SlotResolver {
+	return func(_ *manifest.Manifest, b store.AIBinding) (map[string]string, error) {
+		acct, err := e.store.GetAIAccount(b.AccountID)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]string{"OPENAI_API_KEY": acct.APIKey}
+		if m := b.Models["model.chat"]; len(m) > 0 {
+			out["OPENAI_MODEL"] = m[0]
+		}
+		return out, nil
+	}
+}
+
+// setAccountKey changes an account's key in the store, as a saved edit does.
+func setAccountKey(t *testing.T, e *testEnv, id, key string) {
+	t.Helper()
+	a, err := e.store.GetAIAccount(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.APIKey = key
+	if err := e.store.UpdateAIAccount(a); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -131,23 +164,17 @@ func TestRestampAIAccount(t *testing.T) {
 		ups[i.ID] = composeUps(e, i.ID)
 	}
 
-	var updates []AISlotValues
-	for _, i := range []store.Instance{broken, running, stopped, rebound} {
-		// A new key, and no model value: the model field is cleared.
-		updates = append(updates, AISlotValues{InstanceID: i.ID, Slot: "ai.openai", Values: map[string]string{"OPENAI_API_KEY": "sk-new"}})
-	}
-	err := e.m.RestampAIAccount(context.Background(), "ai_1", updates)
+	setAccountKey(t, e, "ai_1", "sk-new")
+	ids := []string{broken.ID, running.ID, stopped.ID, rebound.ID}
+	err := e.m.RestampAIAccount(context.Background(), "ai_1", ids, keyResolver(e))
 	if err == nil || !strings.Contains(err.Error(), "could not update AI App") {
 		t.Fatalf("err = %v; want it to name the broken app", err)
 	}
 
 	for _, i := range []store.Instance{running, stopped} {
 		env := readOverrideEnv(t, e, i.ID).Services["app"].Environment
-		if env["OPENAI_API_KEY"] != "sk-new" || env["PLAIN"] != "keep" {
+		if env["OPENAI_API_KEY"] != "sk-new" || env["OPENAI_MODEL"] != "gpt-4o" || env["PLAIN"] != "keep" {
 			t.Fatalf("%s override env = %v", i.ID, env)
-		}
-		if _, ok := env["OPENAI_MODEL"]; ok {
-			t.Fatalf("%s kept a slot value the update did not give", i.ID)
 		}
 		cfg, _ := e.store.GetInstanceConfig(i.ID)
 		for _, c := range cfg {
@@ -170,12 +197,32 @@ func TestRestampAIAccount(t *testing.T) {
 	}
 }
 
+// Two quick edits start two jobs. The older one may run last; it reads the
+// account at commit time, so the app ends on the newer key either way.
+func TestRestampAIAccountOlderJobKeepsNewerKey(t *testing.T) {
+	e := newTestEnv(t)
+	e.createAIAccount(t, "ai_1")
+	inst := installAIApp(t, e, "aiapp")
+	setAccountKey(t, e, "ai_1", "sk-first-edit")
+	setAccountKey(t, e, "ai_1", "sk-second-edit")
+	// The second edit's job runs first, then the first edit's job.
+	for i := 0; i < 2; i++ {
+		if err := e.m.RestampAIAccount(context.Background(), "ai_1", []string{inst.ID}, keyResolver(e)); err != nil {
+			t.Fatalf("restamp %d: %v", i, err)
+		}
+	}
+	if env := readOverrideEnv(t, e, inst.ID).Services["app"].Environment; env["OPENAI_API_KEY"] != "sk-second-edit" {
+		t.Fatalf("override env = %v; want the newer key", env)
+	}
+}
+
 func TestRestampConfigAfterAIAccountDelete(t *testing.T) {
 	e := newTestEnv(t)
 	e.createAIAccount(t, "ai_1")
 	inst := installAIApp(t, e, "aiapp")
 	before := composeUps(e, inst.ID)
-	if err := e.store.DeleteAIAccountAndValues("ai_1", "u_admin", map[string][]string{inst.ID: {"OPENAI_API_KEY", "OPENAI_MODEL"}}); err != nil {
+	fields := func(string, string) ([]string, error) { return []string{"OPENAI_API_KEY", "OPENAI_MODEL"}, nil }
+	if _, err := e.store.DeleteAIAccountAndValues("ai_1", "u_admin", fields); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.m.RestampConfig(context.Background(), []string{inst.ID, "gone"}); err != nil {
@@ -236,5 +283,29 @@ func TestRestampMail(t *testing.T) {
 	}
 	if composeUps(e, inst.ID) != before+2 {
 		t.Fatal("the running app was not recreated after the delete")
+	}
+}
+
+// Dropping a deleted email account's lines needs only the binding and the
+// .env, so it works even when the app's manifest copy cannot be read.
+func TestRestampMailWithoutManifest(t *testing.T) {
+	e := newTestEnv(t)
+	if err := e.createMailProvider(testProvider()); err != nil {
+		t.Fatal(err)
+	}
+	inst, _ := installMailApp(t, e, "mp_test")
+	dir := filepath.Join(e.stateDir, "instances", inst.ID)
+	if err := os.Remove(filepath.Join(dir, "manifest.yml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.DeleteMailProvider("mp_test", "u_admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.RestampMail(context.Background(), []string{inst.ID}); err != nil {
+		t.Fatalf("restamp: %v", err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	if strings.Contains(string(raw), "MOOSE_MAIL_") {
+		t.Fatalf(".env still has mail lines:\n%s", raw)
 	}
 }

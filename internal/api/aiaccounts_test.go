@@ -273,7 +273,7 @@ func TestAIAccountValidation422(t *testing.T) {
 		want string
 	}{
 		{"no provider", map[string]any{"provider_id": "  ", "label": "x", "api_key": "k"}, "provider_id is required"},
-		{"unknown provider", map[string]any{"provider_id": "nope", "label": "x", "api_key": "k"}, "unknown AI provider"},
+		{"unknown provider", map[string]any{"provider_id": "nope", "label": "x", "api_key": "k"}, "unknown LLM provider"},
 		{"no label", map[string]any{"provider_id": "acme", "label": "   ", "api_key": "k"}, "label is required"},
 		{"long label", map[string]any{"provider_id": "acme", "label": long, "api_key": "k"}, "label is too long"},
 		{"label line break", map[string]any{"provider_id": "acme", "label": "a\nb", "api_key": "k"}, "label must not contain"},
@@ -338,7 +338,7 @@ func TestAIAccountAcceptedShapes(t *testing.T) {
 	}
 	// Moving a compatible account to an unknown provider is refused.
 	code, raw = h.doRaw("PUT", "/api/v1/ai-accounts/"+keyed.ID, map[string]any{"provider_id": "nope", "label": "Proxy"})
-	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "unknown AI provider") {
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "unknown LLM provider") {
 		t.Fatalf("switch to unknown provider = %d %s", code, raw)
 	}
 	// Dropping the base URL of a compatible account is refused.
@@ -356,7 +356,7 @@ func TestAIAccountEmptyProviderData(t *testing.T) {
 	alice := h.setupAdmin("alice", "pass1")
 
 	code, raw := h.doRaw("POST", "/api/v1/ai-accounts", aiAccountBody("Work"))
-	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "the list of AI providers is not loaded yet") {
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "the list of LLM providers is not loaded yet") {
 		t.Fatalf("listed provider with no data = %d %s", code, raw)
 	}
 	a := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home", "base_url": "http://192.168.1.20:11434/v1"})

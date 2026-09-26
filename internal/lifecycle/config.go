@@ -98,7 +98,9 @@ func (m *Manager) configEnvByService(id string, man *manifest.Manifest) (map[str
 // (the already-up path retries the recreate while the marker is set, #268). The
 // caller (API) validates the values against the manifest before this runs.
 func (m *Manager) SetConfig(ctx context.Context, id string, cfg []store.InstanceConfig) error {
-	return m.SetConfigAndAIBindings(ctx, id, cfg, nil, nil)
+	return m.UpdateConfig(ctx, id, func(*manifest.Manifest, []store.InstanceConfig, []store.AIBinding) (ConfigChange, error) {
+		return ConfigChange{Values: cfg}, nil
+	})
 }
 
 // restampConfigEnv patches an instance's compose.override.yml so each service's
