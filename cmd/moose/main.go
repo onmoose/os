@@ -115,7 +115,7 @@ func run(args []string) error {
 }
 
 // lintArgs reads `[--ai-providers <path>] <manifest>` in any order. ok is false
-// for a missing or extra argument.
+// for a missing, empty or extra argument.
 func lintArgs(args []string) (path, providersPath string, ok bool) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -126,11 +126,19 @@ func lintArgs(args []string) (path, providersPath string, ok bool) {
 			}
 			i++
 			providersPath = args[i]
+			if providersPath == "" {
+				return "", "", false
+			}
 		case strings.HasPrefix(a, "--ai-providers="):
 			if providersPath != "" {
 				return "", "", false
 			}
+			// An empty value (say, an unset CI variable) must not quietly
+			// switch the provider check off.
 			providersPath = strings.TrimPrefix(a, "--ai-providers=")
+			if providersPath == "" {
+				return "", "", false
+			}
 		case path == "" && !strings.HasPrefix(a, "-"):
 			path = a
 		default:

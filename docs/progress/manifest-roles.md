@@ -51,6 +51,7 @@ Realizes the 2026-09-26 rows of `INSTALL_SETUP.md` on role vocabulary, `separato
 - **The install success path is tested at the resolver, not the handler.** A handler test that gets past validation starts an install job, and the API test harness has no Docker driver. The 422 path is tested through the handler.
 - **Drop logging is per install payload load**, not once per snapshot. It is also only on the remote catalog source; the disk source is for tests.
 - **The first unmet group is reported**, not all of them, the same as `required`.
+- **The setup page does not check `requires` before submit yet.** Install stays enabled, and an unmet group shows only as the 422 after the attempt. The setup page reads `requires` in piece 3. No store manifest declares `requires` before then, so no user can hit this. Raised by Greptile on #505.
 - **Not tried in a browser.** The UI does not read the new fields yet.
 
 ## What's next

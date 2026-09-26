@@ -286,6 +286,8 @@ func TestLintArgs(t *testing.T) {
 		{[]string{"m.yml", "n.yml"}, "", "", false},
 		{[]string{"--nope", "m.yml"}, "", "", false},
 		{[]string{"--ai-providers", "a", "--ai-providers", "b", "m.yml"}, "", "", false},
+		{[]string{"m.yml", "--ai-providers="}, "", "", false},
+		{[]string{"--ai-providers", "", "m.yml"}, "", "", false},
 	}
 	for _, c := range cases {
 		path, prov, ok := lintArgs(c.args)
