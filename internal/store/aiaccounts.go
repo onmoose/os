@@ -498,25 +498,9 @@ func (s *Store) DeleteAIAccountAndValues(id, ownerID string, slotFields func(ins
 	if err != nil {
 		return nil, err
 	}
-
-	var ids []string
-	seen := map[string]bool{}
-	for _, b := range bs {
-		envs := b.Envs
-		if envs == nil {
-			if envs, err = slotFields(b.InstanceID, b.Slot); err != nil {
-				return nil, &SlotFieldsError{InstanceID: b.InstanceID, Err: err}
-			}
-		}
-		for _, env := range envs {
-			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, b.InstanceID, env); err != nil {
-				return nil, err
-			}
-		}
-		if !seen[b.InstanceID] {
-			seen[b.InstanceID] = true
-			ids = append(ids, b.InstanceID)
-		}
+	ids, _, err := clearBindingValues(tx, bs, slotFields)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM ai_accounts WHERE id=? AND owner_user_id=?`, id, ownerID); err != nil {
 		return nil, err
@@ -525,6 +509,110 @@ func (s *Store) DeleteAIAccountAndValues(id, ownerID string, slotFields func(ins
 		return nil, err
 	}
 	return ids, nil
+}
+
+// ClearedConfig is one config value a delete took from an app. A user delete
+// keeps them so it can put them back if the host step fails.
+type ClearedConfig struct {
+	InstanceID string
+	InstanceConfig
+}
+
+// DeleteUserAndAIValues removes a user and, in the same transaction, the
+// config values that the user's AI accounts gave each app. It is the user
+// delete's version of DeleteAIAccountAndValues, with the same rules: the
+// bindings are read inside the transaction, a binding clears the app_env
+// names it recorded, and slotFields names them only for a row with none
+// recorded. If slotFields fails, nothing is deleted and the error is a
+// *SlotFieldsError. The accounts, their bindings, and everything else the
+// user owns go with the user row by cascade.
+//
+// It returns the ids of the apps whose values were cleared, each once, and
+// the values themselves, for RestoreConfigValues. ErrNotFound when there is
+// no such user; nothing is removed then.
+func (s *Store) DeleteUserAndAIValues(userID string, slotFields func(instanceID, slot string) ([]string, error)) ([]string, []ClearedConfig, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+	bs, err := scanAIBindings(tx, `SELECT b.instance_id, b.slot, b.account_id, b.models, b.envs
+		FROM instance_ai_bindings b JOIN ai_accounts a ON a.id = b.account_id
+		WHERE a.owner_user_id=? ORDER BY b.instance_id, b.slot`, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids, cleared, err := clearBindingValues(tx, bs, slotFields)
+	if err != nil {
+		return nil, nil, err
+	}
+	res, err := tx.Exec(`DELETE FROM users WHERE id=?`, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, nil, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return ids, cleared, nil
+}
+
+// clearBindingValues deletes, inside tx, the config values each binding
+// gave its app. It returns the ids of the apps it touched, each once, and
+// the values it deleted.
+func clearBindingValues(tx *sql.Tx, bs []AIBinding, slotFields func(instanceID, slot string) ([]string, error)) ([]string, []ClearedConfig, error) {
+	var (
+		ids     []string
+		cleared []ClearedConfig
+		seen    = map[string]bool{}
+	)
+	for _, b := range bs {
+		envs := b.Envs
+		if envs == nil {
+			var err error
+			if envs, err = slotFields(b.InstanceID, b.Slot); err != nil {
+				return nil, nil, &SlotFieldsError{InstanceID: b.InstanceID, Err: err}
+			}
+		}
+		for _, env := range envs {
+			c := ClearedConfig{InstanceID: b.InstanceID, InstanceConfig: InstanceConfig{AppEnv: env}}
+			err := tx.QueryRow(`SELECT value, secret FROM instance_config WHERE instance_id=? AND app_env=?`,
+				b.InstanceID, env).Scan(&c.Value, &c.Secret)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, b.InstanceID, env); err != nil {
+				return nil, nil, err
+			}
+			cleared = append(cleared, c)
+		}
+		if !seen[b.InstanceID] {
+			seen[b.InstanceID] = true
+			ids = append(ids, b.InstanceID)
+		}
+	}
+	return ids, cleared, nil
+}
+
+// RestoreConfigValues puts back values a failed user delete cleared. A value
+// written since is kept, and an app uninstalled since is skipped by its
+// foreign key. Each row is its own write, so one that fails does not stop
+// the rest; the errors are joined.
+func (s *Store) RestoreConfigValues(cs []ClearedConfig) error {
+	var errs []error
+	for _, c := range cs {
+		if _, err := s.db.Exec(
+			`INSERT OR IGNORE INTO instance_config (instance_id, app_env, value, secret) VALUES (?,?,?,?)`,
+			c.InstanceID, c.AppEnv, c.Value, c.Secret); err != nil {
+			errs = append(errs, fmt.Errorf("instance %s %s: %w", c.InstanceID, c.AppEnv, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // AppUse names one app that uses an account: its instance id and its name.

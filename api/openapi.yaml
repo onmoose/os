@@ -4085,15 +4085,19 @@ paths:
           schema:
             type: string
       responses:
-        "204":
-          description: No Content
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountDeletedDTO"
+          description: OK
         default:
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
-      summary: Delete a user (admin only)
+      summary: Delete a user and clear their accounts from the apps that use them (admin only)
     patch:
       operationId: update-user-role
       parameters:

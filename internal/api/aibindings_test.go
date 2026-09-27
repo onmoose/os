@@ -415,6 +415,9 @@ func TestDeleteUserRestoresAIBindings(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// The delete names the slot's fields from the manifest copy, and refuses
+	// without one (TestDeleteUserRefusedWhenManifestUnreadable).
+	h.seedInstanceManifest("i_1", aiAppManifestYML)
 	if err := h.st.SetInstanceAIBindings("i_1", []store.AIBinding{{Slot: "ai.acme", AccountID: acct.ID, Models: map[string][]string{"model.chat": {"acme-1"}}}}); err != nil {
 		t.Fatal(err)
 	}

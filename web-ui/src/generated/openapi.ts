@@ -993,7 +993,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Delete a user (admin only) */
+        /** Delete a user and clear their accounts from the apps that use them (admin only) */
         delete: operations["delete-user"];
         options?: never;
         head?: never;
@@ -4401,12 +4401,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description No Content */
-            204: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AccountDeletedDTO"];
+                };
             };
             /** @description Error */
             default: {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -39,7 +40,7 @@ func (s *Server) registerUsers(api huma.API) {
 
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-user", Method: "DELETE", Path: "/api/v1/users/{id}",
-		Summary: "Delete a user (admin only)", DefaultStatus: 204,
+		Summary: "Delete a user and clear their accounts from the apps that use them (admin only)", DefaultStatus: 200,
 	}, s.deleteUser)
 
 	huma.Register(api, huma.Operation{
@@ -255,7 +256,10 @@ func (s *Server) updateUserRole(ctx context.Context, in *struct {
 
 func (s *Server) deleteUser(ctx context.Context, in *struct {
 	ID string `path:"id"`
-}) (*struct{}, error) {
+}) (*struct {
+	Status int
+	Body   *AccountDeletedDTO
+}, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -331,10 +335,10 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 	}
 
 	// The user's email accounts, and the app bindings to them, go with the user
-	// row (ON DELETE CASCADE): an app bound to one falls back to unbound, as it
-	// does when the account itself is deleted. Read them first, for the same
-	// reason as the SSH keys: a host failure below puts the user row back, and
-	// it must come back with its accounts and bindings, not without them.
+	// row (ON DELETE CASCADE). Read them first, for the same reason as the SSH
+	// keys: a host failure below puts the user row back, and it must come back
+	// with its accounts and bindings, not without them. The bindings also name
+	// the apps whose MOOSE_MAIL_* lines the job at the end drops.
 	mailAccounts, err := s.store.ListMailProviders(targetID)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
@@ -389,9 +393,17 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 	// Brain commits first (FK cascades sessions); on host failure we restore
 	// the row so the two sides stay aligned. Cascaded sessions don't come back —
 	// the user has to log in again, which is acceptable for a rare error path.
-	if err := s.store.DeleteUser(targetID); err != nil {
+	// The values the user's AI accounts gave each app are cleared in the same
+	// transaction, as an account delete does, so a deleted user's key never
+	// stays in the brain's state.
+	aiIDs, clearedConfig, err := s.store.DeleteUserAndAIValues(targetID, s.bindingSlotFields)
+	if err != nil {
 		restoreSSH()
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
+		var sfe *store.SlotFieldsError
+		if errors.As(err, &sfe) {
+			return nil, s.slotFieldsRefused(sfe, "user")
+		}
 		return nil, huma.Error500InternalServerError("delete user failed", err)
 	}
 	if err := s.host.DeleteUser(ctx, target.Username); err != nil {
@@ -435,13 +447,43 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 					slog.Error("rollback ai binding failed", "user_id", targetID, "instance_id", b.InstanceID, "err", rbErr)
 				}
 			}
+			if rbErr := s.store.RestoreConfigValues(clearedConfig); rbErr != nil {
+				slog.Error("rollback ai config values failed", "user_id", targetID, "username", target.Username, "err", rbErr)
+			}
 		}
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
 		return nil, huma.Error502BadGateway("host-agent delete-user failed", err)
 	}
 
 	s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, true)
-	return nil, nil
+
+	// The apps the user's accounts reached still hold the old values in their
+	// files. A job rewrites them and restarts the running ones, as after an
+	// account delete; its id is the answer. A delete that reaches no app
+	// answers 204.
+	var mailIDs []string
+	for _, b := range mailBindings {
+		mailIDs = append(mailIDs, b.InstanceID)
+	}
+	out := &struct {
+		Status int
+		Body   *AccountDeletedDTO
+	}{Status: http.StatusNoContent}
+	if len(aiIDs) == 0 && len(mailIDs) == 0 {
+		return out, nil
+	}
+	job := s.jobs.run("user-delete", func(job *Job) (map[string]any, error) {
+		job.setStep("updating_apps")
+		aiErr := s.life.RestampConfig(context.Background(), aiIDs)
+		mailErr := s.life.RestampMail(context.Background(), mailIDs)
+		if err := errors.Join(aiErr, mailErr); err != nil {
+			return nil, err
+		}
+		return map[string]any{"user_id": targetID}, nil
+	})
+	out.Status = http.StatusOK
+	out.Body = &AccountDeletedDTO{JobID: job.ID}
+	return out, nil
 }
 
 // renameUser changes what a person is called. It touches the display name and

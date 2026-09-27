@@ -164,6 +164,87 @@ func TestDeleteUserCascadesAIAccounts(t *testing.T) {
 	}
 }
 
+// A user delete clears the values the user's AI accounts gave each app, in
+// the same transaction, and leaves another user's values and plain values
+// alone. The cleared values come back through RestoreConfigValues, without
+// overwriting one written since.
+func TestDeleteUserAndAIValues(t *testing.T) {
+	s := openWithOwner(t)
+	addUser(t, s, "u_other", RoleMember, 1_600_000_100)
+	for _, inst := range []Instance{sample("a", "app-a"), sample("b", "app-b")} {
+		if err := s.Create(inst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	theirs := sampleAIAccount("ai_2", "Theirs")
+	theirs.OwnerUserID = "u_other"
+	for _, acct := range []AIAccount{sampleAIAccount("ai_1", "Mine"), theirs} {
+		if err := s.CreateAIAccount(acct); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vals := []InstanceConfig{{AppEnv: "K", Value: "sk", Secret: true}, {AppEnv: "M", Value: "m"}, {AppEnv: "P", Value: "keep"}}
+	for _, id := range []string{"a", "b"} {
+		if err := s.SetInstanceConfig(id, vals); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a uses the other user's account (recorded fields); b uses the owner's
+	// (fields named by the manifest).
+	if err := s.SetInstanceAIBindings("a", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_2", Envs: []string{"K", "M"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInstanceAIBindings("b", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_1"}}); err != nil {
+		t.Fatal(err)
+	}
+	fields := func(string, string) ([]string, error) { return []string{"K", "M"}, nil }
+
+	if _, _, err := s.DeleteUserAndAIValues("u_nobody", fields); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing user: got %v, want ErrNotFound", err)
+	}
+	if _, _, err := s.DeleteUserAndAIValues("u_other", func(string, string) ([]string, error) {
+		return nil, errors.New("no manifest")
+	}); err != nil {
+		t.Fatalf("recorded fields must not ask the manifest: %v", err)
+	}
+	if _, err := s.GetUser("u_other"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("user survived: %v", err)
+	}
+	if got := configMap(t, s, "a"); len(got) != 1 || got["P"] != "keep" {
+		t.Fatalf("a after delete = %v", got)
+	}
+	if got := configMap(t, s, "b"); len(got) != 3 {
+		t.Fatalf("another user's values were touched: %v", got)
+	}
+
+	// A refused lookup deletes nothing.
+	if _, _, err := s.DeleteUserAndAIValues(mailOwner, func(string, string) ([]string, error) {
+		return nil, errors.New("no manifest")
+	}); !errors.As(err, new(*SlotFieldsError)) {
+		t.Fatalf("got %v, want *SlotFieldsError", err)
+	}
+	if _, err := s.GetUser(mailOwner); err != nil {
+		t.Fatalf("refused delete removed the user: %v", err)
+	}
+
+	ids, cleared, err := s.DeleteUserAndAIValues(mailOwner, fields)
+	if err != nil || len(ids) != 1 || ids[0] != "b" || len(cleared) != 2 {
+		t.Fatalf("delete = %v %+v %v", ids, cleared, err)
+	}
+	if got := configMap(t, s, "b"); len(got) != 1 {
+		t.Fatalf("b after delete = %v", got)
+	}
+	if err := s.SetInstanceConfig("b", []InstanceConfig{{AppEnv: "M", Value: "newer"}, {AppEnv: "P", Value: "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RestoreConfigValues(cleared); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := configMap(t, s, "b"); got["K"] != "sk" || got["M"] != "newer" || got["P"] != "keep" {
+		t.Fatalf("b after restore = %v", got)
+	}
+}
+
 // Bindings round-trip their models, replace per instance, list by account, and
 // cascade with both the instance and the account.
 func TestInstanceAIBindings(t *testing.T) {

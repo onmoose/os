@@ -1096,11 +1096,11 @@ func TestDeleteUserMailAccounts(t *testing.T) {
 		t.Fatalf("rollback lost the app's mail binding: %v", err)
 	}
 
-	// Success: carol's account goes, and her app falls back to unbound.
-	resp = h.do("DELETE", "/api/v1/users/u_carol", nil)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("delete carol = %d; want 204", resp.StatusCode)
+	// Success: carol's account goes, and her app falls back to unbound. The
+	// app was bound, so the answer carries the job that rewrites it.
+	code, raw := h.doRaw("DELETE", "/api/v1/users/u_carol", nil)
+	if code != http.StatusOK || decodeRaw[AccountDeletedDTO](t, raw).JobID == "" {
+		t.Fatalf("delete carol = %d %s; want 200 with a job", code, raw)
 	}
 	if got, _ := h.st.ListMailProviders("u_carol"); len(got) != 0 {
 		t.Fatalf("deleted user's accounts survived: %+v", got)
