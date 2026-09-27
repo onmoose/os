@@ -20,7 +20,7 @@ The `ssh` boot now drives the same request the Settings screen sends:
 
 ## Known gaps & deviations
 
-- The script has no unit test. The proof is the `CI / Cloud image` run on this branch (`publish=false`), linked from the PR.
+- The script has no unit test. The proof is the `CI / Cloud image` run on this branch (`publish=false`): run 36342315360, all six boots passed, `ssh` included.
 
 ## What's next
 
