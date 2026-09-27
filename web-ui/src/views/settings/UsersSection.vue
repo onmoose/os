@@ -139,15 +139,21 @@ const changeRole = useMutation({
 // user's keys and email settings from those apps and restarts them. The user
 // is already gone, so a failure here is about the apps, and the notice says
 // which ones.
-const deleteNotice = ref("");
+// One notice per deleted user, so two deletes in a row each keep their own
+// result instead of the older job writing over the newer one.
+const deleteNotices = ref<Record<string, string>>({});
 
-async function followDeleteJob(jobId: string) {
-  deleteNotice.value = "User deleted. Updating the apps that used their accounts…";
+function setDeleteNotice(name: string, msg: string) {
+  deleteNotices.value = { ...deleteNotices.value, [name]: msg };
+}
+
+async function followDeleteJob(jobId: string, name: string) {
+  setDeleteNotice(name, `${name} was deleted. Updating the apps that used their accounts…`);
   try {
     await waitForJobOk(jobId);
-    deleteNotice.value = "User deleted. The apps that used their accounts were updated and restarted.";
+    setDeleteNotice(name, `${name} was deleted. The apps that used their accounts were updated and restarted.`);
   } catch (e) {
-    deleteNotice.value = `User deleted, but ${e instanceof Error ? e.message : "some apps could not be updated"}.`;
+    setDeleteNotice(name, `${name} was deleted, but ${e instanceof Error ? e.message : "some apps could not be updated"}.`);
   } finally {
     qc.invalidateQueries({ queryKey: ["apps"] });
   }
@@ -158,10 +164,10 @@ const deleteUser = useMutation({
   onSuccess: (done, id) => {
     clearRowError(id);
     confirmDeleteFor.value = null;
-    deleteNotice.value = "";
+    const name = users.data.value?.users.find((u) => u.id === id)?.display_name ?? "The user";
     qc.invalidateQueries({ queryKey: ["users"] });
     refreshCurrentUser();
-    if (done?.job_id) void followDeleteJob(done.job_id);
+    if (done?.job_id) void followDeleteJob(done.job_id, name);
   },
   onError: (e, id) => setRowError(id, e),
 });
@@ -223,7 +229,7 @@ const doResetPassword = useMutation({
     <!-- User list -->
     <section class="space-y-3">
       <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">People</h2>
-      <p v-if="deleteNotice" class="text-sm text-muted-foreground">{{ deleteNotice }}</p>
+      <p v-for="(msg, name) in deleteNotices" :key="name" class="text-sm text-muted-foreground">{{ msg }}</p>
       <p v-if="users.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
       <ul v-else class="space-y-2">
         <li

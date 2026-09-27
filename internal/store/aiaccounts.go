@@ -239,27 +239,34 @@ type execer interface {
 }
 
 func putAIBinding(db execer, b AIBinding) error {
-	return writeAIBinding(db, "INSERT OR REPLACE", b)
+	_, err := writeAIBinding(db, "INSERT OR REPLACE", b)
+	return err
 }
 
-// writeAIBinding writes one binding row with the given insert verb.
-func writeAIBinding(db execer, verb string, b AIBinding) error {
+// writeAIBinding writes one binding row with the given insert verb. It
+// returns whether a row was written, which is false when INSERT OR IGNORE
+// found the slot taken.
+func writeAIBinding(db execer, verb string, b AIBinding) (bool, error) {
 	models := b.Models
 	if models == nil {
 		models = map[string][]string{}
 	}
 	raw, err := json.Marshal(models)
 	if err != nil {
-		return fmt.Errorf("encode ai binding models: %w", err)
+		return false, fmt.Errorf("encode ai binding models: %w", err)
 	}
 	envs, err := encodeEnvs(b.Envs)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = db.Exec(
+	res, err := db.Exec(
 		verb+` INTO instance_ai_bindings (instance_id, slot, account_id, models, envs) VALUES (?,?,?,?,?)`,
 		b.InstanceID, b.Slot, b.AccountID, string(raw), envs)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // encodeEnvs stores nil as ” (not recorded) and a list as JSON.
@@ -634,20 +641,17 @@ func (s *Store) RestoreDeletedUser(d DeletedUser) error {
 	type slotKey struct{ instance, slot string }
 	restored := map[slotKey]bool{}
 	for _, b := range d.AIBindings {
-		var taken int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM instance_ai_bindings WHERE instance_id=? AND slot=?`,
-			b.InstanceID, b.Slot).Scan(&taken); err != nil {
+		// Only a binding this insert wrote gets its values back. A slot
+		// someone bound in the meantime, even a moment before this insert,
+		// is ignored and keeps its own values.
+		wrote, err := writeAIBinding(s.db, "INSERT OR IGNORE", b)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("ai binding %s %s: %w", b.InstanceID, b.Slot, err))
 			continue
 		}
-		if taken > 0 {
-			continue
+		if wrote {
+			restored[slotKey{b.InstanceID, b.Slot}] = true
 		}
-		if err := writeAIBinding(s.db, "INSERT OR IGNORE", b); err != nil {
-			errs = append(errs, fmt.Errorf("ai binding %s %s: %w", b.InstanceID, b.Slot, err))
-			continue
-		}
-		restored[slotKey{b.InstanceID, b.Slot}] = true
 	}
 	for _, b := range d.MailBindings {
 		if _, err := s.db.Exec(`INSERT OR IGNORE INTO instance_mail_bindings (instance_id, provider_id) VALUES (?,?)`,
