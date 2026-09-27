@@ -117,7 +117,9 @@ The scope is wider than mail. It is the general answer for any credential an app
 - **API keys first, mail second.** API keys are HTTP — intercept the request, swap an auth header, forward. Mail is SMTP, which means running a submission server plus MAIL FROM validation, queueing, bounces, and abuse handling. Same machine, much harder protocol. Prove the mechanism on the easy one.
 - **Mail on the broker reopens `DECISIONS.md` 2026-06-12** (no moose relay). That rejection was reasoned on *residential-IP deliverability*, which is an appliance fact; it does not hold for a hosted box relaying through a real provider. Reopen it deliberately when mail moves, rather than routing around it.
 - **The provider type is the join key.** The broker has to know which provider a fake credential maps to. `mail_providers.provider_type` (added with the provider presets) is that identity for mail; the equivalent is needed for API-key config fields.
-- **Open:** where the proxy runs (host-agent, a brain-managed container, a sidecar per app), how TLS interception is avoided or handled, what an app sees when the real credential is rejected upstream, and the abuse/rate-limit posture once moose is in the request path.
+- **Base-URL apps are the easy case.** `INSTALL_SETUP.md` adds a role vocabulary on config fields, including `ai.<protocol>.base_url`. When an app declares a base URL, moose can give it a moose address and a fake per-instance token. The app then talks plain HTTP to the proxy, so no TLS interception is needed. An app that takes only a key keeps getting the real key. Provider data would need one more field: the upstream auth style (`Authorization: Bearer`, Anthropic's `x-api-key`, Gemini's `x-goog-api-key`).
+- **Not in the brain.** `DECISIONS.md` 2026-06-15 keeps the brain off every network an app can reach, so the proxy is Caddy (already reachable by apps and configured live by the brain, but real keys would sit in its config) or a small moose-owned container (can meter usage and apply spending caps).
+- **Open:** Caddy or a dedicated container, how streaming responses and long timeouts are handled, what an app and the dashboard see when the real credential is rejected upstream or the proxy is down, and the abuse/rate-limit posture once moose is in the request path. Whether a proxied app can drop `internet: true` is a later question: for now apps keep it, since AI is rarely the only thing they reach.
 
 **Context:** # App-secret injection hardening above, `SERVICE_PROVISIONING.md` # Env-var injection + # BYO outgoing mail, `APP_MANIFEST.md` # D4, `THREAT_MODEL.md` (compromised app at runtime), `DECISIONS.md` 2026-06-12.
 **Why Tier 2:** it changes what a credential *is* from the app's point of view, so the longer the fleet runs on real-value injection the more credentials need rotating when it lands. It also decides whether `_FILE` gets built at all, which is live work today.
@@ -189,16 +191,26 @@ App-level and managed-service migration are well-specced (`SERVICE_PROVISIONING.
 
 ### Outgoing mail — what stays deferred past BYO (`SERVICE_PROVISIONING.md` # BYO outgoing mail)
 
-The v1 shape is shipped (#122): admin-registered SMTP providers, per-app bindings, `MOOSE_MAIL_*` direct injection, no moose relay. Deliberately deferred, in rough order of likely demand:
+The v1 shape is shipped (#122): SMTP accounts owned per user (any user adds their own since 2026-09-25, `DECISIONS.md` 2026-09-25), per-app bindings, `MOOSE_MAIL_*` direct injection, no moose relay. Deliberately deferred, in rough order of likely demand:
 
 - **A box-default provider.** Today every mail-capable app is bound explicitly; a "use for new apps automatically" default would remove a picker step once a box has exactly one provider it always uses.
 - **Brain-sent email riding the same providers.** Notification email digests, password-recovery mail (`# Email-on-file for users` above) — the brain becoming a *consumer* of the provider registry rather than just an injector. This is the promotion trigger: the moment email goes cross-cutting (brain + apps), the `SERVICE_PROVISIONING.md` section graduates to its own `OUTGOING_MAIL.md`.
-- **Re-stamp-on-edit.** A provider edit currently reaches bound apps only at their next rebind/recreate. If edit-propagation demand materializes, the answer is an explicit "apply to N bound apps now" action (visible restarts), not a silent fleet recreate.
 - **A moose-provided sending identity.** Every hosted box already has a free domain (`<box-id>.onmoose.io`) whose DNS moose controls — which means moose, and only moose, can publish the SPF/DKIM/DMARC records that every transactional provider requires. Publish them once and a box could send as `noreply@<box-id>.onmoose.io` with zero user configuration, covering the apps that only mail their own users (Kimai invites, Gitea resets, Paperless alerts). Not v1: v1 is bring-your-own-key. The costs to weigh first are shared-zone reputation (one abusive box hurts every other), per-box quotas, and the fact that an ugly auto-generated sender is wrong for the apps that mail *strangers* (Ghost newsletters, DocuSeal signing requests), which need the user's own domain regardless.
 - **Relay/smarthost.** Stays rejected, not deferred — residential IPs can't deliver mail, so a box-local relay is a queue plus a deliverability support burden in front of the user's real provider (`DECISIONS.md` 2026-06-12).
 
 **Context:** `SERVICE_PROVISIONING.md` # BYO outgoing mail, `APP_MANIFEST.md` # D3, `DECISIONS.md` 2026-06-12. Password at-rest hardening folds into # App-secret injection hardening above.
 **Why Tier 3:** the BYO shape is complete for app demand today; each deferral has a clean additive path that doesn't reshape the v1 contract.
+
+### Install setup: deferred limits (`INSTALL_SETUP.md`, `APP_MANIFEST.md` # D4 # Roles and requires)
+
+The install setup plan is built on the `os` side. Three limits were left out on purpose, and each needs a shape before it is built:
+
+- **A field that picks the provider.** Some apps take one value that names both provider and model (openmuse `MODEL=provider/model`). The role vocabulary has no attribute for it, so it stays a plain field.
+- **One slot per protocol per app.** An app that wants separate OpenAI-compatible endpoints per job (upstream open-webui) cannot say so: all its `ai.openai_compatible.*` fields are one slot.
+- **Sharing an account with other users.** An account is usable only by the user who added it, and a household app uses the installing admin's accounts. Letting another user bind an app to it needs an ownership and revocation story.
+
+**Context:** `INSTALL_SETUP.md` decisions table (2026-09-25 and 2026-09-26), `SERVICE_PROVISIONING.md` # AI provider accounts.
+**Why Tier 3:** each is additive to the role vocabulary or the account model, and no catalog app is blocked on it today.
 
 ### `moosectl` — on-box CLI
 
@@ -319,7 +331,7 @@ Both deferred from v1 (`DECISIONS.md` 2026-05-15). Shape is pinned in `RELEASE_M
 
 ### Settings → Storage UX (Level-1 walk-through, design pass)
 
-The architecture and the install/wizard/add-drive/eject mechanics are locked (`STORAGE.md`, `FIRST_RUN.md`, `AUTH.md`, `BRAIN_HOST_PROTOCOL.md`, `HEALTH.md` # `disk-full`). What remains is design-time copy + screen-layout: card shape for OS drive vs. data drive at Level 0/1, where the "Show recovery passphrase" affordance lives under Advanced, eject-drive confirmation copy, disk-pressure banner copy + top-space-hogs enumeration, single-drive "add a data drive later" dashboard hint, and the file-access permission block on the app-install dialog ("Photos will read and write your Photos folder").
+The architecture and the install/wizard/add-drive/eject mechanics are locked (`STORAGE.md`, `FIRST_RUN.md`, `AUTH.md`, `BRAIN_HOST_PROTOCOL.md`, `HEALTH.md` # `disk-full`). What remains is design-time copy + screen-layout: card shape for OS drive vs. data drive at Level 0/1, where the "Show recovery passphrase" affordance lives under Advanced, eject-drive confirmation copy, disk-pressure banner copy + top-space-hogs enumeration, single-drive "add a data drive later" dashboard hint, and the file-access permission block on the app install setup page ("Photos will read and write your Photos folder").
 
 **Context:** `STORAGE.md`, `FIRST_RUN.md`, `HEALTH.md`, `APP_MANIFEST.md` # `permissions.folders`.
 **Why Tier 3:** doesn't block bring-up — the brain endpoints and health-issue flags exist. UX iteration belongs with the designer and the first user-test pass, not the spec.

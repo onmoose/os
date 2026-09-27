@@ -47,7 +47,7 @@ function cancelPwChange() {
     <div class="space-y-3 rounded-xl border border-border bg-card px-4 py-3">
       <div class="flex items-center justify-between gap-4">
         <div class="min-w-0">
-          <div class="text-sm font-medium">{{ currentUser?.username }}</div>
+          <div class="text-sm font-medium">{{ currentUser?.display_name }}</div>
           <div class="text-xs capitalize text-muted-foreground">{{ currentUser?.role }}</div>
         </div>
         <Button v-if="!showPwForm" variant="secondary" size="sm" @click="showPwForm = true">

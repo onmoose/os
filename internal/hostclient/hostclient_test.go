@@ -50,6 +50,12 @@ func startFakeAuthAgent(t *testing.T) string {
 		valid := ok && bcrypt.CompareHashAndPassword(hash, []byte(req.Password)) == nil
 		_ = json.NewEncoder(w).Encode(protocol.VerifyPasswordResponse{Valid: valid})
 	})
+	mux.HandleFunc("GET /v1/users/{username}/exists", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		_, ok := passwords[r.PathValue("username")]
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(protocol.UserExistsResponse{Exists: ok})
+	})
 	mux.HandleFunc("POST /v1/auth/delete-user", func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.DeleteUserRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -303,5 +309,25 @@ func TestAuthEndpoints(t *testing.T) {
 	}
 	if ok, _ := c.VerifyPassword(ctx, "cindy", "newpass"); ok {
 		t.Fatal("password still valid after delete")
+	}
+}
+
+func TestUserExists(t *testing.T) {
+	c := New(startFakeAuthAgent(t))
+	ctx := context.Background()
+
+	if exists, err := c.UserExists(ctx, "cindy"); err != nil || exists {
+		t.Fatalf("UserExists(unknown) = %v, %v; want false, nil", exists, err)
+	}
+	if err := c.SetPassword(ctx, "cindy", "hunter2"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if exists, err := c.UserExists(ctx, "cindy"); err != nil || !exists {
+		t.Fatalf("UserExists(known) = %v, %v; want true, nil", exists, err)
+	}
+
+	// A name needing escaping must not break the path.
+	if _, err := c.UserExists(ctx, "a b/c"); err != nil {
+		t.Errorf("UserExists with an awkward name: %v", err)
 	}
 }

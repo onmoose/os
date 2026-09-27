@@ -41,6 +41,10 @@ type InstallPlanDTO struct {
 	// present only when the manifest declares a config: block. Schema only — never
 	// a value (a secret field has none; defaults/options are part of the schema).
 	Config []InstallPlanConfigField `json:"config,omitempty"`
+	// Requires lists the "at least one of" groups over Config (INSTALL_SETUP.md
+	// # 3). POST /api/v1/apps answers 422 while a group has no filled member.
+	// Omitted when the manifest declares none the box can use.
+	Requires []RequiresGroupDTO `json:"requires,omitempty"`
 }
 
 // InstallPlanConfigField is one user-supplied config field's form schema
@@ -55,13 +59,21 @@ type InstallPlanConfigField struct {
 	Type        string   `json:"type"`
 	Options     []string `json:"options,omitempty"`
 	Default     string   `json:"default,omitempty"`
+	// Role says what the field means, e.g. ai.anthropic.api_key
+	// (INSTALL_SETUP.md # 1). Present only when the box can fill the field;
+	// otherwise the field is a plain field.
+	Role string `json:"role,omitempty"`
+	// Separator joins a models.<type> list: the declared one or ",". Present
+	// only on a fillable models field.
+	Separator string `json:"separator,omitempty"`
 }
 
 // InstallPlanMail is the outgoing-mail picker block, present only when the
 // manifest declares mail support (SERVICE_PROVISIONING.md # BYO outgoing
-// mail). Providers carry id, label and preset only. The full provider settings
-// (host, username) stay on the admin-only CRUD surface; any installer just
-// picks a name. Empty Providers ⇒ the UI renders the picker with only "None".
+// mail). Providers are the caller's own accounts, with id, label and preset
+// only; the full settings (host, username) stay on the CRUD surface. Empty
+// Providers means the UI renders the picker with only "None" and the add
+// card.
 type InstallPlanMail struct {
 	Optional  bool                 `json:"optional"`
 	Providers []MailProviderOption `json:"providers"`
@@ -202,7 +214,9 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 	}
 
 	config := make([]InstallPlanConfigField, 0, len(man.Config))
+	roles := man.FillableRoles()
 	for _, c := range man.Config {
+		role, sep := fieldRole(roles, &c)
 		config = append(config, InstallPlanConfigField{
 			AppEnv:      c.AppEnv,
 			Title:       c.Title,
@@ -212,6 +226,8 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 			Type:        c.Type,
 			Options:     c.Options,
 			Default:     c.Default,
+			Role:        role,
+			Separator:   sep,
 		})
 	}
 
@@ -228,7 +244,8 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 			Devices:  devices,
 			Folders:  folders,
 		},
-		Config: config,
+		Config:   config,
+		Requires: requiresDTO(man),
 	}
 }
 
@@ -323,10 +340,12 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 	plan := buildInstallPlan(man, id.IsAdmin())
 	plan.Footprint = toInstallPlanFootprint(s.life.InstallFootprint(ctx, man))
 	// The mail picker menu is attached here (not in pure buildInstallPlan) for
-	// the same reason as the footprint: it reads box state. Advisory like the
-	// folder menus — installApp re-validates the election authoritatively.
+	// the same reason as the footprint: it reads box state. It lists only the
+	// caller's own accounts, the only ones installApp will accept. Advisory
+	// like the folder menus: installApp re-validates the election
+	// authoritatively.
 	if man.Mail != nil {
-		providers, err := s.store.ListMailProviders()
+		providers, err := s.store.ListMailProviders(id.User.ID)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("list mail providers failed", err)
 		}

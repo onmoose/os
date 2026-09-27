@@ -58,7 +58,7 @@ func installedWhoami(t *testing.T) (*testEnv, store.Instance) {
 	e := newTestEnv(t)
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
 	e.docker.digests[testImage] = testDigest
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}

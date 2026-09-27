@@ -65,7 +65,7 @@ Fields per app:
 - **`manifest_url` / `manifest_hash`** — content-addressed pointer to the full manifest. On install, brain fetches and verifies the hash matches.
 - **`compose_url` / `compose_hash`** — same, for the compose file.
 - **`images`** — map of `image:tag` (as referenced in the compose) → `{ digest, download_bytes, disk_bytes }`. CI resolves all three at catalog-build time from the registry: `digest` (the pinned bytes — see Trust below; the brain pulls by digest, not by tag), `download_bytes` (sum of the image's compressed layer sizes — the bandwidth/time cost), and `disk_bytes` (sum of its uncompressed layer sizes, deduping layers shared *within this app's own image set* — the on-disk cost). Sizes are **display-only and advisory** (# Trust model); only `digest` gates the pull.
-- **`footprint`** — per-app summary so the **browse grid renders the size without fetching the full manifest**: `{ image_download_bytes, image_disk_bytes, estimated_state }`. CI computes the two image totals by summing the `images` entries and hoists `estimated_state` verbatim from the manifest's `storage.estimated_size` (`APP_MANIFEST.md` # Storage; absent if the manifest omits it). The image totals are an **upper bound** — they assume nothing is cached locally; the install dialog shows a sharper, box-specific number that subtracts already-present images (`BRAIN_UI_PROTOCOL.md` # GET /api/v1/catalog/:id/install-plan). `estimated_state` is the **measured app-state baseline at install** (`DECISIONS.md` 2026-06-09), not a usage projection — the same value on the card and in the dialog.
+- **`footprint`** — per-app summary so the **browse grid renders the size without fetching the full manifest**: `{ image_download_bytes, image_disk_bytes, estimated_state }`. CI computes the two image totals by summing the `images` entries and hoists `estimated_state` verbatim from the manifest's `storage.estimated_size` (`APP_MANIFEST.md` # Storage; absent if the manifest omits it). The image totals are an **upper bound** — they assume nothing is cached locally; the install setup page shows a sharper, box-specific number that subtracts already-present images (`BRAIN_UI_PROTOCOL.md` # GET /api/v1/catalog/:id/install-plan). `estimated_state` is the **measured app-state baseline at install** (`DECISIONS.md` 2026-06-09), not a usage projection — the same value on the card and in the dialog.
 - **`files_first_class`** — true when the manifest declares `folders` and does not set `storage.app_managed_user_content`. Surfaces as a badge in the UI; not a gate.
 
 Top-level fields:
@@ -248,6 +248,15 @@ Two fallbacks remain, and neither is the normal path. A category id the vocabula
 
 The vocabulary is carried on the browse payload alongside the app records and the home block; nothing about it is derived on the box.
 
+## AI provider data
+
+The browse payload carries a top-level `ai_providers` list: the AI providers the install setup page draws as tiles, in display order, each with its models. The shape and the reasons for it are in `INSTALL_SETUP.md` # 4. The box-facing half is here.
+
+- **The box reads it leniently, and never refuses the snapshot over it.** The store will add model types and flags before every box knows them, so an unknown type or flag is dropped rather than refused, a model left with no known type is dropped, and a `defaults` entry naming a missing model or an unknown type is dropped. A provider with no `id` or `name` is dropped, and a repeated `id` keeps the first. A value the box cannot read at all is an empty list. What was dropped is logged once per load (`internal/catalog/aiproviders.go`). This is stricter than the plain "unknown keys are dropped" rule below, on purpose: that rule covers keys, and this covers values in a closed list.
+- **Order is display order.** There is no featured rank; the setup page shows the first five and the rest behind "More".
+- **Logos are opaque URLs, proxied by the box.** `logo_url` and `logo_dark_url` are followed as given, like `icon_url`, and served to the UI from the box's own `/api/v1/ai-providers/{id}/logo` and `/logo-dark` routes with the same 24-hour cache (`BRAIN_UI_PROTOCOL.md` # AI provider data).
+- **No data is a normal state.** A box that has not synced, or reads a catalog without the field, has an empty list, and the setup page shows the app's AI fields as plain fields.
+
 ## What the box models, and what it drops
 
 The box does not model the whole published catalog. `internal/catalog/wire.go` declares the fields the box surfaces, and it declares a **subset** on purpose.
@@ -268,7 +277,7 @@ The digest is gone. It was never doing security work — TLS authenticates the o
 
 ### The shape guard
 
-What keeps the modelled shape reviewable is a **synthetic** pinned payload at `internal/catalog/testdata/snapshot.json`, plus `TestNoUnmodeledFields` (`internal/catalog/wire_test.go`). The fixture is hand-authored — fake apps in the published wire shape, not a copy of any catalog the service serves — and the test parses it into a generic map, failing on any top-level or per-app key the box's own types do not declare, including the nested per-app shapes (footprint, author, links).
+What keeps the modelled shape reviewable is a **synthetic** pinned payload at `internal/catalog/testdata/snapshot.json`, plus `TestNoUnmodeledFields` (`internal/catalog/wire_test.go`). The fixture is hand-authored: fake apps in the published wire shape, not a copy of any catalog the service serves. The test parses it into a generic map, failing on any top-level or per-app key the box's own types do not declare, including the nested per-app shapes (footprint, author, links) and the keys of each `ai_providers` entry and its models.
 
 Be clear about what that does and does not buy. It is no longer a correctness gate: an unmodelled key costs a feature now, not a working store. Both sides of the comparison live in this repo, so what the test holds in step is the box's types and the shape written down next to them, and it makes that shape reviewable as one file. It **cannot** tell you the published shape moved: the box does not hold a published payload to compare against. Noticing a newly published field the box does not model is a **publish-side** check, on the side that has the published payload. When the box starts modelling a field, add it to the fixture; when it deliberately does not model a top-level field, list it in `ignoredTopLevelKeys` with the reason. An explicit "we looked and said no", never silence.
 

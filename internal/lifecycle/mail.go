@@ -1,7 +1,7 @@
 package lifecycle
 
 // BYO outgoing mail (SERVICE_PROVISIONING.md # BYO outgoing mail). The brain
-// injects an admin-registered SMTP provider into a bound app's .env as
+// injects a user's SMTP account into a bound app's .env as
 // MOOSE_MAIL_* — writeEnv stamps it at install, RebindMail re-stamps it later.
 // No moose-run relay: the app dials the provider itself over its declared
 // internet permission.
@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -39,6 +40,13 @@ func mailEnvLines(p store.MailProvider) []string {
 		"MOOSE_MAIL_USE_SSL=" + strconv.FormatBool(p.Encryption == store.MailEncryptionTLS),
 		"MOOSE_MAIL_DSN=" + mailDSN(p),
 	}
+}
+
+// MailEnvChanged reports whether two versions of an account give an app
+// different MOOSE_MAIL_* lines. The API uses it to decide whether an edit must
+// re-stamp the apps bound to the account: a label or preset change does not.
+func MailEnvChanged(a, b store.MailProvider) bool {
+	return !slices.Equal(mailEnvLines(a), mailEnvLines(b))
 }
 
 // mailDSN renders a provider as a Symfony-style SMTP URL

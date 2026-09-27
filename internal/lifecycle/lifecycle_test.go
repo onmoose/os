@@ -124,7 +124,7 @@ func TestInstallHappyDoor1(t *testing.T) {
 	// No digests entry: Door-1 resolves nothing from the registry — the catalog's
 	// promise IS the address it pulls.
 
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestInstallAdmissionRejection(t *testing.T) {
 `
 	e.writeCatalogApp(t, "whoami", bad, whoamiManifest(testDigest))
 
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatalf("want admission rejection")
 	}
@@ -254,7 +254,7 @@ func TestInstallDoor1IgnoresUpstreamTagMove(t *testing.T) {
 	// The tag now resolves to different bytes than the catalog pinned.
 	e.docker.digests[testImage] = "sha256:rebuiltupstream"
 
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install must succeed despite the tag moving: %v", err)
 	}
@@ -296,7 +296,7 @@ images:
 `, composeRef)
 	e.writeCatalogApp(t, "whoami", compose, man)
 
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatalf("want error when the compose pin and the catalog promise disagree")
 	}
@@ -322,7 +322,7 @@ func TestInstallUnpullableImageRollsBack(t *testing.T) {
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
 	e.docker.pullErr[testImage] = fmt.Errorf("registry unreachable")
 
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatalf("want pull error")
 	}
@@ -347,7 +347,7 @@ func TestInstallComposeUpFailureRollsBack(t *testing.T) {
 	e.docker.digests[testImage] = testDigest
 	e.docker.composeUpErr = fmt.Errorf("boom")
 
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatalf("want compose up error")
 	}
@@ -370,7 +370,7 @@ func TestInstallHealthTimeoutKeepsInstanceDirAndFlipsSplashToFailed(t *testing.T
 	// Inspect always reports not-running → wait times out per healthWait.
 	e.docker.inspect = func(string, string) (bool, string, error) { return false, "starting", nil }
 
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatalf("want health timeout error")
 	}
@@ -396,7 +396,7 @@ func TestUninstallTearsDownEvenIfStepsFail(t *testing.T) {
 	e := newTestEnv(t)
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
 	e.docker.digests[testImage] = testDigest
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestUninstallReclaimsUnreferencedImage(t *testing.T) {
 	e := newTestEnv(t)
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(testDigest))
 	e.docker.digests[testImage] = testDigest
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -471,11 +471,11 @@ images:
 `)
 
 	owner := Owner{UserID: "u_admin", Username: "admin"}
-	a, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), owner, store.ScopeHousehold, nil, "", nil, nil)
+	a, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), owner, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install a: %v", err)
 	}
-	b, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "sharer"), owner, store.ScopeHousehold, nil, "", nil, nil)
+	b, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "sharer"), owner, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install b: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestUninstallSucceedsWhenReclaimFails(t *testing.T) {
 	e := newTestEnv(t)
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(testDigest))
 	e.docker.digests[testImage] = testDigest
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestReconcileBringsRunningInstanceBackUp(t *testing.T) {
 	e := newTestEnv(t)
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
 	e.docker.digests[testImage] = testDigest
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -557,7 +557,7 @@ func TestReconcileDriftedInstanceNetworkCreateBeforeComposeUp(t *testing.T) {
 	e := newTestEnv(t)
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
 	e.docker.digests[testImage] = testDigest
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -579,7 +579,7 @@ func TestReconcileDriftedInstanceNetworkCreateFailureSkipsComposeUp(t *testing.T
 	e := newTestEnv(t)
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
 	e.docker.digests[testImage] = testDigest
-	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestReconcileStopsStoppedButRunningInstance(t *testing.T) {
 	e := newTestEnv(t)
 	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
 	e.docker.digests[testImage] = testDigest
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestOverridePinsMainContainerName(t *testing.T) {
 	e.docker.digests[testImage] = testDigest
 
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "jobapp"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -755,7 +755,7 @@ func TestInstallUsesTheLoadedPayloadNotAReFetch(t *testing.T) {
 	e.writeCatalogApp(t, "whoami", whoamiCompose, republished)
 
 	inst, err := e.m.Install(context.Background(), app,
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}

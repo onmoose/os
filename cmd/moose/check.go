@@ -24,30 +24,34 @@ type composeChecker func(ctx context.Context, composeBytes []byte) error
 // (APP_LIFECYCLE.md) and the manifest schema (APP_MANIFEST.md) split between
 // them. lint alone is non-strict and does NOT run admission; this closes that
 // gap so authors (and the authoring agent) never hand-eyeball admission.go.
-func check(ctx context.Context, admit composeChecker, manifestPath string) error {
-	if err := lint(manifestPath); err != nil {
-		return err // lint errors already name the field/slug/compose problem
+//
+// The lint's warnings are returned whether or not the check passes, so the
+// caller prints them either way.
+func check(ctx context.Context, admit composeChecker, manifestPath string, opts lintOptions) ([]string, error) {
+	warnings, err := lint(manifestPath, opts)
+	if err != nil {
+		return warnings, err // lint errors already name the field/slug/compose problem
 	}
 
 	// lint proved the manifest parses and the compose resolves + parses; re-read
 	// the verbatim compose bytes and run them through admission.
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return fmt.Errorf("read manifest: %w", err)
+		return warnings, fmt.Errorf("read manifest: %w", err)
 	}
 	man, err := manifest.Parse(data)
 	if err != nil {
-		return err
+		return warnings, err
 	}
 	composePath := filepath.Join(filepath.Dir(manifestPath), man.ComposeFile)
 	composeData, err := os.ReadFile(composePath)
 	if err != nil {
-		return fmt.Errorf("compose_file %q: %w", man.ComposeFile, err)
+		return warnings, fmt.Errorf("compose_file %q: %w", man.ComposeFile, err)
 	}
 	if err := admit(ctx, composeData); err != nil {
-		return err // admission.Error messages already name the offending service + field
+		return warnings, err // admission.Error messages already name the offending service + field
 	}
-	return checkImagesResolved(man)
+	return warnings, checkImagesResolved(man)
 }
 
 // imageDigest matches a well-formed `sha256:<64 lowercase hex>` reference —

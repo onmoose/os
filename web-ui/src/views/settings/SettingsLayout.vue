@@ -6,8 +6,8 @@
 // own nested route under /settings, so deep-links and the avatar-menu links keep
 // working.
 //
-// Role gating mirrors AUTH.md: Users and Outgoing email are admin-only (hidden
-// from members here; the section view also redirects, defence in depth).
+// Role gating mirrors AUTH.md: Users is admin-only (hidden from members here;
+// the section view also redirects, defence in depth).
 // Everything else is open to every signed-in user. A group left with zero
 // visible items is dropped rather than rendered with a bare label.
 //
@@ -17,7 +17,7 @@
 // (components/Dock.vue), so this doesn't duplicate that with a second slide-over.
 import { computed } from "vue";
 import { RouterLink, RouterView } from "vue-router";
-import { User, Bell, LayoutGrid, Mail, ScrollText, Terminal, Users, Info, type LucideIcon } from "lucide-vue-next";
+import { User, Bell, LayoutGrid, Mail, ScrollText, Sparkles, Terminal, Users, Info, type LucideIcon } from "lucide-vue-next";
 import { useAuth } from "@/auth";
 
 const { currentUser } = useAuth();
@@ -26,8 +26,11 @@ type NavItem = { to: string; label: string; icon: LucideIcon; adminOnly?: boolea
 type NavGroup = { label: string; items: NavItem[] };
 
 // Group and item order is the menu order. "You" holds what the signed-in user
-// owns: their account, then the apps they have installed. "System" holds the
-// box-wide items. SSH sits between Notifications and Activity: it is per-account
+// owns: their account and the apps they have installed. "Integrations" holds
+// the accounts they added to connect their apps to outside services: LLM
+// providers and email (each belongs to one user, INSTALL_SETUP.md # 5). The UI
+// says "LLM provider"; the API and code say `ai`. "System" holds the box-wide
+// items. SSH sits between Notifications and Activity: it is per-account
 // like Notifications, and both of those read as settings you carry, while
 // Activity is the record of what happened on this box.
 const groups: NavGroup[] = [
@@ -39,10 +42,16 @@ const groups: NavGroup[] = [
     ],
   },
   {
+    label: "Integrations",
+    items: [
+      { to: "/settings/llm", label: "LLM providers", icon: Sparkles },
+      { to: "/settings/email", label: "Email", icon: Mail },
+    ],
+  },
+  {
     label: "System",
     items: [
       { to: "/settings/users", label: "Users", icon: Users, adminOnly: true },
-      { to: "/settings/mail", label: "Outgoing email", icon: Mail, adminOnly: true },
       { to: "/settings/notifications", label: "Notifications", icon: Bell },
       { to: "/settings/ssh", label: "SSH", icon: Terminal },
       { to: "/settings/activity", label: "Activity", icon: ScrollText },

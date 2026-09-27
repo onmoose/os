@@ -101,8 +101,8 @@ func newUpdateHarness(t *testing.T) *updateHarness {
 func seedUpdateUsers(t *testing.T, st *store.Store) {
 	t.Helper()
 	for _, u := range []store.User{
-		{ID: "u_admin", Username: "alice", Role: store.RoleAdmin, CreatedAt: time.Now()},
-		{ID: "u_bob", Username: "bob", Role: store.RoleMember, CreatedAt: time.Now()},
+		{ID: "u_admin", Username: "alice", DisplayName: "alice", Role: store.RoleAdmin, CreatedAt: time.Now()},
+		{ID: "u_bob", Username: "bob", DisplayName: "bob", Role: store.RoleMember, CreatedAt: time.Now()},
 	} {
 		if err := st.CreateUser(u); err != nil {
 			t.Fatalf("seed %s: %v", u.ID, err)

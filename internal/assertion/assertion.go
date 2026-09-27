@@ -41,9 +41,16 @@ type Claims struct {
 	// Sub is the portal account id that owns the box — the stable owner identity
 	// the box ties its first admin to.
 	Sub string `json:"sub"`
-	// Email is the owner's portal email, from which the box derives the PAM
-	// username for the auto-created first admin (the derivation is box-side).
+	// Email is the owner's portal email. When Name is absent it is also what the
+	// box derives the owner's display name and PAM account name from (the
+	// derivation is box-side).
 	Email string `json:"email"`
+	// Name is the owner's own name, as typed at portal sign-up. Optional there,
+	// so it is optional here: the box falls back to the email local part when it
+	// is missing, and both paths run through the same derivation
+	// (FIRST_RUN.md # Identity & display names). Adding it to what the portal
+	// signs is a control-plane change; the box only has to read it when present.
+	Name string `json:"name,omitempty"`
 	// Box is the box-id this assertion authorizes the bearer for. The box rejects
 	// an assertion whose Box is not its own box-id.
 	Box string `json:"box"`

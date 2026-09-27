@@ -520,7 +520,7 @@ grep -qE ' (200|401)' <<<"$api" || fail "/api not routed to the brain through Ca
 setup=""
 for _i in $(seq 1 30); do
     setup="$(http_post_status /api/v1/setup "$DASH_HOST" \
-        '{"username":"probe","password":"probe-pw-once"}' 2>/dev/null || true)"
+        '{"display_name":"probe","password":"probe-pw-once"}' 2>/dev/null || true)"
     grep -qE ' (403|409|200)' <<<"$setup" && break
     sleep 1
 done
@@ -895,7 +895,7 @@ access)
     sso_token2="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token2" 2>/dev/null || true)"
     [ -n "$sso_token2" ] || fail "access: moose.sso_token2 credential missing (harness did not mint/deliver the second owner assertion)"
 
-    new_user_body='{"username":"tester","password":"moose-cloud-lane-tester-pw"}'
+    new_user_body='{"display_name":"tester","password":"moose-cloud-lane-tester-pw"}'
 
     # 5a. The plain owner session is admin but NOT elevated, so the write is refused.
     #     This is the state a hosted box could never leave before #469.
@@ -1069,30 +1069,30 @@ ssh)
     # and sshd knows nothing of the login throttling the brain applies to that same
     # password. Enforced server-side, not only in the dashboard.
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before the key-less enable failed"
-    nokey="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" '{"enabled":true}' 2>/dev/null)"
+    # PUT /me/ssh takes the whole state, keys included (#501), so an empty key
+    # list is sent on purpose: a body with no "keys" is refused for being
+    # malformed, which would pass this check for the wrong reason.
+    nokey="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" '{"enabled":true,"keys":[]}' 2>/dev/null)"
     grep -q ' 422' <<<"$(status_of "$nokey")" \
         || fail "ssh: enabling SSH with no key was not refused: status='$(status_of "$nokey")' (want 422 — the key is mandatory on hosted)"
     port22_open && fail "ssh: :22 opened after a refused enable"
     echo "cloud-assertions: enabling SSH with no key refused (422), :22 still closed"
 
-    # --- 4. add a key, turn SSH on.
+    # --- 4. add a key and turn SSH on, in one save.
     KEYFILE=/root/.moose-ssh-lane
     rm -f "$KEYFILE" "${KEYFILE}.pub"
     ssh-keygen -t ed25519 -N '' -C 'moose-cloud-lane' -f "$KEYFILE" >/dev/null 2>&1 \
         || fail "ssh: ssh-keygen failed (is openssh-client in the image?)"
     pubkey="$(tr -d '\n' < "${KEYFILE}.pub")"
-    elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before adding the key failed"
-    addk="$(full_send POST /api/v1/me/ssh/keys "$apex" "$owner_cookie" \
-        "{\"public_key\":\"${pubkey}\",\"label\":\"cloud lane\"}" 2>/dev/null)"
-    grep -qE ' (200|201)' <<<"$(status_of "$addk")" \
-        || fail "ssh: adding a public key failed: status='$(status_of "$addk")'"
-    key_id="$(json_str_of "$addk" id)"
-    [ -n "$key_id" ] || fail "ssh: could not read the new key's id out of the add response"
-
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before turning SSH on failed"
-    on="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" '{"enabled":true}' 2>/dev/null)"
+    on="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" \
+        "{\"enabled\":true,\"keys\":[{\"public_key\":\"${pubkey}\",\"label\":\"cloud lane\"}]}" 2>/dev/null)"
     grep -q ' 200' <<<"$(status_of "$on")" \
-        || fail "ssh: turning SSH on with a key failed: status='$(status_of "$on")'"
+        || fail "ssh: turning SSH on with a new key failed: status='$(status_of "$on")'"
+    # The answer is the whole state; its one key is the one just added. Later
+    # saves keep it by this id.
+    key_id="$(json_str_of "$on" id)"
+    [ -n "$key_id" ] || fail "ssh: could not read the new key's id out of the save response"
     wait_port22 open || fail "ssh: :22 never opened after the account was enabled"
     unit_active || fail "ssh: ssh.service is not active after the account was enabled"
     [ -f "$DROPIN" ] || fail "ssh: $DROPIN was not rendered after the account was enabled"
@@ -1149,7 +1149,8 @@ ssh)
     # (AUTH.md # Device access). The proof is the same key that just worked no longer
     # working, and sshd asking for a password after accepting it.
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before the second-factor toggle failed"
-    both="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" '{"enabled":true,"require_password":true}' 2>/dev/null)"
+    both="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" \
+        "{\"enabled\":true,\"require_password\":true,\"keys\":[{\"id\":\"${key_id}\"}]}" 2>/dev/null)"
     grep -q ' 200' <<<"$(status_of "$both")" \
         || fail "ssh: turning on the optional second factor failed: status='$(status_of "$both")'"
     grep -qE '^ *AuthenticationMethods +publickey,password$' "$DROPIN" \
@@ -1172,11 +1173,12 @@ ssh)
         || fail "ssh: sshd did not demand a password after accepting the key: '$key_methods'"
     echo "cloud-assertions: second factor enforced — the key is accepted, then a password is still demanded"
 
-    # --- 7. removing the only key while SSH is on is refused.
-    # The user asked to remove a key, not to lose their access, and they may be about
-    # to add a replacement — so this refuses rather than silently turning SSH off.
-    elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before the key delete failed"
-    delk="$(full_send DELETE "/api/v1/me/ssh/keys/${key_id}" "$apex" "$owner_cookie" '{}' 2>/dev/null)"
+    # --- 7. a save that leaves SSH on with no key is refused.
+    # The guard checks the state the save ends in (#501), so a save that drops the
+    # only key and adds its replacement goes through, and one that only drops it
+    # is refused rather than silently turning SSH off.
+    elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before the key removal failed"
+    delk="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" '{"enabled":true,"require_password":true,"keys":[]}' 2>/dev/null)"
     grep -q ' 422' <<<"$(status_of "$delk")" \
         || fail "ssh: removing the only key while SSH is on was not refused: status='$(status_of "$delk")' (want 422)"
     [ -f "${KEYSDIR}/${owner}" ] || fail "ssh: the managed key file disappeared on a refused delete"
@@ -1184,7 +1186,8 @@ ssh)
 
     # --- 8. turn SSH off: the port closes and the key file goes.
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before turning SSH off failed"
-    off="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" '{"enabled":false}' 2>/dev/null)"
+    off="$(full_send PUT /api/v1/me/ssh "$apex" "$owner_cookie" \
+        "{\"enabled\":false,\"keys\":[{\"id\":\"${key_id}\"}]}" 2>/dev/null)"
     grep -q ' 200' <<<"$(status_of "$off")" \
         || fail "ssh: turning SSH off failed: status='$(status_of "$off")'"
     wait_port22 closed || fail "ssh: :22 STILL ANSWERS after the last account turned SSH off — on hosted the daemon is the only port control"
@@ -1202,7 +1205,7 @@ ssh)
     GONE_PW='moose-cloud-lane-gone-pw'
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before creating the second account failed"
     mk="$(full_send POST /api/v1/users "$apex" "$owner_cookie" \
-        "{\"username\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"member\"}" 2>/dev/null)"
+        "{\"display_name\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"member\"}" 2>/dev/null)"
     grep -qE ' (200|201)' <<<"$(status_of "$mk")" \
         || fail "ssh: could not create the second account: status='$(status_of "$mk")'"
     gone_id="$(json_str_of "$mk" id)"
@@ -1218,11 +1221,6 @@ ssh)
     [ -n "$gone_cookie" ] || fail "ssh: no session cookie for '$GONE_USER'"
     elevate "$apex" "$gone_cookie" "$GONE_PW" || fail "ssh: '$GONE_USER' could not elevate"
 
-    elevate "$apex" "$gone_cookie" "$GONE_PW" || fail "ssh: re-elevate as '$GONE_USER' before adding a key failed"
-    gaddk="$(full_send POST /api/v1/me/ssh/keys "$apex" "$gone_cookie" \
-        "{\"public_key\":\"${pubkey}\",\"label\":\"cloud lane\"}" 2>/dev/null)"
-    grep -qE ' (200|201)' <<<"$(status_of "$gaddk")" \
-        || fail "ssh: '$GONE_USER' could not add a key: status='$(status_of "$gaddk")'"
     elevate "$apex" "$gone_cookie" "$GONE_PW" || fail "ssh: re-elevate as '$GONE_USER' before turning SSH on failed"
     # This enable is also the re-enable regression test. SSH was turned off in step
     # 8, which stops the unit — and Debian's ssh.service declares
@@ -1231,7 +1229,8 @@ ssh)
     # anything, so without the RuntimeDirectoryPreserve drop-in no account can ever
     # turn SSH back on until the box reboots. Only the SECOND enable of a boot
     # catches it.
-    gon="$(full_send PUT /api/v1/me/ssh "$apex" "$gone_cookie" '{"enabled":true}' 2>/dev/null)"
+    gon="$(full_send PUT /api/v1/me/ssh "$apex" "$gone_cookie" \
+        "{\"enabled\":true,\"keys\":[{\"public_key\":\"${pubkey}\",\"label\":\"cloud lane\"}]}" 2>/dev/null)"
     grep -q ' 200' <<<"$(status_of "$gon")" \
         || fail "ssh: '$GONE_USER' could not turn SSH on AFTER a previous account turned it off: status='$(status_of "$gon")' — if host-agent logged 'Missing privilege separation directory', the ssh.service RuntimeDirectoryPreserve drop-in is missing and SSH is one-shot per boot"
     wait_port22 open || fail "ssh: :22 never re-opened for '$GONE_USER'"

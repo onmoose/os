@@ -15,7 +15,8 @@ This rule has teeth. It forecloses "we'll ship the daemon now and add the UI lat
 User accounts are real Linux users with `/home/<slug>/` home directories. Identity rules (slug derivation, UID range, reserved names, display-name mutability) live in `FIRST_RUN.md` # Identity & display names. Summary for cross-reference:
 
 - **UID range:** ≥ 3000. Below 3000 is reserved for the system and moose internals.
-- **Slug is stable, display name is mutable.** Renaming "Cindy" → "Cynthia" doesn't touch the slug, the home directory, or file ownership.
+- **Slug is stable, display name is mutable.** Renaming "Cindy" → "Cynthia" doesn't touch the slug, the home directory, or file ownership. `POST /api/v1/users/{id}/name`: self-service for your own name, admin plus the elevation window for somebody else's.
+- **The brain derives the slug; no caller supplies one.** `/setup` and `POST /api/v1/users` take a display name only. Part of deriving it is asking the host whether a candidate name already exists, so a derived account never lands on a system or daemon account that set-password would otherwise adopt.
 - **Primary group:** the user's own group, created at the same UID/GID.
 
 ## Roles map to Linux group membership

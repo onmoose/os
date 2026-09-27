@@ -62,7 +62,7 @@ func (h *harness) mintChallenge() string {
 func (h *harness) createSecondUser(username string) int {
 	h.t.Helper()
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": username, "password": "hunter2hunter2",
+		"display_name": username, "password": "hunter2hunter2",
 	})
 	resp.Body.Close()
 	return resp.StatusCode

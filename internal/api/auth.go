@@ -87,8 +87,14 @@ func writeUnauthenticated(w http.ResponseWriter) {
 // --- DTOs ----------------------------------------------------------------
 
 type UserDTO struct {
-	ID             string `json:"id"`
-	Username       string `json:"username"`
+	ID string `json:"id"`
+	// Username is the Linux account name: stable, and the SSH login. The
+	// dashboard shows it only where it is the answer to a question the person
+	// asked (Settings -> SSH, the admin user list), never as their name.
+	Username string `json:"username"`
+	// DisplayName is what the person is called, and what every other surface
+	// renders (FIRST_RUN.md # Identity & display names).
+	DisplayName    string `json:"display_name"`
 	Role           string `json:"role"`
 	CreatedAt      int64  `json:"created_at"`
 	SingleUserMode *bool  `json:"single_user_mode,omitempty"`
@@ -107,7 +113,7 @@ type UserDTO struct {
 
 func userDTO(u store.User) UserDTO {
 	return UserDTO{
-		ID: u.ID, Username: u.Username, Role: u.Role,
+		ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Role: u.Role,
 		CreatedAt: u.CreatedAt.Unix(),
 	}
 }
@@ -231,8 +237,13 @@ func (s *Server) authState(ctx context.Context, _ *struct{}) (*struct {
 // loginPickerUser is the one shape the picker exposes: no role, no email, no
 // hash. Widening it widens what an unauthenticated caller learns.
 type loginPickerUser struct {
-	ID       string `json:"id"`
-	Username string `json:"username"`
+	ID string `json:"id"`
+	// Username is what POST /login authenticates on, so the picker has to carry
+	// it: the browser posts the account name it was handed here. The screen
+	// never renders it — DisplayName is what a person sees and recognises
+	// (AUTH.md # Login screen UX).
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
 }
 
 // authUsers returns the minimal user list for the login picker. Public on the
@@ -267,7 +278,8 @@ func (s *Server) authUsers(ctx context.Context, _ *struct{}) (*struct {
 		}
 	}{}
 	for _, u := range users {
-		out.Body.Users = append(out.Body.Users, loginPickerUser{ID: u.ID, Username: u.Username})
+		out.Body.Users = append(out.Body.Users,
+			loginPickerUser{ID: u.ID, Username: u.Username, DisplayName: u.DisplayName})
 	}
 	return out, nil
 }
@@ -286,8 +298,11 @@ func (s *Server) authUsers(ctx context.Context, _ *struct{}) (*struct {
 // specs/AUTH_AND_ACCESS.md # Portal-to-box SSO).
 func (s *Server) setup(ctx context.Context, in *struct {
 	Body struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		// DisplayName is the first name the wizard asks for. The account name is
+		// derived from it here, never sent by the caller
+		// (FIRST_RUN.md # Step 2 and # Identity & display names).
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
 		// Recovery toggles the first-run recovery code (FIRST_RUN.md # Step 2a,
 		// on by default). nil ⇒ on (back-compat: the M1c headless /setup and any
 		// older caller that omits the field still get a code). Explicit false is
@@ -311,14 +326,15 @@ func (s *Server) setup(ctx context.Context, in *struct {
 		return nil, huma.Error403Forbidden("setup is disabled on hosted boxes; sign in through the portal")
 	}
 
-	username := strings.TrimSpace(in.Body.Username)
 	password := in.Body.Password
 	withRecovery := in.Body.Recovery == nil || *in.Body.Recovery
 
-	if username == "" || password == "" {
-		return nil, huma.Error422UnprocessableEntity("username and password are required")
+	if password == "" {
+		return nil, huma.Error422UnprocessableEntity("name and password are required")
 	}
-	if err := validateUsername(username); err != nil {
+	displayName, username, err := s.newAccount(ctx, in.Body.DisplayName, "")
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionSetupFailure, audit.Target{Kind: "user"}, nil, false)
 		return nil, err
 	}
 
@@ -329,7 +345,6 @@ func (s *Server) setup(ctx context.Context, in *struct {
 	// the user acknowledge.
 	var recoveryCode, recoveryHash string
 	if withRecovery {
-		var err error
 		recoveryCode, recoveryHash, err = newRecoveryCode()
 		if err != nil {
 			return nil, huma.Error500InternalServerError("recovery code", err)
@@ -337,10 +352,10 @@ func (s *Server) setup(ctx context.Context, in *struct {
 	}
 
 	u := store.User{
-		ID: newID(), Username: username, Role: store.RoleAdmin,
+		ID: newID(), Username: username, DisplayName: displayName, Role: store.RoleAdmin,
 		RecoveryHash: recoveryHash, CreatedAt: time.Now(),
 	}
-	meta := map[string]any{"username": username}
+	meta := map[string]any{"username": username, "name": displayName}
 	if err := s.store.CreateFirstAdmin(u); err != nil {
 		s.auditor.Record(ctx, audit.ActionSetupFailure, audit.Target{Kind: "user"}, meta, false)
 		if errors.Is(err, store.ErrConflict) {

@@ -21,7 +21,7 @@ The spec is the target; a few picks haven't landed yet. Don't treat these as bug
 - **Package manager is npm, not pnpm.** There's a `package-lock.json` and `running-locally.md`/CI use `npm ci`. The spec names pnpm; revisit if/when we switch.
 - **No ESLint/Prettier yet.** The spec lists them; `package.json` has neither. `vue-tsc --noEmit` (run by `npm run build` and CI) is the only automated gate today.
 - **Pinia is registered but unused.** The spec reserves Pinia for client-side state; in practice the cross-cutting client state (auth, toasts, elevation) is held as **module-singleton refs** (see below), which is simpler at this size. Pinia is wired in `main.ts` and ready when a real store appears (the spec's `useHealth()` health store is the likely first).
-- **`useJob()` is `waitForJob()` for now.** The spec's `useJob(jobId)` composable (a `useQuery` with `refetchInterval`) isn't built; `api.ts` has a plain poll loop instead. Fine for the skeleton.
+- **`useJob()` is `waitForJob()` for now.** The spec's `useJob(jobId)` composable (a `useQuery` with `refetchInterval`) isn't built as a shared composable; `api.ts` has a plain poll loop instead. The install progress page is the one place that already polls with `useQuery` and `refetchInterval`, inline.
 - **`useHealth()` / `<HealthGated>` / degraded-mode banners** (WEB_UI.md # Health & degraded mode) are not built yet.
 
 When you close one of these gaps, delete its bullet here in the same change.
@@ -54,27 +54,38 @@ web-ui/
     │   └── utils.ts        # cn() class-merge helper (shadcn convention)
     │
     ├── mailProviderForm.ts # outgoing-mail form shape + preset rules, shared by
-    │                       #   the add flow and the inline edit form
-    ├── useInstall.ts       # catalog-app install flow (plan fetch, consent dialog,
-    │                       #   duplicate/job errors, per-app button state) — shared
-    │                       #   by AppDetailView; see "Install flow" below
+    │                       #   the add flow, the inline edit form, and the
+    │                       #   install setup page's inline add
+    ├── sshDraft.ts         # the SSH screen's unsaved draft: the save body, and the
+    │                       #   sessionStorage copy that survives a reload or the
+    │                       #   hosted owner's portal confirm
+    ├── useInstall.ts       # catalog-app install flow: which copies the caller has
+    │                       #   (detail-page button state) and the POST with its
+    │                       #   409/422 branches; see "Install flow" below
+    ├── aiProviders.ts      # AI slots from manifest roles, provider tiles, model
+    │                       #   pickers, bindings and the requires gate for the
+    │                       #   install setup page
     │
     ├── views/              # one component per route (lazy-loaded)
     │   ├── HomeView.vue        # installed-app grid
     │   ├── StoreView.vue       # catalog browse grid (cards → detail page)
-    │   ├── AppDetailView.vue   # /store/:id — app detail page; Install lives here
+    │   ├── AppDetailView.vue   # /store/:id — app detail page; Install starts here
+    │   ├── InstallSetupView.vue    # /store/:id/install: the install setup page
+    │   ├── InstallProgressView.vue # /store/:id/install/:jobId: install job progress
     │   ├── CustomInstallView.vue  # Door-2 custom-container form (admin-only)
     │   ├── FilesView.vue
     │   └── settings/           # Settings left-nav shell + its sections
     │       ├── SettingsLayout.vue        # sidebar + nested-route content pane
     │       ├── AccountSection.vue        # identity + self-service password change
-    │       ├── SshSection.vue            # per-account SSH opt-in + public keys
+    │       ├── SshSection.vue            # per-account SSH opt-in + public keys (draft + Save)
     │       ├── NotificationsSection.vue  # per-category bell mutes
     │       ├── InstalledAppsSection.vue  # manage/uninstall/logs list
     │       ├── ActivitySection.vue       # audit-log browser (all users)
     │       ├── UsersSection.vue          # admin-only user management
-    │       ├── OutgoingEmailSection.vue  # admin-only SMTP account list
-    │       ├── OutgoingEmailAddSection.vue # /mail/add + /mail/add/:preset
+    │       ├── InstalledAppDetailSection.vue # one app: controls, email, secrets, settings + LLM pickers, logs
+    │       ├── LLMProvidersSection.vue   # Integrations → LLM providers: the user's own AI accounts
+    │       ├── EmailSection.vue          # Integrations → Email: the user's own SMTP account list
+    │       ├── EmailAddSection.vue       # /email/add + /email/add/:preset (/settings/mail/* redirect here)
     │       └── AboutSection.vue          # product identity
     │
     └── components/         # reusable chrome + dialogs
@@ -85,9 +96,17 @@ web-ui/
         ├── AppGlyph.vue        # icon-less fallback: manifest icon_glyph → Lucide icon, else AppWindow
         ├── MailProviderLogo.vue # provider mark from assets/mail-providers/, by preset id
         │                        #   (that folder's README is the how-to for adding one)
+        ├── AIProviderLogo.vue   # LLM provider logo (box-proxied), icon fallback
+        ├── AISlotPicker.vue     # LLM provider row: tiles, account pick + inline add,
+        │                        #   model pickers; shared by the setup page and the
+        │                        #   app's settings screen
         ├── SplitButton.vue
-        ├── InstallDialog.vue, ElevateDialog.vue
-        └── ToastHost.vue
+        ├── ElevateDialog.vue
+        ├── ToastHost.vue
+        └── install/            # the rows of the install setup page
+            ├── OptionCards.vue       # selectable card grid + "More" divider + search
+            ├── ConfigFieldInput.vue  # one config field (text / secret / enum / bool)
+            └── MailAccountSection.vue # Email row, with inline account add for any user
 ```
 
 A handful of top-level `.vue` files (`Login.vue`, `Setup.vue`, `NotificationBell.vue`, `LiveResources.vue`) sit directly in `src/` rather than `components/` — they're the pre-shell / standalone surfaces. New reusable components go in `components/`; new routed screens go in `views/`.
@@ -106,20 +125,28 @@ A handful of top-level `.vue` files (`Login.vue`, `Setup.vue`, `NotificationBell
 
 - **`api.ts`** — the ~30-LOC `fetch` wrapper. `api.get/post/put/patch/del` prepend `/api/v1`, send `credentials: "include"`, and normalize both error shapes the brain emits (huma's `{detail,title,errors}` and the jobs `{code,message}`) into a typed `ApiError(code, message, status)`. A 401 from *any* call fires the `onUnauthenticated` handler (registered by `auth.ts`) to drop the session. It also re-exports the **wire types** as friendly aliases (`User`, `Instance`, `CatalogEntry`, …) sourced from `generated/openapi.ts`, plus a few hand-maintained types for endpoints that bypass huma codegen (the Door-2 custom-install request/result types, and the `Scope` literal union the generator emits as a bare string).
 - **`auth.ts`** — owns the session lifecycle and the `currentUser`/`hasUsers`/`booted` singletons that drive `App.vue`'s three-way branch. `bootstrap()` runs `GET /auth/state` → (`/me` | login | setup). `setup()`/`setupComplete()` are split intentionally so the Setup view stays mounted to show the one-time recovery code before flipping to the shell. Call `refreshCurrentUser()` in the `onSettled` of user-management mutations so `single_user_mode` stays accurate without a reload.
-- **`elevate.ts`** — the 5-minute re-prompt window for destructive admin ops (`USERS_AND_GROUPS.md` # Elevation in the UI). Wrap a mutation in `withElevation(fn)`: it runs `fn`, and on a `403 elevation_required` it drives the single `ElevateDialog` (mounted in `AppShell`), elevates the session, and retries once. Inside a live window the prompt never shows. A user cancel rejects with `elevationCancelled` — map it to a no-op, not an error.
+- **`elevate.ts`** — the 5-minute re-prompt window for destructive admin ops (`USERS_AND_GROUPS.md` # Elevation in the UI). Wrap a mutation in `withElevation(fn)`: it runs `fn`, and on a `403 elevation_required` it drives the single `ElevateDialog` (mounted in `AppShell`), elevates the session, and retries once. Inside a live window the prompt never shows. A user cancel rejects with `elevationCancelled` — map it to a no-op, not an error. For the hosted box owner the confirm step is a full-page portal round-trip, so the pending call never resumes. A screen that holds a draft keeps it in `sessionStorage` itself (the SSH screen does, via `sshDraft.ts`), and reads `isLeavingForConfirm()` to skip its unsaved-changes warning for that one leave.
 - **`toasts.ts`** — app-wide ephemeral feedback. `pushErrorToast(message)` from anywhere; `<ToastHost>` (mounted in `AppShell`) renders the live list, auto-dismissing after 6s. Error-only today (the rollback feedback for optimistic notification mutations); success/confirm toasts extend this same channel when they land.
 
 ## Routing
 
 `router.ts` is a flat lazy-imported table (history mode). Four primary destinations mirror the dock (`DASHBOARD.md` # global navigation): Home, Files, Store, Settings. Admin-only screens (`/store/custom`, `/settings/users`) **guard the role inside the view component** rather than via a router guard — follow the `CustomInstallView` pattern when adding another admin-only screen. Unknown paths redirect to `/` so the SPA never 404s its own chrome (production Caddy also serves `index.html` for unmatched routes).
 
-The Store is a **browse → detail** pair: `/store` (`StoreView`) is a grid of `StoreAppCard`s (logo + name) — filterable by a page-wide search and category pills — that link to `/store/:id` (`AppDetailView`), the app-store-style detail page where the description, screenshots, and the Install flow live. `/store/custom` is declared before `/store/:id` (and Vue Router ranks the static segment higher anyway, so `custom` never matches the `:id` param).
+The Store is a **browse → detail** pair: `/store` (`StoreView`) is a grid of `StoreAppCard`s (logo + name) — filterable by a page-wide search and category pills — that link to `/store/:id` (`AppDetailView`), the app-store-style detail page where the description, screenshots, and the Install flow live. `/store/custom` is declared before `/store/:id` (and Vue Router ranks the static segment higher anyway, so `custom` never matches the `:id` param). Installing a catalog app adds two routes under the detail page: `/store/:id/install` (`InstallSetupView`, `?scope=household` for the household install) and `/store/:id/install/:jobId` (`InstallProgressView`).
 
 When an app has no raster icon (`icon_url`), both the card and the detail header fall back via **`AppGlyph`**, which renders the Lucide icon named by the manifest's `icon_glyph` (kebab-case) or the generic `AppWindow`. `AppGlyph` imports the Lucide set with a lazy `import("lucide-vue-next")`, so the ~900 KB icon library is split into its own chunk that loads only when a glyph fallback is actually rendered — never on the main bundle. In a curated catalog most apps ship a real logo, so that chunk rarely loads; if glyph-fallback usage ever becomes common, switch `AppGlyph` to per-icon dynamic imports so only the few used glyphs load.
 
 ## Install flow
 
-`useInstall(manifestId)` (`src/useInstall.ts`) owns the catalog-app install flow so the detail page renders it without re-implementing it: the advisory install-plan fetch (enabled only while the consent dialog is open), the install mutation with its three error branches (409 duplicate → warn-don't-block banner, 422 election → inline dialog error, mid-job failure → standalone banner), and the per-app button state (does the caller already have a household / own-personal instance?). The view supplies wording and renders `InstallDialog` from the returned `activePlan`. It reads/writes the shared `["apps"]` query cache, so an install elsewhere reflects here and vice versa. During a running install it also exposes the job's live `step` (`waitForJob` takes an optional `onPoll` callback that fires on each non-terminal poll); the view collapses the brain's ~15 technical lifecycle steps into a few friendly phases (Preparing → Downloading → Starting, unknown/empty → "Installing…") and renders them with a spinner on the Install button — the wording stays in the view, `useInstall` only carries the raw step.
+A catalog install spans three pages. The detail page's Install button (and the split button's household item) only navigates to the setup page. The setup page fetches `GET /catalog/:id/install-plan` itself, keeps the form in local refs, and sends `POST /apps`. A 202 replaces the URL with the progress page, which polls `GET /jobs/:id` with a `useQuery` `refetchInterval` until the job ends. Because the job id is in the URL, a reload resumes it. A 404 on the job (the brain restarted and forgot it) stops the polling and says so.
+
+`src/useInstall.ts` holds the shared parts. `useAppInstances(manifestId)` finds the caller's household and own-personal copies in the `["apps"]` cache. It says whether the detail page shows Open, Install, or "Installing…", and whether the household item is offered. "Installing…" comes from the instance row being in the `installing` state, which the brain creates at the start of the job, so it needs no local state and holds across a reload. `useInstallSubmit(manifestId)` is the POST with its two error branches: 409 `duplicate-install` becomes a warn-don't-block banner with "Install my own copy" (a retry with `confirm: true`), and any other failure (a 422 election) shows inline above the Install button.
+
+The progress page folds the brain's ~15 lifecycle steps into four phases in the order the brain runs them: Preparing, Downloading (`resolving_digests`, which pulls the images), Setting up, Starting. The phase never goes back, and an unknown step keeps the last known phase. The wording stays in the view.
+
+The setup page's rows live in `components/install/`. `OptionCards` is the shared card grid (about five cards, then a "More" divider button that shows the rest with a search box, and an optional "use what I typed" card for model ids). The Email row reuses `mailProviderForm.ts` for its inline add, the same rules as the Settings add flow; `useMailPresets` takes an `enabled` ref there so the presets load only when the user opens the add flow. The AI providers row gets its provider list from `GET /api/v1/ai-providers` (query key `["ai-providers"]`, fetched by the setup page), plus the "Other (OpenAI-compatible)" tile, which the UI owns and whose accounts carry provider id `openai_compatible`. `aiProviders.ts` is the one module that turns roles and provider data into tiles. It groups the fields that have a `role` of kind `ai` into slots by `kind.protocol`. A tile goes to the app's native slot when its `native_protocol` matches, else to the compatible slot when it has an `openai_base_url` (Other always fits), and it is hidden for a slot when the provider has no model of a type the slot declares. A native slot that no provider fits keeps its fields in the Settings row. Picking a tile lists the user's accounts for it (`GET /api/v1/ai-accounts`, query key `["ai-accounts"]`, owned by `AISlotPicker`) with an inline add that posts `/ai-accounts` and picks the new account, then one picker per model setting: single for `model.<type>`, multi for `models.<type>`, the provider's default first and chosen, plus a typed id. A saved choice becomes a `config.ai_bindings` entry (`bindingOf`), and the slot's fields are not sent in `config.fields`. The Install button also waits for the plan's `requires` groups (`unmetGroups`, `groupNeed`), counting a bound slot as filled. An empty provider list (the catalog is not reachable, or serves none) means no AI row: every field is a plain input, so an install is never blocked on provider data.
+
+The same `AISlotPicker` draws the app's settings screen (`InstalledAppDetailSection.vue`, `INSTALL_SETUP.md` piece 4). There the choices start from the `ai_bindings` of `GET /apps/{id}/config` (`choiceFromBinding`), a slot with values and no binding stays raw fields under "set by hand" until the user asks to pick an account, and Save sends the changed fields plus the changed slots (`bindingChanges`: a new or changed binding, or `account_id: ""` for a removed one) in one `PUT`. A choice whose account is not in the caller's `["ai-accounts"]` list is another user's, and the picker says "Someone else's account". A binding whose provider has no tile (it left the provider data, or the data did not load) gets its own card with **Remove**, which sends the `account_id: ""` clear, and its fields are never raw inputs. The choices are seeded when the page opens an app and again only when nothing is unsaved or right after a save, so a background refetch keeps what the user picked. User-facing text says "LLM provider"; code and API names keep `ai`. An account edit or delete may answer with a `job_id` for the apps it restarts: the Settings screens follow it with `waitForJobOk` (`api.ts`) and then invalidate `["apps"]` and `["app-config"]`, so tiles and the settings screen pick up `needs_setup`.
 
 ## Styling
 

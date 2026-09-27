@@ -135,7 +135,7 @@ if [[ "$HAS_USERS" == "false" ]]; then
   SETUP_RESP=$(curl -sf -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
     -X POST "$BRAIN/api/v1/setup" \
     -H 'Content-Type: application/json' \
-    -d "{\"username\":\"$TEST_USER\",\"password\":\"$TEST_PASS\"}") \
+    -d "{\"display_name\":\"$TEST_USER\",\"password\":\"$TEST_PASS\"}") \
     || fail "POST /api/v1/setup failed"
   echo "    Setup OK (recovery code: $(printf '%s' "$SETUP_RESP" | jq -r '.recovery_code'))"
 else

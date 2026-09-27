@@ -60,12 +60,12 @@ func TestSetConfigFailedRecreateMarksAndClearsPending(t *testing.T) {
 
 func TestRebindMailFailedRecreateMarksPending(t *testing.T) {
 	e := newTestEnv(t)
-	if err := e.store.CreateMailProvider(testProvider()); err != nil {
+	if err := e.createMailProvider(testProvider()); err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
 	second := testProvider()
 	second.ID, second.Label, second.Host = "mp_two", "SES", "email-smtp.example.com"
-	if err := e.store.CreateMailProvider(second); err != nil {
+	if err := e.createMailProvider(second); err != nil {
 		t.Fatalf("create provider 2: %v", err)
 	}
 	inst, _ := installMailApp(t, e, "mp_test") // running

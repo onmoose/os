@@ -100,8 +100,8 @@ func TestInstallRejectsIllegalElectionAndAudits(t *testing.T) {
 
 func TestResolveOwnerScope(t *testing.T) {
 	h := newHarness(t)
-	admin := store.User{ID: "u_a", Username: "andrei", Role: store.RoleAdmin}
-	member := store.User{ID: "u_m", Username: "mara", Role: store.RoleMember}
+	admin := store.User{ID: "u_a", Username: "andrei", DisplayName: "andrei", Role: store.RoleAdmin}
+	member := store.User{ID: "u_m", Username: "mara", DisplayName: "mara", Role: store.RoleMember}
 
 	cases := []struct {
 		name      string
@@ -154,7 +154,7 @@ func TestInstallDuplicateWarnsThenConfirms(t *testing.T) {
 	h.seedInstance("i1", "immich", "immich", "u_admin", store.ScopeHousehold)
 
 	srv := h.srvServer()
-	ctx := auth.WithIdentity(context.Background(), identity(store.User{ID: "u_admin", Username: "admin", Role: store.RoleAdmin}))
+	ctx := auth.WithIdentity(context.Background(), identity(store.User{ID: "u_admin", Username: "admin", DisplayName: "admin", Role: store.RoleAdmin}))
 
 	// Without confirm: 409 duplicate-install.
 	if err := srv.checkDuplicate(ctx, "immich", false, "app.install"); err == nil {
@@ -179,7 +179,7 @@ func TestCheckDuplicateIgnoresOtherMembersPersonal(t *testing.T) {
 	h.seedInstance("i1", "immich", "immich--alex", "u_alex", store.ScopePersonal)
 
 	srv := h.srvServer()
-	ctx := auth.WithIdentity(context.Background(), identity(store.User{ID: "u_mara", Username: "mara", Role: store.RoleMember}))
+	ctx := auth.WithIdentity(context.Background(), identity(store.User{ID: "u_mara", Username: "mara", DisplayName: "mara", Role: store.RoleMember}))
 	if err := srv.checkDuplicate(ctx, "immich", false, "app.install"); err != nil {
 		t.Fatalf("mara should not see alex's personal immich: %v", err)
 	}

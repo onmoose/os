@@ -24,13 +24,16 @@ import (
 
 // setupAdmin bootstraps an admin via the wire (POST /setup) and leaves a
 // valid session in h.jar. Returns the UserDTO from the response body.
-func (h *harness) setupAdmin(username, password string) UserDTO {
+// setupAdmin bootstraps the founding admin. The argument is the display name
+// the wizard asks for; the account name is derived from it, so read it back off
+// the returned DTO rather than assuming the two match.
+func (h *harness) setupAdmin(displayName, password string) UserDTO {
 	h.t.Helper()
 	resp := h.do("POST", "/api/v1/setup", map[string]string{
-		"username": username, "password": password,
+		"display_name": displayName, "password": password,
 	})
 	if resp.StatusCode != 200 {
-		h.t.Fatalf("setup %s: %d", username, resp.StatusCode)
+		h.t.Fatalf("setup %s: %d", displayName, resp.StatusCode)
 	}
 	body := decodeJSON[struct {
 		User UserDTO `json:"user"`
@@ -105,7 +108,7 @@ func TestCreateUserHappyPath(t *testing.T) {
 	h.elevate("pass1")
 
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "bobpass", "role": "member",
+		"display_name": "bob", "password": "bobpass", "role": "member",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("create user: %d", resp.StatusCode)
@@ -133,7 +136,7 @@ func TestCreateUserDefaultsToMember(t *testing.T) {
 	h.elevate("pass1")
 
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "charlie", "password": "charliepass",
+		"display_name": "charlie", "password": "charliepass",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("create user: %d", resp.StatusCode)
@@ -150,11 +153,11 @@ func TestCreateUserDuplicateUsername409(t *testing.T) {
 	h.elevate("pass1")
 
 	h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "p1",
+		"display_name": "bob", "password": "p1",
 	}).Body.Close()
 
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "p2",
+		"display_name": "bob", "password": "p2",
 	})
 	if resp.StatusCode != 409 {
 		t.Fatalf("duplicate username = %d; want 409", resp.StatusCode)
@@ -168,7 +171,7 @@ func TestCreateUserInvalidRole422(t *testing.T) {
 	h.elevate("pass1")
 
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "p1", "role": "superuser",
+		"display_name": "bob", "password": "p1", "role": "superuser",
 	})
 	if resp.StatusCode != 422 {
 		t.Fatalf("invalid role = %d; want 422", resp.StatusCode)
@@ -183,7 +186,7 @@ func TestCreateUserMemberForbidden(t *testing.T) {
 	h.loginAs("bob", "bobpass")
 
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "eve", "password": "pass",
+		"display_name": "eve", "password": "pass",
 	})
 	if resp.StatusCode != 403 {
 		t.Fatalf("member create user = %d; want 403", resp.StatusCode)
@@ -205,7 +208,7 @@ func TestCreateUserRollsBackOnHostFailure(t *testing.T) {
 	h.elevate("alicepass")
 
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "p",
+		"display_name": "bob", "password": "p",
 	})
 	if resp.StatusCode != 502 {
 		t.Fatalf("create with broken host = %d; want 502", resp.StatusCode)
@@ -239,7 +242,7 @@ func TestUpdateRoleHappyPath(t *testing.T) {
 	h.setupAdmin("alice", "pass1")
 	h.elevate("pass1")
 	h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "bobpass", "role": "member",
+		"display_name": "bob", "password": "bobpass", "role": "member",
 	}).Body.Close()
 
 	bob, _ := h.st.GetUserByUsername("bob")
@@ -283,7 +286,7 @@ func TestUpdateRoleNoSelfDemote(t *testing.T) {
 
 	// Add a second admin so the last-admin guard doesn't fire.
 	h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "p", "role": "admin",
+		"display_name": "bob", "password": "p", "role": "admin",
 	}).Body.Close()
 
 	resp := h.do("PATCH", fmt.Sprintf("/api/v1/users/%s", alice.ID), map[string]string{
@@ -330,7 +333,7 @@ func TestDeleteUserHappyPath(t *testing.T) {
 	h.setupAdmin("alice", "pass1")
 	h.elevate("pass1")
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "p",
+		"display_name": "bob", "password": "p",
 	})
 	bob := decodeJSON[UserDTO](t, resp)
 
@@ -365,7 +368,7 @@ func TestDeleteUserNoSelfDelete(t *testing.T) {
 
 	// Add second admin so last-admin guard doesn't fire.
 	h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "p", "role": "admin",
+		"display_name": "bob", "password": "p", "role": "admin",
 	}).Body.Close()
 
 	resp := h.do("DELETE", fmt.Sprintf("/api/v1/users/%s", alice.ID), nil)
@@ -408,7 +411,7 @@ func TestResetUserPasswordHappyPath(t *testing.T) {
 	h.setupAdmin("alice", "pass1")
 	h.elevate("pass1")
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "oldpass",
+		"display_name": "bob", "password": "oldpass",
 	})
 	bob := decodeJSON[UserDTO](t, resp)
 
@@ -564,7 +567,7 @@ func TestCreateUserAuditEvent(t *testing.T) {
 	h.elevate("pass1")
 
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "p",
+		"display_name": "bob", "password": "p",
 	})
 	bob := decodeJSON[UserDTO](t, resp)
 
@@ -585,7 +588,7 @@ func TestDeleteUserAuditEvent(t *testing.T) {
 	h := newHarness(t)
 	h.setupAdmin("alice", "pass1")
 	h.elevate("pass1")
-	resp := h.do("POST", "/api/v1/users", map[string]string{"username": "bob", "password": "p"})
+	resp := h.do("POST", "/api/v1/users", map[string]string{"display_name": "bob", "password": "p"})
 	bob := decodeJSON[UserDTO](t, resp)
 
 	h.do("DELETE", fmt.Sprintf("/api/v1/users/%s", bob.ID), nil).Body.Close()
@@ -614,7 +617,7 @@ func TestUpdateRoleRollsBackOnHostFailure(t *testing.T) {
 	h.elevate("alicepass")
 
 	bob := store.User{
-		ID: "u_bob", Username: "bob", Role: store.RoleMember, CreatedAt: time.Now(),
+		ID: "u_bob", Username: "bob", DisplayName: "bob", Role: store.RoleMember, CreatedAt: time.Now(),
 	}
 	if err := h.st.CreateUser(bob); err != nil {
 		t.Fatalf("seed bob: %v", err)
@@ -648,7 +651,7 @@ func TestCreateUserRollsBackOnSetRoleFailure(t *testing.T) {
 	h.elevate("alicepass")
 
 	resp := h.do("POST", "/api/v1/users", map[string]string{
-		"username": "bob", "password": "bobpass", "role": "member",
+		"display_name": "bob", "password": "bobpass", "role": "member",
 	})
 	if resp.StatusCode != 502 {
 		t.Fatalf("createUser with broken set-role = %d; want 502", resp.StatusCode)
@@ -694,6 +697,12 @@ func newHarnessWithBrokenSetPassword(t *testing.T) *harness {
 		t.Fatalf("listen: %v", err)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/users/{username}/exists", func(w http.ResponseWriter, r *http.Request) {
+		pmu.Lock()
+		_, ok := pwds[r.PathValue("username")]
+		pmu.Unlock()
+		_ = json.NewEncoder(w).Encode(protocol.UserExistsResponse{Exists: ok})
+	})
 	// set-password 500s for non-"alice" users (alice is seeded directly).
 	mux.HandleFunc("POST /v1/auth/set-password", func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.SetPasswordRequest
@@ -765,6 +774,12 @@ func newHarnessWithBrokenSetRole(t *testing.T) *harness {
 		t.Fatalf("listen: %v", err)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/users/{username}/exists", func(w http.ResponseWriter, r *http.Request) {
+		pmu.Lock()
+		_, ok := pwds[r.PathValue("username")]
+		pmu.Unlock()
+		_ = json.NewEncoder(w).Encode(protocol.UserExistsResponse{Exists: ok})
+	})
 	mux.HandleFunc("POST /v1/auth/set-password", func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.SetPasswordRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -817,7 +832,7 @@ func newHarnessWithBrokenSetRole(t *testing.T) *harness {
 func (h *harness) setupAdminDirect(username string) {
 	h.t.Helper()
 	u := store.User{
-		ID: "u_direct", Username: username, Role: store.RoleAdmin,
+		ID: "u_direct", Username: username, DisplayName: username, Role: store.RoleAdmin,
 		CreatedAt: time.Now(),
 	}
 	if err := h.st.CreateFirstAdmin(u); err != nil {

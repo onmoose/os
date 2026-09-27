@@ -1,6 +1,6 @@
 # Outgoing-email provider logos
 
-Drop a logo in here and it appears in Settings → Outgoing email. No code change needed.
+Drop a logo in here and it appears in Settings → Integrations → Email. No code change needed.
 
 ## Naming
 

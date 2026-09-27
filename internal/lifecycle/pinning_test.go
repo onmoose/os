@@ -25,7 +25,7 @@ services:
 `
 	e.writeCatalogApp(t, "whoami", compose, whoamiManifest("")) // no promise: the compose's own digest is the trust anchor
 
-	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil)
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopePersonal, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}

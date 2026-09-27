@@ -18,7 +18,7 @@ func TestCheck_RealSamples(t *testing.T) {
 		"testdata/whoami/manifest.yml",
 		"testdata/files-demo/manifest.yml",
 	} {
-		if err := check(context.Background(), admission.CheckStructure, p); err != nil {
+		if _, err := check(context.Background(), admission.CheckStructure, p, lintOptions{}); err != nil {
 			t.Errorf("check(%s): want clean, got %v", p, err)
 		}
 	}
@@ -67,7 +67,7 @@ func TestCheck_RejectsOnAdmission(t *testing.T) {
 			// validManifest/validCompose live in main_test.go; here the manifest is
 			// schema-valid so the failure must come from admission, not lint.
 			mp := writeApp(t, validManifest, tc.compose)
-			err := check(context.Background(), admission.CheckStructure, mp)
+			_, err := check(context.Background(), admission.CheckStructure, mp, lintOptions{})
 			if err == nil {
 				t.Fatalf("want an admission error, got nil")
 			}
@@ -82,7 +82,7 @@ func TestCheck_RejectsOnAdmission(t *testing.T) {
 
 func TestCheck_RejectsOnSchema(t *testing.T) {
 	bad := strings.Replace(validManifest, "id: test-app", "id: Test_App", 1)
-	err := check(context.Background(), admission.CheckStructure, writeApp(t, bad, validCompose))
+	_, err := check(context.Background(), admission.CheckStructure, writeApp(t, bad, validCompose), lintOptions{})
 	if err == nil || !strings.Contains(err.Error(), "kebab-case") {
 		t.Fatalf("bad slug: want a schema error naming kebab-case, got %v", err)
 	}
@@ -102,7 +102,7 @@ images:
     download_bytes: 0
     disk_bytes: 0
 `
-	err := check(context.Background(), admission.CheckStructure, writeApp(t, withImages, validCompose))
+	_, err := check(context.Background(), admission.CheckStructure, writeApp(t, withImages, validCompose), lintOptions{})
 	if err == nil || !strings.Contains(err.Error(), "not resolved") {
 		t.Fatalf("want an unresolved-images error, got %v", err)
 	}
@@ -116,7 +116,7 @@ images:
     download_bytes: 100
     disk_bytes: 200
 `
-	err := check(context.Background(), admission.CheckStructure, writeApp(t, withImages, validCompose))
+	_, err := check(context.Background(), admission.CheckStructure, writeApp(t, withImages, validCompose), lintOptions{})
 	if err == nil || !strings.Contains(err.Error(), "well-formed sha256 digest") {
 		t.Fatalf("want a malformed-digest error, got %v", err)
 	}
@@ -130,7 +130,7 @@ images:
     download_bytes: 2850040
     disk_bytes: 6581646
 `
-	if err := check(context.Background(), admission.CheckStructure, writeApp(t, withImages, validCompose)); err != nil {
+	if _, err := check(context.Background(), admission.CheckStructure, writeApp(t, withImages, validCompose), lintOptions{}); err != nil {
 		t.Fatalf("want clean, got %v", err)
 	}
 }

@@ -168,6 +168,13 @@ const (
 // the dashboard API, and a reflected header would let the app read the reply.
 // AUTH.md # Re-authentication and confirm.go both rest on the opposite: that
 // a cross-origin page cannot make an authenticated JSON POST here.
+//
+// confirm.go rests on it more narrowly and more heavily than the rest: the
+// confirm challenge it mints is the only thing standing between a forced portal
+// navigation and an elevated owner session, and that challenge is unguessable
+// only because no cross-origin caller can read the response that carries it.
+// Adding a CORS layer here is therefore not a convenience change; it is a change
+// to how hosted re-authentication holds.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig(openAPITitle, openAPIVersion))
@@ -189,6 +196,9 @@ func (s *Server) Handler() http.Handler {
 	// directly in <img> tags (APP_STORE.md # Catalog schema).
 	mux.HandleFunc("GET /api/v1/catalog/{id}/icon", s.catalogIcon)
 	mux.HandleFunc("GET /api/v1/catalog/{id}/screenshots/{n}", s.catalogScreenshot)
+	// AI provider logos, the same way: proxied and cached like an app icon.
+	mux.HandleFunc("GET /api/v1/ai-providers/{id}/logo", s.aiProviderLogo)
+	mux.HandleFunc("GET /api/v1/ai-providers/{id}/logo-dark", s.aiProviderLogoDark)
 
 	// Portal-to-box SSO landing (hosted only): the portal redirects the owner's
 	// browser here with a signed ownership assertion; the handler verifies it,
@@ -227,6 +237,8 @@ func (s *Server) registerAll(api huma.API) {
 	s.registerHealth(api)
 	s.registerNotifications(api)
 	s.registerMail(api)
+	s.registerAIProviders(api)
+	s.registerAIAccounts(api)
 	s.registerSystem(api)
 	s.registerSystemUpdate(api)
 	s.registerFirstRun(api)
@@ -368,6 +380,10 @@ type InstanceDTO struct {
 	Exposure  string `json:"exposure" enum:"restricted,public"`
 	IconURL   string `json:"icon_url,omitempty"`
 	IconGlyph string `json:"icon_glyph,omitempty"`
+	// ShortDescription is the catalog's one-line tagline, so the installed-apps
+	// list can show it without a per-row /catalog/<id> request. A Door-2 custom
+	// app has no catalog entry, so this stays empty.
+	ShortDescription string `json:"short_description,omitempty"`
 	// Mail fields are detail-page enrichments set only by getApp (list
 	// responses omit them): MailSupported reports the manifest's mail block,
 	// MailProviderID the current binding ("" ⇒ unbound). They drive the
@@ -381,6 +397,11 @@ type InstanceDTO struct {
 	// narrower app than Caddy is actually serving. Empty ⇒ the access toggle means
 	// exactly what it says.
 	PublicPaths []string `json:"public_paths,omitempty"`
+	// NeedsSetup is true when a required config field has no value or a
+	// requires group is unmet (INSTALL_SETUP.md piece 4), for example after
+	// the AI account the app used was deleted. The home tile and the
+	// installed-apps list show it. GET /apps/{id}/config says what is missing.
+	NeedsSetup bool `json:"needs_setup"`
 }
 
 func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
@@ -409,6 +430,7 @@ func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry)
 	if e != nil {
 		dto.IconURL = e.IconURL
 		dto.IconGlyph = e.IconGlyph
+		dto.ShortDescription = e.ShortDescription
 	}
 	return dto
 }
@@ -589,6 +611,7 @@ func (s *Server) listApps(ctx context.Context, _ *struct{}) (*struct {
 		// Costs one manifest read per app; best-effort, so a missing copy just
 		// leaves the field empty.
 		s.withPublicPaths(&dto)
+		dto.NeedsSetup = s.instanceNeedsSetup(i.ID)
 		out.Body.Apps = append(out.Body.Apps, dto)
 	}
 	return out, nil
@@ -625,6 +648,7 @@ func (s *Server) getApp(ctx context.Context, in *struct {
 	}
 	dto := s.toDTO(i, owner.Username, catEntry)
 	s.withPublicPaths(&dto)
+	dto.NeedsSetup = s.instanceNeedsSetup(i.ID)
 	// Mail enrichment for the rebind picker. The manifest comes from the
 	// INSTANCE's own copy, the one the installer persisted (#434): the app is
 	// already installed, so asking the catalog service would put a routine page
@@ -679,6 +703,11 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 			// (APP_MANIFEST.md # D4). Validated against the manifest; required fields
 			// must be present, optional-blank injects nothing.
 			Fields map[string]string `json:"fields,omitempty"`
+			// AIBindings fills the app's AI slots from the caller's AI accounts
+			// (INSTALL_SETUP.md # 5), one binding per slot. The brain resolves each
+			// into the slot's field values. A field a binding fills must not also
+			// be in Fields.
+			AIBindings []AIBindingBody `json:"ai_bindings,omitempty"`
 		} `json:"config,omitempty"` // per-folder source/subfolder elections (consent screen)
 	}
 }) (*struct{ Body Job }, error) {
@@ -720,7 +749,10 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 	}
 	// Validate the mail-provider election authoritatively, like folder
 	// elections above: the app must declare mail support and the provider must
-	// exist. Same elevation-class rejection ⇒ audits success=false.
+	// be one the caller owns. A household app installed by an admin therefore
+	// sends through that admin's account. Someone else's account reads as
+	// missing, so the answer does not say whether the id exists. Same
+	// elevation-class rejection, so it audits success=false.
 	mailProviderID := in.Body.Config.MailProviderID
 	if mailProviderID != "" {
 		failMeta := map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}
@@ -728,18 +760,22 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
 			return nil, huma.Error422UnprocessableEntity("this app does not support outgoing email")
 		}
-		if _, err := s.store.GetMailProvider(mailProviderID); errors.Is(err, store.ErrNotFound) {
+		caller, _ := auth.FromContext(ctx) // resolveOwnerScope already required it
+		if _, err := s.ownMailProvider(caller, mailProviderID); errors.Is(err, store.ErrNotFound) {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
 			return nil, huma.Error422UnprocessableEntity("no such mail provider")
 		} else if err != nil {
+			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
 			slog.Error("install: mail provider lookup failed", "manifest_id", manifestID, "err", err)
 			return nil, huma.Error500InternalServerError("mail provider lookup failed")
 		}
 	}
 	// Resolve the user-supplied config answers against the manifest, like the
-	// folder/mail elections above. An invalid answer is an elevation-class
-	// rejection ⇒ audits success=false.
-	config, err := resolveInstallConfig(man, in.Body.Config.Fields)
+	// folder/mail elections above. AI bindings are resolved first, from the
+	// caller's own accounts: a household app installed by an admin uses that
+	// admin's accounts, and someone else's account reads as missing. An invalid
+	// answer is an elevation-class rejection ⇒ audits success=false.
+	config, aiBindings, err := s.resolveInstallAnswers(ctx, man, in.Body.Config.Fields, in.Body.Config.AIBindings)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"},
 			map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}, false)
@@ -750,7 +786,7 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 	}
 	jobCtx := ctx // capture for audit inside the job goroutine
 	job := s.jobs.run("app-install", func(job *Job) (map[string]any, error) {
-		inst, err := s.life.Install(context.Background(), app, owner, scope, mounts, mailProviderID, config, job.setStep)
+		inst, err := s.life.Install(context.Background(), app, owner, scope, mounts, mailProviderID, config, aiBindings, job.setStep)
 		target := audit.Target{Kind: "app"}
 		// confirm records a deliberate override of the duplicate-install warning,
 		// so the Activity view can see "installed a second copy on purpose".

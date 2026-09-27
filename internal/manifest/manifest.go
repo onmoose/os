@@ -125,6 +125,12 @@ type Manifest struct {
 	// install button) and on the app detail page after. Absent ⇒ no form.
 	Config []ConfigField `yaml:"config,omitempty"`
 
+	// Requires lists "at least one of" groups over the config fields
+	// (INSTALL_SETUP.md # 3, roles.go): the install is gated until each group
+	// has a filled member. Read leniently: a group the box cannot use is
+	// dropped, never a Parse error. Read it through EffectiveRequires.
+	Requires Requirements `yaml:"requires,omitempty"`
+
 	// ExternalCosts names money a THIRD PARTY charges to make the app useful: a
 	// model-provider API key the assistant cannot answer without, a mail provider
 	// an email app sends through. The brain does not act on it — it is display
@@ -539,6 +545,20 @@ type ConfigField struct {
 	Options     []string `yaml:"options,omitempty"`  // enum only, non-empty
 	Default     string   `yaml:"default,omitempty"`  // prefill / value-when-blank; required on bool; forbidden on secret
 	Service     string   `yaml:"service,omitempty"`  // target compose service; default main_service
+
+	// Role says what the field means, so the setup page can fill it from a
+	// provider account: <kind>.<protocol>.<attribute>, e.g.
+	// ai.anthropic.api_key (INSTALL_SETUP.md # 1, roles.go). Optional. The value
+	// still lands under AppEnv. Read it through Manifest.FillableRoles: a role
+	// the box cannot fill leaves the field a plain field, never a Parse error.
+	Role string `yaml:"role,omitempty"`
+	// Separator joins a models.<type> list. nil means DefaultSeparator. Read it
+	// through EffectiveSeparator.
+	Separator *string `yaml:"separator,omitempty"`
+
+	// unreadable names the keys (role, separator) whose value was not a single
+	// scalar. The lenient decoder reads them as absent; Lint reports them.
+	unreadable []string
 }
 
 // serviceVersions is the allowlist of versions per managed-service type

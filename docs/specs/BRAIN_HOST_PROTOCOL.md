@@ -181,6 +181,23 @@ GET /v1/users/{username}/home
 
 The brain maps `unknown-user` to an installation error (not a 500 retry) — the user was deleted between the install-plan call and the install commit. The fake host-agent returns a deterministic result derived from the username (UID in [3000, 3999]) so the dev loop is coherent without a real `/etc/passwd`. See `APP_ISOLATION.md` # User content for the personal-scope bind-mount contract this feeds.
 
+**Account-name existence probe.** The brain derives a Linux account name from the display name a person types (`FIRST_RUN.md` # Identity & display names), and has to know whether a candidate name is already on the host before it settles on one. Pattern A:
+
+```
+GET /v1/users/{username}/exists
+→ 200 OK  { "exists": true }
+```
+
+It answers about the whole of `/etc/passwd`, not just moose's own users, because the collision that matters is a daemon account an app package added. `set-password` is an upsert, so a name that already exists would get a password set on it rather than being created, and a person called Plex on a box running Plex would be handed the Plex daemon's account.
+
+Three properties are load-bearing and should not be relaxed:
+
+- **It is a boolean probe for one name, never a listing.** An enumerate op would leak the host's whole system-account layout for no gain.
+- **Nothing proxies it to the browser.** Doing so would hand an unprivileged caller an oracle for which system accounts exist. The brain calls it; the dashboard never does.
+- **A lookup failure that is not "unknown user" is an error, not "free".** Reading a broken NSS as an empty passwd file is how somebody ends up owning a system account.
+
+It is a route of its own rather than a read of `/v1/users/{username}/home` because of the fake: the fake host-agent resolves *every* name to the dev operator's own home, so as an existence probe it would report every name taken and the derivation would never terminate. The fake answers this route from the accounts it has itself created, which is the right answer for a dev loop with no real `/etc/passwd` to collide with.
+
 For a **household-scope** app the owner's UID doesn't apply — the instance runs as a shared service identity (`moose-app`) and any folder electing a shared source is added to the `moose-shared` group. The brain learns those fixed identities through a companion Pattern A endpoint:
 
 ```

@@ -1,12 +1,12 @@
 // Command mkcatalog generates a control-plane catalog snapshot (the GET /catalog
 // browse wire format, with each app's manifest and compose inlined for the seed
 // seam) from one or more on-disk app packages, optionally with a curated
-// landing page. The brain reads that snapshot once at boot (MOOSE_CATALOG_FILE,
-// internal/catalog/remote.go # loadSnapshotFile) and installs an app from it, so
-// this exercises the real remote read path (verify → project → Load) with no
-// catalog/ directory in the image and no control plane to reach. The file is an
-// input for dev and test lanes only — a box keeps no catalog on disk and a real
-// one never sets MOOSE_CATALOG_FILE.
+// landing page and a list of AI providers. The brain reads that snapshot once
+// at boot (MOOSE_CATALOG_FILE, internal/catalog/remote.go # loadSnapshotFile)
+// and installs an app from it, so this exercises the real remote read path
+// (verify → project → Load) with no catalog/ directory in the image and no
+// control plane to reach. The file is an input for dev and test lanes only: a
+// box keeps no catalog on disk and a real one never sets MOOSE_CATALOG_FILE.
 //
 // Two callers:
 //
@@ -40,6 +40,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -91,6 +92,7 @@ func main() {
 		out     = flag.String("out", "", "output snapshot path (default: stdout)")
 		homeArg = flag.String("home", "", "path to a store home.yml to carry as the snapshot's curated landing page (optional)")
 		catsArg = flag.String("categories", "", "path to a store categories.yml to carry as the snapshot's category vocabulary (optional)")
+		aiArg   = flag.String("ai-providers", "", "path to a JSON list of AI providers, in the published ai_providers shape, to carry on the snapshot (optional)")
 	)
 	flag.Var(&pkgs, "pkg", "app package directory (contains manifest.yml + compose file); repeatable")
 	flag.Parse()
@@ -112,7 +114,12 @@ func main() {
 		cats = loadCategories(*catsArg)
 	}
 
-	b, err := catalog.BuildSnapshot(apps, home, cats, "")
+	var providers []catalog.SnapshotAIProvider
+	if *aiArg != "" {
+		providers = loadAIProviders(*aiArg)
+	}
+
+	b, err := catalog.BuildSnapshot(apps, home, cats, providers, "")
 	if err != nil {
 		fatal("build snapshot: %v", err)
 	}
@@ -230,6 +237,23 @@ func loadCategories(path string) []catalog.SnapshotCategory {
 			fatal("categories %q: every entry needs an id and a label (got id=%q label=%q)", path, c.ID, c.Label)
 		}
 		out = append(out, catalog.SnapshotCategory{ID: c.ID, Label: c.Label})
+	}
+	return out
+}
+
+// loadAIProviders reads a JSON list of AI providers in the same shape the
+// catalog service publishes as ai_providers, so the setup page's provider
+// tiles can be tried against a seeded store. It is read as given: the brain
+// applies its own lenient reading when it loads the seed, so what it drops
+// here shows in the brain's log, as it would for a published catalog.
+func loadAIProviders(path string) []catalog.SnapshotAIProvider {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fatal("read ai providers: %v", err)
+	}
+	var out []catalog.SnapshotAIProvider
+	if err := json.Unmarshal(data, &out); err != nil {
+		fatal("parse ai providers %q: %v", path, err)
 	}
 	return out
 }

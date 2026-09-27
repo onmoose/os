@@ -6,6 +6,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,9 +38,25 @@ services:
     image: traefik/whoami:v1.10.3
 `
 
+// createMailProvider stores p after making sure its owner exists: an account's
+// owner must be a real user row, and installMailApp installs as u_admin.
+func (e *testEnv) createMailProvider(p store.MailProvider) error {
+	if _, err := e.store.GetUser(p.OwnerUserID); errors.Is(err, store.ErrNotFound) {
+		if err := e.store.CreateUser(store.User{
+			ID: p.OwnerUserID, Username: "admin", DisplayName: "admin",
+			Role: store.RoleAdmin, CreatedAt: time.Unix(1_600_000_000, 0),
+		}); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	return e.store.CreateMailProvider(p)
+}
+
 func testProvider() store.MailProvider {
 	return store.MailProvider{
-		ID: "mp_test", Label: "Fastmail", Host: "smtp.fastmail.com", Port: 465,
+		ID: "mp_test", OwnerUserID: "u_admin", Label: "Fastmail", Host: "smtp.fastmail.com", Port: 465,
 		Username: "box@example.com", Password: "p@ss:word/2",
 		FromAddress: "box@example.com", Encryption: store.MailEncryptionTLS,
 		CreatedAt: time.Unix(1_700_000_000, 0),
@@ -51,7 +68,7 @@ func installMailApp(t *testing.T, e *testEnv, providerID string) (store.Instance
 	e.writeCatalogApp(t, "mailapp", mailCompose, mailManifest)
 	e.docker.digests[testImage] = testDigest
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "mailapp"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, providerID, nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, providerID, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -64,7 +81,7 @@ func installMailApp(t *testing.T, e *testEnv, providerID string) (store.Instance
 
 func TestInstallBoundInjectsMailVars(t *testing.T) {
 	e := newTestEnv(t)
-	if err := e.store.CreateMailProvider(testProvider()); err != nil {
+	if err := e.createMailProvider(testProvider()); err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
 	inst, env := installMailApp(t, e, "mp_test")
@@ -103,13 +120,13 @@ func TestInstallUnboundInjectsNothing(t *testing.T) {
 
 func TestInstallMailElectionOnNonMailApp(t *testing.T) {
 	e := newTestEnv(t)
-	if err := e.store.CreateMailProvider(testProvider()); err != nil {
+	if err := e.createMailProvider(testProvider()); err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
 	e.writeCatalogApp(t, "whoami", mailCompose, whoamiManifest(testDigest))
 	e.docker.digests[testImage] = testDigest
 	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "mp_test", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "mp_test", nil, nil, nil)
 	if err == nil {
 		t.Fatal("want error binding a provider to an app without a mail block")
 	}
@@ -124,7 +141,7 @@ func TestInstallMissingProviderRollsBack(t *testing.T) {
 	e.writeCatalogApp(t, "mailapp", mailCompose, mailManifest)
 	e.docker.digests[testImage] = testDigest
 	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "mailapp"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "mp_ghost", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "mp_ghost", nil, nil, nil)
 	if err == nil {
 		t.Fatal("want error binding a nonexistent provider")
 	}
@@ -135,12 +152,12 @@ func TestInstallMissingProviderRollsBack(t *testing.T) {
 
 func TestRebindMail(t *testing.T) {
 	e := newTestEnv(t)
-	if err := e.store.CreateMailProvider(testProvider()); err != nil {
+	if err := e.createMailProvider(testProvider()); err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
 	second := testProvider()
 	second.ID, second.Label, second.Host = "mp_two", "SES", "email-smtp.example.com"
-	if err := e.store.CreateMailProvider(second); err != nil {
+	if err := e.createMailProvider(second); err != nil {
 		t.Fatalf("create provider 2: %v", err)
 	}
 	inst, _ := installMailApp(t, e, "mp_test")
@@ -175,7 +192,7 @@ func TestRebindMail(t *testing.T) {
 	// A non-mail app rejects a binding.
 	e.writeCatalogApp(t, "whoami", mailCompose, whoamiManifest(testDigest))
 	plain, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install plain app: %v", err)
 	}

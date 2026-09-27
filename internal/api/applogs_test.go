@@ -84,8 +84,10 @@ func TestAppLogLeakGuardOnOthersPersonal(t *testing.T) {
 
 func TestAppLogUnknownInstance(t *testing.T) {
 	h := newHarness(t)
-	h.setupAdmin("admin", "hunter2")
-	h.loginAs("admin", "hunter2")
+	// "admin" is a reserved account name, so the derived account is not "admin".
+	// Log in with what the box actually created.
+	a := h.setupAdmin("admin", "hunter2")
+	h.loginAs(a.Username, "hunter2")
 
 	resp := h.do("GET", "/api/v1/apps/nope/log", nil)
 	resp.Body.Close()

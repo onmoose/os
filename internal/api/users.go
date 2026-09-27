@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -39,13 +40,24 @@ func (s *Server) registerUsers(api huma.API) {
 
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-user", Method: "DELETE", Path: "/api/v1/users/{id}",
-		Summary: "Delete a user (admin only)", DefaultStatus: 204,
+		Summary: "Delete a user and clear their accounts from the apps that use them (admin only)", DefaultStatus: 200,
+		Responses: map[string]*huma.Response{
+			"204": {Description: "Deleted. None of the user's accounts reached an app, so nothing else changes."},
+		},
+		// Listed because the 204 above stops huma adding its default error.
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict,
+			http.StatusInternalServerError, http.StatusBadGateway},
 	}, s.deleteUser)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "reset-user-password", Method: "POST", Path: "/api/v1/users/{id}/password",
 		Summary: "Admin-set password reset (admin only)", DefaultStatus: 204,
 	}, s.resetUserPassword)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "rename-user", Method: "POST", Path: "/api/v1/users/{id}/name",
+		Summary: "Change a user's display name (self, or admin for anyone)",
+	}, s.renameUser)
 }
 
 // validateUsername enforces the constraints owner-scoped instance slugs depend
@@ -88,9 +100,12 @@ func (s *Server) listUsers(ctx context.Context, _ *struct{}) (*struct {
 
 func (s *Server) createUser(ctx context.Context, in *struct {
 	Body struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Role     string `json:"role,omitempty"`
+		// DisplayName is the person's name, as the admin types it. The account
+		// name is derived from it here, never sent by the caller
+		// (FIRST_RUN.md # Identity & display names).
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
+		Role        string `json:"role,omitempty"`
 	}
 }) (*struct{ Body UserDTO }, error) {
 	if err := requireAdmin(ctx); err != nil {
@@ -100,13 +115,9 @@ func (s *Server) createUser(ctx context.Context, in *struct {
 		return nil, err
 	}
 
-	username := strings.TrimSpace(in.Body.Username)
 	password := in.Body.Password
-	if username == "" || password == "" {
-		return nil, huma.Error422UnprocessableEntity("username and password are required")
-	}
-	if err := validateUsername(username); err != nil {
-		return nil, err
+	if password == "" {
+		return nil, huma.Error422UnprocessableEntity("name and password are required")
 	}
 
 	role := in.Body.Role
@@ -117,14 +128,25 @@ func (s *Server) createUser(ctx context.Context, in *struct {
 		return nil, huma.Error422UnprocessableEntity("role must be admin or member")
 	}
 
-	u := store.User{
-		ID: newID(), Username: username, Role: role, CreatedAt: time.Now(),
+	displayName, username, err := s.newAccount(ctx, in.Body.DisplayName, "")
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserCreate, audit.Target{Kind: "user"},
+			map[string]any{"role": role}, false)
+		return nil, err
 	}
-	meta := map[string]any{"username": username, "role": role}
+
+	u := store.User{
+		ID: newID(), Username: username, DisplayName: displayName,
+		Role: role, CreatedAt: time.Now(),
+	}
+	meta := map[string]any{"username": username, "name": displayName, "role": role}
 	if err := s.store.CreateUser(u); err != nil {
 		s.auditor.Record(ctx, audit.ActionUserCreate, audit.Target{Kind: "user"}, meta, false)
 		if errors.Is(err, store.ErrConflict) {
-			return nil, huma.Error409Conflict("username already exists")
+			// The derivation already walked past every name it could see, so a
+			// conflict here is the race it cannot close: a concurrent create
+			// that took the name between the check and this insert.
+			return nil, huma.Error409Conflict("that name was just taken; try again")
 		}
 		return nil, huma.Error500InternalServerError("create user failed", err)
 	}
@@ -240,7 +262,10 @@ func (s *Server) updateUserRole(ctx context.Context, in *struct {
 
 func (s *Server) deleteUser(ctx context.Context, in *struct {
 	ID string `path:"id"`
-}) (*struct{}, error) {
+}) (*struct {
+	Status int
+	Body   *AccountDeletedDTO
+}, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -315,6 +340,23 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 		return nil, huma.Error500InternalServerError("read ssh keys failed", err)
 	}
 
+	// The user's email and AI accounts go with the user row (ON DELETE
+	// CASCADE). Read them first, for the same reason as the SSH keys: a host
+	// failure below puts the user row back, and it must come back with its
+	// accounts, not without them. The app bindings to those accounts are read
+	// by the delete itself, inside its transaction, so a binding made a moment
+	// before is both cleared from its app and put back on a failure.
+	mailAccounts, err := s.store.ListMailProviders(targetID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
+		return nil, huma.Error500InternalServerError("read mail accounts failed", err)
+	}
+	aiAccounts, err := s.store.ListAIAccounts(targetID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
+		return nil, huma.Error500InternalServerError("read ai accounts failed", err)
+	}
+
 	// This is the one place the brain-commits-first rule cannot hold: the revoke
 	// has to read state the delete is about to cascade away, so the host is
 	// changed first. That makes every later failure path owe a compensating
@@ -341,9 +383,17 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 	// Brain commits first (FK cascades sessions); on host failure we restore
 	// the row so the two sides stay aligned. Cascaded sessions don't come back —
 	// the user has to log in again, which is acceptable for a rare error path.
-	if err := s.store.DeleteUser(targetID); err != nil {
+	// The values the user's AI accounts gave each app are cleared in the same
+	// transaction, as an account delete does, so a deleted user's key never
+	// stays in the brain's state.
+	deleted, err := s.store.DeleteUserAndAccountValues(targetID, s.bindingSlotFields)
+	if err != nil {
 		restoreSSH()
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
+		var sfe *store.SlotFieldsError
+		if errors.As(err, &sfe) {
+			return nil, s.slotFieldsRefused(sfe, "user")
+		}
 		return nil, huma.Error500InternalServerError("delete user failed", err)
 	}
 	if err := s.host.DeleteUser(ctx, target.Username); err != nil {
@@ -366,13 +416,125 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 				}
 			}
 			restoreSSH()
+			// Accounts before bindings: a binding needs its account row.
+			for _, p := range mailAccounts {
+				if rbErr := s.store.CreateMailProvider(p); rbErr != nil {
+					slog.Error("rollback mail account failed", "user_id", targetID, "username", target.Username, "err", rbErr)
+				}
+			}
+			for _, a := range aiAccounts {
+				if rbErr := s.store.CreateAIAccount(a); rbErr != nil {
+					slog.Error("rollback ai account failed", "user_id", targetID, "username", target.Username, "err", rbErr)
+				}
+			}
+			// A binding or value written while the host step ran is kept, so a
+			// slot someone rebound in that window keeps its binding and values.
+			if rbErr := s.store.RestoreDeletedUser(deleted); rbErr != nil {
+				slog.Error("rollback account bindings and values failed", "user_id", targetID, "username", target.Username, "err", rbErr)
+			}
 		}
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
 		return nil, huma.Error502BadGateway("host-agent delete-user failed", err)
 	}
 
 	s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, true)
-	return nil, nil
+
+	// The apps the user's accounts reached still hold the old values in their
+	// files. A job rewrites them and restarts the running ones, as after an
+	// account delete; its id is the answer. A delete that reaches no app
+	// answers 204.
+	var mailIDs []string
+	for _, b := range deleted.MailBindings {
+		mailIDs = append(mailIDs, b.InstanceID)
+	}
+	out := &struct {
+		Status int
+		Body   *AccountDeletedDTO
+	}{Status: http.StatusNoContent}
+	if len(deleted.AIInstanceIDs) == 0 && len(mailIDs) == 0 {
+		return out, nil
+	}
+	job := s.jobs.run("user-delete", func(job *Job) (map[string]any, error) {
+		job.setStep("updating_apps")
+		if err := s.life.RestampAccounts(context.Background(), deleted.AIInstanceIDs, mailIDs); err != nil {
+			return nil, err
+		}
+		return map[string]any{"user_id": targetID}, nil
+	})
+	out.Status = http.StatusOK
+	out.Body = &AccountDeletedDTO{JobID: job.ID}
+	return out, nil
+}
+
+// renameUser changes what a person is called. It touches the display name and
+// nothing else: the account name, the home directory, and file ownership are
+// frozen at creation, because renaming a Linux user is destructive and we do
+// not expose it (FIRST_RUN.md # Identity & display names).
+//
+// Anyone may rename themselves. Renaming somebody else is an admin action in
+// the Users settings section, so it also needs the elevation window, matching
+// every other mutation an admin makes to another account there.
+func (s *Server) renameUser(ctx context.Context, in *struct {
+	ID   string `path:"id"`
+	Body struct {
+		DisplayName string `json:"display_name"`
+	}
+}) (*struct{ Body UserDTO }, error) {
+	id, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("unauthenticated")
+	}
+	tgt := audit.Target{Kind: "user", ID: in.ID}
+	if in.ID != id.User.ID {
+		if err := requireAdmin(ctx); err != nil {
+			s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+			return nil, err
+		}
+		if err := requireElevated(ctx); err != nil {
+			s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+			return nil, err
+		}
+	}
+
+	target, err := s.store.GetUser(in.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("user not found")
+		}
+		s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+		return nil, huma.Error500InternalServerError("get user failed", err)
+	}
+
+	name := normalizeDisplayName(in.Body.DisplayName)
+	if err := validateDisplayName(name); err != nil {
+		return nil, err
+	}
+	clash, err := s.displayNameTaken(name, target.ID)
+	if err != nil {
+		s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+		return nil, huma.Error500InternalServerError("list users failed", err)
+	}
+	if clash != "" {
+		s.auditor.Record(ctx, audit.ActionUserRename, tgt, nil, false)
+		return nil, huma.Error409Conflict(displayNameClashMessage(clash))
+	}
+
+	meta := map[string]any{"username": target.Username, "name": name, "from": target.DisplayName}
+	if err := s.store.UpdateDisplayName(target.ID, name); err != nil {
+		s.auditor.Record(ctx, audit.ActionUserRename, tgt, meta, false)
+		if errors.Is(err, store.ErrConflict) {
+			return nil, huma.Error409Conflict("that name was just taken; try again")
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("user not found")
+		}
+		return nil, huma.Error500InternalServerError("rename user failed", err)
+	}
+
+	target.DisplayName = name
+	s.auditor.Record(ctx, audit.ActionUserRename, tgt, meta, true)
+	slog.Info("user renamed", "user_id", target.ID, "username", target.Username, "name", name)
+	return &struct{ Body UserDTO }{Body: userDTO(target)}, nil
 }
 
 func (s *Server) changeMyPassword(ctx context.Context, in *struct {

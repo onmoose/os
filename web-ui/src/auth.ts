@@ -108,12 +108,12 @@ export interface SetupOptions {
 // wizard because first_run_complete is still false, and the admin-gated
 // time-zone/telemetry/complete calls need the session this just minted.
 export async function setup(
-  username: string,
+  displayName: string,
   password: string,
   opts: SetupOptions,
 ): Promise<SetupResult> {
   const res = await api.post<SetupResult>("/setup", {
-    username,
+    display_name: displayName,
     password,
     recovery: opts.recovery,
   });

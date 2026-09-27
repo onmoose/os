@@ -152,7 +152,7 @@ wait_for "brain HTTP" curl -sS "$BRAIN/api/v1/auth/state"
 step "bootstrapping admin user"
 curl -sS -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
   -H 'Content-Type: application/json' \
-  -d "{\"username\":\"$TEST_USER\",\"password\":\"$TEST_PASS\"}" \
+  -d "{\"display_name\":\"$TEST_USER\",\"password\":\"$TEST_PASS\"}" \
   "$BRAIN/api/v1/setup" >/dev/null
 curl -sS -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
   -H 'Content-Type: application/json' \

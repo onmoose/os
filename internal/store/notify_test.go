@@ -187,7 +187,7 @@ func TestRaiseNotification_ReRaiseAfterResolveUnresolves(t *testing.T) {
 
 func seedUser(t *testing.T, s *Store, id, role string) {
 	t.Helper()
-	if err := s.CreateUser(User{ID: id, Username: id, Role: role, CreatedAt: time.Now()}); err != nil {
+	if err := s.CreateUser(User{ID: id, Username: id, DisplayName: id, Role: role, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("create user %s: %v", id, err)
 	}
 }

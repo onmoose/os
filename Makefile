@@ -417,6 +417,10 @@ dev: check-state-owner build caddy
 # collide with the shell's own $HOME.) APP=<id> keeps working unchanged — it is
 # just the single-app case of the same underlying seed-catalog recipe.
 #
+# AIPROVIDERS=<path/to/providers.json> carries a JSON list of AI providers, in
+# the published ai_providers shape, onto the seed, so the install setup page's
+# provider tiles can be tried without a catalog service that serves them.
+#
 # It uses mkcatalog, NOT cloud's catalog-sync, on purpose: catalog-sync publishes
 # only listed:true records, but an app under curation has no verdict yet — you
 # boot it to *decide* whether it is full or degraded. mkcatalog reads the
@@ -429,7 +433,7 @@ CATALOG_SEED := $(DEV_DIR)/catalog-seed.json
 
 seed-catalog:
 	@ids="$(APPS)"; [ -n "$$ids" ] || ids="$(APP)"; \
-	  [ -n "$$ids" ] || { echo "usage: make seed-catalog APP=<id> | APPS=\"<id> <id> ...\" [STORE=../store] [HOMEFILE=path/to/home.yml]" >&2; exit 2; }; \
+	  [ -n "$$ids" ] || { echo "usage: make seed-catalog APP=<id> | APPS=\"<id> <id> ...\" [STORE=../store] [HOMEFILE=path/to/home.yml] [AIPROVIDERS=path/to/providers.json]" >&2; exit 2; }; \
 	  pkgflags=""; \
 	  for id in $$ids; do \
 	    [ -d "$(STORE)/apps/$$id" ] || { echo "error: no app package at $(STORE)/apps/$$id" >&2; exit 2; }; \
@@ -439,8 +443,10 @@ seed-catalog:
 	  [ -z "$(HOMEFILE)" ] || homeflag="-home $(HOMEFILE)"; \
 	  catsflag=""; \
 	  [ ! -f "$(STORE)/categories.yml" ] || catsflag="-categories $(STORE)/categories.yml"; \
+	  aiflag=""; \
+	  [ -z "$(AIPROVIDERS)" ] || aiflag="-ai-providers $(AIPROVIDERS)"; \
 	  mkdir -p $(DEV_DIR) && \
-	  $(GO) run ./dev/mkcatalog $$pkgflags -out $(CATALOG_SEED) $$homeflag $$catsflag && \
+	  $(GO) run ./dev/mkcatalog $$pkgflags -out $(CATALOG_SEED) $$homeflag $$catsflag $$aiflag && \
 	  echo "seeded [$$ids] -> $(CATALOG_SEED)$${homeflag:+, landing from $(HOMEFILE)}$${catsflag:+, category labels from $(STORE)/categories.yml}"
 
 # The inert catalog URL and the seed file are target-specific, exported

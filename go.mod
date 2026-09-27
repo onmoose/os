@@ -7,7 +7,8 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/msteinert/pam/v2 v2.1.0
 	golang.org/x/crypto v0.28.0
-	golang.org/x/mod v0.16.0
+	golang.org/x/mod v0.17.0
+	golang.org/x/text v0.19.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.34.4
 )

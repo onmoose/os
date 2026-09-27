@@ -71,7 +71,7 @@ Other Step 1 details:
 
 ### Step 2 — First admin
 
-> **Hosted.** On the appliance, the trust that lets *this* person create the founding admin is physical presence at the box during first boot. A hosted cloud VM has no such gate, and **this whole step does not run there**. The owner already has a portal account at `mooseos.com`, so the portal signs a short-lived ownership assertion and sends the owner's browser to the box; the box checks it against the key in its provisioning seed and creates the founding admin from it, with a username derived from the owner's email and a random password the owner never sees (`ENVIRONMENT.md` # Owner sign-in & seed ingestion — as built). There is no name-and-password form, no recovery code (the portal account is the way back in), and no hosted `/setup` — `POST /setup` returns 403 on hosted, and an unauthenticated visitor is sent to the portal instead of a setup page. Until the box has ingested a seed it has no key, and sign-in returns "not provisioned".
+> **Hosted.** On the appliance, the trust that lets *this* person create the founding admin is physical presence at the box during first boot. A hosted cloud VM has no such gate, and **this whole step does not run there**. The owner already has a portal account at `mooseos.com`, so the portal signs a short-lived ownership assertion and sends the owner's browser to the box; the box checks it against the key in its provisioning seed and creates the founding admin from it, with a random password the owner never sees. The owner's display name is the `name` the assertion carries, falling back to the email local part when the portal did not collect one, and the account name is derived from that display name by the same rules as every other account (`ENVIRONMENT.md` # Owner sign-in & seed ingestion — as built). There is no name-and-password form, no recovery code (the portal account is the way back in), and no hosted `/setup` — `POST /setup` returns 403 on hosted, and an unauthenticated visitor is sent to the portal instead of a setup page. Until the box has ingested a seed it has no key, and sign-in returns "not provisioned".
 
 - Two fields: **first name** + **password**. That's it.
 - The first user created is automatically an admin. Admins can create more users (admins or members) later in Settings. Admins are added to the Linux `sudo` group (rescue path when the dashboard is broken); members are unprivileged. See `USERS_AND_GROUPS.md`.
@@ -160,22 +160,32 @@ The user types a first name and a password. The first name is shown everywhere �
 
 ### What the system stores
 
-The display name is slugified to a stable Linux user ID:
+The display name is slugified to a stable Linux user ID. As built, in `internal/api/accountname.go`, and it is the only derivation on the box: `/setup`, `POST /api/v1/users` and the hosted SSO handshake all call it, and none of them accepts an account name from the caller.
 
-1. Transliterate to ASCII (`José` → `jose`, `李` → `li`).
-2. Lowercase, strip to `[a-z0-9]`, collapse runs.
-3. Empty result falls back to `user`.
-4. Check against a reserved-slug list: `root`, `admin`, `daemon`, `postgres`, `redis`, `mysql`, `nobody`, `www-data`, `sshd`, `systemd*`, `moose`, plus standard system. On hit, append `1`, `2`, ... until free.
+1. Transliterate to ASCII (`José` → `jose`). Lowercase, decompose, drop the combining marks, then fold the Latin letters decomposition does not split (`ø` → `o`, `ß` → `ss`, `ł` → `l`, `æ` → `ae`, `đ` → `d`, `þ` → `th`).
+2. Keep `[a-z0-9]` and drop everything else, so `José Smith` → `josesmith`. Cap at 32 characters, the conservative classic Linux username length.
+3. Empty result falls back to `user`. A result starting with a digit gets a `u` in front, because `useradd` refuses an all-numeric name.
+4. Check against a reserved-slug list: `root`, `admin`, `daemon`, `postgres`, `redis`, `mysql`, `nobody`, `www-data`, `sshd`, `systemd`, `moose`, plus the standard Debian system accounts. Then ask the host whether the name is already in `/etc/passwd`. On either hit, append `1`, `2`, ... until free.
 5. Display-name uniqueness is enforced at creation, so collisions in step 4 are the rare path.
 
-The `[a-z0-9]`-strip-and-collapse in step 2 already guarantees the two reservations the `<slug>--<user>` personal-instance scheme depends on (`DASHBOARD.md` # instance naming): a username slug can never contain `--` (runs collapse to a single `-`) nor start with `xn--`. The brain also enforces both as an explicit guard at the user-creation boundary.
+**Non-Latin scripts fall back rather than transliterate.** A name written entirely in a script with no mapping (`李`) keeps nothing in step 2, so it lands on the `user` fallback and becomes `user`, `user1`, and so on. The slug is invisible unless somebody uses SSH, and a per-script transliteration table is a lot of surface to carry and to get wrong, so the fallback is the deliberate answer rather than a gap.
+
+**Step 4 asks the host, not just the list.** The static list only holds names somebody thought of. The collision that actually bites is a daemon account an app package added later, such as `plex` on a box that runs Plex. host-agent's set-password is an upsert: handed a name that already exists it sets a password on *that* account rather than creating one, so without the host check a person called Plex would be given the Plex daemon's account. The probe is `GET /v1/users/{username}/exists` (`BRAIN_HOST_PROTOCOL.md`), a boolean for one name. It is never a listing and is never proxied to the browser, because either would be an oracle for which system accounts exist.
+
+The spec writes the systemd entry as `systemd*`. Every account Debian actually creates under it is hyphenated (`systemd-network`, `systemd-resolve`, `systemd-timesync`) and so is already unreachable by step 2, which leaves the bare name. It is deliberately not matched as a prefix: a prefix match would also reject `systemd1`, `systemd2` and every other name the walk in step 4 could fall back to.
+
+The strip in step 2 guarantees the two reservations the `<slug>--<user>` personal-instance scheme depends on (`DASHBOARD.md` # instance naming): with no hyphen in the alphabet at all, a username slug can neither contain `--` nor start with `xn--`. The brain also enforces both as an explicit guard at the user-creation boundary.
+
+**Uniqueness folds case and whitespace, not accents.** "Cindy" and "cindy" are the same name and the second is refused. "José" and "Jose" are two different people, both allowed, and they then collide on the account name instead: the second gets `josesmith1`. That is what the numeric walk in step 4 is for, alongside the reserved and host hits. The check runs in the brain because SQLite's `NOCASE` collation only folds ASCII; the unique index on the column is the backstop for the race between the check and the insert, not the check itself.
 
 UID assigned from the moose-reserved range (3000+). Home directory: `/home/<slug>/`. Use-case folders created at account setup: `Photos/`, `Documents/`, `Movies/`, `Music/`, `Notes/`, `Downloads/` (`STORAGE.md` # What apps and users actually see).
 
 ### Why this shape
 
 - **No prefix on the slug.** `cindy`, not `moose-cindy`. SSH (`ssh cindy@box.local`), paths (`/home/cindy/Photos/`), and Samba usernames stay clean. Collision risk is real but small, and the reserved list + UID-range filtering covers it without per-day verbosity cost.
-- **Display name is mutable, slug is stable.** A user renames "Cindy" → "Cynthia" — display flips, slug stays `cindy`, paths and ownership untouched. Renaming a Linux user is a destructive operation we don't expose.
+- **Display name is mutable, slug is stable.** A user renames "Cindy" → "Cynthia" — display flips, slug stays `cindy`, paths and ownership untouched. Renaming a Linux user is a destructive operation we don't expose. The route is `POST /api/v1/users/{id}/name`: anyone may rename themselves, and an admin may rename anyone, which needs the elevation window like every other admin change to somebody else's account.
+
+- **The slug is shown in two places and nowhere else.** Settings → SSH, where it is the name you type to `ssh cindy@moose.local`, and the admin user list, where it is what an admin needs when helping somebody with SSH. Every other surface shows the display name: the login picker, the top bar, the account screen, the activity feed. The activity feed resolves names at render time from the current user list, so a person who has been renamed reads under their new name throughout their own history.
 - **Display-name uniqueness enforced.** Two "Cindys" on one box is rejected at admin-create time with a "use Cindy K. or Cindy 2" prompt. Edge case for the 1–2-user installs we expect.
 
 ### Roles

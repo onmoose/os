@@ -55,7 +55,7 @@ func TestInstallServiceUser_PinsAllocatedIdentity(t *testing.T) {
 	e.docker.digests[testImage] = testDigest
 
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestUninstallServiceUser_ReleasesIdentity(t *testing.T) {
 	e.docker.digests[testImage] = testDigest
 
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestInstallServiceUser_LateFailureReleasesIdentity(t *testing.T) {
 	e.docker.composeUpErr = errors.New("compose up exploded")
 
 	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("want install error, got nil")
 	}
@@ -140,7 +140,7 @@ func TestInstallServiceUser_AllocateFailureRollsBack(t *testing.T) {
 	e.host.allocErr = errors.New("host-agent unreachable")
 
 	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("want install error, got nil")
 	}
@@ -160,7 +160,7 @@ func TestInstallServiceUser_WithFoldersRejectedBeforeState(t *testing.T) {
 
 	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"),
 		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold,
-		nil, "", nil, nil)
+		nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("want admission rejection, got nil")
 	}
@@ -189,7 +189,7 @@ func TestInstall_DefaultFolderlessAllocatesNoIdentity(t *testing.T) {
 	e.docker.digests[testImage] = testDigest
 
 	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"),
-		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil)
+		Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}

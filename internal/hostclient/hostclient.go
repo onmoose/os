@@ -110,6 +110,16 @@ func (c *Client) DeleteUser(ctx context.Context, user string) error {
 // Check with errors.Is — the value is stable across versions.
 var ErrUnknownUser = errors.New("unknown user")
 
+// UserExists reports whether the host already has a Linux account by this name.
+// Used while deriving an account name from a display name, so a derived name
+// never lands on an account that is already there (FIRST_RUN.md # Identity &
+// display names). See protocol.UserExistsResponse for why this is its own route.
+func (c *Client) UserExists(ctx context.Context, username string) (bool, error) {
+	var out protocol.UserExistsResponse
+	err := c.do(ctx, "GET", "/v1/users/"+url.PathEscape(username)+"/exists", nil, &out)
+	return out.Exists, err
+}
+
 // ResolveHome returns the user's home directory path, UID, and GID from the
 // host. The brain calls this during install to build bind-mount sources and
 // user: directives for personal app instances.

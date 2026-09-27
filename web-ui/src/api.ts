@@ -9,10 +9,15 @@ import type { components } from "./generated/openapi";
 export class ApiError extends Error {
   code: string;
   status: number;
-  constructor(code: string, message: string, status: number) {
+  // location is the field the brain blamed, when it named one (huma's
+  // errors[0].location, e.g. "body.keys[2].public_key"). Lets a form show the
+  // message next to the input at fault instead of only at its submit button.
+  location?: string;
+  constructor(code: string, message: string, status: number, location?: string) {
     super(message);
     this.code = code;
     this.status = status;
+    this.location = location;
   }
 }
 
@@ -51,7 +56,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts?: R
     const code = err.code ?? err.detail ?? "unknown";
     const message =
       err.message ?? err.errors?.[0]?.message ?? err.detail ?? err.title ?? res.statusText;
-    throw new ApiError(code, message, res.status);
+    throw new ApiError(code, message, res.status, err.errors?.[0]?.location);
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
@@ -110,8 +115,35 @@ export type AppConfigField = Schemas["AppConfigFieldDTO"];
 export type SourceMenu = Schemas["SourceMenu"];
 export type FolderSources = Schemas["FolderSources"];
 export type MailProvider = Schemas["MailProviderDTO"];
+export type MailProviderSaved = Schemas["MailProviderSavedDTO"];
 export type MailProviderOption = Schemas["MailProviderOption"];
 export type MailPreset = Schemas["MailPresetDTO"];
+// AIProvider is one AI provider from the catalog (GET /api/v1/ai-providers,
+// INSTALL_SETUP.md # 4), in display order. Logo URLs are box routes.
+export type AIProvider = Schemas["AIProvider"];
+export type AIModel = Schemas["AIModel"];
+// AIAccount is one of the caller's saved AI provider accounts
+// (GET /api/v1/ai-accounts). The key is never in it: key_set says whether one
+// is stored.
+export type AIAccount = Schemas["AIAccountDTO"];
+export type AIAccountBody = Schemas["AIAccountBody"];
+// AIAccountSaved is the answer to an account edit: the account, plus job_id
+// when the edit updates and restarts the apps that use it.
+export type AIAccountSaved = Schemas["AIAccountSavedDTO"];
+// AppUse names one app that uses an account (used_by on the account lists).
+export type AppUse = Schemas["AppUseDTO"];
+// AccountDeleted is the 200 answer to deleting an account that apps used: the
+// job that updates and restarts them. A delete no app felt answers 204.
+export type AccountDeleted = Schemas["AccountDeletedDTO"];
+// AIBinding fills one AI slot of an app from one account, on POST /api/v1/apps
+// and on PUT /api/v1/apps/{id}/config (an empty account_id clears the slot).
+export type AIBinding = Schemas["AIBindingBody"];
+// AppAIBinding is one AI slot of an installed app and the account filling it,
+// on GET /api/v1/apps/{id}/config. mine is false for another user's account,
+// which comes without its label.
+export type AppAIBinding = Schemas["AppAIBindingDTO"];
+export type AppConfigUpdate = Schemas["AppConfigUpdateBody"];
+export type RequiresGroup = Schemas["RequiresGroupDTO"];
 export type MailPresetRegionOption = Schemas["MailPresetRegionOptionDTO"];
 export type SystemStorage = Schemas["SystemStorageDTO"];
 export type SystemVersion = Schemas["SystemVersionDTO"];
@@ -131,7 +163,7 @@ export type SSHKey = Schemas["SSHKeyDTO"];
 // serves scope (like severity / status / state) as a free string — the huma
 // structs don't declare enums (filed as a follow-up in
 // docs/progress/openapi-codegen.md). The dashboard only ever sets/compares the
-// two real values, and InstallDialog indexes FolderSources by scope, which
+// two real values, and the install setup page indexes FolderSources by scope, which
 // needs the literal union.
 export type Scope = "household" | "personal";
 
@@ -208,4 +240,22 @@ export async function waitForJob(jobId: string, onPoll?: (job: Job) => void): Pr
     onPoll?.(job);
     await new Promise((r) => setTimeout(r, 600));
   }
+}
+
+// waitForJobOk polls a job to its end and throws with the job's own message
+// when it failed. For the jobs an account edit or delete starts to update the
+// apps that use the account: the save already happened, so the caller shows
+// the failure next to the account, not as a failed save.
+export async function waitForJobOk(jobId: string): Promise<Job> {
+  const done = await waitForJob(jobId);
+  if (done.status === "failed") throw new Error(done.error?.message || "Some apps could not be updated.");
+  return done;
+}
+
+// appNames joins the names of the apps that use an account for a sentence:
+// "Paperless", "Paperless and Immich", "Paperless, Immich and Kimai".
+export function appNames(uses: { name: string }[] | null | undefined): string {
+  const names = (uses ?? []).map((u) => u.name);
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }

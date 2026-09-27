@@ -80,7 +80,7 @@ func (s *Store) SetSSHAccess(userID string, enabled, requirePassword bool) error
 func (s *Store) ListSSHKeys(userID string) ([]SSHKey, error) {
 	rows, err := s.db.Query(
 		`SELECT id, user_id, label, public_key, fingerprint, added_at
-		 FROM ssh_keys WHERE user_id=? ORDER BY added_at`, userID)
+		 FROM ssh_keys WHERE user_id=? ORDER BY added_at, rowid`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -129,18 +129,66 @@ func (s *Store) AddSSHKey(k SSHKey) error {
 	return err
 }
 
-// DeleteSSHKey removes one of the account's keys. Scoped by user_id as well as
-// id so a crafted request cannot delete another account's key: the ownership
-// check is the WHERE clause, not a prior read.
-func (s *Store) DeleteSSHKey(userID, keyID string) error {
-	res, err := s.db.Exec(`DELETE FROM ssh_keys WHERE id=? AND user_id=?`, keyID, userID)
+// ApplySSHChange writes one Save of the SSH screen as a single transaction: the
+// access row, the keys the account dropped, and the keys it added. Either all of
+// it lands or none of it does, so a refused insert cannot leave the account with
+// its old keys gone and its new ones missing.
+//
+// Removals run before additions, so a key removed and pasted back in the same
+// change does not trip the duplicate index against itself. Removals are scoped by
+// user_id as well as id, so a crafted request cannot delete another account's
+// key: the ownership check is the WHERE clause, not a prior read.
+//
+// The same call undoes a change after a failed host push: pass the previous
+// access state, the ids that were added as remove, and the removed keys (with
+// their original AddedAt) as add.
+//
+// A remove id the account does not hold returns ErrNotFound, and an added key the
+// account already holds returns ErrDuplicateSSHKey. Both roll back the whole
+// change.
+func (s *Store) ApplySSHChange(userID string, enabled, requirePassword bool, remove []string, add []SSHKey) error {
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		INSERT INTO ssh_access (user_id, enabled, require_password, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			enabled=excluded.enabled,
+			require_password=excluded.require_password,
+			updated_at=excluded.updated_at`,
+		userID, boolToInt(enabled), boolToInt(requirePassword), time.Now().Unix()); err != nil {
+		return err
 	}
-	return nil
+	for _, id := range remove {
+		res, err := tx.Exec(`DELETE FROM ssh_keys WHERE id=? AND user_id=?`, id, userID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+	}
+	now := time.Now()
+	for _, k := range add {
+		added := k.AddedAt
+		if added.IsZero() {
+			added = now
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO ssh_keys (id, user_id, label, public_key, fingerprint, added_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			k.ID, userID, k.Label, k.PublicKey, k.Fingerprint, added.Unix()); err != nil {
+			if isUniqueErr(err) {
+				return ErrDuplicateSSHKey
+			}
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func boolToInt(b bool) int {

@@ -10,9 +10,9 @@
 // acknowledges — the brain stores only a hash, so this is the single reveal.
 // When toggled off, the form shows the tradeoff copy and no code is generated.
 //
-// NOTE (known gap): the field is a Linux username, not the display-name → slug
-// mapping FIRST_RUN.md # Identity & display names specs. That slugification is
-// deferred; tracked in the progress entry.
+// The field is the person's first name (FIRST_RUN.md # Step 2: "two fields,
+// first name and password"). The box derives the Linux account name from it, so
+// there is no username to type and none is shown here.
 import { ref } from "vue";
 import { setup } from "../auth";
 import type { ApiError } from "../api";
@@ -20,7 +20,7 @@ import Button from "@/components/ui/Button.vue";
 
 const emit = defineEmits<{ done: [] }>();
 
-const username = ref("");
+const displayName = ref("");
 const password = ref("");
 
 const recovery = ref(true);
@@ -62,7 +62,7 @@ async function submit() {
   error.value = "";
   submitting.value = true;
   try {
-    const res = await setup(username.value.trim(), password.value, {
+    const res = await setup(displayName.value.trim(), password.value, {
       recovery: recovery.value,
     });
     if (recovery.value && res.recovery_code) {
@@ -84,8 +84,8 @@ async function submit() {
     <p class="hint">This is the first account on the box — the administrator.</p>
 
     <label>
-      Username
-      <input v-model="username" autocomplete="username" required autofocus />
+      Your first name
+      <input v-model="displayName" autocomplete="given-name" required autofocus />
     </label>
     <label>
       Password
