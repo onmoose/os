@@ -30,6 +30,7 @@ GET  /api/v1/apps/:id                      → instance detail (with needs_setup
 GET  /api/v1/apps/:id/config               → user-supplied config values (APP_MANIFEST.md # D4; secret fields masked), the app's AI bindings, and what is missing
 PUT  /api/v1/apps/:id/config               → update config values and AI bindings; rewrites override + restarts the app
 POST /api/v1/users                         → create user
+DELETE /api/v1/users/:id                   → delete a user (admin, elevation required); may start a job for the apps their accounts reached (see Pattern B)
 GET  /api/v1/settings/network              → current network config
 GET  /api/v1/health                        → active health issues (see HEALTH.md; v1 path, in the OpenAPI spec as of issue #12)
 POST /api/v1/health/:id/:act               → invoke a remediation action attached to an issue
@@ -229,6 +230,10 @@ The provider data is read only when the request has `ai_bindings`.
 #### Email accounts after an edit or a delete
 
 `GET /api/v1/mail-providers` gives each account `used_by`, the apps bound to it, as for AI accounts. `PUT /api/v1/mail-providers/:id` returns the account plus `job_id` when the edit changes what the bound apps' `MOOSE_MAIL_*` lines hold (host, port, username, password, from address, encryption): a job (kind `mail-provider-restamp`) re-stamps those apps' `.env` and restarts the running ones. A label or preset change starts no job. `DELETE /api/v1/mail-providers/:id` is 204 when no app used the account, and 200 `{ "job_id": "…" }` when apps did: the bindings go with the account, and a job (kind `mail-provider-delete`) drops the lines from those apps and restarts the running ones (`SERVICE_PROVISIONING.md` # BYO outgoing mail).
+
+#### Deleting a user
+
+`DELETE /api/v1/users/:id` takes the user's email and AI accounts with it, and treats the apps those accounts reached as an account delete does. The values the user's AI accounts gave each app are cleared in the same store transaction as the user row. Then a job (kind `user-delete`, step `updating_apps`) rewrites those apps' compose override, drops the `MOOSE_MAIL_*` lines of the apps bound to the user's email accounts, and restarts the running ones. The answer is `200 { "job_id": "…" }` when the delete reached an app, and `204` with no body when it reached none. The apps may belong to anyone, for example a household app that used the user's key. The delete is refused with a 500 that names the app, and nothing is deleted, when a binding from before bindings recorded their fields cannot be matched to its fields: the same rule as `DELETE /api/v1/ai-accounts/:id`. When the host step fails and the user row is put back, their accounts, bindings and cleared values are put back too.
 
 **Warn, don't block, on duplicate install (`DASHBOARD.md` # warn, don't block).** A `POST /api/v1/apps` with `confirm` unset/false, when an instance of that manifest already exists that the caller can see (a household instance or their own personal one), returns `409 Conflict` with `code: "duplicate-install"` and an `errors` array summarizing the existing copies. The UI surfaces "open it" vs. "install your own copy"; the latter retries the same request with `confirm: true`, which skips the check.
 

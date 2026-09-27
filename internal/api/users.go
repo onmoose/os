@@ -41,6 +41,12 @@ func (s *Server) registerUsers(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-user", Method: "DELETE", Path: "/api/v1/users/{id}",
 		Summary: "Delete a user and clear their accounts from the apps that use them (admin only)", DefaultStatus: 200,
+		Responses: map[string]*huma.Response{
+			"204": {Description: "Deleted. None of the user's accounts reached an app, so nothing else changes."},
+		},
+		// Listed because the 204 above stops huma adding its default error.
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict,
+			http.StatusInternalServerError, http.StatusBadGateway},
 	}, s.deleteUser)
 
 	huma.Register(api, huma.Operation{
