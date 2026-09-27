@@ -602,6 +602,78 @@ func TestAIAccountKeyChangeWithoutProviderData(t *testing.T) {
 	}
 }
 
+// Removing an account's base URL is refused while an app's compatible slot
+// would have nothing to take in its place, so a key changed in the same edit
+// is never saved without reaching the app. With the provider's address in
+// the data, the removal goes through and the app gets that address.
+func TestAIAccountBaseURLRemoval(t *testing.T) {
+	bindCompatible := func(h *harness, id, accountID string) {
+		t.Helper()
+		if err := h.st.SetInstanceAIBindings(id, []store.AIBinding{{Slot: "ai.openai_compatible", AccountID: accountID, Models: map[string][]string{"models.chat": {"a"}}}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.SetInstanceConfig(id, []store.InstanceConfig{{AppEnv: "CUSTOM_BASE_URL", Value: "https://proxy.invalid/v1"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := map[string]any{"provider_id": "acme", "label": "Work", "api_key": "sk-new-key"}
+
+	t.Run("no provider data", func(t *testing.T) {
+		h := newHarness(t) // a disk catalog: the provider list is empty
+		admin := h.setupAdmin("alice", "pass1")
+		now := time.Now()
+		if err := h.st.CreateAIAccount(store.AIAccount{ID: "ai_1", OwnerUserID: admin.ID, ProviderID: "acme", Label: "Work", APIKey: testAIKey, BaseURL: "https://proxy.invalid/v1", CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		h.seedAIApp("i_ai", "AI Demo", admin.ID, "")
+		bindCompatible(h, "i_ai", "ai_1")
+
+		code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_1", body)
+		if code != http.StatusConflict {
+			t.Fatalf("removal = %d %s; want 409", code, raw)
+		}
+		if a, _ := h.st.GetAIAccount("ai_1"); a.APIKey != testAIKey || a.BaseURL == "" {
+			t.Fatalf("account = %+v; want it unchanged", a)
+		}
+		// The key alone still changes.
+		body := map[string]any{"provider_id": "acme", "label": "Work", "api_key": "sk-new-key", "base_url": "https://proxy.invalid/v1"}
+		if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_1", body); code != http.StatusOK {
+			t.Fatalf("key change = %d %s", code, raw)
+		}
+	})
+
+	t.Run("provider has no address", func(t *testing.T) {
+		h, _ := aiHarness(t) // acme has no openai_base_url in this data
+		admin := h.setupAdmin("alice", "pass1")
+		acct := h.createAIAccount(map[string]any{"provider_id": "acme", "label": "Work", "api_key": testAIKey, "base_url": "https://proxy.invalid/v1"})
+		h.seedAIApp("i_ai", "AI Demo", admin.ID, "")
+		bindCompatible(h, "i_ai", acct.ID)
+
+		if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/"+acct.ID, body); code != http.StatusConflict {
+			t.Fatalf("removal = %d %s; want 409", code, raw)
+		}
+	})
+
+	t.Run("provider address in the data", func(t *testing.T) {
+		h, _ := aiHarness(t)
+		admin := h.setupAdmin("alice", "pass1")
+		acct := h.createAIAccount(map[string]any{"provider_id": "plain", "label": "Work", "api_key": testAIKey, "base_url": "https://proxy.invalid/v1"})
+		h.seedAIApp("i_ai", "AI Demo", admin.ID, "")
+		bindCompatible(h, "i_ai", acct.ID)
+
+		code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/"+acct.ID, map[string]any{"provider_id": "plain", "label": "Work", "api_key": "sk-new-key"})
+		if code != http.StatusOK {
+			t.Fatalf("removal = %d %s", code, raw)
+		}
+		if done := awaitJob(t, h.apiSrv, decodeRaw[AIAccountSavedDTO](t, raw).JobID); done.Status != "completed" {
+			t.Fatalf("job = %s %+v", done.Status, done.Error)
+		}
+		if v := h.storedValues("i_ai"); v["CUSTOM_BASE_URL"] != "https://api.example.invalid/v1" || v["CUSTOM_API_KEY"] != "sk-new-key" {
+			t.Fatalf("values = %v", v)
+		}
+	})
+}
+
 func TestRestampSlotRules(t *testing.T) {
 	man := parseAIAppManifest(t)
 	slots := fillableSlots(man)

@@ -389,6 +389,11 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 	if err := requireAIKey(a.ProviderID, a.APIKey); err != nil {
 		return nil, err
 	}
+	if existing.BaseURL != "" && a.BaseURL == "" {
+		if err := s.checkBaseURLRemoval(ctx, tgt, meta, a.ProviderID, bindings); err != nil {
+			return nil, err
+		}
+	}
 
 	// Send the key only when the request carries one. An empty key tells the
 	// store to keep the stored one, so a concurrent key change is not undone.
@@ -429,6 +434,38 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 		out.Body.JobID = s.restampAIAccountJob(a.ID, ids, removedURL).ID
 	}
 	return out, nil
+}
+
+// checkBaseURLRemoval refuses an edit that removes the account's own base URL
+// while an app's OpenAI-compatible slot has nothing to take in its place: the
+// provider data is not loaded, or it has no openai_base_url for the provider.
+// Saving it would leave the app on the removed address, or fail the app's
+// whole re-stamp, so a key changed in the same edit would never reach it. The
+// user can still change the key on its own.
+func (s *Server) checkBaseURLRemoval(ctx context.Context, tgt audit.Target, meta map[string]any, providerID string, bindings []store.AIBinding) error {
+	compatible := false
+	for _, b := range bindings {
+		if strings.HasSuffix(b.Slot, "."+manifest.ProtocolOpenAICompatible) {
+			compatible = true
+			break
+		}
+	}
+	if !compatible {
+		return nil
+	}
+	providers, err := s.catalog.AIProviders()
+	if err != nil || len(providers) == 0 {
+		if err != nil {
+			slog.Warn("read ai providers for base URL removal failed", "err", err)
+		}
+		s.auditor.Record(ctx, audit.ActionAIAccountUpdate, tgt, meta, false)
+		return huma.Error409Conflict("the list of LLM providers is not loaded yet, so this account's base URL cannot be removed now. Try again in a few minutes. You can still change the key on its own")
+	}
+	if providerBaseURL(providers, providerID) == "" {
+		s.auditor.Record(ctx, audit.ActionAIAccountUpdate, tgt, meta, false)
+		return huma.Error409Conflict("an app uses this account's base URL as its OpenAI-compatible address, and the provider has no standard one to use instead. Keep the base URL, or pick another account in that app's settings first")
+	}
+	return nil
 }
 
 // restampAIAccountJob starts the job that gives every app bound to an
