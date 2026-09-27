@@ -340,37 +340,21 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 		return nil, huma.Error500InternalServerError("read ssh keys failed", err)
 	}
 
-	// The user's email accounts, and the app bindings to them, go with the user
-	// row (ON DELETE CASCADE). Read them first, for the same reason as the SSH
-	// keys: a host failure below puts the user row back, and it must come back
-	// with its accounts and bindings, not without them. The bindings also name
-	// the apps whose MOOSE_MAIL_* lines the job at the end drops.
+	// The user's email and AI accounts go with the user row (ON DELETE
+	// CASCADE). Read them first, for the same reason as the SSH keys: a host
+	// failure below puts the user row back, and it must come back with its
+	// accounts, not without them. The app bindings to those accounts are read
+	// by the delete itself, inside its transaction, so a binding made a moment
+	// before is both cleared from its app and put back on a failure.
 	mailAccounts, err := s.store.ListMailProviders(targetID)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
 		return nil, huma.Error500InternalServerError("read mail accounts failed", err)
 	}
-	mailBindings, err := s.store.ListMailBindingsForOwner(targetID)
-	if err != nil {
-		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
-		return nil, huma.Error500InternalServerError("read mail bindings failed", err)
-	}
-	// The user's AI provider accounts cascade with the user row too, and are
-	// read first for the same reason.
 	aiAccounts, err := s.store.ListAIAccounts(targetID)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
 		return nil, huma.Error500InternalServerError("read ai accounts failed", err)
-	}
-	// The app bindings to those accounts cascade with them.
-	var aiBindings []store.AIBinding
-	for _, a := range aiAccounts {
-		bs, err := s.store.ListAIBindingsForAccount(a.ID)
-		if err != nil {
-			s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
-			return nil, huma.Error500InternalServerError("read ai bindings failed", err)
-		}
-		aiBindings = append(aiBindings, bs...)
 	}
 
 	// This is the one place the brain-commits-first rule cannot hold: the revoke
@@ -402,7 +386,7 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 	// The values the user's AI accounts gave each app are cleared in the same
 	// transaction, as an account delete does, so a deleted user's key never
 	// stays in the brain's state.
-	aiIDs, clearedConfig, err := s.store.DeleteUserAndAIValues(targetID, s.bindingSlotFields)
+	deleted, err := s.store.DeleteUserAndAccountValues(targetID, s.bindingSlotFields)
 	if err != nil {
 		restoreSSH()
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
@@ -438,23 +422,15 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 					slog.Error("rollback mail account failed", "user_id", targetID, "username", target.Username, "err", rbErr)
 				}
 			}
-			for _, b := range mailBindings {
-				if rbErr := s.store.SetInstanceMailBinding(b.InstanceID, b.ProviderID); rbErr != nil {
-					slog.Error("rollback mail binding failed", "user_id", targetID, "instance_id", b.InstanceID, "err", rbErr)
-				}
-			}
 			for _, a := range aiAccounts {
 				if rbErr := s.store.CreateAIAccount(a); rbErr != nil {
 					slog.Error("rollback ai account failed", "user_id", targetID, "username", target.Username, "err", rbErr)
 				}
 			}
-			for _, b := range aiBindings {
-				if rbErr := s.store.PutAIBinding(b); rbErr != nil {
-					slog.Error("rollback ai binding failed", "user_id", targetID, "instance_id", b.InstanceID, "err", rbErr)
-				}
-			}
-			if rbErr := s.store.RestoreConfigValues(clearedConfig); rbErr != nil {
-				slog.Error("rollback ai config values failed", "user_id", targetID, "username", target.Username, "err", rbErr)
+			// A binding or value written while the host step ran is kept, so a
+			// slot someone rebound in that window keeps its binding and values.
+			if rbErr := s.store.RestoreDeletedUser(deleted); rbErr != nil {
+				slog.Error("rollback account bindings and values failed", "user_id", targetID, "username", target.Username, "err", rbErr)
 			}
 		}
 		s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
@@ -468,21 +444,19 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 	// account delete; its id is the answer. A delete that reaches no app
 	// answers 204.
 	var mailIDs []string
-	for _, b := range mailBindings {
+	for _, b := range deleted.MailBindings {
 		mailIDs = append(mailIDs, b.InstanceID)
 	}
 	out := &struct {
 		Status int
 		Body   *AccountDeletedDTO
 	}{Status: http.StatusNoContent}
-	if len(aiIDs) == 0 && len(mailIDs) == 0 {
+	if len(deleted.AIInstanceIDs) == 0 && len(mailIDs) == 0 {
 		return out, nil
 	}
 	job := s.jobs.run("user-delete", func(job *Job) (map[string]any, error) {
 		job.setStep("updating_apps")
-		aiErr := s.life.RestampConfig(context.Background(), aiIDs)
-		mailErr := s.life.RestampMail(context.Background(), mailIDs)
-		if err := errors.Join(aiErr, mailErr); err != nil {
+		if err := s.life.RestampAccounts(context.Background(), deleted.AIInstanceIDs, mailIDs); err != nil {
 			return nil, err
 		}
 		return map[string]any{"user_id": targetID}, nil

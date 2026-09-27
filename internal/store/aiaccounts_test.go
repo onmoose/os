@@ -166,12 +166,13 @@ func TestDeleteUserCascadesAIAccounts(t *testing.T) {
 
 // A user delete clears the values the user's AI accounts gave each app, in
 // the same transaction, and leaves another user's values and plain values
-// alone. The cleared values come back through RestoreConfigValues, without
-// overwriting one written since.
-func TestDeleteUserAndAIValues(t *testing.T) {
+// alone. It returns the bindings it found, AI and email, and
+// RestoreDeletedUser puts them and the values back without overwriting a row
+// written since.
+func TestDeleteUserAndAccountValues(t *testing.T) {
 	s := openWithOwner(t)
 	addUser(t, s, "u_other", RoleMember, 1_600_000_100)
-	for _, inst := range []Instance{sample("a", "app-a"), sample("b", "app-b")} {
+	for _, inst := range []Instance{sample("a", "app-a"), sample("b", "app-b"), sample("c", "app-c")} {
 		if err := s.Create(inst); err != nil {
 			t.Fatal(err)
 		}
@@ -184,27 +185,35 @@ func TestDeleteUserAndAIValues(t *testing.T) {
 		}
 	}
 	vals := []InstanceConfig{{AppEnv: "K", Value: "sk", Secret: true}, {AppEnv: "M", Value: "m"}, {AppEnv: "P", Value: "keep"}}
-	for _, id := range []string{"a", "b"} {
+	for _, id := range []string{"a", "b", "c"} {
 		if err := s.SetInstanceConfig(id, vals); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// a uses the other user's account (recorded fields); b uses the owner's
-	// (fields named by the manifest).
+	// a uses the other user's account (recorded fields); b and c use the
+	// owner's (fields named by the manifest).
 	if err := s.SetInstanceAIBindings("a", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_2", Envs: []string{"K", "M"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetInstanceAIBindings("b", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_1"}}); err != nil {
+	for _, id := range []string{"b", "c"} {
+		if err := s.SetInstanceAIBindings(id, []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_1"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := sampleProvider("mp_1", "Mine")
+	if err := s.CreateMailProvider(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInstanceMailBinding("c", p.ID); err != nil {
 		t.Fatal(err)
 	}
 	fields := func(string, string) ([]string, error) { return []string{"K", "M"}, nil }
+	noManifest := func(string, string) ([]string, error) { return nil, errors.New("no manifest") }
 
-	if _, _, err := s.DeleteUserAndAIValues("u_nobody", fields); !errors.Is(err, ErrNotFound) {
+	if _, err := s.DeleteUserAndAccountValues("u_nobody", fields); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing user: got %v, want ErrNotFound", err)
 	}
-	if _, _, err := s.DeleteUserAndAIValues("u_other", func(string, string) ([]string, error) {
-		return nil, errors.New("no manifest")
-	}); err != nil {
+	if _, err := s.DeleteUserAndAccountValues("u_other", noManifest); err != nil {
 		t.Fatalf("recorded fields must not ask the manifest: %v", err)
 	}
 	if _, err := s.GetUser("u_other"); !errors.Is(err, ErrNotFound) {
@@ -218,30 +227,65 @@ func TestDeleteUserAndAIValues(t *testing.T) {
 	}
 
 	// A refused lookup deletes nothing.
-	if _, _, err := s.DeleteUserAndAIValues(mailOwner, func(string, string) ([]string, error) {
-		return nil, errors.New("no manifest")
-	}); !errors.As(err, new(*SlotFieldsError)) {
+	if _, err := s.DeleteUserAndAccountValues(mailOwner, noManifest); !errors.As(err, new(*SlotFieldsError)) {
 		t.Fatalf("got %v, want *SlotFieldsError", err)
 	}
 	if _, err := s.GetUser(mailOwner); err != nil {
 		t.Fatalf("refused delete removed the user: %v", err)
 	}
 
-	ids, cleared, err := s.DeleteUserAndAIValues(mailOwner, fields)
-	if err != nil || len(ids) != 1 || ids[0] != "b" || len(cleared) != 2 {
-		t.Fatalf("delete = %v %+v %v", ids, cleared, err)
+	owner, _ := s.GetUser(mailOwner)
+	accounts, _ := s.ListAIAccounts(mailOwner)
+	d, err := s.DeleteUserAndAccountValues(mailOwner, fields)
+	if err != nil || len(d.AIInstanceIDs) != 2 || len(d.AIBindings) != 2 || len(d.Cleared) != 4 ||
+		len(d.MailBindings) != 1 || d.MailBindings[0].InstanceID != "c" {
+		t.Fatalf("delete = %+v %v", d, err)
 	}
 	if got := configMap(t, s, "b"); len(got) != 1 {
 		t.Fatalf("b after delete = %v", got)
 	}
-	if err := s.SetInstanceConfig("b", []InstanceConfig{{AppEnv: "M", Value: "newer"}, {AppEnv: "P", Value: "keep"}}); err != nil {
+
+	// The host step failed. Meanwhile someone rebound c to another account
+	// and gave it new values; b was left alone.
+	if err := s.CreateUser(owner); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RestoreConfigValues(cleared); err != nil {
+	for _, a := range accounts {
+		if err := s.CreateAIAccount(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateMailProvider(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAIAccount(sampleAIAccount("ai_3", "Newer")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInstanceAIBindings("c", []AIBinding{{Slot: "ai.anthropic", AccountID: "ai_3"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInstanceConfig("c", []InstanceConfig{{AppEnv: "K", Value: "sk-newer"}, {AppEnv: "P", Value: "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RestoreDeletedUser(d); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	if got := configMap(t, s, "b"); got["K"] != "sk" || got["M"] != "newer" || got["P"] != "keep" {
+	if got := configMap(t, s, "b"); got["K"] != "sk" || got["M"] != "m" || len(got) != 3 {
 		t.Fatalf("b after restore = %v", got)
+	}
+	if bs, _ := s.ListInstanceAIBindings("b"); len(bs) != 1 || bs[0].AccountID != "ai_1" {
+		t.Fatalf("b binding after restore = %+v", bs)
+	}
+	// c keeps the newer binding and its values, and no old value comes back
+	// to it, not even M, which nothing wrote since.
+	if bs, _ := s.ListInstanceAIBindings("c"); len(bs) != 1 || bs[0].AccountID != "ai_3" {
+		t.Fatalf("restore overwrote the newer binding: %+v", bs)
+	}
+	if got := configMap(t, s, "c"); len(got) != 2 || got["K"] != "sk-newer" {
+		t.Fatalf("restore mixed old values into the rebound slot: %v", got)
+	}
+	if got, err := s.GetInstanceMailProvider("c"); err != nil || got.ID != p.ID {
+		t.Fatalf("mail binding after restore = %+v %v", got, err)
 	}
 }
 

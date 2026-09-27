@@ -18,7 +18,7 @@
 import { ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
-import { api, ApiError, type User } from "@/api";
+import { api, ApiError, waitForJobOk, type AccountDeleted, type User } from "@/api";
 import { withElevation } from "@/elevate";
 import { useAuth } from "@/auth";
 import Button from "@/components/ui/Button.vue";
@@ -135,13 +135,33 @@ const changeRole = useMutation({
 });
 
 // ── delete user ────────────────────────────────────────────────────────────────
+// A user whose accounts an app used answers with a job: the brain clears the
+// user's keys and email settings from those apps and restarts them. The user
+// is already gone, so a failure here is about the apps, and the notice says
+// which ones.
+const deleteNotice = ref("");
+
+async function followDeleteJob(jobId: string) {
+  deleteNotice.value = "User deleted. Updating the apps that used their accounts…";
+  try {
+    await waitForJobOk(jobId);
+    deleteNotice.value = "User deleted. The apps that used their accounts were updated and restarted.";
+  } catch (e) {
+    deleteNotice.value = `User deleted, but ${e instanceof Error ? e.message : "some apps could not be updated"}.`;
+  } finally {
+    qc.invalidateQueries({ queryKey: ["apps"] });
+  }
+}
+
 const deleteUser = useMutation({
-  mutationFn: (id: string) => withElevation(() => api.del<void>(`/users/${id}`)),
-  onSuccess: (_, id) => {
+  mutationFn: (id: string) => withElevation(() => api.del<AccountDeleted | undefined>(`/users/${id}`)),
+  onSuccess: (done, id) => {
     clearRowError(id);
     confirmDeleteFor.value = null;
+    deleteNotice.value = "";
     qc.invalidateQueries({ queryKey: ["users"] });
     refreshCurrentUser();
+    if (done?.job_id) void followDeleteJob(done.job_id);
   },
   onError: (e, id) => setRowError(id, e),
 });
@@ -203,6 +223,7 @@ const doResetPassword = useMutation({
     <!-- User list -->
     <section class="space-y-3">
       <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">People</h2>
+      <p v-if="deleteNotice" class="text-sm text-muted-foreground">{{ deleteNotice }}</p>
       <p v-if="users.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
       <ul v-else class="space-y-2">
         <li

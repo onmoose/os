@@ -372,3 +372,63 @@ func TestUpdateConfigDeleteBetweenReadAndWrite(t *testing.T) {
 		}
 	}
 }
+
+// An app a user delete reaches through both an AI and an email account is
+// rewritten for both and recreated once. If its override cannot be rewritten,
+// the mail lines still go and the app is still recreated, and the error
+// names it.
+func TestRestampAccounts(t *testing.T) {
+	e := newTestEnv(t)
+	e.createAIAccount(t, "ai_1")
+	if err := e.createMailProvider(testProvider()); err != nil {
+		t.Fatal(err)
+	}
+	both := installAIApp(t, e, "aiapp")
+	broken := installAIApp(t, e, "aiapp2")
+	for _, id := range []string{both.ID, broken.ID} {
+		if err := e.store.SetInstanceMailBinding(id, "mp_test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.m.RestampMail(context.Background(), []string{both.ID, broken.ID}); err != nil {
+		t.Fatal(err)
+	}
+	envOf := func(id string) string {
+		raw, err := os.ReadFile(filepath.Join(e.stateDir, "instances", id, ".env"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	if !strings.Contains(envOf(both.ID), "MOOSE_MAIL_") {
+		t.Fatalf("seed: no mail lines:\n%s", envOf(both.ID))
+	}
+	deleteAccount(t, e, "ai_1")
+	if err := e.store.DeleteMailProvider("mp_test", "u_admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(e.stateDir, "instances", broken.ID, "manifest.yml")); err != nil {
+		t.Fatal(err)
+	}
+	beforeBoth, beforeBroken := composeUps(e, both.ID), composeUps(e, broken.ID)
+
+	ids := []string{both.ID, broken.ID}
+	err := e.m.RestampAccounts(context.Background(), ids, ids)
+	if err == nil || !strings.Contains(err.Error(), broken.Name) {
+		t.Fatalf("restamp = %v; want an error naming %s", err, broken.Name)
+	}
+	if n := composeUps(e, both.ID) - beforeBoth; n != 1 {
+		t.Fatalf("the app reached twice was recreated %d times; want 1", n)
+	}
+	if env := readOverrideEnv(t, e, both.ID).Services["app"].Environment; len(env) != 1 || env["PLAIN"] != "keep" {
+		t.Fatalf("override env = %v", env)
+	}
+	for _, id := range ids {
+		if strings.Contains(envOf(id), "MOOSE_MAIL_") {
+			t.Fatalf("%s .env still has mail lines:\n%s", id, envOf(id))
+		}
+	}
+	if n := composeUps(e, broken.ID) - beforeBroken; n != 1 {
+		t.Fatalf("the app whose override failed was recreated %d times; want 1 for its mail lines", n)
+	}
+}

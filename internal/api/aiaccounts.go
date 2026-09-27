@@ -494,7 +494,7 @@ func (s *Server) restampAIAccountJob(accountID string, ids []string, removedURL 
 
 // bindingSlotFields names the app_env fields of one AI slot from the app's
 // manifest copy. A delete that clears an account's values from apps
-// (store.DeleteAIAccountAndValues, store.DeleteUserAndAIValues) calls it
+// (store.DeleteAIAccountAndValues, store.DeleteUserAndAccountValues) calls it
 // only for a binding from before bindings recorded their fields. If the copy
 // cannot be read, or no longer has the slot, it fails and the delete is
 // refused: a deleted key must never stay in an app.
