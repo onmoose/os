@@ -420,7 +420,13 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 				ids = append(ids, b.InstanceID)
 			}
 		}
-		out.Body.JobID = s.restampAIAccountJob(a.ID, ids).ID
+		// A removed base URL is passed on, so an app that still holds it is
+		// not left on it when the provider data cannot fill the slot.
+		var removedURL string
+		if a.BaseURL == "" {
+			removedURL = existing.BaseURL
+		}
+		out.Body.JobID = s.restampAIAccountJob(a.ID, ids, removedURL).ID
 	}
 	return out, nil
 }
@@ -431,7 +437,7 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 // lock from the account as it is then (accountSlotResolver), so two quick
 // edits end on the newer one whichever job finishes last. One app failing
 // does not stop the others.
-func (s *Server) restampAIAccountJob(accountID string, ids []string) *Job {
+func (s *Server) restampAIAccountJob(accountID string, ids []string, removedURL string) *Job {
 	return s.jobs.run("ai-account-restamp", func(job *Job) (map[string]any, error) {
 		job.setStep("updating_apps")
 		// The provider data is only a fallback here (restampSlot), so a read
@@ -441,7 +447,7 @@ func (s *Server) restampAIAccountJob(accountID string, ids []string) *Job {
 			slog.Warn("read ai providers for account re-stamp failed", "err", err)
 			providers = nil
 		}
-		resolve := accountSlotResolver(s.store.GetAIAccount, providers)
+		resolve := accountSlotResolver(s.store.GetAIAccount, providers, removedURL)
 		if err := s.life.RestampAIAccount(context.Background(), accountID, ids, resolve); err != nil {
 			return nil, err
 		}

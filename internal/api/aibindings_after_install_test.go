@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/store"
 )
 
@@ -464,7 +465,7 @@ func TestAIAccountRestampJobUsesLatestKey(t *testing.T) {
 	if err := h.st.UpdateAIAccount(stored); err != nil {
 		t.Fatal(err)
 	}
-	job := h.apiSrv.restampAIAccountJob(acct.ID, []string{"i_ai"})
+	job := h.apiSrv.restampAIAccountJob(acct.ID, []string{"i_ai"}, "")
 	if done := awaitJob(t, h.apiSrv, job.ID); done.Status != "completed" {
 		t.Fatalf("job = %s %+v", done.Status, done.Error)
 	}
@@ -604,27 +605,52 @@ func TestAIAccountKeyChangeWithoutProviderData(t *testing.T) {
 func TestRestampSlotRules(t *testing.T) {
 	man := parseAIAppManifest(t)
 	slots := fillableSlots(man)
+	restamp := func(fields []slotField, b store.AIBinding, acct store.AIAccount, providers []catalog.AIProvider, removedURL string, cur map[string]string) map[string]string {
+		t.Helper()
+		got, err := restampSlot(fields, b, acct, providers, removedURL, cur)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
 	b := store.AIBinding{Slot: "ai.openai_compatible", Models: map[string][]string{"models.chat": {"a", "b"}}}
 	cur := map[string]string{"CUSTOM_BASE_URL": "https://kept.invalid/v1", "CUSTOM_EMBED": "kept-embed"}
 
 	// No provider data, no account base URL: the stored base URL and the
 	// stored embedding value are kept, the model list comes from the binding.
-	got := restampSlot(slots["ai.openai_compatible"], b, testAccounts["a_acme"], nil, cur)
+	got := restamp(slots["ai.openai_compatible"], b, testAccounts["a_acme"], nil, "", cur)
 	assertValues(t, got, map[string]string{"CUSTOM_API_KEY": "sk-acme", "CUSTOM_BASE_URL": "https://kept.invalid/v1", "CUSTOM_MODELS": "a;b", "CUSTOM_EMBED": "kept-embed"})
 
 	// With provider data the provider's endpoint wins over the stored one.
-	got = restampSlot(slots["ai.openai_compatible"], b, testAccounts["a_acme"], testAIProviders(), cur)
+	got = restamp(slots["ai.openai_compatible"], b, testAccounts["a_acme"], testAIProviders(), "", cur)
 	if got["CUSTOM_BASE_URL"] != "https://api.acme.invalid/v1" {
 		t.Fatalf("values = %v", got)
 	}
 	// An account base URL wins over both.
-	got = restampSlot(slots["ai.openai_compatible"], b, testAccounts["a_acme_proxy"], testAIProviders(), cur)
+	got = restamp(slots["ai.openai_compatible"], b, testAccounts["a_acme_proxy"], testAIProviders(), "", cur)
 	if got["CUSTOM_BASE_URL"] != "https://proxy.invalid/v1" {
 		t.Fatalf("values = %v", got)
 	}
 	// A native slot's base URL stays blank without an account base URL.
-	got = restampSlot(slots["ai.acme"], store.AIBinding{Slot: "ai.acme"}, testAccounts["a_acme"], nil, map[string]string{"ACME_BASE_URL": "https://old.invalid", "ACME_MODEL": "m"})
+	got = restamp(slots["ai.acme"], store.AIBinding{Slot: "ai.acme"}, testAccounts["a_acme"], nil, "", map[string]string{"ACME_BASE_URL": "https://old.invalid", "ACME_MODEL": "m"})
 	assertValues(t, got, map[string]string{"ACME_API_KEY": "sk-acme", "ACME_MODEL": "m"})
+
+	// The edit removed the account's base URL, the app still holds it, and
+	// there is no provider data: the app fails instead of keeping the
+	// removed endpoint.
+	if _, err := restampSlot(slots["ai.openai_compatible"], b, testAccounts["a_acme"], nil, "https://kept.invalid/v1", cur); err == nil {
+		t.Fatal("the removed base URL was kept")
+	}
+	// A removed URL the app does not hold does not fail it.
+	got = restamp(slots["ai.openai_compatible"], b, testAccounts["a_acme"], nil, "https://other.invalid/v1", cur)
+	if got["CUSTOM_BASE_URL"] != "https://kept.invalid/v1" {
+		t.Fatalf("values = %v", got)
+	}
+	// With provider data the removed URL is replaced, so nothing fails.
+	got = restamp(slots["ai.openai_compatible"], b, testAccounts["a_acme"], testAIProviders(), "https://kept.invalid/v1", cur)
+	if got["CUSTOM_BASE_URL"] != "https://api.acme.invalid/v1" {
+		t.Fatalf("values = %v", got)
+	}
 }
 
 // A binding that recorded its fields is cleared by those names, so the

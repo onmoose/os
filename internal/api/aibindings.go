@@ -423,13 +423,19 @@ func resolvePutWithAI(man *manifest.Manifest, current []store.InstanceConfig, cu
 //   - base_url gets the account's base URL when it has one. Without one, a
 //     native slot's base URL is left blank (the decision row), and the
 //     compatible slot takes the provider's openai_base_url from the data if
-//     the data has it, else keeps the value it has now.
+//     the data has it, else keeps the value it has now. The one exception:
+//     when this edit removed the account's base URL and the app still holds
+//     that URL, keeping it would leave the app on the endpoint the user just
+//     removed. That app fails in the job with a plain message instead.
 //   - a model field gets the stored model ids, joined with the field's
 //     separator, else keeps the value it has now.
 //
 // The provider does not have to fit the slot again: the binding was checked
 // when it was made, and the provider id of a bound account cannot change.
-func accountSlotResolver(account func(id string) (store.AIAccount, error), providers []catalog.AIProvider) lifecycle.SlotResolver {
+//
+// removedURL is the base URL the edit removed from the account, or "" when
+// the edit left the account with one (or it never had one).
+func accountSlotResolver(account func(id string) (store.AIAccount, error), providers []catalog.AIProvider, removedURL string) lifecycle.SlotResolver {
 	return func(man *manifest.Manifest, b store.AIBinding, current map[string]string) (map[string]string, error) {
 		acct, err := account(b.AccountID)
 		if err != nil {
@@ -439,13 +445,13 @@ func accountSlotResolver(account func(id string) (store.AIAccount, error), provi
 		if !ok {
 			return nil, fmt.Errorf("the app has no LLM provider setting %s now", b.Slot)
 		}
-		return restampSlot(fields, b, acct, providers, current), nil
+		return restampSlot(fields, b, acct, providers, removedURL, current)
 	}
 }
 
 // restampSlot is the values of one bound slot after its account changed.
 // See accountSlotResolver for the rules.
-func restampSlot(fields []slotField, b store.AIBinding, acct store.AIAccount, providers []catalog.AIProvider, current map[string]string) map[string]string {
+func restampSlot(fields []slotField, b store.AIBinding, acct store.AIAccount, providers []catalog.AIProvider, removedURL string, current map[string]string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, sf := range fields {
 		env := sf.field.AppEnv
@@ -464,6 +470,9 @@ func restampSlot(fields []slotField, b store.AIBinding, acct store.AIAccount, pr
 				if u := providerBaseURL(providers, acct.ProviderID); u != "" {
 					out[env] = u
 				} else if v := current[env]; v != "" {
+					if acct.BaseURL == "" && removedURL != "" && v == removedURL {
+						return nil, errors.New("the account no longer has its own address, and the provider's usual address cannot be read right now. Save the account again in a few minutes")
+					}
 					out[env] = v
 				}
 			}
@@ -475,7 +484,7 @@ func restampSlot(fields []slotField, b store.AIBinding, acct store.AIAccount, pr
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // providerBaseURL is a listed provider's OpenAI-compatible endpoint, or ""
