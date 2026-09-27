@@ -426,6 +426,9 @@ func (s *Store) migrate() error {
 		{"instances", "exposure", "ALTER TABLE instances ADD COLUMN exposure TEXT NOT NULL DEFAULT 'public'"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
 		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
+		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
+		// before it: an account delete falls back to the manifest for those.
+		{"instance_ai_bindings", "envs", "ALTER TABLE instance_ai_bindings ADD COLUMN envs TEXT NOT NULL DEFAULT ''"},
 	} {
 		has, hErr := s.hasColumn(col.table, col.name)
 		if hErr != nil {
@@ -704,6 +707,14 @@ func (s *Store) SetInstanceConfig(instanceID string, cfg []InstanceConfig) error
 		return err
 	}
 	defer tx.Rollback()
+	if err := replaceInstanceConfig(tx, instanceID, cfg); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// replaceInstanceConfig replaces an instance's config values inside tx.
+func replaceInstanceConfig(tx execer, instanceID string, cfg []InstanceConfig) error {
 	if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=?`, instanceID); err != nil {
 		return err
 	}
@@ -714,7 +725,7 @@ func (s *Store) SetInstanceConfig(instanceID string, cfg []InstanceConfig) error
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // GetInstanceConfig returns an instance's stored config values, ordered by

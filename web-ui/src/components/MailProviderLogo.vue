@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Provider logo for the outgoing-email picker (Settings → Outgoing email).
+// Provider logo for the outgoing-email picker (Settings → Integrations → Email).
 //
 // Files live in assets/mail-providers/ and are matched by preset id, so adding
 // a provider logo is adding a file — no change here. See the README in that

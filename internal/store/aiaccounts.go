@@ -182,6 +182,11 @@ type AIBinding struct {
 	Slot       string
 	AccountID  string
 	Models     map[string][]string
+	// Envs are the app_env names the binding fills: every field of its slot.
+	// An account delete clears exactly these, so it never needs the app's
+	// manifest. nil means not recorded (a row from before the column); a
+	// delete then falls back to the manifest.
+	Envs []string
 }
 
 // aiBindingsDDL creates the instance_ai_bindings table. One row per instance
@@ -189,11 +194,14 @@ type AIBinding struct {
 // with the account, so deleting an account removes its bindings. The app keeps
 // its stored config values until its next write; what it shows then is piece 4.
 // models is a JSON object, never NULL: '{}' when the slot takes no model.
+// envs is a JSON list of the app_env names the binding fills, or ” when not
+// recorded (rows from before the column, which migrate adds with ALTER).
 const aiBindingsDDL = `CREATE TABLE IF NOT EXISTS instance_ai_bindings (
 	instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
 	slot        TEXT NOT NULL,
 	account_id  TEXT NOT NULL REFERENCES ai_accounts(id) ON DELETE CASCADE,
 	models      TEXT NOT NULL DEFAULT '{}',
+	envs        TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (instance_id, slot)
 )`
 
@@ -239,10 +247,38 @@ func putAIBinding(db execer, b AIBinding) error {
 	if err != nil {
 		return fmt.Errorf("encode ai binding models: %w", err)
 	}
+	envs, err := encodeEnvs(b.Envs)
+	if err != nil {
+		return err
+	}
 	_, err = db.Exec(
-		`INSERT OR REPLACE INTO instance_ai_bindings (instance_id, slot, account_id, models) VALUES (?,?,?,?)`,
-		b.InstanceID, b.Slot, b.AccountID, string(raw))
+		`INSERT OR REPLACE INTO instance_ai_bindings (instance_id, slot, account_id, models, envs) VALUES (?,?,?,?,?)`,
+		b.InstanceID, b.Slot, b.AccountID, string(raw), envs)
 	return err
+}
+
+// encodeEnvs stores nil as ” (not recorded) and a list as JSON.
+func encodeEnvs(envs []string) (string, error) {
+	if envs == nil {
+		return "", nil
+	}
+	raw, err := json.Marshal(envs)
+	if err != nil {
+		return "", fmt.Errorf("encode ai binding envs: %w", err)
+	}
+	return string(raw), nil
+}
+
+// decodeEnvs is the reverse of encodeEnvs.
+func decodeEnvs(raw string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	envs := []string{}
+	if err := json.Unmarshal([]byte(raw), &envs); err != nil {
+		return nil, fmt.Errorf("decode ai binding envs: %w", err)
+	}
+	return envs, nil
 }
 
 // ListInstanceAIBindings returns an instance's bindings, ordered by slot.
@@ -257,7 +293,16 @@ func (s *Store) ListAIBindingsForAccount(accountID string) ([]AIBinding, error) 
 }
 
 func (s *Store) listAIBindings(where string, args ...any) ([]AIBinding, error) {
-	rows, err := s.db.Query(`SELECT instance_id, slot, account_id, models FROM instance_ai_bindings `+where, args...)
+	return scanAIBindings(s.db, `SELECT instance_id, slot, account_id, models, envs FROM instance_ai_bindings `+where, args...)
+}
+
+// querier is the part of *sql.DB and *sql.Tx that scanAIBindings needs.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func scanAIBindings(db querier, query string, args ...any) ([]AIBinding, error) {
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -265,16 +310,263 @@ func (s *Store) listAIBindings(where string, args ...any) ([]AIBinding, error) {
 	var out []AIBinding
 	for rows.Next() {
 		var (
-			b   AIBinding
-			raw string
+			b         AIBinding
+			raw, envs string
 		)
-		if err := rows.Scan(&b.InstanceID, &b.Slot, &b.AccountID, &raw); err != nil {
+		if err := rows.Scan(&b.InstanceID, &b.Slot, &b.AccountID, &raw, &envs); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(raw), &b.Models); err != nil {
 			return nil, fmt.Errorf("decode ai binding models: %w", err)
 		}
+		if b.Envs, err = decodeEnvs(envs); err != nil {
+			return nil, err
+		}
 		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ErrBindingGone means a binding a write relied on no longer exists, because
+// its account was deleted (or the slot rebound) since the caller read it. The
+// write is not done. Lifecycle turns it into a plain job error.
+var ErrBindingGone = errors.New("an ai binding changed since it was read")
+
+// SetInstanceConfigAndAIBindings writes an instance's config values and the
+// AI bindings of some of its slots in one transaction, so the values an app
+// gets and the bindings that explain them never disagree (INSTALL_SETUP.md #
+// 5, piece 4). cfg replaces every config value, as SetInstanceConfig does.
+// Each slot in slots loses its binding, and then bindings are written. A slot
+// not in slots keeps its binding.
+//
+// keep are the bindings of the other slots as the caller read them, the ones
+// cfg's values for those slots came from. Each must still exist, same slot
+// and same account, when the transaction runs; otherwise an account delete
+// ran in between, cfg would bring its values back, and the write is refused
+// with ErrBindingGone. A new binding whose account no longer exists is
+// refused the same way. Nothing is written in either case. The store has one
+// connection, so the check and the write cannot interleave with a delete.
+func (s *Store) SetInstanceConfigAndAIBindings(instanceID string, cfg []InstanceConfig, slots []string, bindings []AIBinding, keep []AIBinding) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, k := range keep {
+		ok, err := bindingExists(tx, instanceID, k.Slot, k.AccountID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrBindingGone
+		}
+	}
+	for _, b := range bindings {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM ai_accounts WHERE id=?`, b.AccountID).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrBindingGone
+		}
+	}
+	if err := replaceInstanceConfig(tx, instanceID, cfg); err != nil {
+		return err
+	}
+	for _, slot := range slots {
+		if _, err := tx.Exec(`DELETE FROM instance_ai_bindings WHERE instance_id=? AND slot=?`, instanceID, slot); err != nil {
+			return err
+		}
+	}
+	for _, b := range bindings {
+		b.InstanceID = instanceID
+		if err := putAIBinding(tx, b); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// rowQuerier is the part of *sql.DB and *sql.Tx that bindingExists needs.
+type rowQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func bindingExists(db rowQuerier, instanceID, slot, accountID string) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM instance_ai_bindings WHERE instance_id=? AND slot=? AND account_id=?`,
+		instanceID, slot, accountID).Scan(&n)
+	return n > 0, err
+}
+
+// SlotWrite is the new values of one AI slot of an app. Envs are all the
+// fields of the slot: they are cleared first, then Values are written, and
+// Envs is recorded on the binding.
+type SlotWrite struct {
+	Slot   string
+	Envs   []string
+	Values []InstanceConfig
+}
+
+// ApplyAISlotValues writes new values into the slots of an instance that are
+// bound to accountID, in one transaction, after an account edit. A slot whose
+// binding no longer names accountID (rebound, or the account was deleted
+// since the caller read it) is skipped and nothing is written for it, so a
+// re-stamp can never bring back a deleted key. The other config values are
+// not touched. It returns how many slots were written.
+func (s *Store) ApplyAISlotValues(instanceID, accountID string, writes []SlotWrite) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	applied := 0
+	for _, w := range writes {
+		ok, err := bindingExists(tx, instanceID, w.Slot, accountID)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			continue
+		}
+		for _, env := range w.Envs {
+			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, instanceID, env); err != nil {
+				return 0, err
+			}
+		}
+		for _, c := range w.Values {
+			if _, err := tx.Exec(
+				`INSERT INTO instance_config (instance_id, app_env, value, secret) VALUES (?,?,?,?)`,
+				instanceID, c.AppEnv, c.Value, c.Secret); err != nil {
+				return 0, err
+			}
+		}
+		envs, err := encodeEnvs(w.Envs)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`UPDATE instance_ai_bindings SET envs=? WHERE instance_id=? AND slot=?`, envs, instanceID, w.Slot); err != nil {
+			return 0, err
+		}
+		applied++
+	}
+	return applied, tx.Commit()
+}
+
+// SlotFieldsError says which app's slot fields could not be named during
+// DeleteAIAccountAndValues. The API needs the instance id to tell the user
+// which app is in the way.
+type SlotFieldsError struct {
+	InstanceID string
+	Err        error
+}
+
+func (e *SlotFieldsError) Error() string {
+	return fmt.Sprintf("fields of instance %s: %v", e.InstanceID, e.Err)
+}
+
+func (e *SlotFieldsError) Unwrap() error { return e.Err }
+
+// DeleteAIAccountAndValues removes an account ownerID owns and, in the same
+// transaction, the config values its bindings gave each app. The bindings are
+// read inside the transaction, so a slot rebound to another account a moment
+// before is not touched: only slots still bound to this account lose their
+// values. A binding clears the app_env names it recorded (Envs). Only for a
+// row with none recorded does slotFields name the fields of the slot (from
+// the app's manifest copy). It must not use the store: the store has one
+// connection, and the transaction holds it. If slotFields fails, nothing is
+// deleted and the error is a *SlotFieldsError, because a deleted key must
+// never stay in an app. The binding rows go with the account by cascade.
+//
+// It returns the ids of the apps whose values were cleared, each once, for
+// the job that rewrites them. ErrNotFound when that owner has no such
+// account; nothing is removed then.
+func (s *Store) DeleteAIAccountAndValues(id, ownerID string, slotFields func(instanceID, slot string) ([]string, error)) ([]string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var found int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM ai_accounts WHERE id=? AND owner_user_id=?`, id, ownerID).Scan(&found); err != nil {
+		return nil, err
+	}
+	if found == 0 {
+		return nil, ErrNotFound
+	}
+	bs, err := scanAIBindings(tx, `SELECT instance_id, slot, account_id, models, envs FROM instance_ai_bindings WHERE account_id=? ORDER BY instance_id, slot`, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var ids []string
+	seen := map[string]bool{}
+	for _, b := range bs {
+		envs := b.Envs
+		if envs == nil {
+			if envs, err = slotFields(b.InstanceID, b.Slot); err != nil {
+				return nil, &SlotFieldsError{InstanceID: b.InstanceID, Err: err}
+			}
+		}
+		for _, env := range envs {
+			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, b.InstanceID, env); err != nil {
+				return nil, err
+			}
+		}
+		if !seen[b.InstanceID] {
+			seen[b.InstanceID] = true
+			ids = append(ids, b.InstanceID)
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM ai_accounts WHERE id=? AND owner_user_id=?`, id, ownerID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// AppUse names one app that uses an account: its instance id and its name.
+type AppUse struct {
+	InstanceID string
+	Name       string
+}
+
+// AIAccountUsage maps each of ownerID's AI accounts to the apps bound to it,
+// each app once, ordered by name. An account no app uses is absent.
+func (s *Store) AIAccountUsage(ownerID string) (map[string][]AppUse, error) {
+	return s.accountUsage(
+		`SELECT DISTINCT b.account_id, i.id, i.name FROM instance_ai_bindings b
+		 JOIN ai_accounts a ON a.id = b.account_id
+		 JOIN instances i ON i.id = b.instance_id
+		 WHERE a.owner_user_id=? ORDER BY i.name, i.id`, ownerID)
+}
+
+// MailProviderUsage maps each of ownerID's email accounts to the apps bound to
+// it, ordered by name. An account no app uses is absent.
+func (s *Store) MailProviderUsage(ownerID string) (map[string][]AppUse, error) {
+	return s.accountUsage(
+		`SELECT b.provider_id, i.id, i.name FROM instance_mail_bindings b
+		 JOIN mail_providers p ON p.id = b.provider_id
+		 JOIN instances i ON i.id = b.instance_id
+		 WHERE p.owner_user_id=? ORDER BY i.name, i.id`, ownerID)
+}
+
+func (s *Store) accountUsage(query string, args ...any) (map[string][]AppUse, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]AppUse{}
+	for rows.Next() {
+		var account string
+		var u AppUse
+		if err := rows.Scan(&account, &u.InstanceID, &u.Name); err != nil {
+			return nil, err
+		}
+		out[account] = append(out[account], u)
 	}
 	return out, rows.Err()
 }

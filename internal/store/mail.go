@@ -351,6 +351,27 @@ func (s *Store) ListMailBindingsForOwner(ownerID string) ([]MailBinding, error) 
 	return out, rows.Err()
 }
 
+// ListMailBindingsForProvider returns the ids of the instances bound to one
+// provider, ordered by id: the apps an edit or a delete of that account must
+// re-stamp.
+func (s *Store) ListMailBindingsForProvider(providerID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT instance_id FROM instance_mail_bindings WHERE provider_id=? ORDER BY instance_id`, providerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // GetInstanceMailProvider returns the provider an instance is bound to, or
 // ErrNotFound when unbound (writeEnv's signal to inject nothing).
 func (s *Store) GetInstanceMailProvider(instanceID string) (MailProvider, error) {

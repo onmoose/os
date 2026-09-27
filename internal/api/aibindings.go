@@ -19,6 +19,7 @@ import (
 
 	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
 )
@@ -108,10 +109,14 @@ func resolveAIBindings(man *manifest.Manifest, bindings []AIBindingBody, account
 		for env, v := range bound.values {
 			res.values[env] = v
 		}
+		envs := make([]string, 0, len(fields))
 		for _, sf := range fields {
 			res.claimed[sf.field.AppEnv] = true
+			envs = append(envs, sf.field.AppEnv)
 		}
-		res.bindings = append(res.bindings, store.AIBinding{Slot: slot, AccountID: acct.ID, Models: bound.models})
+		// Envs records every field of the slot, so an account delete can
+		// clear them without the manifest.
+		res.bindings = append(res.bindings, store.AIBinding{Slot: slot, AccountID: acct.ID, Models: bound.models, Envs: envs})
 	}
 	return res, nil
 }
@@ -310,4 +315,185 @@ func (s *Server) resolveInstallAnswers(ctx context.Context, man *manifest.Manife
 	}
 	account := func(id string) (store.AIAccount, error) { return s.ownAIAccount(caller, id) }
 	return resolveInstallWithAI(man, fields, bindings, account, providers)
+}
+
+// putAIResolution is what a config edit with bindings resolved to.
+type putAIResolution struct {
+	// cfg is the app's full set of config values after the edit.
+	cfg []store.InstanceConfig
+	// slots are the slots the edit replaced or cleared, in request order.
+	slots []string
+	// bindings are the new binding rows for the replaced slots. A cleared
+	// slot has none.
+	bindings []store.AIBinding
+}
+
+// resolvePutWithAI applies a config edit that may carry AI bindings
+// (INSTALL_SETUP.md piece 4). A listed slot is replaced: its binding with the
+// new one and its fields with the values the new binding gives. A slot sent
+// with an empty account_id is cleared: its binding and its values go. A slot
+// not listed is left alone. The typed fields and the slots are checked
+// together by resolvePutConfig, so `required` and the "no worse" requires
+// rule see the result of the whole edit.
+//
+// A typed value for a field of a listed slot is a 422, as at install. So is a
+// typed value for a field of a slot that is bound now and not listed: the
+// user changes such a slot by picking another account or clearing it. An
+// empty typed value for either is ignored, like at install.
+func resolvePutWithAI(man *manifest.Manifest, current []store.InstanceConfig, currentBindings []store.AIBinding, fields map[string]string, bindings []AIBindingBody, account func(id string) (store.AIAccount, error), providers []catalog.AIProvider) (putAIResolution, error) {
+	slots := fillableSlots(man)
+	listed := map[string]bool{}
+	var order []string
+	var sets []AIBindingBody
+	for _, b := range bindings {
+		slot := strings.TrimSpace(b.Slot)
+		if _, ok := slots[slot]; !ok {
+			return putAIResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: this app has no AI slot %q", slot))
+		}
+		if listed[slot] {
+			return putAIResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: slot %s is given more than once", slot))
+		}
+		listed[slot] = true
+		order = append(order, slot)
+		if strings.TrimSpace(b.AccountID) == "" {
+			continue // a clear
+		}
+		b.Slot = slot
+		sets = append(sets, b)
+	}
+	res, err := resolveAIBindings(man, sets, account, providers)
+	if err != nil {
+		return putAIResolution{}, err
+	}
+
+	claimed := map[string]bool{}
+	for slot := range listed {
+		for _, sf := range slots[slot] {
+			claimed[sf.field.AppEnv] = true
+		}
+	}
+	for _, cb := range currentBindings {
+		if listed[cb.Slot] {
+			continue
+		}
+		for _, sf := range slots[cb.Slot] {
+			claimed[sf.field.AppEnv] = true
+		}
+	}
+
+	put := make(map[string]string, len(fields))
+	envs := make([]string, 0, len(fields))
+	for env := range fields {
+		envs = append(envs, env)
+	}
+	slices.Sort(envs)
+	for _, env := range envs {
+		v := fields[env]
+		if !claimed[env] {
+			put[env] = v
+			continue
+		}
+		if v != "" {
+			return putAIResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %s is filled from an AI account, so do not also send a value for it", env))
+		}
+	}
+	// Every field of a listed slot gets the value its new binding gives, or is
+	// cleared when the binding gives none (or the slot is being cleared).
+	for slot := range listed {
+		for _, sf := range slots[slot] {
+			put[sf.field.AppEnv] = res.values[sf.field.AppEnv]
+		}
+	}
+	cfg, err := resolvePutConfig(man, current, put)
+	if err != nil {
+		return putAIResolution{}, err
+	}
+	return putAIResolution{cfg: cfg, slots: order, bindings: res.bindings}, nil
+}
+
+// accountSlotResolver is the lifecycle.SlotResolver for an account edit
+// (INSTALL_SETUP.md piece 4). Lifecycle calls it under each app's lock, and
+// it reads the account row then, through account, so the values come from
+// the account as it is at commit time, not as it was when the edit started.
+//
+// It fills the slot from what the edit can change, and needs no provider
+// data for that, so a key change still reaches the apps right after a boot
+// or while the catalog service is down:
+//   - api_key gets the account's key (nothing for a keyless account).
+//   - base_url gets the account's base URL when it has one. Without one, a
+//     native slot's base URL is left blank (the decision row), and the
+//     compatible slot takes the provider's openai_base_url from the data if
+//     the data has it, else keeps the value it has now. The one exception:
+//     when this edit removed the account's base URL and the app still holds
+//     that URL, keeping it would leave the app on the endpoint the user just
+//     removed. That app fails in the job with a plain message instead.
+//   - a model field gets the stored model ids, joined with the field's
+//     separator, else keeps the value it has now.
+//
+// The provider does not have to fit the slot again: the binding was checked
+// when it was made, and the provider id of a bound account cannot change.
+//
+// removedURL is the base URL the edit removed from the account, or "" when
+// the edit left the account with one (or it never had one).
+func accountSlotResolver(account func(id string) (store.AIAccount, error), providers []catalog.AIProvider, removedURL string) lifecycle.SlotResolver {
+	return func(man *manifest.Manifest, b store.AIBinding, current map[string]string) (map[string]string, error) {
+		acct, err := account(b.AccountID)
+		if err != nil {
+			return nil, fmt.Errorf("read account: %w", err)
+		}
+		fields, ok := fillableSlots(man)[b.Slot]
+		if !ok {
+			return nil, fmt.Errorf("the app has no LLM provider setting %s now", b.Slot)
+		}
+		return restampSlot(fields, b, acct, providers, removedURL, current)
+	}
+}
+
+// restampSlot is the values of one bound slot after its account changed.
+// See accountSlotResolver for the rules.
+func restampSlot(fields []slotField, b store.AIBinding, acct store.AIAccount, providers []catalog.AIProvider, removedURL string, current map[string]string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, sf := range fields {
+		env := sf.field.AppEnv
+		switch sf.role.Attribute {
+		case manifest.AttrAPIKey:
+			if acct.APIKey != "" {
+				out[env] = acct.APIKey
+			}
+		case manifest.AttrBaseURL:
+			switch {
+			case acct.BaseURL != "":
+				out[env] = acct.BaseURL
+			case sf.role.Protocol != manifest.ProtocolOpenAICompatible:
+				// A native base URL comes only from the account.
+			default:
+				if u := providerBaseURL(providers, acct.ProviderID); u != "" {
+					out[env] = u
+				} else if v := current[env]; v != "" {
+					if acct.BaseURL == "" && removedURL != "" && v == removedURL {
+						return nil, errors.New("the account no longer has its own address, and the provider's usual address cannot be read right now. Save the account again in a few minutes")
+					}
+					out[env] = v
+				}
+			}
+		case manifest.AttrModel, manifest.AttrModels:
+			if ids := b.Models[modelKey(sf.role)]; len(ids) > 0 {
+				out[env] = strings.Join(ids, sf.field.EffectiveSeparator())
+			} else if v := current[env]; v != "" {
+				out[env] = v
+			}
+		}
+	}
+	return out, nil
+}
+
+// providerBaseURL is a listed provider's OpenAI-compatible endpoint, or ""
+// when the provider is not in the data (or the data is empty).
+func providerBaseURL(providers []catalog.AIProvider, id string) string {
+	for _, p := range providers {
+		if p.ID == id {
+			return p.OpenAIBaseURL
+		}
+	}
+	return ""
 }

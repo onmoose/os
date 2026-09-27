@@ -322,12 +322,8 @@ func putConfig(t *testing.T, s *Server, ctx context.Context, id string, fields m
 	t.Helper()
 	return s.updateAppConfig(ctx, &struct {
 		ID   string `path:"id"`
-		Body struct {
-			Fields map[string]string `json:"fields"`
-		}
-	}{ID: id, Body: struct {
-		Fields map[string]string `json:"fields"`
-	}{Fields: fields}})
+		Body AppConfigUpdateBody
+	}{ID: id, Body: AppConfigUpdateBody{Fields: fields}})
 }
 
 // auditedConfigUpdate reports whether an app.config.update event with the given

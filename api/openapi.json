@@ -66,6 +66,15 @@
           "updated_at": {
             "format": "int64",
             "type": "integer"
+          },
+          "used_by": {
+            "items": {
+              "$ref": "#/components/schemas/AppUseDTO"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -75,7 +84,68 @@
           "base_url",
           "key_set",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "used_by"
+        ],
+        "type": "object"
+      },
+      "AIAccountSavedDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/AIAccountSavedDTO.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "key_set": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "used_by": {
+            "items": {
+              "$ref": "#/components/schemas/AppUseDTO"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "provider_id",
+          "label",
+          "base_url",
+          "key_set",
+          "created_at",
+          "updated_at",
+          "used_by"
         ],
         "type": "object"
       },
@@ -211,6 +281,27 @@
         ],
         "type": "object"
       },
+      "AccountDeletedDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/AccountDeletedDTO.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
       "AiProvidersOutputBody": {
         "additionalProperties": false,
         "properties": {
@@ -238,6 +329,45 @@
         ],
         "type": "object"
       },
+      "AppAIBindingDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "account_label": {
+            "type": "string"
+          },
+          "mine": {
+            "type": "boolean"
+          },
+          "models": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "type": "object"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "slot": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slot",
+          "account_id",
+          "mine",
+          "provider_id"
+        ],
+        "type": "object"
+      },
       "AppConfigDTO": {
         "additionalProperties": false,
         "properties": {
@@ -250,6 +380,15 @@
             "readOnly": true,
             "type": "string"
           },
+          "ai_bindings": {
+            "items": {
+              "$ref": "#/components/schemas/AppAIBindingDTO"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "fields": {
             "items": {
               "$ref": "#/components/schemas/AppConfigFieldDTO"
@@ -258,6 +397,18 @@
               "array",
               "null"
             ]
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "needs_setup": {
+            "type": "boolean"
           },
           "requires": {
             "items": {
@@ -270,7 +421,10 @@
           }
         },
         "required": [
-          "fields"
+          "fields",
+          "ai_bindings",
+          "needs_setup",
+          "missing"
         ],
         "type": "object"
       },
@@ -332,6 +486,36 @@
         ],
         "type": "object"
       },
+      "AppConfigUpdateBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/AppConfigUpdateBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "ai_bindings": {
+            "items": {
+              "$ref": "#/components/schemas/AIBindingBody"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
       "AppSecretDTO": {
         "additionalProperties": false,
         "properties": {
@@ -372,6 +556,22 @@
         },
         "required": [
           "secrets"
+        ],
+        "type": "object"
+      },
+      "AppUseDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance_id",
+          "name"
         ],
         "type": "object"
       },
@@ -1675,6 +1875,9 @@
           "name": {
             "type": "string"
           },
+          "needs_setup": {
+            "type": "boolean"
+          },
           "owner_user_id": {
             "type": "string"
           },
@@ -1720,7 +1923,8 @@
           "owner_user_id",
           "owner_username",
           "scope",
-          "exposure"
+          "exposure",
+          "needs_setup"
         ],
         "type": "object"
       },
@@ -2407,6 +2611,15 @@
           "provider_type": {
             "type": "string"
           },
+          "used_by": {
+            "items": {
+              "$ref": "#/components/schemas/AppUseDTO"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "username": {
             "type": "string"
           }
@@ -2421,7 +2634,8 @@
           "encryption",
           "provider_type",
           "provider_label",
-          "created_at"
+          "created_at",
+          "used_by"
         ],
         "type": "object"
       },
@@ -2442,6 +2656,83 @@
           "id",
           "label",
           "provider_type"
+        ],
+        "type": "object"
+      },
+      "MailProviderSavedDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MailProviderSavedDTO.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "encryption": {
+            "enum": [
+              "none",
+              "starttls",
+              "tls"
+            ],
+            "type": "string"
+          },
+          "from_address": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "port": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "provider_label": {
+            "type": "string"
+          },
+          "provider_type": {
+            "type": "string"
+          },
+          "used_by": {
+            "items": {
+              "$ref": "#/components/schemas/AppUseDTO"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "host",
+          "port",
+          "username",
+          "from_address",
+          "encryption",
+          "provider_type",
+          "provider_label",
+          "created_at",
+          "used_by"
         ],
         "type": "object"
       },
@@ -3215,30 +3506,6 @@
         ],
         "type": "object"
       },
-      "Update-app-configRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/Update-app-configRequest.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "fields": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "fields"
-        ],
-        "type": "object"
-      },
       "Update-user-roleRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3474,10 +3741,20 @@
           }
         ],
         "responses": {
-          "204": {
-            "description": "No Content"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletedDTO"
+                }
+              }
+            },
+            "description": "OK"
           },
-          "default": {
+          "204": {
+            "description": "Deleted. No app used the account, so nothing else changes."
+          },
+          "401": {
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3485,10 +3762,50 @@
                 }
               }
             },
-            "description": "Error"
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           }
         },
-        "summary": "Delete one of the caller's AI provider accounts (elevation required)"
+        "summary": "Delete one of the caller's AI provider accounts and clear it from the apps that use it (elevation required)"
       },
       "put": {
         "operationId": "update-ai-account",
@@ -3517,7 +3834,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AIAccountDTO"
+                  "$ref": "#/components/schemas/AIAccountSavedDTO"
                 }
               }
             },
@@ -3908,7 +4225,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Update-app-configRequest"
+                "$ref": "#/components/schemas/AppConfigUpdateBody"
               }
             }
           },
@@ -4832,10 +5149,20 @@
           }
         ],
         "responses": {
-          "204": {
-            "description": "No Content"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletedDTO"
+                }
+              }
+            },
+            "description": "OK"
           },
-          "default": {
+          "204": {
+            "description": "Deleted. No app used the account, so nothing else changes."
+          },
+          "401": {
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4843,10 +5170,50 @@
                 }
               }
             },
-            "description": "Error"
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           }
         },
-        "summary": "Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound)"
+        "summary": "Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound and restart)"
       },
       "put": {
         "operationId": "update-mail-provider",
@@ -4875,7 +5242,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MailProviderDTO"
+                  "$ref": "#/components/schemas/MailProviderSavedDTO"
                 }
               }
             },

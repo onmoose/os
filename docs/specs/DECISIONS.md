@@ -21,6 +21,18 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-26 — Editing or deleting an email or AI account reaches the apps that use it
+
+**Previously:** editing or deleting an outgoing email account did not touch the apps bound to it. They kept the old values in their `.env` until their next rebind or reinstall. This lag was accepted on purpose, "rather than a fleet-restart side effect hidden inside a settings save" (2026-06-12), and `NEXT.md` held re-stamp-on-edit as a deferral whose answer would be visible restarts.
+
+**Now:** editing an account's credential or connection re-stamps every app bound to it and restarts the running ones, in a background job. Deleting an account clears its values from those apps and restarts them. This holds for email accounts and for AI provider accounts. The edit form and the delete dialog name the apps that will restart before the user confirms, so the restart is never hidden. A label change restarts nothing. An AI account's provider cannot change while an app uses it.
+
+**Why:** AI accounts made the lag worse. A user who replaces a leaked or revoked key expects every app to use the new one, and a user who deletes an account expects the key to leave their apps. Keeping the old key running quietly is the surprise, not the restart. The 2026-06-12 objection was to a hidden restart, and naming the apps first answers it, which is the shape `NEXT.md` already proposed.
+
+**Affected docs:** `INSTALL_SETUP.md` (decisions table), `SERVICE_PROVISIONING.md` # BYO outgoing mail and # AI provider accounts, `NEXT.md` # Outgoing mail, `SETTINGS.md`, `DASHBOARD.md`.
+
+---
+
 ## 2026-09-25 — Email accounts belong to a user, any user can add one, and add or edit needs no re-prompt
 
 **Previously:** outgoing email accounts belonged to the box. Only an admin could add, edit or delete one, every one of those was elevation-class (a password re-prompt, or the portal round trip on a hosted box), and every user could bind any account to their apps. Labels were unique per box.

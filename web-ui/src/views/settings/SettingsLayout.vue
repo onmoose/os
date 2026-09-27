@@ -17,7 +17,7 @@
 // (components/Dock.vue), so this doesn't duplicate that with a second slide-over.
 import { computed } from "vue";
 import { RouterLink, RouterView } from "vue-router";
-import { User, Bell, LayoutGrid, Mail, ScrollText, Terminal, Users, Info, type LucideIcon } from "lucide-vue-next";
+import { User, Bell, LayoutGrid, Mail, ScrollText, Sparkles, Terminal, Users, Info, type LucideIcon } from "lucide-vue-next";
 import { useAuth } from "@/auth";
 
 const { currentUser } = useAuth();
@@ -26,9 +26,11 @@ type NavItem = { to: string; label: string; icon: LucideIcon; adminOnly?: boolea
 type NavGroup = { label: string; items: NavItem[] };
 
 // Group and item order is the menu order. "You" holds what the signed-in user
-// owns: their account, the apps they have installed, and the email accounts
-// they added (each belongs to one user, INSTALL_SETUP.md # 5). "System" holds the
-// box-wide items. SSH sits between Notifications and Activity: it is per-account
+// owns: their account and the apps they have installed. "Integrations" holds
+// the accounts they added to connect their apps to outside services: LLM
+// providers and email (each belongs to one user, INSTALL_SETUP.md # 5). The UI
+// says "LLM provider"; the API and code say `ai`. "System" holds the box-wide
+// items. SSH sits between Notifications and Activity: it is per-account
 // like Notifications, and both of those read as settings you carry, while
 // Activity is the record of what happened on this box.
 const groups: NavGroup[] = [
@@ -37,7 +39,13 @@ const groups: NavGroup[] = [
     items: [
       { to: "/settings/account", label: "Account", icon: User },
       { to: "/settings/apps", label: "Installed apps", icon: LayoutGrid },
-      { to: "/settings/mail", label: "Outgoing email", icon: Mail },
+    ],
+  },
+  {
+    label: "Integrations",
+    items: [
+      { to: "/settings/llm", label: "LLM providers", icon: Sparkles },
+      { to: "/settings/email", label: "Email", icon: Mail },
     ],
   },
   {

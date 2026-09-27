@@ -11,6 +11,10 @@
 //               the corner alert mark and a "View details" link to the app page
 //               where the failure reason / logs live (retry is in the quick menu).
 //   - other:    grayed with the corner alert mark — needs attention.
+//   - needs setup (INSTALL_SETUP.md piece 4): a required setting is empty or
+//               the app has no LLM provider, often after its account was
+//               deleted. The corner mark shows in amber, and a controller gets
+//               a "Needs setup" link to the app's settings screen.
 //
 // Icon rendering mirrors StoreAppCard: icon_url when present, AppGlyph fallback.
 import { computed, ref } from "vue";
@@ -60,6 +64,9 @@ const brokenIcon = ref(false);
 
 // The corner alert is for trouble (failed/crashed), not a deliberate stop.
 const showAlert = computed(() => !running.value && !stopped.value);
+// Needs setup is a softer warning than a failure, so it gets the amber mark
+// only when no failure mark is already there.
+const needsSetup = computed(() => !!props.instance.needs_setup);
 
 // Element + behavior: a link when running (opens the app), otherwise an inert div
 // — the logo is the open affordance only, never a start/retry button.
@@ -96,6 +103,11 @@ const menuOpen = ref(false);
       <AlertTriangle
         v-if="showAlert"
         class="absolute right-3 top-3 size-4 text-destructive"
+      />
+      <AlertTriangle
+        v-else-if="needsSetup"
+        class="absolute right-3 top-3 size-4 text-amber-600"
+        aria-label="Needs setup"
       />
       <span
         v-if="access !== 'closed'"
@@ -152,6 +164,15 @@ const menuOpen = ref(false);
       </div>
       <div v-else-if="!singleUserMode" class="text-xs uppercase tracking-wide text-muted-foreground">{{ label }}</div>
     </div>
+
+    <!-- Needs setup: the app's settings screen says what is missing. -->
+    <RouterLink
+      v-if="needsSetup && !failed && canControl"
+      :to="`/settings/apps/${instance.id}`"
+      class="text-xs text-amber-700 underline underline-offset-2 hover:text-foreground"
+    >
+      Needs setup
+    </RouterLink>
 
     <!-- Don't retry blind: a controller can open the app page for the failure
          reason / logs rather than looping on the tile (#154). -->

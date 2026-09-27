@@ -1,5 +1,6 @@
-// AI providers for the install setup page (docs/specs/INSTALL_SETUP.md # 1 to
-// # 3, and # 6).
+// AI providers for the install setup page and the app's settings screen
+// (docs/specs/INSTALL_SETUP.md # 1 to # 3, # 6, and piece 4). The UI calls
+// them LLM providers; the code keeps `ai`, the role kind.
 //
 // This is the one module that turns an app's roles and the provider data into
 // tiles, model pickers and bindings. The provider list comes from the catalog
@@ -17,7 +18,7 @@
 // The page sends one binding per filled slot (account and model ids), and the
 // brain turns it into the app's values. The page never sees a key again after
 // the account is saved.
-import type { AIAccount, AIBinding, AIModel, AIProvider, InstallPlanConfigField, RequiresGroup } from "./api";
+import type { AIAccount, AIBinding, AIModel, AIProvider, AppAIBinding, InstallPlanConfigField, RequiresGroup } from "./api";
 
 // COMPATIBLE is the reserved protocol of the generic slot, and the provider id
 // of an account made with the Other tile.
@@ -245,6 +246,24 @@ export function bindingOf(slot: AISlot, c: AIChoice): AIBinding {
   return b;
 }
 
+// choiceFromBinding turns an installed app's binding (GET
+// /api/v1/apps/{id}/config) back into a picker choice. An openai_compatible
+// account is the Other tile.
+export function choiceFromBinding(b: AppAIBinding): AIChoice {
+  const models: Record<string, string[]> = {};
+  for (const [k, ids] of Object.entries(b.models ?? {})) models[k] = [...(ids ?? [])];
+  return { provider: b.provider_id === COMPATIBLE ? OTHER_ID : b.provider_id, accountId: b.account_id, models };
+}
+
+// sameBinding says whether a choice would bind a slot as it is bound now:
+// the same account and the same model ids for every model setting.
+export function sameBinding(slot: AISlot, stored: AppAIBinding, next: AIBinding): boolean {
+  if (stored.account_id !== next.account_id) return false;
+  return slot.models.every(
+    (m) => (stored.models?.[m.key] ?? []).join("\n") === (next.models?.[m.key] ?? []).join("\n"),
+  );
+}
+
 // filledEnvs lists the fields of a bound slot that the brain will really give
 // a value, the same rule as its resolution: the key only when the account has
 // one; a compatible base URL always (the account's, or the provider's
@@ -298,7 +317,8 @@ export function unmetGroups(
 export function groupNeed(fields: InstallPlanConfigField[], group: RequiresGroup): string {
   const members = group.one_of ?? [];
   // A group of AI kinds or slots is met by any tile the page shows for them.
-  if (members.every((m) => m === "ai" || /^ai\.[a-z0-9_]+$/.test(m))) return "an AI provider";
+  // The UI says "LLM provider"; the role kind stays `ai`.
+  if (members.every((m) => m === "ai" || /^ai\.[a-z0-9_]+$/.test(m))) return "an LLM provider";
   const titles = groupFields(fields, group).map((f) => f.title);
   if (titles.length === 0) return members.join(", ");
   if (titles.length === 1) return titles[0]!;

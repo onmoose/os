@@ -1,8 +1,8 @@
 // Vue Router 4, history mode (WEB_UI.md: Caddy serves index.html for unmatched
 // routes). The four destinations mirror the dock in DASHBOARD.md # global
-// navigation. Settings is a left-nav shell (SettingsLayout) whose sections —
-// Account, Notifications, Installed apps, Activity, Users, About — are nested
-// child routes; the right pane is the shell's <RouterView>. Activity is open to
+// navigation. Settings is a left-nav shell (SettingsLayout) whose sections
+// (Account, Installed apps, LLM providers, Email, Notifications, Activity,
+// Users, About) are nested child routes; the right pane is the shell's <RouterView>. Activity is open to
 // all signed-in users; Users is admin-only (the section guards the role, and the
 // shell hides its nav item from members). Role gating per AUTH.md # Roles.
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
@@ -45,11 +45,19 @@ const routes: RouteRecordRaw[] = [
       { path: "apps/:id", name: "settings-app", component: () => import("@/views/settings/InstalledAppDetailSection.vue") },
       { path: "activity", name: "settings-activity", component: () => import("@/views/settings/ActivitySection.vue") },
       { path: "users", name: "settings-users", component: () => import("@/views/settings/UsersSection.vue") },
-      { path: "mail", name: "settings-mail", component: () => import("@/views/settings/OutgoingEmailSection.vue") },
+      // Integrations (INSTALL_SETUP.md, 2026-09-26): the user's own accounts
+      // that connect their apps to outside services.
+      { path: "llm", name: "settings-llm", component: () => import("@/views/settings/LLMProvidersSection.vue") },
+      { path: "email", name: "settings-email", component: () => import("@/views/settings/EmailSection.vue") },
       // Adding an account is two steps, and each is its own URL so the browser
       // Back button walks form → picker → list.
-      { path: "mail/add", name: "settings-mail-add", component: () => import("@/views/settings/OutgoingEmailAddSection.vue") },
-      { path: "mail/add/:preset", name: "settings-mail-new", component: () => import("@/views/settings/OutgoingEmailAddSection.vue") },
+      { path: "email/add", name: "settings-email-add", component: () => import("@/views/settings/EmailAddSection.vue") },
+      { path: "email/add/:preset", name: "settings-email-new", component: () => import("@/views/settings/EmailAddSection.vue") },
+      // The screen was Outgoing email at /settings/mail until it moved under
+      // Integrations. Old links and bookmarks still land on it.
+      { path: "mail", redirect: "/settings/email" },
+      { path: "mail/add", redirect: "/settings/email/add" },
+      { path: "mail/add/:preset", redirect: (to) => `/settings/email/add/${String(to.params.preset)}` },
       { path: "about", name: "settings-about", component: () => import("@/views/settings/AboutSection.vue") },
     ],
   },

@@ -4,7 +4,7 @@
 // Install authorization): permissions, folder sources and subfolders, the
 // storage estimate and its not-enough-space warning, the required-field gate,
 // inline 422 errors, and the 409 duplicate warning with confirm-and-retry. It
-// adds an Email row with an inline "add an account", an AI providers row that
+// adds an Email row with an inline "add an account", an LLM providers row that
 // fills the app's AI slots from the user's AI accounts, and a gate on the
 // app's `requires` groups.
 //
@@ -51,7 +51,7 @@ import Button from "../components/ui/Button.vue";
 import Heading from "../components/ui/Heading.vue";
 import ConfigFieldInput from "../components/install/ConfigFieldInput.vue";
 import MailAccountSection from "../components/install/MailAccountSection.vue";
-import AIProviderSection from "../components/install/AIProviderSection.vue";
+import AISlotPicker from "../components/AISlotPicker.vue";
 
 const route = useRoute();
 const { singleUserMode } = useAuth();
@@ -395,9 +395,9 @@ const ddClass = "mt-2 text-sm/6 text-foreground sm:col-span-2 sm:mt-0";
           </div>
 
           <div v-if="slots.length > 0" :class="rowClass">
-            <dt :class="dtClass">AI providers</dt>
+            <dt :class="dtClass">LLM providers</dt>
             <dd :class="ddClass">
-              <AIProviderSection v-model="aiChoices" :slots="slots" :providers="providers" :app-name="plan.name" />
+              <AISlotPicker v-model="aiChoices" :slots="slots" :providers="providers" :app-name="plan.name" />
             </dd>
           </div>
 

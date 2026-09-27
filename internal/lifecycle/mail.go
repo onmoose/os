@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -39,6 +40,13 @@ func mailEnvLines(p store.MailProvider) []string {
 		"MOOSE_MAIL_USE_SSL=" + strconv.FormatBool(p.Encryption == store.MailEncryptionTLS),
 		"MOOSE_MAIL_DSN=" + mailDSN(p),
 	}
+}
+
+// MailEnvChanged reports whether two versions of an account give an app
+// different MOOSE_MAIL_* lines. The API uses it to decide whether an edit must
+// re-stamp the apps bound to the account: a label or preset change does not.
+func MailEnvChanged(a, b store.MailProvider) bool {
+	return !slices.Equal(mailEnvLines(a), mailEnvLines(b))
 }
 
 // mailDSN renders a provider as a Symfony-style SMTP URL

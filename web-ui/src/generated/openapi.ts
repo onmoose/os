@@ -33,7 +33,7 @@ export interface paths {
         /** Update one of the caller's AI provider accounts (an empty api_key keeps the stored one) */
         put: operations["update-ai-account"];
         post?: never;
-        /** Delete one of the caller's AI provider accounts (elevation required) */
+        /** Delete one of the caller's AI provider accounts and clear it from the apps that use it (elevation required) */
         delete: operations["delete-ai-account"];
         options?: never;
         head?: never;
@@ -599,7 +599,7 @@ export interface paths {
         /** Update one of the caller's outgoing-mail providers */
         put: operations["update-mail-provider"];
         post?: never;
-        /** Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound) */
+        /** Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound and restart) */
         delete: operations["delete-mail-provider"];
         options?: never;
         head?: never;
@@ -1067,6 +1067,26 @@ export interface components {
             provider_id: string;
             /** Format: int64 */
             updated_at: number;
+            used_by: components["schemas"]["AppUseDTO"][] | null;
+        };
+        AIAccountSavedDTO: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/AIAccountSavedDTO.json
+             */
+            readonly $schema?: string;
+            base_url: string;
+            /** Format: int64 */
+            created_at: number;
+            id: string;
+            job_id?: string;
+            key_set: boolean;
+            label: string;
+            provider_id: string;
+            /** Format: int64 */
+            updated_at: number;
+            used_by: components["schemas"]["AppUseDTO"][] | null;
         };
         AIBindingBody: {
             account_id: string;
@@ -1097,6 +1117,15 @@ export interface components {
             native_protocol?: string;
             openai_base_url?: string;
         };
+        AccountDeletedDTO: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/AccountDeletedDTO.json
+             */
+            readonly $schema?: string;
+            job_id: string;
+        };
         AiProvidersOutputBody: {
             /**
              * Format: uri
@@ -1106,6 +1135,16 @@ export interface components {
             readonly $schema?: string;
             providers: components["schemas"]["AIProvider"][] | null;
         };
+        AppAIBindingDTO: {
+            account_id: string;
+            account_label?: string;
+            mine: boolean;
+            models?: {
+                [key: string]: string[] | null;
+            };
+            provider_id: string;
+            slot: string;
+        };
         AppConfigDTO: {
             /**
              * Format: uri
@@ -1113,7 +1152,10 @@ export interface components {
              * @example https://example.com/schemas/AppConfigDTO.json
              */
             readonly $schema?: string;
+            ai_bindings: components["schemas"]["AppAIBindingDTO"][] | null;
             fields: components["schemas"]["AppConfigFieldDTO"][] | null;
+            missing: string[] | null;
+            needs_setup: boolean;
             requires?: components["schemas"]["RequiresGroupDTO"][] | null;
         };
         AppConfigFieldDTO: {
@@ -1130,6 +1172,18 @@ export interface components {
             type: string;
             value: string;
         };
+        AppConfigUpdateBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/AppConfigUpdateBody.json
+             */
+            readonly $schema?: string;
+            ai_bindings?: components["schemas"]["AIBindingBody"][] | null;
+            fields?: {
+                [key: string]: string;
+            };
+        };
         AppSecretDTO: {
             name: string;
             value: string;
@@ -1142,6 +1196,10 @@ export interface components {
              */
             readonly $schema?: string;
             secrets: components["schemas"]["AppSecretDTO"][] | null;
+        };
+        AppUseDTO: {
+            instance_id: string;
+            name: string;
         };
         AuditEventDTO: {
             action: string;
@@ -1557,6 +1615,7 @@ export interface components {
             mail_supported?: boolean;
             manifest_id: string;
             name: string;
+            needs_setup: boolean;
             owner_user_id: string;
             owner_username: string;
             public_paths?: string[] | null;
@@ -1791,12 +1850,36 @@ export interface components {
             port: number;
             provider_label: string;
             provider_type: string;
+            used_by: components["schemas"]["AppUseDTO"][] | null;
             username: string;
         };
         MailProviderOption: {
             id: string;
             label: string;
             provider_type: string;
+        };
+        MailProviderSavedDTO: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MailProviderSavedDTO.json
+             */
+            readonly $schema?: string;
+            /** Format: int64 */
+            created_at: number;
+            /** @enum {string} */
+            encryption: "none" | "starttls" | "tls";
+            from_address: string;
+            host: string;
+            id: string;
+            job_id?: string;
+            label: string;
+            /** Format: int64 */
+            port: number;
+            provider_label: string;
+            provider_type: string;
+            used_by: components["schemas"]["AppUseDTO"][] | null;
+            username: string;
         };
         NotificationDTO: {
             action_label?: string;
@@ -2083,17 +2166,6 @@ export interface components {
             /** Format: int64 */
             count: number;
         };
-        "Update-app-configRequest": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Update-app-configRequest.json
-             */
-            readonly $schema?: string;
-            fields: {
-                [key: string]: string;
-            };
-        };
         "Update-user-roleRequest": {
             /**
              * Format: uri
@@ -2237,7 +2309,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AIAccountDTO"];
+                    "application/json": components["schemas"]["AIAccountSavedDTO"];
                 };
             };
             /** @description Error */
@@ -2262,15 +2334,60 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description No Content */
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDeletedDTO"];
+                };
+            };
+            /** @description Deleted. No app used the account, so nothing else changes. */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Error */
-            default: {
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2607,7 +2724,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Update-app-configRequest"];
+                "application/json": components["schemas"]["AppConfigUpdateBody"];
             };
         };
         responses: {
@@ -3422,7 +3539,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MailProviderDTO"];
+                    "application/json": components["schemas"]["MailProviderSavedDTO"];
                 };
             };
             /** @description Error */
@@ -3447,15 +3564,60 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description No Content */
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDeletedDTO"];
+                };
+            };
+            /** @description Deleted. No app used the account, so nothing else changes. */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Error */
-            default: {
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

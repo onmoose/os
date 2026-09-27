@@ -7,7 +7,10 @@ package api
 // exist, so ids do not leak. Adding and editing need no password re-prompt,
 // so a hosted owner can add an account from the install setup page without
 // the round trip to the portal that loses the form. Delete keeps the
-// re-prompt. The per-app binding endpoint follows the stop/start
+// re-prompt. An edit that changes what MOOSE_MAIL_* holds, and a delete,
+// reach the apps bound to the account: their .env is re-stamped and the
+// running ones restart, in one background job whose id the response carries
+// (DECISIONS.md 2026-09-26). The per-app binding endpoint follows the stop/start
 // authorization (a member may rebind their own personal instance) and binds
 // only to the caller's own accounts. Passwords are write-only: requests
 // carry them, responses never do.
@@ -18,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/smtp"
 	"strconv"
 	"strings"
@@ -56,7 +60,12 @@ func (s *Server) registerMail(api huma.API) {
 
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-mail-provider", Method: "DELETE", Path: "/api/v1/mail-providers/{id}",
-		Summary: "Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound)", DefaultStatus: 204,
+		Summary: "Delete one of the caller's outgoing-mail providers (elevation required; bound apps fall back to unbound and restart)", DefaultStatus: 200,
+		Responses: map[string]*huma.Response{
+			"204": {Description: "Deleted. No app used the account, so nothing else changes."},
+		},
+		// Listed because the 204 above stops huma adding its default error.
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusInternalServerError},
 	}, s.deleteMailProvider)
 
 	huma.Register(api, huma.Operation{
@@ -100,16 +109,29 @@ type MailProviderDTO struct {
 	ProviderType  string `json:"provider_type"`
 	ProviderLabel string `json:"provider_label"`
 	CreatedAt     int64  `json:"created_at"`
+	// UsedBy lists the apps bound to the account, ordered by name. An edit
+	// of its connection or credential restarts them, and a delete unbinds
+	// them, so the UI names them before the user confirms.
+	UsedBy []AppUseDTO `json:"used_by"`
 }
 
-func mailProviderDTO(p store.MailProvider) MailProviderDTO {
+func mailProviderDTO(p store.MailProvider, uses []store.AppUse) MailProviderDTO {
 	return MailProviderDTO{
 		ID: p.ID, Label: p.Label, Host: p.Host, Port: p.Port,
 		Username: p.Username, FromAddress: p.FromAddress,
 		Encryption:   p.Encryption,
 		ProviderType: p.ProviderType, ProviderLabel: mailpreset.LabelFor(p.ProviderType),
 		CreatedAt: p.CreatedAt.Unix(),
+		UsedBy:    appUseDTOs(uses),
 	}
+}
+
+// MailProviderSavedDTO is the answer to an edit: the account, plus the id of
+// the job that re-stamps and restarts the apps bound to it. JobID is empty
+// when the edit reaches no app (a label change, or an account no app uses).
+type MailProviderSavedDTO struct {
+	MailProviderDTO
+	JobID string `json:"job_id,omitempty"`
 }
 
 // MailProviderBody is the create/update request shape. On update an empty
@@ -282,6 +304,10 @@ func (s *Server) listMailProviders(ctx context.Context, _ *struct{}) (*struct {
 	if err != nil {
 		return nil, huma.Error500InternalServerError("list mail providers failed", err)
 	}
+	usage, err := s.store.MailProviderUsage(id.User.ID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("list mail provider usage failed", err)
+	}
 	out := &struct {
 		Body struct {
 			Providers []MailProviderDTO `json:"providers"`
@@ -289,7 +315,7 @@ func (s *Server) listMailProviders(ctx context.Context, _ *struct{}) (*struct {
 	}{}
 	out.Body.Providers = []MailProviderDTO{}
 	for _, p := range providers {
-		out.Body.Providers = append(out.Body.Providers, mailProviderDTO(p))
+		out.Body.Providers = append(out.Body.Providers, mailProviderDTO(p, usage[p.ID]))
 	}
 	return out, nil
 }
@@ -356,15 +382,20 @@ func (s *Server) createMailProvider(ctx context.Context, in *struct {
 		return nil, huma.Error500InternalServerError("create mail provider failed", err)
 	}
 	s.auditor.Record(ctx, audit.ActionMailProviderCreate, audit.Target{Kind: "mail_provider", ID: p.ID}, meta, true)
-	return &struct{ Body MailProviderDTO }{Body: mailProviderDTO(p)}, nil
+	return &struct{ Body MailProviderDTO }{Body: mailProviderDTO(p, nil)}, nil
 }
 
 // updateMailProvider edits one of the caller's accounts. No elevation, for
 // the same reason as create.
+//
+// When the edit changes what the MOOSE_MAIL_* lines hold (host, port,
+// credential, from address, encryption), every app bound to the account is
+// re-stamped and the running ones restart, in one background job. The save
+// does not wait for it. A label or preset change restarts nothing.
 func (s *Server) updateMailProvider(ctx context.Context, in *struct {
 	ID   string `path:"id"`
 	Body MailProviderBody
-}) (*struct{ Body MailProviderDTO }, error) {
+}) (*struct{ Body MailProviderSavedDTO }, error) {
 	id, err := mailCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -405,20 +436,50 @@ func (s *Server) updateMailProvider(ctx context.Context, in *struct {
 		}
 		return nil, huma.Error500InternalServerError("update mail provider failed", err)
 	}
-
-	// A provider edit changes what bound apps should be sending with, but their
-	// .env still carries the old values until each is re-stamped. Bound apps
-	// pick the change up on their next rebind/recreate; v1 accepts that lag.
 	s.auditor.Record(ctx, audit.ActionMailProviderUpdate, tgt, meta, true)
-	return &struct{ Body MailProviderDTO }{Body: mailProviderDTO(p)}, nil
+
+	usage, err := s.store.MailProviderUsage(id.User.ID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("list mail provider usage failed", err)
+	}
+	out := &struct{ Body MailProviderSavedDTO }{Body: MailProviderSavedDTO{MailProviderDTO: mailProviderDTO(p, usage[p.ID])}}
+	if !lifecycle.MailEnvChanged(existing, p) {
+		return out, nil
+	}
+	ids, err := s.store.ListMailBindingsForProvider(p.ID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("list mail bindings failed", err)
+	}
+	if len(ids) > 0 {
+		out.Body.JobID = s.restampMailJob("mail-provider-restamp", p.ID, ids).ID
+	}
+	return out, nil
+}
+
+// restampMailJob starts the job that re-stamps the MOOSE_MAIL_* lines of the
+// given apps from their current binding and restarts the running ones.
+func (s *Server) restampMailJob(kind, providerID string, ids []string) *Job {
+	return s.jobs.run(kind, func(job *Job) (map[string]any, error) {
+		job.setStep("updating_apps")
+		if err := s.life.RestampMail(context.Background(), ids); err != nil {
+			return nil, err
+		}
+		return map[string]any{"provider_id": providerID}, nil
+	})
 }
 
 // deleteMailProvider removes one of the caller's accounts. It keeps the
-// password re-prompt: unlike an edit it cannot be undone, and it silently
-// unbinds every app that sends through the account.
+// password re-prompt: unlike an edit it cannot be undone, and it unbinds
+// every app that sends through the account. The bindings go with the account
+// in the store; then a background job drops the MOOSE_MAIL_* lines from
+// those apps and restarts the running ones. Its id is the answer; a delete
+// that reaches no app answers 204.
 func (s *Server) deleteMailProvider(ctx context.Context, in *struct {
 	ID string `path:"id"`
-}) (*struct{}, error) {
+}) (*struct {
+	Status int
+	Body   *AccountDeletedDTO
+}, error) {
 	id, err := mailCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -428,17 +489,39 @@ func (s *Server) deleteMailProvider(ctx context.Context, in *struct {
 	}
 
 	tgt := audit.Target{Kind: "mail_provider", ID: in.ID}
-	if err := s.store.DeleteMailProvider(in.ID, id.User.ID); err != nil {
+	if _, err := s.ownMailProvider(id, in.ID); err != nil {
+		s.auditor.Record(ctx, audit.ActionMailProviderDelete, tgt, nil, false)
 		if errors.Is(err, store.ErrNotFound) {
 			// Audited: a delete aimed at someone else's account lands here.
-			s.auditor.Record(ctx, audit.ActionMailProviderDelete, tgt, nil, false)
 			return nil, huma.Error404NotFound("no such mail provider")
 		}
+		return nil, huma.Error500InternalServerError("get mail provider failed", err)
+	}
+	// Read before the delete: the bindings cascade away with the account.
+	ids, err := s.store.ListMailBindingsForProvider(in.ID)
+	if err != nil {
 		s.auditor.Record(ctx, audit.ActionMailProviderDelete, tgt, nil, false)
+		return nil, huma.Error500InternalServerError("list mail bindings failed", err)
+	}
+	if err := s.store.DeleteMailProvider(in.ID, id.User.ID); err != nil {
+		s.auditor.Record(ctx, audit.ActionMailProviderDelete, tgt, nil, false)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("no such mail provider")
+		}
 		return nil, huma.Error500InternalServerError("delete mail provider failed", err)
 	}
 	s.auditor.Record(ctx, audit.ActionMailProviderDelete, tgt, nil, true)
-	return nil, nil
+
+	out := &struct {
+		Status int
+		Body   *AccountDeletedDTO
+	}{Status: http.StatusNoContent}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	out.Status = http.StatusOK
+	out.Body = &AccountDeletedDTO{JobID: s.restampMailJob("mail-provider-delete", in.ID, ids).ID}
+	return out, nil
 }
 
 // verifyMailProviderConfig checks a config the user has not saved yet, so a
