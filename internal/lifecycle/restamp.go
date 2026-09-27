@@ -217,8 +217,54 @@ func (m *Manager) RestampMail(ctx context.Context, ids []string) error {
 	})
 }
 
+// RestampAccounts is RestampConfig for the apps in configIDs and RestampMail
+// for the apps in mailIDs, in one pass. It runs after a user delete, which can
+// reach an app through both an AI and an email account. An app in both lists
+// is rewritten for both before its one restart, so it never runs with half
+// of the deleted user's values gone.
+func (m *Manager) RestampAccounts(ctx context.Context, configIDs, mailIDs []string) error {
+	config := map[string]bool{}
+	mail := map[string]bool{}
+	var ids []string
+	for _, id := range configIDs {
+		if !config[id] {
+			config[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range mailIDs {
+		if !mail[id] && !config[id] {
+			ids = append(ids, id)
+		}
+		mail[id] = true
+	}
+	// Mail goes first because it needs no manifest. If the override then
+	// fails, the app is still restarted without the mail lines, and the
+	// error names it.
+	return m.restampEach(ctx, ids, "update app after user delete failed", func(inst store.Instance) (bool, error) {
+		changed := false
+		if mail[inst.ID] {
+			if err := m.rewriteEnvMail(inst.ID); err != nil {
+				return false, fmt.Errorf("rewrite env: %w", err)
+			}
+			changed = true
+		}
+		if config[inst.ID] {
+			man, err := m.loadInstanceManifest(inst.ID)
+			if err != nil {
+				return changed, fmt.Errorf("load manifest: %w", err)
+			}
+			if err := m.restampConfigEnv(inst.ID, man); err != nil {
+				return changed, fmt.Errorf("rewrite override: %w", err)
+			}
+		}
+		return true, nil
+	})
+}
+
 // restampEach runs apply on each app under its lock, then recreates the app
-// when apply changed something and the app is running. An app uninstalled in
+// when apply changed something and the app is running, even if apply also
+// failed on a later part. An app uninstalled in
 // the meantime is skipped. A failure is logged and the loop goes on; the
 // error at the end names the apps that failed. A failed recreate leaves the
 // app marked pending-recreate (recreateRunning), so the reconcile pass
@@ -253,16 +299,16 @@ func (m *Manager) restampOne(ctx context.Context, id string, apply func(store.In
 	if err != nil {
 		return "", err
 	}
-	changed, err := apply(inst)
-	if err != nil {
-		return inst.Name, err
-	}
+	// apply may report a change and an error together: part of the work
+	// landed (RestampAccounts). The app is restarted for that part, and the
+	// error is still returned.
+	changed, applyErr := apply(inst)
 	if !changed || inst.State != "running" {
-		return inst.Name, nil
+		return inst.Name, applyErr
 	}
 	if err := m.recreateRunning(ctx, inst); err != nil {
-		return inst.Name, err
+		return inst.Name, errors.Join(applyErr, err)
 	}
 	slog.Info("app restarted after account change", "instance_id", id, "name", inst.Name)
-	return inst.Name, nil
+	return inst.Name, applyErr
 }

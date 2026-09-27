@@ -329,10 +329,14 @@ type MailBinding struct {
 }
 
 // ListMailBindingsForOwner returns the bindings to every provider ownerID
-// owns. deleteUser reads them before the user row goes, because the delete
-// cascades them away and a failed host step has to put them back.
+// owns. A user delete reads the same list inside its transaction
+// (DeleteUserAndAccountValues).
 func (s *Store) ListMailBindingsForOwner(ownerID string) ([]MailBinding, error) {
-	rows, err := s.db.Query(
+	return listMailBindingsForOwner(s.db, ownerID)
+}
+
+func listMailBindingsForOwner(db querier, ownerID string) ([]MailBinding, error) {
+	rows, err := db.Query(
 		`SELECT b.instance_id, b.provider_id FROM instance_mail_bindings b
 		 JOIN mail_providers p ON p.id = b.provider_id
 		 WHERE p.owner_user_id=? ORDER BY b.instance_id`, ownerID)

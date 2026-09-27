@@ -239,22 +239,34 @@ type execer interface {
 }
 
 func putAIBinding(db execer, b AIBinding) error {
+	_, err := writeAIBinding(db, "INSERT OR REPLACE", b)
+	return err
+}
+
+// writeAIBinding writes one binding row with the given insert verb. It
+// returns whether a row was written, which is false when INSERT OR IGNORE
+// found the slot taken.
+func writeAIBinding(db execer, verb string, b AIBinding) (bool, error) {
 	models := b.Models
 	if models == nil {
 		models = map[string][]string{}
 	}
 	raw, err := json.Marshal(models)
 	if err != nil {
-		return fmt.Errorf("encode ai binding models: %w", err)
+		return false, fmt.Errorf("encode ai binding models: %w", err)
 	}
 	envs, err := encodeEnvs(b.Envs)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = db.Exec(
-		`INSERT OR REPLACE INTO instance_ai_bindings (instance_id, slot, account_id, models, envs) VALUES (?,?,?,?,?)`,
+	res, err := db.Exec(
+		verb+` INTO instance_ai_bindings (instance_id, slot, account_id, models, envs) VALUES (?,?,?,?,?)`,
 		b.InstanceID, b.Slot, b.AccountID, string(raw), envs)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // encodeEnvs stores nil as ” (not recorded) and a list as JSON.
@@ -498,25 +510,9 @@ func (s *Store) DeleteAIAccountAndValues(id, ownerID string, slotFields func(ins
 	if err != nil {
 		return nil, err
 	}
-
-	var ids []string
-	seen := map[string]bool{}
-	for _, b := range bs {
-		envs := b.Envs
-		if envs == nil {
-			if envs, err = slotFields(b.InstanceID, b.Slot); err != nil {
-				return nil, &SlotFieldsError{InstanceID: b.InstanceID, Err: err}
-			}
-		}
-		for _, env := range envs {
-			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, b.InstanceID, env); err != nil {
-				return nil, err
-			}
-		}
-		if !seen[b.InstanceID] {
-			seen[b.InstanceID] = true
-			ids = append(ids, b.InstanceID)
-		}
+	ids, _, err := clearBindingValues(tx, bs, slotFields)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := tx.Exec(`DELETE FROM ai_accounts WHERE id=? AND owner_user_id=?`, id, ownerID); err != nil {
 		return nil, err
@@ -525,6 +521,155 @@ func (s *Store) DeleteAIAccountAndValues(id, ownerID string, slotFields func(ins
 		return nil, err
 	}
 	return ids, nil
+}
+
+// ClearedConfig is one config value a delete took from an app. A user delete
+// keeps them so it can put them back if the host step fails.
+type ClearedConfig struct {
+	InstanceID string
+	// Slot is the AI slot whose binding gave the value.
+	Slot string
+	InstanceConfig
+}
+
+// DeletedUser is what DeleteUserAndAccountValues took from the apps. It is
+// read inside the delete transaction, so a binding made a moment before the
+// delete is in it.
+type DeletedUser struct {
+	// AIBindings and MailBindings are the app bindings to the user's AI and
+	// email accounts. They went with the accounts by cascade.
+	AIBindings   []AIBinding
+	MailBindings []MailBinding
+	// AIInstanceIDs are the apps whose AI values were cleared, each once.
+	AIInstanceIDs []string
+	// Cleared are the values themselves.
+	Cleared []ClearedConfig
+}
+
+// DeleteUserAndAccountValues removes a user and, in the same transaction,
+// the config values that the user's AI accounts gave each app. It is the
+// user delete's version of DeleteAIAccountAndValues, with the same rules: a
+// binding clears the app_env names it recorded, and slotFields names them
+// only for a row with none recorded. If slotFields fails, nothing is deleted
+// and the error is a *SlotFieldsError. The accounts, their bindings, and
+// everything else the user owns go with the user row by cascade.
+//
+// It returns what it took, for the job that rewrites the apps and for
+// RestoreDeletedUser. ErrNotFound when there is no such user; nothing is
+// removed then.
+func (s *Store) DeleteUserAndAccountValues(userID string, slotFields func(instanceID, slot string) ([]string, error)) (DeletedUser, error) {
+	var d DeletedUser
+	tx, err := s.db.Begin()
+	if err != nil {
+		return d, err
+	}
+	defer tx.Rollback()
+	if d.AIBindings, err = scanAIBindings(tx, `SELECT b.instance_id, b.slot, b.account_id, b.models, b.envs
+		FROM instance_ai_bindings b JOIN ai_accounts a ON a.id = b.account_id
+		WHERE a.owner_user_id=? ORDER BY b.instance_id, b.slot`, userID); err != nil {
+		return d, err
+	}
+	if d.MailBindings, err = listMailBindingsForOwner(tx, userID); err != nil {
+		return d, err
+	}
+	if d.AIInstanceIDs, d.Cleared, err = clearBindingValues(tx, d.AIBindings, slotFields); err != nil {
+		return DeletedUser{}, err
+	}
+	res, err := tx.Exec(`DELETE FROM users WHERE id=?`, userID)
+	if err != nil {
+		return DeletedUser{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return DeletedUser{}, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return DeletedUser{}, err
+	}
+	return d, nil
+}
+
+// clearBindingValues deletes, inside tx, the config values each binding
+// gave its app. It returns the ids of the apps it touched, each once, and
+// the values it deleted.
+func clearBindingValues(tx *sql.Tx, bs []AIBinding, slotFields func(instanceID, slot string) ([]string, error)) ([]string, []ClearedConfig, error) {
+	var (
+		ids     []string
+		cleared []ClearedConfig
+		seen    = map[string]bool{}
+	)
+	for _, b := range bs {
+		envs := b.Envs
+		if envs == nil {
+			var err error
+			if envs, err = slotFields(b.InstanceID, b.Slot); err != nil {
+				return nil, nil, &SlotFieldsError{InstanceID: b.InstanceID, Err: err}
+			}
+		}
+		for _, env := range envs {
+			c := ClearedConfig{InstanceID: b.InstanceID, Slot: b.Slot, InstanceConfig: InstanceConfig{AppEnv: env}}
+			err := tx.QueryRow(`SELECT value, secret FROM instance_config WHERE instance_id=? AND app_env=?`,
+				b.InstanceID, env).Scan(&c.Value, &c.Secret)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+			if _, err := tx.Exec(`DELETE FROM instance_config WHERE instance_id=? AND app_env=?`, b.InstanceID, env); err != nil {
+				return nil, nil, err
+			}
+			cleared = append(cleared, c)
+		}
+		if !seen[b.InstanceID] {
+			seen[b.InstanceID] = true
+			ids = append(ids, b.InstanceID)
+		}
+	}
+	return ids, cleared, nil
+}
+
+// RestoreDeletedUser puts back the bindings and values a failed user delete
+// took, after the caller has put the user row and the accounts back. A row
+// written since is kept. A slot someone rebound while the delete ran keeps
+// its new binding, and none of the old values come back to it, so a slot
+// never holds values from two accounts. A value is also kept when one was
+// written since. An app uninstalled since is skipped by its foreign key.
+// Each row is its own write, so one that fails does not stop the rest; the
+// errors are joined.
+func (s *Store) RestoreDeletedUser(d DeletedUser) error {
+	var errs []error
+	type slotKey struct{ instance, slot string }
+	restored := map[slotKey]bool{}
+	for _, b := range d.AIBindings {
+		// Only a binding this insert wrote gets its values back. A slot
+		// someone bound in the meantime, even a moment before this insert,
+		// is ignored and keeps its own values.
+		wrote, err := writeAIBinding(s.db, "INSERT OR IGNORE", b)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("ai binding %s %s: %w", b.InstanceID, b.Slot, err))
+			continue
+		}
+		if wrote {
+			restored[slotKey{b.InstanceID, b.Slot}] = true
+		}
+	}
+	for _, b := range d.MailBindings {
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO instance_mail_bindings (instance_id, provider_id) VALUES (?,?)`,
+			b.InstanceID, b.ProviderID); err != nil {
+			errs = append(errs, fmt.Errorf("mail binding %s: %w", b.InstanceID, err))
+		}
+	}
+	for _, c := range d.Cleared {
+		if !restored[slotKey{c.InstanceID, c.Slot}] {
+			continue
+		}
+		if _, err := s.db.Exec(
+			`INSERT OR IGNORE INTO instance_config (instance_id, app_env, value, secret) VALUES (?,?,?,?)`,
+			c.InstanceID, c.AppEnv, c.Value, c.Secret); err != nil {
+			errs = append(errs, fmt.Errorf("value %s %s: %w", c.InstanceID, c.AppEnv, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // AppUse names one app that uses an account: its instance id and its name.

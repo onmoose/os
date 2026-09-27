@@ -492,6 +492,41 @@ func (s *Server) restampAIAccountJob(accountID string, ids []string, removedURL 
 	})
 }
 
+// bindingSlotFields names the app_env fields of one AI slot from the app's
+// manifest copy. A delete that clears an account's values from apps
+// (store.DeleteAIAccountAndValues, store.DeleteUserAndAccountValues) calls it
+// only for a binding from before bindings recorded their fields. If the copy
+// cannot be read, or no longer has the slot, it fails and the delete is
+// refused: a deleted key must never stay in an app.
+func (s *Server) bindingSlotFields(instanceID, slot string) ([]string, error) {
+	man, err := s.life.InstanceManifest(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	fields := fillableSlots(man)[slot]
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("the manifest has no slot %s", slot)
+	}
+	envs := make([]string, 0, len(fields))
+	for _, sf := range fields {
+		envs = append(envs, sf.field.AppEnv)
+	}
+	return envs, nil
+}
+
+// slotFieldsRefused is the answer to a delete that bindingSlotFields
+// refused. what names the thing that was not deleted ("account", "user").
+func (s *Server) slotFieldsRefused(sfe *store.SlotFieldsError, what string) error {
+	name := sfe.InstanceID
+	if inst, err := s.store.Get(sfe.InstanceID); err == nil {
+		name = inst.Name
+	}
+	slog.Error("delete refused: cannot name the AI fields to clear",
+		"instance_id", sfe.InstanceID, "name", name, "target_kind", what, "err", sfe.Err)
+	return huma.Error500InternalServerError(fmt.Sprintf(
+		"the LLM provider settings of %s could not be found, so its key could not be removed. The %s was not deleted. Try again, or uninstall %s first", name, what, name))
+}
+
 // deleteAIAccount removes one of the caller's accounts. It keeps the password
 // re-prompt, like an email account: a delete cannot be undone.
 //
@@ -523,27 +558,8 @@ func (s *Server) deleteAIAccount(ctx context.Context, in *struct {
 		return nil, huma.Error500InternalServerError("get ai account failed", err)
 	}
 	// The bindings are read inside the delete transaction, so a slot rebound
-	// to another account a moment ago keeps its new values. Each binding
-	// clears the fields it recorded. Only a binding from before that record
-	// needs the app's manifest copy to name its fields. If the copy cannot
-	// be read, or no longer has the slot, the delete is refused: a deleted
-	// key must never stay in an app.
-	slotFields := func(instanceID, slot string) ([]string, error) {
-		man, err := s.life.InstanceManifest(instanceID)
-		if err != nil {
-			return nil, err
-		}
-		fields := fillableSlots(man)[slot]
-		if len(fields) == 0 {
-			return nil, fmt.Errorf("the manifest has no slot %s", slot)
-		}
-		envs := make([]string, 0, len(fields))
-		for _, sf := range fields {
-			envs = append(envs, sf.field.AppEnv)
-		}
-		return envs, nil
-	}
-	ids, err := s.store.DeleteAIAccountAndValues(in.ID, id.User.ID, slotFields)
+	// to another account a moment ago keeps its new values.
+	ids, err := s.store.DeleteAIAccountAndValues(in.ID, id.User.ID, s.bindingSlotFields)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionAIAccountDelete, tgt, nil, false)
 		var sfe *store.SlotFieldsError
@@ -552,14 +568,7 @@ func (s *Server) deleteAIAccount(ctx context.Context, in *struct {
 			// Deleted between the read and the write.
 			return nil, huma.Error404NotFound("no such AI account")
 		case errors.As(err, &sfe):
-			name := sfe.InstanceID
-			if inst, gerr := s.store.Get(sfe.InstanceID); gerr == nil {
-				name = inst.Name
-			}
-			slog.Error("delete ai account refused: cannot name the fields to clear",
-				"instance_id", sfe.InstanceID, "name", name, "err", sfe.Err)
-			return nil, huma.Error500InternalServerError(fmt.Sprintf(
-				"the LLM provider settings of %s could not be found, so its key could not be removed. The account was not deleted. Try again, or uninstall %s first", name, name))
+			return nil, s.slotFieldsRefused(sfe, "account")
 		}
 		return nil, huma.Error500InternalServerError("delete ai account failed", err)
 	}

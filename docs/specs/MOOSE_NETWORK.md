@@ -77,7 +77,7 @@ Some apps need real HTTPS to function — typically because they use browser API
 The brain uses this field as a **warning trigger at install time**, not a routing override:
 
 - Toggle on: install proceeds silently. The app's URL is HTTPS, the app works.
-- Toggle off (or not enrolled): install dialog shows a warning — *"This app uses features that need HTTPS to work fully (camera, etc.). It may not work correctly at its `.local` URL. Turn on secure URLs in Settings → Network."* The user can install anyway. Some apps degrade gracefully on HTTP; that's the app's call to make, not moose's.
+- Toggle off (or not enrolled): install setup page shows a warning — *"This app uses features that need HTTPS to work fully (camera, etc.). It may not work correctly at its `.local` URL. Turn on secure URLs in Settings → Network."* The user can install anyway. Some apps degrade gracefully on HTTP; that's the app's call to make, not moose's.
 
 No install hard-block. We respect user agency; the warning is informative, not gating.
 

@@ -446,6 +446,75 @@ func TestMailProviderEditAndDeleteReachApps(t *testing.T) {
 	}
 }
 
+// Deleting a user clears what their accounts gave an app, as an account
+// delete does: the AI values go from the store at once, and a job drops the
+// key from the override and the MOOSE_MAIL_* lines from the .env. The app
+// is someone else's, so it outlives the user.
+func TestDeleteUserClearsTheirAccountsFromApps(t *testing.T) {
+	h, _ := aiHarness(t)
+	admin := h.setupAdmin("alice", "pass1")
+	h.addMember("u_carol", "carol", "pw-carol")
+	h.loginAs("carol", "pw-carol")
+	acct := h.createAIAccount(aiAccountBody("carol ai"))
+	p := h.createProvider("carol mail")
+	h.seedAIApp("i_ai", "AI Demo", admin.ID, acct.ID)
+	if err := h.st.SetInstanceMailBinding("i_ai", p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.apiSrv.life.RestampMail(t.Context(), []string{"i_ai"}); err != nil {
+		t.Fatal(err)
+	}
+	envOf := func() string {
+		raw, err := os.ReadFile(filepath.Join(h.stateDir, "instances", "i_ai", ".env"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	if !strings.Contains(envOf(), "MOOSE_MAIL_") {
+		t.Fatalf("seed: no mail lines in .env:\n%s", envOf())
+	}
+
+	h.loginAs("alice", "pass1")
+	h.elevate("pass1")
+	code, raw := h.doRaw("DELETE", "/api/v1/users/u_carol", nil)
+	if code != http.StatusOK {
+		t.Fatalf("delete = %d %s", code, raw)
+	}
+	if v := h.storedValues("i_ai"); len(v) != 1 || v["SEARCH_KEY"] != "s" {
+		t.Fatalf("values right after delete = %v", v)
+	}
+	if job := awaitJob(t, h.apiSrv, decodeRaw[AccountDeletedDTO](t, raw).JobID); job.Status != "completed" {
+		t.Fatalf("job = %s %+v", job.Status, job.Error)
+	}
+	if strings.Contains(h.overrideOf("i_ai"), testAIKey) {
+		t.Fatalf("override still holds the deleted user's key:\n%s", h.overrideOf("i_ai"))
+	}
+	if env := envOf(); strings.Contains(env, "MOOSE_MAIL_") || !strings.Contains(env, "MOOSE_APP_ID=i_ai") {
+		t.Fatalf(".env after delete:\n%s", env)
+	}
+}
+
+// A failed user delete puts back the AI values it cleared, so the app keeps
+// working with the account the user still has.
+func TestDeleteUserRestoresAIValues(t *testing.T) {
+	h, _ := aiHarness(t)
+	admin := h.setupAdmin("alice", "pass1")
+	h.addMember("u_bob", deleteFailUser, "pw-bob")
+	h.loginAs(deleteFailUser, "pw-bob")
+	acct := h.createAIAccount(aiAccountBody("bob ai"))
+	h.seedAIApp("i_ai", "AI Demo", admin.ID, acct.ID)
+
+	h.loginAs("alice", "pass1")
+	h.elevate("pass1")
+	if code, raw := h.doRaw("DELETE", "/api/v1/users/u_bob", nil); code != http.StatusBadGateway {
+		t.Fatalf("delete with host failure = %d %s; want 502", code, raw)
+	}
+	if v := h.storedValues("i_ai"); len(v) != 3 || v["ACME_API_KEY"] != testAIKey {
+		t.Fatalf("rollback lost the AI values: %v", v)
+	}
+}
+
 // --- ordering: values resolved at commit time -----------------------------
 
 // An older re-stamp job that runs after a newer edit writes the newer key,
@@ -568,6 +637,36 @@ func TestAIAccountDeleteRefusedWhenManifestUnreadable(t *testing.T) {
 		t.Fatalf("values changed on a refused delete: %v", v)
 	}
 	if !h.hasAuditEvent(audit.ActionAIAccountDelete, acct.ID, false) {
+		t.Fatal("refused delete was not audited")
+	}
+}
+
+// A user delete follows the same rule as an account delete: if the fields
+// to clear cannot be named, nothing is deleted, so the user's key never
+// stays in an app with no account behind it.
+func TestDeleteUserRefusedWhenManifestUnreadable(t *testing.T) {
+	h, _ := aiHarness(t)
+	admin := h.setupAdmin("alice", "pass1")
+	h.addMember("u_carol", "carol", "pw-carol")
+	h.loginAs("carol", "pw-carol")
+	acct := h.createAIAccount(aiAccountBody("carol ai"))
+	h.seedAIApp("i_ai", "Broken App", admin.ID, acct.ID)
+	if err := os.Remove(filepath.Join(h.stateDir, "instances", "i_ai", "manifest.yml")); err != nil {
+		t.Fatal(err)
+	}
+	h.loginAs("alice", "pass1")
+	h.elevate("pass1")
+	code, raw := h.doRaw("DELETE", "/api/v1/users/u_carol", nil)
+	if code != http.StatusInternalServerError || !strings.Contains(string(raw), "The user was not deleted") {
+		t.Fatalf("delete = %d %s", code, raw)
+	}
+	if _, err := h.st.GetUser("u_carol"); err != nil {
+		t.Fatalf("the user was deleted anyway: %v", err)
+	}
+	if v := h.storedValues("i_ai"); v["ACME_API_KEY"] != testAIKey {
+		t.Fatalf("values changed on a refused delete: %v", v)
+	}
+	if !h.hasAuditEvent(audit.ActionUserDelete, "u_carol", false) {
 		t.Fatal("refused delete was not audited")
 	}
 }

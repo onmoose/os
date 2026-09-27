@@ -191,7 +191,7 @@ App-level and managed-service migration are well-specced (`SERVICE_PROVISIONING.
 
 ### Outgoing mail — what stays deferred past BYO (`SERVICE_PROVISIONING.md` # BYO outgoing mail)
 
-The v1 shape is shipped (#122): admin-registered SMTP providers, per-app bindings, `MOOSE_MAIL_*` direct injection, no moose relay. Deliberately deferred, in rough order of likely demand:
+The v1 shape is shipped (#122): SMTP accounts owned per user (any user adds their own since 2026-09-25, `DECISIONS.md` 2026-09-25), per-app bindings, `MOOSE_MAIL_*` direct injection, no moose relay. Deliberately deferred, in rough order of likely demand:
 
 - **A box-default provider.** Today every mail-capable app is bound explicitly; a "use for new apps automatically" default would remove a picker step once a box has exactly one provider it always uses.
 - **Brain-sent email riding the same providers.** Notification email digests, password-recovery mail (`# Email-on-file for users` above) — the brain becoming a *consumer* of the provider registry rather than just an injector. This is the promotion trigger: the moment email goes cross-cutting (brain + apps), the `SERVICE_PROVISIONING.md` section graduates to its own `OUTGOING_MAIL.md`.
@@ -200,6 +200,17 @@ The v1 shape is shipped (#122): admin-registered SMTP providers, per-app binding
 
 **Context:** `SERVICE_PROVISIONING.md` # BYO outgoing mail, `APP_MANIFEST.md` # D3, `DECISIONS.md` 2026-06-12. Password at-rest hardening folds into # App-secret injection hardening above.
 **Why Tier 3:** the BYO shape is complete for app demand today; each deferral has a clean additive path that doesn't reshape the v1 contract.
+
+### Install setup: deferred limits (`INSTALL_SETUP.md`, `APP_MANIFEST.md` # D4 # Roles and requires)
+
+The install setup plan is built on the `os` side. Three limits were left out on purpose, and each needs a shape before it is built:
+
+- **A field that picks the provider.** Some apps take one value that names both provider and model (openmuse `MODEL=provider/model`). The role vocabulary has no attribute for it, so it stays a plain field.
+- **One slot per protocol per app.** An app that wants separate OpenAI-compatible endpoints per job (upstream open-webui) cannot say so: all its `ai.openai_compatible.*` fields are one slot.
+- **Sharing an account with other users.** An account is usable only by the user who added it, and a household app uses the installing admin's accounts. Letting another user bind an app to it needs an ownership and revocation story.
+
+**Context:** `INSTALL_SETUP.md` decisions table (2026-09-25 and 2026-09-26), `SERVICE_PROVISIONING.md` # AI provider accounts.
+**Why Tier 3:** each is additive to the role vocabulary or the account model, and no catalog app is blocked on it today.
 
 ### `moosectl` — on-box CLI
 
@@ -320,7 +331,7 @@ Both deferred from v1 (`DECISIONS.md` 2026-05-15). Shape is pinned in `RELEASE_M
 
 ### Settings → Storage UX (Level-1 walk-through, design pass)
 
-The architecture and the install/wizard/add-drive/eject mechanics are locked (`STORAGE.md`, `FIRST_RUN.md`, `AUTH.md`, `BRAIN_HOST_PROTOCOL.md`, `HEALTH.md` # `disk-full`). What remains is design-time copy + screen-layout: card shape for OS drive vs. data drive at Level 0/1, where the "Show recovery passphrase" affordance lives under Advanced, eject-drive confirmation copy, disk-pressure banner copy + top-space-hogs enumeration, single-drive "add a data drive later" dashboard hint, and the file-access permission block on the app-install dialog ("Photos will read and write your Photos folder").
+The architecture and the install/wizard/add-drive/eject mechanics are locked (`STORAGE.md`, `FIRST_RUN.md`, `AUTH.md`, `BRAIN_HOST_PROTOCOL.md`, `HEALTH.md` # `disk-full`). What remains is design-time copy + screen-layout: card shape for OS drive vs. data drive at Level 0/1, where the "Show recovery passphrase" affordance lives under Advanced, eject-drive confirmation copy, disk-pressure banner copy + top-space-hogs enumeration, single-drive "add a data drive later" dashboard hint, and the file-access permission block on the app install setup page ("Photos will read and write your Photos folder").
 
 **Context:** `STORAGE.md`, `FIRST_RUN.md`, `HEALTH.md`, `APP_MANIFEST.md` # `permissions.folders`.
 **Why Tier 3:** doesn't block bring-up — the brain endpoints and health-issue flags exist. UX iteration belongs with the designer and the first user-test pass, not the spec.
