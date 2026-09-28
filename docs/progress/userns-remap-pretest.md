@@ -35,6 +35,8 @@ Short answer: **go.** No app failed only under the remap. poznote and mealie, wh
 | Fail only in A (store switch, not the remap) | 1 | twenty, a timing edge |
 | Not testable | 1 | windmill |
 
+mealie is counted twice: as a default-tier fail and as a caps-tier pass. So the counts add up to 60, not 59. The per-app table has one row for it.
+
 Of the 47, three booted with values that are not real: openmuse used placeholder OpenAI and CopilotKit keys, and hermes-agent and openclaw used a custom model URL with nothing behind it. They prove the containers start under the remap. They do not prove the AI features work. Six more (chatto, coneshare, cube, databag, openmausbot, uptimepage) only needed plain test values, like an owner email.
 
 ### Per-app table
@@ -204,6 +206,7 @@ So the fix for calibre-web is packaging on the catalog side, not the remap.
 - **Store growth in A is not usable** (see Profile). Growth also counts layers that the prune after the last app left behind, so single values are noisy.
 - **Harness leak.** `run-app.sh` never uninstalls an instance whose job failed after the instance was made (a health-wait failure keeps the instance as `failed`). So mealie and open-seo kept running during later C installs until the reruns removed them. mealie's crash loop added some background load. It does not change any verdict.
 - **Proof 9** (the generator never emits `userns_mode: host` with the restored capabilities) was not tested. The spike code refuses that combination at install time, but nothing ran it.
+- **Raw evidence is not checked in** (review note from Greptile, not taken). The JSONL files, probe output and brain logs name catalog details and are large, and this repo keeps no copy of catalog data. The tables and quoted log lines here are the record. The files stay on the box and in the maintainer's local copy.
 - **Placeholder values** for openmuse, hermes-agent and openclaw prove only that the containers start.
 - **calibre-web is one app.** The s6-skipped run used a local compose, not a catalog package. The image without s6 that upstream once published (`janeczku/calibre-web`) was not tried: its newest tag is from 2017. The folder-app limit does not rest on this one app, though. It follows from one fixed range for every container, and the plain-Docker probe shows it directly.
 - **The box was left in mode A** with the fixed memos package in its local catalog copy (the old copy is `~/memos-old`). It shuts itself down when idle.
