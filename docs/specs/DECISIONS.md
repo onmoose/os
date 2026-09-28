@@ -21,6 +21,26 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-28 — Install asks one question per page, and repeat installs skip to the last page
+
+**Previously:** the install setup page showed every section at once, as rows: permissions, folders, email, AI providers, settings, size (`INSTALL_SETUP.md` # 6). The AI row asked for a provider, an account and the models, with its own Save inside the page. The provider tiles showed five featured providers and the rest behind More, in the catalog's order. Optional email was a row on every install of a mail-capable app.
+
+**Now:** one question per page, each with one Continue button, and a last page that shows every answer with a Change link (`INSTALL_STEPS.md`). A user whose every need has a saved answer goes straight to the last page. Models are not asked during the install: the provider's default is used, and the model changes later on the app's settings screen. The service grid shows every service the app can use in popularity order, with no search, no More and no Recommended badge. Needs have three levels (required, recommended, optional), and optional email and AI stay inside the install. Permissions and size are a quiet box on the first and last page only.
+
+**Why:** a non-technical user could not tell which parts of the page needed an answer, and the Save inside the AI row was a trap: a key added but not saved linked nothing, and Install stayed disabled. One question per page fixes that for a first install. For a repeat install it is a click tax that teaches users to press Continue without reading, so the last page shows the saved answers in plain view instead. Models were dropped from the install because a non-technical user cannot choose on model names, and the default is a safe start. The order is popularity, and nothing is recommended, so that moose never tips the scale toward a provider, including one moose may run itself later. We rejected taking optional email out of the install: some apps are badly degraded without it, and sending the user to Settings afterwards is a poor experience.
+
+**Affected docs:** `INSTALL_STEPS.md` (new), `DASHBOARD.md` # Install authorization, `APP_STORE.md` # AI provider data, `INSTALL_SETUP.md`, `NEXT.md` # Install steps: deferred.
+
+## 2026-09-28 — Gmail and iCloud become the first email presets
+
+**Previously:** the email presets were sending services (SES, SendGrid, Mailgun, Postmark, Brevo, Resend, SMTP2GO), plus Google Workspace and Custom. iCloud was excluded as "465-only in practice, which hosted blocks" (`SERVICE_PROVISIONING.md` # BYO outgoing mail).
+
+**Now:** "Gmail or Google Workspace" (the Workspace preset renamed, same server) and iCloud are planned as the first two presets, with the sending services after them under their own heading (`INSTALL_STEPS.md` # 4). Both use port 587 with STARTTLS and an app password.
+
+**Why:** a household has a Gmail or iCloud address, not a SendGrid account, so the old list had nothing a non-technical user already owns. Gmail still allows SMTP with an app password: what ended in 2025 was sign-in with the normal password, and the 2026 Gmailify and POP change is about Gmail fetching mail, not other apps sending through it. Apple's own settings page gives iCloud's SMTP on port 587, so the old exclusion was wrong. The known risks: Google may remove app passwords one day, a Workspace admin can turn them off, and both are for low volume (Gmail allows about 500 emails a day).
+
+**Affected docs:** `INSTALL_STEPS.md` # 4, `SERVICE_PROVISIONING.md` # BYO outgoing mail.
+
 ## 2026-09-26 — Editing or deleting an email or AI account reaches the apps that use it
 
 **Previously:** editing or deleting an outgoing email account did not touch the apps bound to it. They kept the old values in their `.env` until their next rebind or reinstall. This lag was accepted on purpose, "rather than a fleet-restart side effect hidden inside a settings save" (2026-06-12), and `NEXT.md` held re-stamp-on-edit as a deferral whose answer would be visible restarts.
