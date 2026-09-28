@@ -34,10 +34,11 @@ Counted from the `onmoose/store` manifests on 2026-09-28 (112 apps).
 | The service grid shows every service the app can use, three columns wide on a computer. No search, no More button, no Recommended badge. |
 | Services are in **popularity order**. Moose never marks a service as recommended and never moves one up for its own reasons. If moose offers its own AI service one day, it takes the place the same rule gives it. |
 | Models are not asked during the install. The install uses the provider's default model for each model setting. The user changes the model later in the app's settings screen in moose, or inside the app. The one exception is "My own server", which has no model list: its key page has a model name box. |
-| One AI service per install. An app that can use several (openclaw) gets its second one from its settings screen. |
+| One AI service per need. An app that can use several for the same need (openclaw) gets its second one from its settings screen. An app with two separate AI needs (two `requires` groups on different slots, for example chat and embeddings) gets one set of AI pages per need. |
 | Needs have three levels: **required** (a page, no Skip), **recommended** (a page with Skip and one sentence on what the user misses), **optional** (a row on the last page with "Set up"). Optional email and AI stay inside the install flow. The user never has to go to Settings to add them. |
 | The info box (permissions, size, not-enough-space) is quiet, has no controls, and sits under the app name on the first page and the last page only. The pages in between show one line: icon, name, and "Step 2 of 4". |
 | The duplicate-install and not-enough-space warnings show on the first page, before any question, not on the last. |
+| A saved account is used on its own only for a required or recommended need. An optional need stays "not set up" until the user presses Set up, even when they have a saved account, so no app starts sending email or spending on AI without an explicit act. Set up then opens with the saved account picked. |
 | Gmail and iCloud are the first two email presets. The Google Workspace preset becomes "Gmail or Google Workspace", and iCloud is added. The sending services (SES, SendGrid and the rest) follow under their own heading. |
 | Out of scope for this plan: checking a key against the provider before saving it, and starting the image download before the user presses Install. Both are in `NEXT.md`. |
 
@@ -65,27 +66,27 @@ An app with no questions goes from the App page straight to the last page.
 - **Paperless, email marked recommended, user has no email account.** App page, email service grid (with Skip), email account form, last page.
 - **Immich, needs nothing.** App page, last page.
 
-**Routes.** The last page is `/store/:id/install`, as today. A question page adds `?step=<name>` (for example `?step=ai-key`), so Back, browser Back and reload all work. A query parameter keeps the step names clear of the progress route's `:jobId`. The answers ride in the URL and in the tab's session storage, so a trip to the provider's site in another tab loses nothing. A key typed but not yet saved is never written to storage.
+**Routes.** The last page is `/store/:id/install`, as today. A question page adds `?step=<name>` (for example `?step=ai-key`), so Back, browser Back and reload all work. A query parameter keeps the step names clear of the progress route's `:jobId`. The scope (`?scope=household`) stays in the query string on every page. Opening `/store/:id/install` while a required or recommended need has no answer (a first-time user, a bookmark, a reload of a fresh tab) redirects to the first unanswered `?step=`, so the last page is only ever reached with its answers in place. The answers ride in the URL and in the tab's session storage, so a trip to the provider's site in another tab loses nothing. A key typed but not yet saved is never written to storage.
 
 **Step counter.** "Step 2 of 4" counts only the pages this app shows to this user.
 
 ### 2. The last page
 
 - **Header:** app icon and name, then the info box. The box is grey, uses smaller text and has no controls. It lists what the app can do, as plain sentences (write access to a folder stays in red, because that is the one line people must notice), and its size ("Takes about 1.2 GB"). It adds the not-enough-space warning when it applies.
-- **For** (admin on a multi-user box only): "For: just you · Change", or "For: everyone at home · Change". This is the only place that tells an admin that their key pays for the whole household.
+- **For** (admin on a multi-user box only): "For: just you · Change", or "For: everyone at home · Change". Together with the line on the AI key page, it tells an admin that their key pays for the whole household. Changing it resets the folder rows to the new scope's defaults, and the page says so ("Folders reset for everyone at home"), because folder sources differ per scope.
 - **One row per answered need:** "AI service: Anthropic, key 'Anthropic key' · Change", "Email: Gmail, family@gmail.com · Change".
 - **Folders:** "Photos: your Photos · Change". A folder source always has a default, so it is a row here, never its own question page. Change opens the choice (yours or the household's), and "Change subfolder" opens the text box.
 - **Optional rows:** "Email: not set up · Set up". Set up opens the same pages as a recommended need, then comes back here.
 - **Extra settings:** optional plain fields (postiz, osiris) are one row, "Extra settings · Set up", which opens one page with all of them.
-- **Install.** Disabled only when a required answer is missing, which can happen only after a Change removed one. The line next to it names what is missing.
+- **Install.** Disabled only when a required answer is missing, which, with the redirect rule in # 1, can happen only after a Change removed one. The line next to it names what is missing.
 
 **Change comes back here.** A Change link opens that one question, and Continue returns to the last page. It does not walk the user through the other steps again (the GOV.UK "Check your answers" pattern).
 
-**Errors.** A 422 from `POST /api/v1/apps` sends the user to the page that owns the field, with the error on that page. It is not shown as red text on the last page. A 409 duplicate never reaches this point, because the first page already warned.
+**Errors.** A 422 from `POST /api/v1/apps` sends the user to the page that owns the field, with the error on that page. It is not shown as red text on the last page. The first page already warned about a duplicate, from duplicate info the install plan will carry (see # Work by repo). A 409 can still come back (a second tab, a race), so the last page keeps today's handling: the warning with "Install my own copy" and Cancel.
 
 ### 3. AI pages
 
-**Which services show.** The existing slot rule decides it (`INSTALL_SETUP.md` # 1): a service shows when it can fill one of the app's slots and has a model of every type the slot asks for. When only one service can serve the app (firecrawl: OpenAI; open-seo: OpenRouter), there is no grid. The key page names the service instead: "Firecrawl works with OpenAI."
+**Which services show.** The existing slot rule (`INSTALL_SETUP.md` # 1), made stricter by one condition: a service shows when it can fill one of the app's slots, has a model of every type the slot asks for, **and has a default model for each of those types**. The last part is new, because with no model page the default is the only way to choose (see Models below). When only one service can serve the app (firecrawl: OpenAI; open-seo: OpenRouter), there is no grid. The key page names the service instead: "Firecrawl works with OpenAI."
 
 **Which key should Openclaw use?** (Change on the last page, when the user has usable keys)
 
@@ -141,7 +142,7 @@ Use a different AI service →
 
 **Gmail and iCloud presets.** Both send over SMTP on port 587 with STARTTLS and an app password. Port 587 is open from hosted boxes (`SERVICE_PROVISIONING.md` # BYO outgoing mail).
 
-- **Gmail or Google Workspace:** `smtp.gmail.com`, 587, username is the full address, the credential is a 16-character app password. It is the existing `google_workspace` preset renamed, with help text that covers personal Gmail too. Password-only sign-in for apps ended in 2025, and app passwords still work for SMTP. Google pushes OAuth instead and could remove app passwords later, and a Workspace admin can turn them off.
+- **Gmail or Google Workspace:** `smtp.gmail.com`, 587, username is the full address, the credential is a 16-character app password. It is the existing `google_workspace` preset with a new label and help text that covers personal Gmail too. Only the label changes: the id `google_workspace` stays, because saved accounts and the logo map use it. Password-only sign-in for apps ended in 2025, and app passwords still work for SMTP. Google pushes OAuth instead and could remove app passwords later, and a Workspace admin can turn them off.
 - **iCloud:** `smtp.mail.me.com`, 587, username is the full iCloud address, the credential is an app-specific password from appleid.apple.com (Sign-In and Security). Apple's support page gives port 587. The earlier exclusion ("465-only in practice") was wrong.
 - Both are for low volume: Gmail allows about 500 emails a day. Password resets and reminders for a household fit easily. The tile says "For personal use".
 
@@ -163,6 +164,7 @@ recommends:
 - A need that is neither required nor recommended is optional: a row on the last page.
 - The box reads `recommends` leniently, like `requires`. An older box ignores it, and the need shows as optional.
 - The lint rejects a need that is both required and recommended, and a `without` sentence that is empty.
+- `mail` is a special member. Today a `one_of` member is a kind (only `ai`), a slot, or a plain `app_env`, and a member that matches no field is dropped. `mail` matches no field, so it must be resolved from the manifest's `mail:` block instead. The lenient reader drops a `mail` member when the manifest has no `mail:` block, and logs it; the lint rejects that case.
 - The shape is a proposal: see # Open questions.
 
 ### 6. Other rules
@@ -175,8 +177,8 @@ recommends:
 
 - **os:**
   - web-ui: the question pages and the last page, `?step=` routing, the B layout for AI and email, the key form with a default name, the three-level handling, the info box, and moving the warnings to the first page.
-  - brain: `recommends` in the manifest schema and lint, and in the install plan; the Gmail rename and the iCloud preset in `internal/mailpreset`; and a way to tell which account an app used most recently.
-- **store:** the popularity order in `ai_providers.yml`, a default model for every model type each provider offers, and `recommends` on the apps that degrade badly without email or AI.
+  - brain: `recommends` in the manifest schema and lint, and in the install plan; duplicate info in the install plan, so the first page can warn before any question (today it is only a 409 from `POST /api/v1/apps`); the Gmail rename and the iCloud preset in `internal/mailpreset`; and a way to tell which account an app used most recently.
+- **store:** the popularity order in `ai_providers.yml`, a default model for every model type each provider offers (with a lint that fails when one is missing), and `recommends` on the apps that degrade badly without email or AI.
 - **cloud:** nothing.
 
 ## Suggested order
@@ -189,6 +191,6 @@ recommends:
 
 ## Open questions
 
-1. **The `recommends` shape.** `mail` as a `one_of` member, and the key names `recommends` and `without`, are a proposal.
+1. **The `recommends` shape.** `mail` as a special `one_of` member resolved from the `mail:` block, and the key names `recommends` and `without`, are a proposal.
 2. **A one-line description per service tile** ("Makes the Claude models", "One key for many AI services"). It would help a user tell Groq from Fireworks, and it ranks nothing. It needs a `summary` field in the provider data. Not decided.
 3. **Who keeps the popularity order, and from what source.** Boxes send no usage data, so today it is a fixed order in `ai_providers.yml`, kept by hand from public market share. The rule should be written down in `APP_STORE.md` # AI provider data when it is decided.
