@@ -20,7 +20,7 @@ Short answer: **go.** No app failed only under the remap. poznote and mealie, wh
   - **C:** classic `overlay2` with `userns-remap` on host UIDs 1000000 to 1065535, owned by a `moose-remap` system account. In C the brain uses the three tiers from #516. Apps are remapped with `cap_drop: ALL` by default. poznote (and mealie in one extra pass) gets `CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER` back. Folder and GPU apps get `userns_mode: host`.
 - **Apps:** 58 listed catalog apps plus a poznote fixture. Each app is pulled cold, installed through the API, watched for one minute, measured, then uninstalled.
 - **Reruns:** apps that were refused for missing install config got plain test values and ran again in C, then in A. memos ran again in A and C with its fixed catalog package, which now sets `service_user: true`. forgejo and langfuse were retried. mealie ran once more in C with the caps tier. B was not rerun, so those apps show `refused` in B. When a mode has two lines for one app, the later line is the one shown below.
-- **Raw results:** `A.jsonl`, `B.jsonl`, `C.jsonl`, `probes.txt` and the brain logs stay on the box under `~/remap-results/`. The task's local copy is in the session scratchpad. None of it is checked in.
+- **Raw results:** `A.jsonl`, `B.jsonl`, `C.jsonl`, `probes.txt` and the brain logs stay on the box under `~/remap-results/`. A local copy is kept on the maintainer's machine. None of it is checked in.
 
 ### Result by class
 
