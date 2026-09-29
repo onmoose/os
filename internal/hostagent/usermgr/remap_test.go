@@ -7,20 +7,20 @@ import (
 	"testing"
 )
 
-func TestParseSubIDStart(t *testing.T) {
+func TestParseSubIDRange(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		content string
-		start   int
+		want    subIDRange
 		found   bool
 		wantErr bool
 	}{
-		{name: "the line", content: "moose-remap:1000000:65536\n", start: 1000000, found: true},
-		{name: "other accounts around it", content: "alice:100000:65536\nmoose-remap:1000000:65536\nbob:165536:65536\n", start: 1000000, found: true},
-		{name: "no line", content: "alice:100000:65536\n", found: false},
-		{name: "empty file", content: "", found: false},
-		{name: "a longer name is another account", content: "moose-remap2:5:5\n", found: false},
-		{name: "blank and comment lines", content: "\n# moose-remap:1:1\n  \nmoose-remap:1000000:65536", start: 1000000, found: true},
+		{name: "the line", content: "moose-remap:1000000:65536\n", want: subIDRange{1000000, 65536}, found: true},
+		{name: "other accounts around it", content: "alice:100000:65536\nmoose-remap:1000000:65536\nbob:165536:65536\n", want: subIDRange{1000000, 65536}, found: true},
+		{name: "no line", content: "alice:100000:65536\n"},
+		{name: "empty file", content: ""},
+		{name: "a longer name is another account", content: "moose-remap2:5:5\n"},
+		{name: "blank and comment lines", content: "\n# moose-remap:1:1\n  \nmoose-remap:1000000:65536", want: subIDRange{1000000, 65536}, found: true},
 		{name: "two fields", content: "moose-remap:1000000\n", wantErr: true},
 		{name: "four fields", content: "moose-remap:1000000:65536:1\n", wantErr: true},
 		{name: "start not a number", content: "moose-remap:x:65536\n", wantErr: true},
@@ -30,18 +30,18 @@ func TestParseSubIDStart(t *testing.T) {
 		{name: "two lines", content: "moose-remap:1000000:65536\nmoose-remap:2000000:65536\n", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			start, found, err := parseSubIDStart([]byte(tc.content), "moose-remap")
+			r, found, err := parseSubIDRange([]byte(tc.content), "moose-remap")
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("got start %d found %v, want an error", start, found)
+					t.Fatalf("got %+v found %v, want an error", r, found)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if start != tc.start || found != tc.found {
-				t.Errorf("got start %d found %v, want %d %v", start, found, tc.start, tc.found)
+			if r != tc.want || found != tc.found {
+				t.Errorf("got %+v found %v, want %+v %v", r, found, tc.want, tc.found)
 			}
 		})
 	}
@@ -56,19 +56,22 @@ func TestRemapBase(t *testing.T) {
 		ok             bool
 		wantErr        string
 	}{
-		{name: "both agree", subuid: ptr(line), subgid: ptr(line), base: 1000000, ok: true},
-		{name: "neither has the line", subuid: ptr("alice:100000:65536\n"), subgid: ptr("alice:100000:65536\n")},
+		{name: "both agree", subuid: strPtr(line), subgid: strPtr(line), base: 1000000, ok: true},
+		{name: "a larger range is fine", subuid: strPtr("moose-remap:1000000:131072\n"), subgid: strPtr("moose-remap:1000000:131072\n"), base: 1000000, ok: true},
+		{name: "neither has the line", subuid: strPtr("alice:100000:65536\n"), subgid: strPtr("alice:100000:65536\n")},
 		{name: "neither file exists"},
-		{name: "starts differ", subuid: ptr(line), subgid: ptr("moose-remap:2000000:65536\n"), wantErr: "differ"},
-		{name: "only subuid has it", subuid: ptr(line), subgid: ptr(""), wantErr: "only one"},
-		{name: "only subgid has it", subuid: nil, subgid: ptr(line), wantErr: "only one"},
-		{name: "malformed subgid", subuid: ptr(line), subgid: ptr("moose-remap:oops\n"), wantErr: "malformed"},
+		{name: "starts differ", subuid: strPtr(line), subgid: strPtr("moose-remap:2000000:65536\n"), wantErr: "differ"},
+		{name: "counts differ", subuid: strPtr(line), subgid: strPtr("moose-remap:1000000:1024\n"), wantErr: "differ"},
+		{name: "range too small", subuid: strPtr("moose-remap:1000000:1024\n"), subgid: strPtr("moose-remap:1000000:1024\n"), wantErr: "at least 65536"},
+		{name: "only subuid has it", subuid: strPtr(line), subgid: strPtr(""), wantErr: "only one"},
+		{name: "only subgid has it", subuid: nil, subgid: strPtr(line), wantErr: "only one"},
+		{name: "malformed subgid", subuid: strPtr(line), subgid: strPtr("moose-remap:oops\n"), wantErr: "malformed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			m := &LinuxUserManager{SubUIDPath: filepath.Join(dir, "subuid"), SubGIDPath: filepath.Join(dir, "subgid")}
-			write(t, m.SubUIDPath, tc.subuid)
-			write(t, m.SubGIDPath, tc.subgid)
+			writeIfSet(t, m.SubUIDPath, tc.subuid)
+			writeIfSet(t, m.SubGIDPath, tc.subgid)
 			base, ok, err := m.RemapBase()
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
@@ -97,9 +100,9 @@ func TestRemapBaseUnreadableFile(t *testing.T) {
 	}
 }
 
-func ptr(s string) *string { return &s }
+func strPtr(s string) *string { return &s }
 
-func write(t *testing.T, path string, content *string) {
+func writeIfSet(t *testing.T, path string, content *string) {
 	t.Helper()
 	if content == nil {
 		return
