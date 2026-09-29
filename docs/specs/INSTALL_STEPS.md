@@ -1,6 +1,6 @@
 # Install steps: one question per page
 
-> **Status: designed 2026-09-28, being built (steps 1 to 3) from 2026-09-29.** This is the plan for the next shape of the install flow. It follows `INSTALL_SETUP.md`, which built the setup page, provider accounts and role-mapped settings. Until this plan is built, the as-built flow is the one in `DASHBOARD.md` # Install authorization. When a part of this plan is built, its spec (`DASHBOARD.md`, `APP_MANIFEST.md`, `APP_STORE.md`, `SERVICE_PROVISIONING.md`) becomes the source of truth for it, and this doc gets an "As built" note, the same way `INSTALL_SETUP.md` did.
+> **Status: designed 2026-09-28. Steps 1 to 3 of # Suggested order built 2026-09-29 (`docs/progress/install-steps.md`); step 4 (`recommends`) and the user test are not done.** This doc follows `INSTALL_SETUP.md`, which built the setup page, provider accounts and role-mapped settings. The built flow is described in `DASHBOARD.md` # Install authorization, which is its source of truth; the wire shapes are in `BRAIN_UI_PROTOCOL.md` and the email presets in `SERVICE_PROVISIONING.md` # BYO outgoing mail. This doc keeps the design, the build rules and an "As built" note per step, the same way `INSTALL_SETUP.md` did. The parts not built yet (need levels with `recommends`, the most recently used key) are still planned here.
 
 ## Goal
 
@@ -65,13 +65,13 @@ These rules were set when the build started (steps 1 to 3 of # Suggested order).
 
 **As built (step 1, 2026-09-29).** The page logic is `web-ui/src/installSteps.ts` and the pages are `web-ui/src/views/InstallSetupView.vue`. The choices made while building it:
 
-- **Step names.** Each AI need has a name: `ai`, `ai-2`, … for the required groups in `requires` order, and `ai-optional` for the optional row. The need's first page is its name, its service grid is `<name>-service` and its key form `<name>-key`. The "needs these to run" page is `settings`. The pages opened only from the last page are `ai-optional`, `email`, `extra`, `folders` and `for`. A step the app does not have goes to the last page, and a key page with no service picked yet goes to its need's first page.
+- **Step names.** Each AI need has a name: `ai`, `ai-2`, … for the required groups in `requires` order, and `ai-optional` for the optional row. The need's first page is its name, its service grid is `<name>-service` and its key form `<name>-key`. The "needs these to run" page is `settings`. The pages opened only from the last page are `ai-optional`, `email` (with `email-service` and `email-add`), `extra`, `folders` and `for`. A step the app does not have goes to the last page, and a key page with no service picked yet goes to its need's first page.
 - **The first-time pages are fixed when the install starts** and kept in the draft, so the step counter does not change as pages are answered. The counter counts the App page, those pages and the last page. A page opened with Change has no number.
 - **Continue after the last page was shown** goes back to the last page. Before that, it goes to the next first-time page.
 - **Folders are one page.** Every folder's source and subfolder are on the `folders` page, opened by the Change link of any folder row. A folder with no choice has no Change link.
 - **"For" is its own page** with two choices, "Just you" and "Everyone at home". A change moves the draft to the other scope with the folders on their defaults, and the last page says "Folders reset for …" once.
 - **Optional pages save on Continue.** Email, folders and "For" keep a copy while the page is open, so leaving with Back changes nothing. Email opens with the newest saved account picked.
-- **Step 1 kept today's pickers** behind the pages. Step 2 replaced the AI one, and the email page still uses `MailAccountSection` until step 3.
+- **Step 1 kept today's pickers** behind the pages. Steps 2 and 3 replaced them.
 
 **As built (step 2, 2026-09-29).** The AI pages are `components/install/AIKeyList.vue`, `ServiceGrid.vue` and `AIKeyForm.vue`, and the need logic is in `installSteps.ts` (# AI needs). `AISlotPicker.vue` is now used only by the app's settings screen. The choices made:
 
@@ -80,8 +80,14 @@ These rules were set when the build started (steps 1 to 3 of # Suggested order).
 - **An optional need's key list** ends with "Don't use an AI service", which puts the row back to "Not set up".
 - **Continue on the key form** saves the account (`POST /api/v1/ai-accounts`) and picks it, with the provider's default models. A model is asked only for My own server, one box per model setting of the slot.
 - **The default name** is "<Service> key", then "<Service> key 2", and for My own server "My server".
-- **The cost line** says "<Service> charges for use, so it may ask for a card on file." It is softer than the design's "You need a card on file", because some services have a free tier.
-- **Words.** The Settings screen is Settings → Integrations → AI services at `/settings/ai`, and `/settings/llm` redirects there. "My own server" is also the tile's name in Settings. The brain's `missing` sentence says "Pick at least one AI service." The brain's 422 messages still say "LLM provider".
+- **Words.** The Settings screen is Settings → Integrations → AI services at `/settings/ai`, and `/settings/llm` redirects there. "My own server" is also the tile's name in Settings. The brain's messages the user can read (the `missing` sentence and the 422s) say "AI service" too.
+
+**As built (step 3, 2026-09-29).** The email pages are `components/install/MailServiceGrid.vue` and `MailAddForm.vue`, and the account list is the same `AccountList.vue` as the AI key list. `MailAccountSection.vue` is gone. The presets are in `internal/mailpreset`. The choices made:
+
+- **Pages.** `email` shows the user's accounts when they have one (newest picked, "Don't send email", "Use a different email service"), else the grid. `email-service` is the grid and `email-add` the add form for the service picked there.
+- **The preset table carries the order and the words.** The table lists Gmail and iCloud first with `personal: true`, then the sending services, then "Custom server" (renamed from "Custom SMTP server"). A personal preset has `steps` (the numbered steps, the first one about 2-Step Verification or two-factor authentication), a `setup_url` for the "Open your Google account" or "Open your Apple account" button, and `account_name` ("Gmail"). Settings → Integrations → Email reads the same table, so its list has the new order too, and its add form asks a personal preset's address once.
+- **The add form** asks only what the preset needs: the address (for Gmail and iCloud it is also the username), the region for SES and Mailgun, the username for the presets whose user supplies it (SES, Mailgun, Brevo, SMTP2GO, Custom server), the credential, and the server settings for Custom server only. The name is optional and defaults to "Gmail", then "Gmail 2". "Test the settings first" is on by default, as in Settings.
+- **The iCloud logo** in `assets/mail-providers/icloud.svg` is a plain cloud drawn for moose, not Apple's mark.
 
 ## Design
 
@@ -153,7 +159,7 @@ Use a different AI service →
 
 **Your Anthropic key** (the new-key form)
 
-- Numbered steps, with an "Open Anthropic" button that opens a new tab. The steps come from the provider data's `help` and `key_url`. A plain line says that the service charges for use: "Anthropic charges for use. You need a card on file."
+- Numbered steps, with an "Open Anthropic" button that opens a new tab. The steps come from the provider data's `help` and `key_url`. A plain line says that the service charges for use: "Anthropic charges for use, so it may ask for a card on file." It does not say a card is needed, because some services have a free tier.
 - One password box. The prefix warning stays.
 - "Name this key (optional)" is a link that opens a name box. The default name is the service name plus "key" ("Anthropic key"), then "Anthropic key 2" and so on, so a name is never needed to go on.
 - Under the box: "Saved on your box. Your other apps can use it too."

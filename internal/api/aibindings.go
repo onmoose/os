@@ -443,7 +443,7 @@ func accountSlotResolver(account func(id string) (store.AIAccount, error), provi
 		}
 		fields, ok := fillableSlots(man)[b.Slot]
 		if !ok {
-			return nil, fmt.Errorf("the app has no LLM provider setting %s now", b.Slot)
+			return nil, fmt.Errorf("the app has no AI service setting %s now", b.Slot)
 		}
 		return restampSlot(fields, b, acct, providers, removedURL, current)
 	}

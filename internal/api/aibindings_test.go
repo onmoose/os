@@ -274,7 +274,7 @@ func TestResolveAIBindings_422(t *testing.T) {
 		{"same id twice", nil, []AIBindingBody{compat("a_acme", map[string][]string{"models.chat": {"a", " a"}})}, `config.ai_bindings: model "a" is picked twice for Custom models`},
 		{"separator in an id", nil, []AIBindingBody{compat("a_acme", map[string][]string{"models.chat": {"a;b"}})}, `config.ai_bindings: model "a;b" for Custom models contains ";", which this app uses to separate models`},
 		{"binding and a typed value on one slot", map[string]string{"ACME_MODEL": "typed"}, []AIBindingBody{{Slot: "ai.acme", AccountID: "a_acme"}}, "config.fields: ACME_MODEL is filled from an AI account, so do not also send a value for it"},
-		{"requires still checked", map[string]string{"SEARCH_KEY": "k"}, nil, "config.fields: pick at least one LLM provider"},
+		{"requires still checked", map[string]string{"SEARCH_KEY": "k"}, nil, "config.fields: pick at least one AI service"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

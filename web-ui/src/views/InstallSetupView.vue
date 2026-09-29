@@ -21,8 +21,9 @@
 // nothing but a typed secret.
 //
 // An AI need has its own pages (INSTALL_STEPS.md # 3): the key list, the
-// service grid and the key form, with no Save inside any of them. The email
-// page still uses today's picker (MailAccountSection) until step 3.
+// service grid and the key form. Email has the same three (# 4): the account
+// list, the email service grid and the add form. There is no Save inside any
+// of them: Continue saves.
 //
 // Driven by GET /api/v1/catalog/:id/install-plan (advisory; the brain checks
 // everything again on POST /api/v1/apps). The UI owns all wording.
@@ -43,6 +44,7 @@ import {
 } from "../api";
 import { useAuth } from "../auth";
 import { useAppInstances, useInstallSubmit } from "../useInstall";
+import { useMailPresets } from "../mailProviderForm";
 import {
   aiSlots,
   bindingOf,
@@ -65,6 +67,8 @@ import {
   usableAccounts,
   withNeedChoice,
   STEP_EMAIL,
+  STEP_EMAIL_ADD,
+  STEP_EMAIL_SERVICE,
   STEP_EXTRA,
   STEP_FOLDERS,
   STEP_FOR,
@@ -91,9 +95,12 @@ import Heading from "../components/ui/Heading.vue";
 import ConfigFieldInput from "../components/install/ConfigFieldInput.vue";
 import FolderChoices from "../components/install/FolderChoices.vue";
 import InstallInfoBox from "../components/install/InstallInfoBox.vue";
-import MailAccountSection from "../components/install/MailAccountSection.vue";
+import MailAddForm from "../components/install/MailAddForm.vue";
+import MailProviderLogo from "../components/MailProviderLogo.vue";
+import MailServiceGrid from "../components/install/MailServiceGrid.vue";
 import AIKeyForm from "../components/install/AIKeyForm.vue";
-import AIKeyList from "../components/install/AIKeyList.vue";
+import AccountList from "../components/install/AccountList.vue";
+import AIProviderLogo from "../components/AIProviderLogo.vue";
 import ServiceGrid from "../components/install/ServiceGrid.vue";
 
 const route = useRoute();
@@ -176,7 +183,26 @@ const aiChoices = ref<Record<string, AIChoice>>({});
 // aiService is the service tile picked on a need's grid, by need step, so
 // its key page knows which service it is for.
 const aiService = ref<Record<string, string>>({});
+// mailService is the email service picked on the email grid, for the add form.
+const mailService = ref("");
 const foldersReset = ref(false);
+
+// The email pages' state (see # Email pages below for the pages).
+const mailAccounts = computed(() =>
+  [...(plan.value?.mail?.providers ?? [])].sort((a, b) => b.created_at - a.created_at),
+);
+const onEmailPage = computed(() => [STEP_EMAIL, STEP_EMAIL_SERVICE, STEP_EMAIL_ADD].includes(step.value));
+const presetsQuery = useMailPresets(computed(() => !!plan.value?.mail));
+const mailPresets = computed(() => presetsQuery.data.value?.presets ?? []);
+const mailPreset = computed(() => mailPresets.value.find((p) => p.id === mailService.value));
+const emailMode = computed<"list" | "grid" | "add">(() => {
+  if (step.value === STEP_EMAIL_ADD) return "add";
+  if (step.value === STEP_EMAIL_SERVICE) return "grid";
+  return mailAccounts.value.length > 0 ? "list" : "grid";
+});
+const pageMailService = ref("");
+const mailForm = ref<InstanceType<typeof MailAddForm> | null>(null);
+
 
 const secretEnvs = computed(() => new Set(configFields.value.filter((f) => f.secret).map((f) => f.app_env)));
 const key = computed(() => draftKey(userId.value, manifestId.value, scope.value));
@@ -214,6 +240,7 @@ function seed(p: InstallPlan) {
   for (const [slot, c] of Object.entries(saved?.ai ?? {})) if (slotIds.has(slot) && c?.accountId) choices[slot] = c;
 
   aiService.value = { ...(saved?.aiService ?? {}) };
+  mailService.value = typeof saved?.mailService === "string" ? saved.mailService : "";
 
   if (saved?.flow) {
     flow.value = saved.flow;
@@ -242,17 +269,6 @@ function seed(p: InstallPlan) {
   aiChoices.value = choices;
 }
 
-watch(
-  [ready, key],
-  () => {
-    if (!ready.value || !plan.value || !userId.value) return;
-    if (seededFor === key.value) return;
-    seededFor = key.value;
-    seed(plan.value);
-    route.query.step ? checkStep() : redirect();
-  },
-  { immediate: true },
-);
 
 const draft = computed<Draft>(() => ({
   flow: flow.value,
@@ -264,6 +280,7 @@ const draft = computed<Draft>(() => ({
   values: configValues.value,
   ai: aiChoices.value,
   aiService: aiService.value,
+  mailService: mailService.value,
   foldersReset: foldersReset.value,
 }));
 watch(
@@ -292,6 +309,12 @@ const aiPage = computed(() => needOfStep(aiNeedList.value, step.value));
 
 function needMet(need: AINeed): boolean {
   return !need.group || groupMet(need.group, configFields.value, plainValues.value, filled.value);
+}
+
+// tileOfId is the service of one of the user's AI accounts, for its logo.
+function tileOfId(accountId: string): AIProvider | undefined {
+  const a = accounts.value.find((x) => x.id === accountId);
+  return a && tileOf(a, providers.value);
 }
 
 function usableFor(need: AINeed) {
@@ -344,7 +367,11 @@ const validSteps = computed(() => {
     if (needTiles(need, providers.value).length > 1) out.add(need.step + SUB_SERVICE);
     if (keyService(need)) out.add(need.step + SUB_KEY);
   }
-  if (plan.value?.mail) out.add(STEP_EMAIL);
+  if (plan.value?.mail) {
+    out.add(STEP_EMAIL);
+    out.add(STEP_EMAIL_SERVICE);
+    if (mailService.value) out.add(STEP_EMAIL_ADD);
+  }
   if (needs.value.extraFields.length > 0) out.add(STEP_EXTRA);
   if (folders.value.some((f) => folderHasChoice(f))) out.add(STEP_FOLDERS);
   if (canInstallHousehold.value) out.add(STEP_FOR);
@@ -436,7 +463,12 @@ const pageTitle = computed(() => {
     case STEP_SETTINGS:
       return `${name} needs these to run`;
     case STEP_EMAIL:
-      return `Which email should ${name} send from?`;
+    case STEP_EMAIL_SERVICE:
+      return emailMode.value === "list"
+        ? `Which email account should ${name} send from?`
+        : `Which email should ${name} send from?`;
+    case STEP_EMAIL_ADD:
+      return `Your ${mailPreset.value?.id === "custom" ? "email server" : `${mailPreset.value?.account_name || mailPreset.value?.label} account`}`;
     case STEP_EXTRA:
       return "Extra settings";
     case STEP_FOLDERS:
@@ -479,12 +511,13 @@ const keyForm = ref<InstanceType<typeof AIKeyForm> | null>(null);
 watch(
   [step, ready],
   () => {
-    if (step.value === STEP_EMAIL) {
+    if (step.value === STEP_EMAIL && ready.value) {
       // Set up opens with the newest saved account picked (INSTALL_STEPS.md
       // # Decisions); Change opens with the current one.
       const newest = [...(plan.value?.mail?.providers ?? [])].sort((a, b) => b.created_at - a.created_at)[0];
       pageMail.value = mailProviderId.value || newest?.id || "";
     }
+    if (step.value === STEP_EMAIL || step.value === STEP_EMAIL_SERVICE) pageMailService.value = mailService.value;
     if (step.value === STEP_FOLDERS) {
       pageSources.value = { ...folderSources.value };
       pageSubfolders.value = { ...folderSubfolders.value };
@@ -508,6 +541,11 @@ watch(
 );
 
 const canContinue = computed(() => {
+  if (onEmailPage.value) {
+    if (emailMode.value === "list") return true;
+    if (emailMode.value === "grid") return pageMailService.value !== "";
+    return !!mailForm.value?.valid && !mailForm.value?.pending;
+  }
   const ai = aiPage.value;
   if (ai) {
     const mode = aiMode(ai.need, ai.page);
@@ -562,6 +600,33 @@ async function continueAI(need: AINeed, page: "base" | "service" | "key") {
 }
 
 // useOtherService opens the grid, or the key form when one service fits.
+// ── Email pages ─────────────────────────────────────────────────────────────
+// email: the account list when the user has accounts, else the grid;
+// email-service: the grid; email-add: the add form for the picked service.
+// Email is optional in v1, so it stays "not set up" until Continue.
+function presetLabel(id: string): string {
+  return mailPresets.value.find((p) => p.id === id)?.label ?? "";
+}
+
+async function continueEmail() {
+  if (emailMode.value === "list") {
+    mailProviderId.value = pageMail.value;
+    markDone(STEP_EMAIL);
+    router.push(to(next(STEP_EMAIL)));
+    return;
+  }
+  if (emailMode.value === "grid") {
+    mailService.value = pageMailService.value;
+    router.push(to(STEP_EMAIL_ADD));
+    return;
+  }
+  const created = await mailForm.value?.save();
+  if (!created) return;
+  mailProviderId.value = created.id;
+  markDone(STEP_EMAIL);
+  router.push(to(next(STEP_EMAIL)));
+}
+
 function useOtherService() {
   const ai = aiPage.value;
   if (!ai) return;
@@ -578,7 +643,10 @@ function onContinue() {
     void continueAI(ai.need, ai.page);
     return;
   }
-  if (name === STEP_EMAIL) mailProviderId.value = pageMail.value;
+  if (name === STEP_EMAIL || name === STEP_EMAIL_SERVICE || name === STEP_EMAIL_ADD) {
+    void continueEmail();
+    return;
+  }
   if (name === STEP_FOLDERS) {
     folderSources.value = { ...pageSources.value };
     folderSubfolders.value = { ...pageSubfolders.value };
@@ -614,6 +682,7 @@ function backLink() {
   // The grid and a key form off the flow go back to their need's first page.
   const ai = aiPage.value;
   if (ai && ai.page !== "base" && i < 0) return to(ai.need.step);
+  if (step.value === STEP_EMAIL_SERVICE || step.value === STEP_EMAIL_ADD) return to(STEP_EMAIL);
   return reviewed.value ? to("") : `/store/${manifestId.value}`;
 }
 
@@ -744,6 +813,20 @@ const openable = computed(() => {
   return i && i.state !== "installing" && i.url ? i : undefined;
 });
 
+// Seeding runs last in setup, after every value it reads is declared: with
+// the plan already cached, it runs at once.
+watch(
+  [ready, key],
+  () => {
+    if (!ready.value || !plan.value || !userId.value) return;
+    if (seededFor === key.value) return;
+    seededFor = key.value;
+    seed(plan.value);
+    route.query.step ? checkStep() : redirect();
+  },
+  { immediate: true },
+);
+
 const rowClass = "px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-0";
 const dtClass = "text-sm/6 font-medium text-foreground";
 const ddClass = "mt-1 flex items-start justify-between gap-4 text-sm/6 text-foreground sm:col-span-2 sm:mt-0";
@@ -824,15 +907,19 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
       <template v-if="!isLast">
         <div class="px-4 sm:px-0">
           <template v-if="aiPage">
-            <AIKeyList
+            <AccountList
               v-if="aiMode(aiPage.need, aiPage.page) === 'list'"
               v-model="pageAccount"
-              :rows="usableFor(aiPage.need).map((a) => ({ account: a, service: tileOf(a, providers) }))"
+              :rows="usableFor(aiPage.need).map((a) => ({ id: a.id, label: a.label, detail: tileOf(a, providers)?.name }))"
               :label="`Key for ${plan.name}`"
-              :optional="!aiPage.need.required"
+              :none-label="aiPage.need.required ? undefined : 'Don\'t use an AI service'"
               :other-label="needTiles(aiPage.need, providers).length > 1 ? 'Use a different AI service' : 'Add another key'"
               @other="useOtherService"
-            />
+            >
+              <template #logo="{ row }">
+                <AIProviderLogo :provider="tileOfId(row.id)" />
+              </template>
+            </AccountList>
             <ServiceGrid
               v-else-if="aiMode(aiPage.need, aiPage.page) === 'grid'"
               v-model="pageService"
@@ -869,13 +956,39 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
               :field="f"
             />
           </div>
-          <MailAccountSection
-            v-else-if="step === 'email' && plan.mail"
-            v-model="pageMail"
-            :manifest-id="manifestId"
-            :app-name="plan.name"
-            :providers="plan.mail.providers ?? []"
-          />
+          <template v-else-if="onEmailPage && plan.mail">
+            <p v-if="presetsQuery.isPending.value" class="text-sm text-muted-foreground">Loading…</p>
+            <AccountList
+              v-else-if="emailMode === 'list'"
+              v-model="pageMail"
+              :rows="mailAccounts.map((m) => ({ id: m.id, label: m.label, detail: presetLabel(m.provider_type) }))"
+              :label="`Email account for ${plan.name}`"
+              none-label="Don't send email"
+              other-label="Use a different email service"
+              @other="router.push(to(STEP_EMAIL_SERVICE))"
+            >
+              <template #logo="{ row }">
+                <MailProviderLogo
+                  :id="mailAccounts.find((m) => m.id === row.id)?.provider_type ?? 'custom'"
+                  :label="row.label"
+                  size="icon"
+                />
+              </template>
+            </AccountList>
+            <MailServiceGrid
+              v-else-if="emailMode === 'grid'"
+              v-model="pageMailService"
+              :presets="mailPresets"
+              :label="`Email service for ${plan.name}`"
+            />
+            <MailAddForm
+              v-else-if="mailPreset"
+              ref="mailForm"
+              :preset="mailPreset"
+              :labels="mailAccounts.map((m) => m.label)"
+              :manifest-id="manifestId"
+            />
+          </template>
           <FolderChoices
             v-else-if="step === 'folders'"
             v-model:sources="pageSources"
@@ -901,7 +1014,10 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
         <div
           class="flex flex-col-reverse gap-3 border-t border-border px-4 pt-6 sm:flex-row sm:items-center sm:justify-end sm:px-0"
         >
-          <p v-if="!canContinue && aiPage" class="text-sm text-muted-foreground sm:mr-auto">
+          <p v-if="!canContinue && onEmailPage" class="text-sm text-muted-foreground sm:mr-auto">
+            {{ emailMode === "grid" ? "Pick an email service to go on." : "Fill in the form to go on." }}
+          </p>
+          <p v-else-if="!canContinue && aiPage" class="text-sm text-muted-foreground sm:mr-auto">
             {{
               aiMode(aiPage.need, aiPage.page) === "grid"
                 ? "Pick an AI service to go on."

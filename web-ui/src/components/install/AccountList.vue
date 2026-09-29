@@ -1,29 +1,30 @@
 <script lang="ts">
-import type { AIAccount, AIProvider } from "../../api";
-export type KeyRow = { account: AIAccount; service?: AIProvider };
+export type AccountRow = { id: string; label: string; detail?: string };
 </script>
 
 <script setup lang="ts">
-// "Which key should <App> use?" (INSTALL_STEPS.md # 3, the B layout): the
-// user's saved keys this app can use, each with its service's logo. Picking
-// a key also picks the service. "Use a different AI service" under the list
-// opens the service grid (or "Add another key" when one service fits). An optional need also offers "Don't use an AI
-// service".
+// The B layout of the install flow (INSTALL_STEPS.md # 3 and # 4): the
+// user's saved accounts an app can use, each with its service's logo (the
+// #logo slot). Picking an account also picks the service. A link under the
+// list opens another service ("Use a different AI service"), and an optional
+// need also offers not using one ("Don't send email").
 //
 // It is a radio group, with the arrow keys moving the choice.
 import { computed, nextTick, ref } from "vue";
 import { ArrowRight, Check, CircleSlash } from "lucide-vue-next";
-import AIProviderLogo from "../AIProviderLogo.vue";
 
-// otherLabel is the link under the list: "Use a different AI service" opens
-// the grid; when only one service fits the need it adds another key for it.
-const props = defineProps<{ rows: KeyRow[]; label: string; optional: boolean; otherLabel: string }>();
-// "" is "Don't use an AI service" (only offered for an optional need).
+const props = defineProps<{
+  rows: AccountRow[];
+  label: string;
+  // noneLabel, when set, adds the "not used" choice, whose value is "".
+  noneLabel?: string;
+  otherLabel: string;
+}>();
 const selected = defineModel<string>({ required: true });
 const emit = defineEmits<{ other: [] }>();
 
 const NONE = "";
-const ids = computed(() => [...props.rows.map((r) => r.account.id), ...(props.optional ? [NONE] : [])]);
+const ids = computed(() => [...props.rows.map((r) => r.id), ...(props.noneLabel ? [NONE] : [])]);
 const items = ref<HTMLButtonElement[]>([]);
 const noneItem = ref<HTMLButtonElement | null>(null);
 const focusIndex = computed(() => Math.max(0, ids.value.indexOf(selected.value)));
@@ -50,25 +51,25 @@ const rowClass = (on: boolean) => [
     <div role="radiogroup" :aria-label="label" class="space-y-2">
       <button
         v-for="(r, i) in rows"
-        :key="r.account.id"
+        :key="r.id"
         ref="items"
         type="button"
         role="radio"
-        :aria-checked="selected === r.account.id"
+        :aria-checked="selected === r.id"
         :tabindex="i === focusIndex ? 0 : -1"
-        :class="rowClass(selected === r.account.id)"
-        @click="selected = r.account.id"
+        :class="rowClass(selected === r.id)"
+        @click="selected = r.id"
         @keydown="onKey($event, i)"
       >
-        <AIProviderLogo :provider="r.service" />
+        <slot name="logo" :row="r" />
         <span class="min-w-0 flex-1">
-          <span class="block text-sm font-medium wrap-anywhere text-foreground">{{ r.account.label }}</span>
-          <span v-if="r.service" class="block text-sm text-muted-foreground">{{ r.service.name }}</span>
+          <span class="block text-sm font-medium wrap-anywhere text-foreground">{{ r.label }}</span>
+          <span v-if="r.detail" class="block text-sm text-muted-foreground">{{ r.detail }}</span>
         </span>
-        <Check v-if="selected === r.account.id" class="size-4 shrink-0 text-accent" aria-hidden="true" />
+        <Check v-if="selected === r.id" class="size-4 shrink-0 text-accent" aria-hidden="true" />
       </button>
       <button
-        v-if="optional"
+        v-if="noneLabel"
         ref="noneItem"
         type="button"
         role="radio"
@@ -81,7 +82,7 @@ const rowClass = (on: boolean) => [
         <span class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <CircleSlash class="size-5 stroke-[1.5]" aria-hidden="true" />
         </span>
-        <span class="min-w-0 flex-1 text-sm font-medium text-foreground">Don't use an AI service</span>
+        <span class="min-w-0 flex-1 text-sm font-medium text-foreground">{{ noneLabel }}</span>
         <Check v-if="selected === NONE" class="size-4 shrink-0 text-accent" aria-hidden="true" />
       </button>
     </div>

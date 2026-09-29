@@ -223,14 +223,14 @@ func (s *Server) checkAIProvider(ctx context.Context, action string, tgt audit.T
 		return huma.Error500InternalServerError("catalog read failed", err)
 	}
 	if len(providers) == 0 {
-		return huma.Error422UnprocessableEntity("the list of LLM providers is not loaded yet. Try again in a few minutes, or add an OpenAI-compatible server")
+		return huma.Error422UnprocessableEntity("the list of AI services is not loaded yet. Try again in a few minutes, or add an OpenAI-compatible server")
 	}
 	for _, p := range providers {
 		if p.ID == providerID {
 			return nil
 		}
 	}
-	return huma.Error422UnprocessableEntity("unknown LLM provider")
+	return huma.Error422UnprocessableEntity("unknown AI service")
 }
 
 // requireAIKey enforces the key rule once the final key is known: a listed
@@ -459,7 +459,7 @@ func (s *Server) checkBaseURLRemoval(ctx context.Context, tgt audit.Target, meta
 			slog.Warn("read ai providers for base URL removal failed", "err", err)
 		}
 		s.auditor.Record(ctx, audit.ActionAIAccountUpdate, tgt, meta, false)
-		return huma.Error409Conflict("the list of LLM providers is not loaded yet, so this account's base URL cannot be removed now. Try again in a few minutes. You can still change the key on its own")
+		return huma.Error409Conflict("the list of AI services is not loaded yet, so this account's base URL cannot be removed now. Try again in a few minutes. You can still change the key on its own")
 	}
 	if providerBaseURL(providers, providerID) == "" {
 		s.auditor.Record(ctx, audit.ActionAIAccountUpdate, tgt, meta, false)
@@ -524,7 +524,7 @@ func (s *Server) slotFieldsRefused(sfe *store.SlotFieldsError, what string) erro
 	slog.Error("delete refused: cannot name the AI fields to clear",
 		"instance_id", sfe.InstanceID, "name", name, "target_kind", what, "err", sfe.Err)
 	return huma.Error500InternalServerError(fmt.Sprintf(
-		"the LLM provider settings of %s could not be found, so its key could not be removed. The %s was not deleted. Try again, or uninstall %s first", name, what, name))
+		"the AI service settings of %s could not be found, so its key could not be removed. The %s was not deleted. Try again, or uninstall %s first", name, what, name))
 }
 
 // deleteAIAccount removes one of the caller's accounts. It keeps the password

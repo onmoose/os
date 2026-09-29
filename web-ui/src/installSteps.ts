@@ -47,6 +47,8 @@ import {
 export const STEP_SETTINGS = "settings";
 export const STEP_AI_OPTIONAL = "ai-optional";
 export const STEP_EMAIL = "email";
+export const STEP_EMAIL_SERVICE = "email-service";
+export const STEP_EMAIL_ADD = "email-add";
 export const STEP_EXTRA = "extra";
 export const STEP_FOLDERS = "folders";
 export const STEP_FOR = "for";
@@ -297,6 +299,8 @@ export type Draft = {
   ai: Record<string, AIChoice>;
   // aiService is the service picked on a need's grid, by need step.
   aiService: Record<string, string>;
+  // mailService is the email service picked on the email grid.
+  mailService: string;
   // foldersReset is set when a change of scope put the folders back on their
   // defaults, so the last page can say so once.
   foldersReset: boolean;

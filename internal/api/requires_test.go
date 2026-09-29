@@ -88,11 +88,11 @@ func TestResolveInstallConfig_Requires(t *testing.T) {
 
 	t.Run("no AI provider", func(t *testing.T) {
 		_, err := resolveInstallConfig(man, map[string]string{"SEARCH_KEY": "k"})
-		assert422(t, err, "config.fields: pick at least one LLM provider")
+		assert422(t, err, "config.fields: pick at least one AI service")
 	})
 	t.Run("a model list alone is not a provider", func(t *testing.T) {
 		_, err := resolveInstallConfig(man, map[string]string{"CUSTOM_MODELS": "a;b", "SEARCH_KEY": "k"})
-		assert422(t, err, "config.fields: pick at least one LLM provider")
+		assert422(t, err, "config.fields: pick at least one AI service")
 	})
 	t.Run("plain group unmet", func(t *testing.T) {
 		_, err := resolveInstallConfig(man, map[string]string{"ANTHROPIC_API_KEY": "sk-ant"})
@@ -119,7 +119,7 @@ func TestResolvePutConfig_RequiresNoWorse(t *testing.T) {
 
 	t.Run("clearing the only provider is rejected", func(t *testing.T) {
 		_, err := resolvePutConfig(man, met, map[string]string{"ANTHROPIC_API_KEY": ""})
-		assert422(t, err, "config.fields: keep at least one LLM provider")
+		assert422(t, err, "config.fields: keep at least one AI service")
 	})
 	t.Run("clearing the only plain member is rejected", func(t *testing.T) {
 		_, err := resolvePutConfig(man, met, map[string]string{"SEARCH_KEY": ""})
@@ -208,7 +208,7 @@ func TestUpdateAppConfig_RequiresWorsening_Audits422(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := putConfig(t, s, adminCtx("u_admin"), id, map[string]string{"ANTHROPIC_API_KEY": ""})
-	assert422(t, err, "keep at least one LLM provider")
+	assert422(t, err, "keep at least one AI service")
 	if !auditedConfigUpdate(t, s, false) {
 		t.Errorf("rejected update was not audited as failure")
 	}
@@ -227,8 +227,8 @@ func TestInstallUnmetRequires422(t *testing.T) {
 	})
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "pick at least one LLM provider") {
-		t.Fatalf("install without a provider = %d %s; want 422 pick at least one LLM provider", resp.StatusCode, raw)
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "pick at least one AI service") {
+		t.Fatalf("install without a provider = %d %s; want 422 pick at least one AI service", resp.StatusCode, raw)
 	}
 	if !h.hasAuditEvent(audit.ActionAppInstall, "", false) {
 		t.Fatal("app.install failure audit event not found")
@@ -273,7 +273,7 @@ config:
 		{"required field", map[string]any{"manifest_id": "reqapp"}, "config.fields.TOKEN", "config.fields: TOKEN is required"},
 		{"bad enum", map[string]any{"manifest_id": "reqapp", "config": map[string]any{"fields": map[string]string{"TOKEN": "t", "MODE": "c"}}}, "config.fields.MODE", "must be one of"},
 		{"unknown mail account", map[string]any{"manifest_id": "reqapp", "config": map[string]any{"fields": map[string]string{"TOKEN": "t"}, "mail_provider_id": "nope"}}, "config.mail_provider_id", "no such mail provider"},
-		{"AI group unmet", map[string]any{"manifest_id": "cfgapp", "config": map[string]any{"fields": map[string]string{"SEARCH_KEY": "k"}}}, "config.requires[0]", "pick at least one LLM provider"},
+		{"AI group unmet", map[string]any{"manifest_id": "cfgapp", "config": map[string]any{"fields": map[string]string{"SEARCH_KEY": "k"}}}, "config.requires[0]", "pick at least one AI service"},
 		{"plain group unmet", map[string]any{"manifest_id": "cfgapp", "config": map[string]any{"fields": map[string]string{"ANTHROPIC_API_KEY": "sk"}}}, "config.requires[1]", "fill in at least one of"},
 		{"unknown AI slot", map[string]any{"manifest_id": "cfgapp", "config": map[string]any{"ai_bindings": []map[string]any{{"slot": "ai.nope", "account_id": "x"}}}}, "config.ai_bindings.ai.nope", "has no AI slot"},
 	}

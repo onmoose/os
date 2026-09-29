@@ -1794,6 +1794,7 @@ export interface components {
             user: components["schemas"]["UserDTO"];
         };
         MailPresetDTO: {
+            account_name: string;
             credential_label: string;
             docs_url: string;
             /** @enum {string} */
@@ -1802,9 +1803,12 @@ export interface components {
             host: string;
             id: string;
             label: string;
+            personal: boolean;
             /** Format: int64 */
             port: number;
             region?: components["schemas"]["MailPresetRegionDTO"];
+            setup_url: string;
+            steps: string[] | null;
             username_fixed: string;
             /** @enum {string} */
             username_mode: "user" | "fixed" | "same_as_password";

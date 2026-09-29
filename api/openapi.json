@@ -2438,6 +2438,9 @@
       "MailPresetDTO": {
         "additionalProperties": false,
         "properties": {
+          "account_name": {
+            "type": "string"
+          },
           "credential_label": {
             "type": "string"
           },
@@ -2464,12 +2467,27 @@
           "label": {
             "type": "string"
           },
+          "personal": {
+            "type": "boolean"
+          },
           "port": {
             "format": "int64",
             "type": "integer"
           },
           "region": {
             "$ref": "#/components/schemas/MailPresetRegionDTO"
+          },
+          "setup_url": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "username_fixed": {
             "type": "string"
@@ -2497,7 +2515,11 @@
           "username_prefill",
           "credential_label",
           "help",
-          "docs_url"
+          "docs_url",
+          "personal",
+          "account_name",
+          "steps",
+          "setup_url"
         ],
         "type": "object"
       },

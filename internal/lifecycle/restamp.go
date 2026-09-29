@@ -107,9 +107,9 @@ func (m *Manager) UpdateConfig(ctx context.Context, id string, resolve ConfigRes
 	return nil
 }
 
-// errBindingGone is the job error when an LLM provider account the save
+// errBindingGone is the job error when an AI service account the save
 // relied on was deleted while it ran. Nothing was written.
-var errBindingGone = errors.New("an LLM provider account this app uses was deleted while saving, so nothing was changed. Check the settings and save again")
+var errBindingGone = errors.New("an AI service account this app uses was deleted while saving, so nothing was changed. Check the settings and save again")
 
 // SlotResolver resolves one AI binding of an app into the values of its
 // slot, from the account as it is now. current is the app's stored values,

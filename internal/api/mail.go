@@ -210,6 +210,14 @@ type MailPresetDTO struct {
 	Help            string               `json:"help"`
 	DocsURL         string               `json:"docs_url"`
 	Region          *MailPresetRegionDTO `json:"region,omitempty"`
+	// Personal is true for an account most people already have (Gmail,
+	// iCloud): the username is the full address, the same as the from
+	// address. AccountName is the default name of a new account. Steps and
+	// SetupURL are the numbered steps for making the credential.
+	Personal    bool     `json:"personal"`
+	AccountName string   `json:"account_name"`
+	Steps       []string `json:"steps"`
+	SetupURL    string   `json:"setup_url"`
 }
 
 // MailPresetRegionDTO is the at-most-one variable a preset carries.
@@ -232,6 +240,10 @@ func mailPresetDTO(p mailpreset.Preset) MailPresetDTO {
 		Encryption: p.Encryption, UsernameMode: p.UsernameMode,
 		UsernameFixed: p.UsernameFixed, UsernamePrefill: p.UsernamePrefill,
 		CredentialLabel: p.CredentialLabel, Help: p.Help, DocsURL: p.DocsURL,
+		Personal: p.Personal, AccountName: p.DefaultAccountName(), Steps: p.Steps, SetupURL: p.SetupURL,
+	}
+	if d.Steps == nil {
+		d.Steps = []string{}
 	}
 	if p.Region != nil {
 		r := &MailPresetRegionDTO{Label: p.Region.Label, Default: p.Region.Default}

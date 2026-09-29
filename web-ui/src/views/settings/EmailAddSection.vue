@@ -22,7 +22,7 @@ import { api, type MailProvider, type MailPreset } from "@/api";
 import Button from "@/components/ui/Button.vue";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
 import {
-  useMailPresets, emptyForm, formFromPreset, hostFor, syncSameAsPassword,
+  useMailPresets, emptyForm, formFromPreset, hostFor, syncSameAsPassword, syncPersonalUsername,
   formValid, portWarning, bodyOf, errorMessage, fieldClass,
   type ProviderForm,
 } from "@/mailProviderForm";
@@ -79,6 +79,7 @@ function onRegionChange() {
 
 const create = useMutation({
   mutationFn: async () => {
+    syncPersonalUsername(form.value, preset.value);
     syncSameAsPassword(form.value, preset.value);
     const body = bodyOf(form.value);
     // Check before saving, not after: a config that cannot connect never
@@ -218,7 +219,7 @@ function fid(name: string): string {
         </div>
 
         <!-- Username: hidden when the provider fixes it or reuses the credential. -->
-        <div v-if="preset.username_mode === 'user'" class="space-y-1.5">
+        <div v-if="preset.username_mode === 'user' && !preset.personal" class="space-y-1.5">
           <label class="text-sm font-medium" :for="fid('username')">Username</label>
           <input :id="fid('username')" v-model="form.username" :class="fieldClass" autocomplete="off" />
         </div>

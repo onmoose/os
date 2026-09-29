@@ -1,7 +1,7 @@
 // Shared shape and helpers for the outgoing-email provider form
 // (SERVICE_PROVISIONING.md # BYO outgoing mail). Three places consume it: the
 // add flow at /settings/email/add/:preset, the inline edit form on the account
-// list, and the inline add on the install setup page. They must agree field for
+// list, and the add form of the install flow (MailAddForm.vue). They must agree field for
 // field: the same preset rules decide what is shown and what is sent on all.
 import type { Ref } from "vue";
 import { useQuery } from "@tanstack/vue-query";
@@ -63,7 +63,7 @@ export function hostFor(p: MailPreset, region: string): string {
 export function formFromPreset(p: MailPreset): ProviderForm {
   const f = emptyForm();
   f.provider_type = p.id;
-  f.label = p.id === "custom" ? "" : p.label;
+  f.label = p.id === "custom" ? "" : p.account_name || p.label;
   f.port = p.port;
   f.encryption = p.encryption as ProviderForm["encryption"];
   f.region = p.region?.default ?? "";
@@ -83,6 +83,12 @@ export function formFromPreset(p: MailPreset): ProviderForm {
 // UI to say why.
 export function syncSameAsPassword(f: ProviderForm, p: MailPreset | undefined) {
   if (p?.username_mode === "same_as_password" && f.password !== "") f.username = f.password;
+}
+
+// A personal account (Gmail, iCloud) signs in with the full address, which is
+// also the from address, so the form asks for it once and copies it here.
+export function syncPersonalUsername(f: ProviderForm, p: MailPreset | undefined) {
+  if (p?.personal) f.username = f.from_address.trim();
 }
 
 export function formValid(f: ProviderForm): boolean {

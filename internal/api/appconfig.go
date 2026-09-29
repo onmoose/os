@@ -397,7 +397,7 @@ func resolveInstallConfig(man *manifest.Manifest, fields map[string]string) ([]s
 	for i, g := range man.EffectiveRequires() {
 		if !man.GroupSatisfied(g, values) {
 			if isKindGroup(g, "ai") {
-				return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: pick at least one LLM provider")
+				return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: pick at least one AI service")
 			}
 			return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: fill in at least one of: "+groupTitles(man, g))
 		}
@@ -425,7 +425,7 @@ func configValues(cfg []store.InstanceConfig) map[string]string {
 }
 
 // isKindGroup reports whether a requires group is exactly one kind member, so
-// the 422 can name the kind ("an LLM provider") rather than list its fields.
+// the 422 can name the kind ("an AI service") rather than list its fields.
 func isKindGroup(group []string, kind string) bool {
 	return len(group) == 1 && group[0] == kind
 }
@@ -488,7 +488,7 @@ func resolvePutConfig(man *manifest.Manifest, current []store.InstanceConfig, fi
 	for i, g := range man.EffectiveRequires() {
 		if man.GroupSatisfied(g, before) && !man.GroupSatisfied(g, after) {
 			if isKindGroup(g, "ai") {
-				return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: keep at least one LLM provider")
+				return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: keep at least one AI service")
 			}
 			return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: keep at least one of these filled in: "+groupTitles(man, g))
 		}
