@@ -181,6 +181,19 @@ GET /v1/users/{username}/home
 
 The brain maps `unknown-user` to an installation error (not a 500 retry) — the user was deleted between the install-plan call and the install commit. The fake host-agent returns a deterministic result derived from the username (UID in [3000, 3999]) so the dev loop is coherent without a real `/etc/passwd`. See `APP_ISOLATION.md` # User content for the personal-scope bind-mount contract this feeds.
 
+**Personal folder source preparation.** Before a personal folder source is bound into an app, it has to exist on the host and be owned by the user, or Docker creates it `root:root` and the app, running as the owner, cannot write it. The brain cannot make it: its container does not mount `/home` (`CONTROL_PLANE.md` # Locked: host-agent launches the brain container). So the brain asks host-agent, once per personal folder, during the install (#519). Pattern A:
+
+```
+POST /v1/users/{username}/prepare-folder
+  { "path": "Documents/Notebooks" }
+→ 200 OK  {}
+→ 400     { "code": "bad-path", ... }
+→ 404     { "code": "unknown-user", ... }
+→ 409     { "code": "not-a-directory", "message": "a file or link is in the way of the folder" }
+```
+
+`path` is relative to the home. It has no empty, `.` or `..` level, and its first level is one of the use-case folders (`Photos`, `Documents`, `Movies`, `Music`, `Notes`, `Downloads`), so the op can never touch anything else in a home, such as `~/.ssh`. host-agent resolves the home from the username, never from a path the brain sends. It creates each missing level owned by the user, sets the owner of the last level (which a Docker bind may have left `root:root` before this op existed), and leaves every other existing level alone. It never follows a symlink: each level is opened relative to the one before with `O_NOFOLLOW`, because the user owns the home and a root process that followed `~/Documents -> /etc` would hand `/etc` to them. A symlink or a file on the way is the 409. The op is idempotent. The fake host-agent creates the path under the dev operator's own home, the one its `home` route hands out, with no chown.
+
 **Account-name existence probe.** The brain derives a Linux account name from the display name a person types (`FIRST_RUN.md` # Identity & display names), and has to know whether a candidate name is already on the host before it settles on one. Pattern A:
 
 ```
@@ -312,7 +325,7 @@ Implementation: `publish` creates an Avahi DBus entry group and calls `EntryGrou
 
 **`enroll-drive` and `eject-drive` carry credentials inline** because host-agent verifies them via PAM as the first step of the job and uses them to authorize reading `/etc/moose/secrets/luks-recovery.key`. The brain does not cache or forward the password beyond the single request. On invalid credentials the job fails immediately with `error.code = "auth-failed"`; otherwise host-agent proceeds with format → LUKS → TPM enrollment → mount → mergerfs add (enroll) or stop apps → unmount → marker removal (eject). Declared attributes: `Dangerous: true`, `ResourceClass: "disk"`, `MaxDuration: 10m`. See `STORAGE.md` # Adding a data drive and # Ejecting a data drive for the user-facing flow; `AUTH.md` # Roles for the fresh-password requirement.
 
-**Files endpoints (`/v1/files/*`).** Back the in-dashboard file manager (`FILES.md`). The brain is containerized and cannot touch `/home` or `/srv/moose`, so every file operation runs here, **with host-agent dropping to the requesting user's Linux UID/GID for the duration of the op** (`setresuid`/`setresgid` to the moose 3000+ UID, or a forked child). This makes POSIX `0750`/`02770` the kernel-enforced backstop — a member's op cannot read another user's `0750` home even past a brain-side bug — and gives created files correct ownership natively, the same contract the compose `user:` directive gives app instances (`APP_ISOLATION.md` # User content). host-agent owns logical-root resolution: `root` is `home` (→ the user's home, resolved as in `/v1/users/{username}/home`) or `shared` (→ `/srv/moose/shared/`); it re-validates path containment before acting. The brain passes `user` on every call; there is no "act as a different user" parameter.
+**Files endpoints (`/v1/files/*`).** Back the in-dashboard file manager (`FILES.md`). The brain is containerized and cannot touch `/home`. It does mount the household shared tree (`/srv/moose/shared`), but only to prepare shared folder sources for installs, so every file-manager operation still runs here, **with host-agent dropping to the requesting user's Linux UID/GID for the duration of the op** (`setresuid`/`setresgid` to the moose 3000+ UID, or a forked child). This makes POSIX `0750`/`02770` the kernel-enforced backstop — a member's op cannot read another user's `0750` home even past a brain-side bug — and gives created files correct ownership natively, the same contract the compose `user:` directive gives app instances (`APP_ISOLATION.md` # User content). host-agent owns logical-root resolution: `root` is `home` (→ the user's home, resolved as in `/v1/users/{username}/home`) or `shared` (→ `/srv/moose/shared/`); it re-validates path containment before acting. The brain passes `user` on every call; there is no "act as a different user" parameter.
 
 Metadata ops are Pattern A:
 
