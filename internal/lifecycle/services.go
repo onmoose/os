@@ -539,14 +539,24 @@ func (m *Manager) writeServiceDir(kind, version, superuserPW string, remapBase i
 	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte(compose), 0o644); err != nil {
 		return err
 	}
-	env := pwVar + "=" + superuserPW + "\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600); err != nil {
+	// The owner goes first and .env last. ensureServiceInstance treats an
+	// existing .env as a service dir that is already set up and skips this
+	// function, so a chown that failed after .env was written would never be
+	// tried again.
+	if err := m.chownServiceData(kind, filepath.Join(dir, "data"), remapBase); err != nil {
 		return err
 	}
+	env := pwVar + "=" + superuserPW + "\n"
+	return os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600)
+}
+
+// chownServiceData gives a managed service's data dir, and what is in it, to
+// base:base on a remapped daemon. It does nothing with no remap.
+func (m *Manager) chownServiceData(kind, data string, remapBase int) error {
 	if remapBase == 0 {
 		return nil
 	}
-	err := filepath.WalkDir(filepath.Join(dir, "data"), func(p string, _ fs.DirEntry, err error) error {
+	err := filepath.WalkDir(data, func(p string, _ fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

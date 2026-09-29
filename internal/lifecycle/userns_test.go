@@ -445,6 +445,41 @@ func TestManagedServiceDataOwnedByRemapBase(t *testing.T) {
 	}
 }
 
+// Valkey's data dir holds a file the brain writes (users.acl), and it goes to
+// base:base too.
+func TestManagedValkeyDataOwnedByRemapBase(t *testing.T) {
+	e := newTestEnv(t)
+	e.remapped()
+	chowns := recordChowns(e)
+	installDBAppKind(t, e, "cacheapp", "valkey", "8")
+	data := filepath.Join(e.m.serviceDir("valkey", "8"), "data")
+	for _, p := range []string{data, filepath.Join(data, "users.acl")} {
+		if got := chowns.owner(p); got != "1000000:1000000" {
+			t.Fatalf("%s owner = %q, want base:base", p, got)
+		}
+	}
+}
+
+// A chown that fails as root leaves no .env, so the next install sets the
+// service dir up again instead of skipping it.
+func TestManagedServiceChownFailureLeavesNoEnv(t *testing.T) {
+	e := newTestEnv(t)
+	e.remapped()
+	e.m.chown = func(string, int, int) error { return errors.New("boom") }
+	err := e.m.writeServiceDir("postgres", "15", "pw", testRemapBase)
+	if os.Geteuid() == 0 {
+		if err == nil {
+			t.Fatal("chown failure as root was not returned")
+		}
+	} else if err != nil {
+		t.Fatalf("unprivileged brain should log and go on: %v", err)
+	}
+	_, envErr := os.Stat(filepath.Join(e.m.serviceDir("postgres", "15"), ".env"))
+	if os.Geteuid() == 0 && envErr == nil {
+		t.Fatal(".env written after a failed chown")
+	}
+}
+
 // With no remap a managed service's data dir is left as it was.
 func TestManagedServiceDataUntouchedWithoutRemap(t *testing.T) {
 	e := newTestEnv(t)

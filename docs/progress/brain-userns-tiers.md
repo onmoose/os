@@ -78,6 +78,14 @@ Both are public images, used only on the throwaway branch, never added as catalo
 - **The install progress screen has no step for the new check.** It runs inside the first phase ("Preparing"), which is where its refusals belong.
 - **A managed service created before the remap keeps its old owner.** Only a new service dir is chowned. Same reason as the migration: a box's remap does not change.
 
+- **In the caps tier every service loses its `user:` pin, and every bind dir goes to `base`.** A service in a `root_setup` app that runs as its image's own non-root user and does not fix its dir's owner as root cannot write that dir. This is the spec's design (`APP_ISOLATION.md`: the caps tier's bind dirs are owned by the container's root), not a slip in the code, and it is the same point as the plunk and formbricks product call above. Greptile raised it as P1; see # Review.
+
+## Review
+
+- **Fresh Sonnet agent:** no Block findings. Two Notes. (1) A failed host-agent or `docker info` read reaches the job message wrapped, not translated. That is the pattern the rest of the install path uses (the GPU and home reads), so it is left as is. (2) The managed-service chown walk was only tested on an empty dir. Fixed: a Valkey test now checks that `users.acl` is chowned too.
+- **Greptile P1, "Failed ownership change persists":** confirmed and fixed. `writeServiceDir` wrote `.env` before the chown, and an existing `.env` makes the brain skip the service dir setup, so a failed chown was never tried again. The chown now runs before `.env` is written (`chownServiceData`). A test checks that a failed chown as root leaves no `.env` (under a non-root test run it checks the log-and-go-on path instead).
+- **Greptile P1, "Non-root sidecar cannot write":** dismissed as a code finding, kept as a known gap. The caps tier giving bind dirs to `base` and dropping `user:` on every service is what `APP_ISOLATION.md` # User-namespace tiers specifies. Changing it is the product call recorded above, not a fix in this slice.
+
 ## What's next
 
 1. #530: turn the remap on in both images (after #486), and #531: a remap boot in `CI / Cloud image`, so the lane keeps proving this.
