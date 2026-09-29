@@ -181,10 +181,16 @@ const update = useMutation({
     if (editKey.value.trim()) body.api_key = editKey.value.trim();
     if (editUrl.value.trim()) body.base_url = editUrl.value.trim();
     if (a.provider_id === COMPATIBLE) {
-      // The chat name is set or cleared; other types the account has stay.
+      // The box shows only the first chat id. Untouched, the whole saved list
+      // stays; changed, it replaces the list, and emptied, it clears it.
+      // Other types the account has stay.
       const models: Record<string, string[]> = {};
-      for (const [t, ids] of Object.entries(a.models ?? {})) if (t !== "chat" && ids?.length) models[t] = [...ids];
-      if (editModel.value.trim()) models.chat = [editModel.value.trim()];
+      for (const [t, ids] of Object.entries(a.models ?? {})) if (ids?.length) models[t] = [...ids];
+      const typed = editModel.value.trim();
+      if (typed !== (a.models?.chat?.[0] ?? "")) {
+        if (typed) models.chat = [typed];
+        else delete models.chat;
+      }
       body.models = models;
     }
     return api.put<AIAccountSaved>(`/ai-accounts/${a.id}`, body);

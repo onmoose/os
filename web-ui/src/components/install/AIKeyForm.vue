@@ -128,7 +128,13 @@ async function save(): Promise<{ account: AIAccount } | null> {
     body.base_url = address.value.trim();
     const own: Record<string, string[]> = {};
     for (const [t, ids] of Object.entries(props.account?.models ?? {})) if (ids?.length) own[t] = [...ids];
-    for (const t of modelTypes.value) own[t] = [(models.value[t] ?? "").trim()];
+    // A box shows only the first saved id, so an untouched box keeps the
+    // whole saved list; a changed one replaces it.
+    for (const t of modelTypes.value) {
+      const typed = (models.value[t] ?? "").trim();
+      const saved = props.account?.models?.[t] ?? [];
+      if (saved.length === 0 || typed !== saved[0]) own[t] = [typed];
+    }
     body.models = own;
   }
   try {
