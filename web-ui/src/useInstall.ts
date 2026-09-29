@@ -53,7 +53,9 @@ export function useAppInstances(manifestId: Ref<string>) {
   return { householdInstance, ownPersonalInstance, installing, canInstallHousehold };
 }
 
-export function useInstallSubmit(manifestId: Ref<string>) {
+// onStarted runs when the brain accepted the install (202), before the page
+// moves on. The setup flow clears its draft there.
+export function useInstallSubmit(manifestId: Ref<string>, onStarted?: () => void) {
   const qc = useQueryClient();
   const router = useRouter();
 
@@ -64,6 +66,7 @@ export function useInstallSubmit(manifestId: Ref<string>) {
   const mutation = useMutation({
     mutationFn: (req: InstallRequest) => api.post<Job>("/apps", req),
     onSuccess: (job, req) => {
+      onStarted?.();
       // The instance row appears early in the job; refetch so the detail page
       // shows "Installing…" if the user goes back to it.
       qc.invalidateQueries({ queryKey: ["apps"] });

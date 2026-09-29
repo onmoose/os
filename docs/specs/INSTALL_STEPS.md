@@ -61,7 +61,17 @@ These rules were set when the build started (steps 1 to 3 of # Suggested order).
 3. **The key picked in advance** is the newest usable account for now. "The one another app used most recently" needs a brain change and comes later.
 4. **Duplicate info in the install plan.** The brain adds the copies of the app the caller can already see to the install plan, so the first page warns before any question. When the plan lists a copy, the user has seen the warning, so the install is sent with `confirm: true`. The last page keeps the 409 handling for a copy that appears later (a second tab, a race).
 5. **Session storage.** The draft is kept in the tab's session storage under one key per user, app and scope. It is removed after a successful install or on Cancel. Only non-secret answers are stored: picked account ids, folder choices, and non-secret plain fields. A `secret: true` field and a key that is typed but not saved stay in the page's memory only. The URL carries only the step and the scope, not the answers.
-6. **Default models.** A provider with no default model for a type it offers still gets its tile for now. The stricter rule in # 3 (hide such a tile) waits for the store lint that makes every provider carry a default for every type it offers.
+6. **Default models.** A provider with no default model for a type it offers still gets its tile for now. The stricter rule in # 3 (hide such a tile) waits for the store lint that makes every provider carry a default for every type it offers. On 2026-09-29 every provider in `onmoose/store` `ai_providers.yml` has a default for every type it offers, so no tile is affected today.
+
+**As built (step 1, 2026-09-29).** The page logic is `web-ui/src/installSteps.ts` and the pages are `web-ui/src/views/InstallSetupView.vue`. The choices made while building it:
+
+- **Step names.** The required AI pages are `ai`, `ai-2`, … in `requires` order. The "needs these to run" page is `settings`. The pages opened only from the last page are `ai-optional`, `email`, `extra`, `folders` and `for`. A step the app does not have goes to the last page.
+- **The first-time pages are fixed when the install starts** and kept in the draft, so the step counter does not change as pages are answered. The counter counts the App page, those pages and the last page. A page opened with Change has no number.
+- **Continue after the last page was shown** goes back to the last page. Before that, it goes to the next first-time page.
+- **Folders are one page.** Every folder's source and subfolder are on the `folders` page, opened by the Change link of any folder row. A folder with no choice has no Change link.
+- **"For" is its own page** with two choices, "Just you" and "Everyone at home". A change moves the draft to the other scope with the folders on their defaults, and the last page says "Folders reset for …" once.
+- **Optional pages save on Continue.** Email, folders and "For" keep a copy while the page is open, so leaving with Back changes nothing. Email opens with the newest saved account picked.
+- **Step 1 keeps today's pickers** on the AI pages (`AISlotPicker`, with its own Add and Save) and the email page (`MailAccountSection`). Steps 2 and 3 replace them.
 
 ## Design
 

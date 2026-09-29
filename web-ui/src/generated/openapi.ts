@@ -1561,6 +1561,7 @@ export interface components {
              */
             readonly $schema?: string;
             config?: components["schemas"]["InstallPlanConfigField"][] | null;
+            existing: components["schemas"]["InstallPlanExisting"][] | null;
             footprint: components["schemas"]["InstallPlanFootprint"];
             mail?: components["schemas"]["InstallPlanMail"];
             manifest_id: string;
@@ -1570,6 +1571,12 @@ export interface components {
             scope_default: string;
             scope_options: string[] | null;
             version: string;
+        };
+        InstallPlanExisting: {
+            instance_id: string;
+            mine: boolean;
+            name: string;
+            scope: string;
         };
         InstallPlanFolder: {
             folder: string;
@@ -1854,6 +1861,8 @@ export interface components {
             username: string;
         };
         MailProviderOption: {
+            /** Format: int64 */
+            created_at: number;
             id: string;
             label: string;
             provider_type: string;

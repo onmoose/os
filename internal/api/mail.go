@@ -345,7 +345,7 @@ func (s *Server) listMailProviderOptions(ctx context.Context, _ *struct{}) (*str
 	}{}
 	out.Body.Providers = []MailProviderOption{}
 	for _, p := range providers {
-		out.Body.Providers = append(out.Body.Providers, MailProviderOption{ID: p.ID, Label: p.Label, ProviderType: p.ProviderType})
+		out.Body.Providers = append(out.Body.Providers, MailProviderOption{ID: p.ID, Label: p.Label, ProviderType: p.ProviderType, CreatedAt: p.CreatedAt.Unix()})
 	}
 	return out, nil
 }

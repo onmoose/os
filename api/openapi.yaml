@@ -1175,6 +1175,12 @@ components:
           type:
             - array
             - "null"
+        existing:
+          items:
+            $ref: "#/components/schemas/InstallPlanExisting"
+          type:
+            - array
+            - "null"
         footprint:
           $ref: "#/components/schemas/InstallPlanFootprint"
         mail:
@@ -1209,6 +1215,24 @@ components:
         - scope_default
         - footprint
         - permissions
+        - existing
+      type: object
+    InstallPlanExisting:
+      additionalProperties: false
+      properties:
+        instance_id:
+          type: string
+        mine:
+          type: boolean
+        name:
+          type: string
+        scope:
+          type: string
+      required:
+        - instance_id
+        - name
+        - scope
+        - mine
       type: object
     InstallPlanFolder:
       additionalProperties: false
@@ -1872,6 +1896,9 @@ components:
     MailProviderOption:
       additionalProperties: false
       properties:
+        created_at:
+          format: int64
+          type: integer
         id:
           type: string
         label:
@@ -1882,6 +1909,7 @@ components:
         - id
         - label
         - provider_type
+        - created_at
       type: object
     MailProviderSavedDTO:
       additionalProperties: false
