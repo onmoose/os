@@ -65,13 +65,23 @@ These rules were set when the build started (steps 1 to 3 of # Suggested order).
 
 **As built (step 1, 2026-09-29).** The page logic is `web-ui/src/installSteps.ts` and the pages are `web-ui/src/views/InstallSetupView.vue`. The choices made while building it:
 
-- **Step names.** The required AI pages are `ai`, `ai-2`, … in `requires` order. The "needs these to run" page is `settings`. The pages opened only from the last page are `ai-optional`, `email`, `extra`, `folders` and `for`. A step the app does not have goes to the last page.
+- **Step names.** Each AI need has a name: `ai`, `ai-2`, … for the required groups in `requires` order, and `ai-optional` for the optional row. The need's first page is its name, its service grid is `<name>-service` and its key form `<name>-key`. The "needs these to run" page is `settings`. The pages opened only from the last page are `ai-optional`, `email`, `extra`, `folders` and `for`. A step the app does not have goes to the last page, and a key page with no service picked yet goes to its need's first page.
 - **The first-time pages are fixed when the install starts** and kept in the draft, so the step counter does not change as pages are answered. The counter counts the App page, those pages and the last page. A page opened with Change has no number.
 - **Continue after the last page was shown** goes back to the last page. Before that, it goes to the next first-time page.
 - **Folders are one page.** Every folder's source and subfolder are on the `folders` page, opened by the Change link of any folder row. A folder with no choice has no Change link.
 - **"For" is its own page** with two choices, "Just you" and "Everyone at home". A change moves the draft to the other scope with the folders on their defaults, and the last page says "Folders reset for …" once.
 - **Optional pages save on Continue.** Email, folders and "For" keep a copy while the page is open, so leaving with Back changes nothing. Email opens with the newest saved account picked.
-- **Step 1 keeps today's pickers** on the AI pages (`AISlotPicker`, with its own Add and Save) and the email page (`MailAccountSection`). Steps 2 and 3 replace them.
+- **Step 1 kept today's pickers** behind the pages. Step 2 replaced the AI one, and the email page still uses `MailAccountSection` until step 3.
+
+**As built (step 2, 2026-09-29).** The AI pages are `components/install/AIKeyList.vue`, `ServiceGrid.vue` and `AIKeyForm.vue`, and the need logic is in `installSteps.ts` (# AI needs). `AISlotPicker.vue` is now used only by the app's settings screen. The choices made:
+
+- **A need's first page** shows the key list when the user has a key the app can use, else the service grid, else the key form when only one service fits (firecrawl, open-seo). So a first-time user of openclaw sees the grid and then the key form (two numbered pages), and a firecrawl user sees only the key form.
+- **When one service fits,** the key list offers "Add another key" instead of "Use a different AI service", since there is no grid to go to.
+- **An optional need's key list** ends with "Don't use an AI service", which puts the row back to "Not set up".
+- **Continue on the key form** saves the account (`POST /api/v1/ai-accounts`) and picks it, with the provider's default models. A model is asked only for My own server, one box per model setting of the slot.
+- **The default name** is "<Service> key", then "<Service> key 2", and for My own server "My server".
+- **The cost line** says "<Service> charges for use, so it may ask for a card on file." It is softer than the design's "You need a card on file", because some services have a free tier.
+- **Words.** The Settings screen is Settings → Integrations → AI services at `/settings/ai`, and `/settings/llm` redirects there. "My own server" is also the tile's name in Settings. The brain's `missing` sentence says "Pick at least one AI service." The brain's 422 messages still say "LLM provider".
 
 ## Design
 

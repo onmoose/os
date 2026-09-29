@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// Settings → Integrations → LLM providers: the signed-in user's own AI
+// Settings → Integrations → AI services: the signed-in user's own AI
 // provider accounts (INSTALL_SETUP.md # 5 and piece 4, SERVICE_PROVISIONING.md
 // # AI provider accounts). Every user has this screen, and it lists only the
-// accounts they added. The UI says "LLM provider"; the API says ai-accounts.
+// accounts they added. The UI says "AI service"; the API says ai-accounts.
 //
 // A row shows the account, its provider, and the apps that use it (used_by).
 // Add and edit need no password re-prompt: the account is the user's own.
@@ -241,9 +241,9 @@ function fid(name: string, id = ""): string {
 <template>
   <div class="space-y-6">
     <section class="space-y-3">
-      <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">LLM providers</h2>
+      <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">AI services</h2>
       <p class="text-sm text-muted-foreground">
-        Your accounts with LLM providers, such as OpenAI or Anthropic, or a server on your network. Apps you install use
+        Your accounts with AI services, such as OpenAI or Anthropic, or a server on your network. Apps you install use
         them to answer questions, write and search. Only you can see and use the accounts you add here.
       </p>
       <Button v-if="!isEmpty && !adding" @click="startAdd"><Plus class="size-4" /> Add account</Button>
@@ -256,7 +256,7 @@ function fid(name: string, id = ""): string {
       <template v-if="!addProvider">
         <h3 class="text-sm font-semibold text-foreground">Which provider?</h3>
         <p v-if="providersQuery.isPending.value" class="text-sm text-muted-foreground">Loading…</p>
-        <OptionCards v-else label="LLM provider" :options="tiles" :selected="[]" @pick="pickAddProvider">
+        <OptionCards v-else label="AI service" :options="tiles" :selected="[]" @pick="pickAddProvider">
           <template #icon="{ option }">
             <AIProviderLogo :provider="findProvider(providers, option.id)" />
           </template>
@@ -343,9 +343,9 @@ function fid(name: string, id = ""): string {
       class="flex min-h-[20rem] items-center justify-center rounded-2xl border border-border bg-card px-6 py-12"
     >
       <div class="text-center">
-        <h3 class="text-sm font-semibold text-foreground">No LLM provider accounts</h3>
+        <h3 class="text-sm font-semibold text-foreground">No AI service accounts</h3>
         <p class="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-          Add an account, and the apps that need an LLM provider can use it. You can also add one while you install an
+          Add an account, and the apps that need an AI service can use it. You can also add one while you install an
           app.
         </p>
         <div class="mt-6">

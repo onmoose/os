@@ -775,12 +775,12 @@ const saveConfig = useMutation({
           <div class="min-w-0 flex-1">
             <div class="text-sm font-medium">{{ orphanAccount(b) }}</div>
             <div class="text-xs text-muted-foreground">
-              <template v-if="clearing.has(b.slot)">This LLM provider is removed from {{ app.name }} when you save.</template>
+              <template v-if="clearing.has(b.slot)">This AI service is removed from {{ app.name }} when you save.</template>
               <template v-else-if="providers.length === 0">
-                The list of LLM providers did not load, so this account cannot be changed here now. You can remove it.
+                The list of AI services did not load, so this account cannot be changed here now. You can remove it.
               </template>
               <template v-else>
-                Its LLM provider ({{ b.provider_id }}) is no longer listed. Remove it<template
+                Its AI service ({{ b.provider_id }}) is no longer listed. Remove it<template
                   v-if="pickerSlots.some((s) => s.id === b.slot)"
                 >, or pick another account below</template>.
               </template>
@@ -792,7 +792,7 @@ const saveConfig = useMutation({
         </div>
 
         <div v-if="pickerSlots.length" class="space-y-2 rounded-xl border border-border bg-card px-4 py-3">
-          <div class="text-sm font-medium">LLM providers</div>
+          <div class="text-sm font-medium">AI services</div>
           <AISlotPicker v-model="aiChoices" :slots="pickerSlots" :providers="providers" :app-name="app.name" />
         </div>
 
@@ -802,7 +802,7 @@ const saveConfig = useMutation({
             class="flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-border px-4 py-3"
           >
             <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">LLM provider, set by hand</div>
+              <div class="text-sm font-medium">AI service, set by hand</div>
               <div class="text-xs text-muted-foreground">
                 These values were typed in, not taken from one of your accounts.
               </div>

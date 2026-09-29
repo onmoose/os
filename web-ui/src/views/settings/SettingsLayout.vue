@@ -27,9 +27,9 @@ type NavGroup = { label: string; items: NavItem[] };
 
 // Group and item order is the menu order. "You" holds what the signed-in user
 // owns: their account and the apps they have installed. "Integrations" holds
-// the accounts they added to connect their apps to outside services: LLM
-// providers and email (each belongs to one user, INSTALL_SETUP.md # 5). The UI
-// says "LLM provider"; the API and code say `ai`. "System" holds the box-wide
+// the accounts they added to connect their apps to outside services: AI
+// services and email (each belongs to one user, INSTALL_SETUP.md # 5). The UI
+// says "AI service"; the API and code say `ai`. "System" holds the box-wide
 // items. SSH sits between Notifications and Activity: it is per-account
 // like Notifications, and both of those read as settings you carry, while
 // Activity is the record of what happened on this box.
@@ -44,7 +44,7 @@ const groups: NavGroup[] = [
   {
     label: "Integrations",
     items: [
-      { to: "/settings/llm", label: "LLM providers", icon: Sparkles },
+      { to: "/settings/ai", label: "AI services", icon: Sparkles },
       { to: "/settings/email", label: "Email", icon: Mail },
     ],
   },

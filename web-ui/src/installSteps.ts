@@ -27,6 +27,7 @@ import type {
 import {
   COMPATIBLE,
   OTHER,
+  withOther,
   aiSlots,
   choiceComplete,
   claimedEnvs,
@@ -160,30 +161,116 @@ export function requiredFieldsMet(
   return unmetGroups(needs.plainGroups, fields, values, new Set()).length === 0;
 }
 
-// ── The key picked in advance ───────────────────────────────────────────────
+// ── AI needs ────────────────────────────────────────────────────────────────
+// An AI need is one set of AI pages: a required group, or the optional row
+// for the slots no group covers. One AI service fills one need
+// (INSTALL_STEPS.md # Decisions): picking a key for a need replaces the
+// choice of every slot of that need.
+//
+// Each need has three pages, named after its step: <step> (the key list, or
+// the service grid when the user has no usable key, or the key form when
+// only one service fits), <step>-service (the grid) and <step>-key (the key
+// form).
 
-// pickInAdvance is the choice a saved account gives an AI group: the newest
-// account that can fill one of the group's slots and meet the group
-// (INSTALL_STEPS.md # Build rules, rule 3). Undefined when no account can.
+export type AINeed = { step: string; slots: AISlot[]; required: boolean; group?: RequiresGroup };
+
+export const SUB_SERVICE = "-service";
+export const SUB_KEY = "-key";
+
+export function aiNeeds(needs: Needs): AINeed[] {
+  const out: AINeed[] = needs.aiGroups.map((g) => ({ step: g.step, slots: g.slots, required: true, group: g.group }));
+  if (needs.optionalSlots.length > 0) out.push({ step: STEP_AI_OPTIONAL, slots: needs.optionalSlots, required: false });
+  return out;
+}
+
+// needOfStep finds the need a step belongs to, and which of its pages it is.
+export function needOfStep(
+  needs: AINeed[],
+  step: string,
+): { need: AINeed; page: "base" | "service" | "key" } | undefined {
+  for (const need of needs) {
+    if (step === need.step) return { need, page: "base" };
+    if (step === need.step + SUB_SERVICE) return { need, page: "service" };
+    if (step === need.step + SUB_KEY) return { need, page: "key" };
+  }
+  return undefined;
+}
+
+// tileOf is the service tile an account belongs to: My own server for an
+// OpenAI-compatible account, else its listed provider.
+export function tileOf(account: AIAccount, providers: AIProvider[]): AIProvider | undefined {
+  return account.provider_id === COMPATIBLE ? OTHER : providers.find((p) => p.id === account.provider_id);
+}
+
+// needTiles are the services that can fill a need, in the provider data's
+// order (popularity order), with My own server last.
+export function needTiles(need: AINeed, providers: AIProvider[]): AIProvider[] {
+  return withOther(providers).filter((p) => !!slotFor(p, need.slots));
+}
+
+// choiceFor is the choice one account gives a need, with the provider's
+// default models, or undefined when the account cannot fill the need.
+export function choiceFor(
+  need: AINeed,
+  fields: InstallPlanConfigField[],
+  providers: AIProvider[],
+  account: AIAccount,
+  models?: Record<string, string[]>,
+): { slotId: string; choice: AIChoice } | undefined {
+  const provider = tileOf(account, providers);
+  if (!provider) return undefined;
+  const slot = slotFor(provider, need.slots);
+  if (!slot) return undefined;
+  const choice: AIChoice = { provider: provider.id, accountId: account.id, models: models ?? suggestedModels(provider, slot) };
+  if (!choiceComplete(slot, choice, provider)) return undefined;
+  if (need.group && !groupMet(need.group, fields, {}, new Set(filledEnvs(slot, account)))) return undefined;
+  return { slotId: slot.id, choice };
+}
+
+// usableAccounts are the user's accounts that can fill a need, newest first.
+export function usableAccounts(
+  need: AINeed,
+  fields: InstallPlanConfigField[],
+  providers: AIProvider[],
+  accounts: AIAccount[],
+): AIAccount[] {
+  return [...accounts]
+    .sort((a, b) => b.created_at - a.created_at)
+    .filter((a) => !!choiceFor(need, fields, providers, a));
+}
+
+// pickInAdvance is the choice a saved account gives a need: the newest usable
+// account (INSTALL_STEPS.md # Build rules, rule 3). Undefined when none can.
 export function pickInAdvance(
-  need: AIGroupNeed,
+  need: AINeed,
   fields: InstallPlanConfigField[],
   providers: AIProvider[],
   accounts: AIAccount[],
 ): { slotId: string; choice: AIChoice } | undefined {
-  const newest = [...accounts].sort((a, b) => b.created_at - a.created_at);
-  for (const account of newest) {
-    const provider =
-      account.provider_id === COMPATIBLE ? OTHER : providers.find((p) => p.id === account.provider_id);
-    if (!provider) continue;
-    const slot = slotFor(provider, need.slots);
-    if (!slot) continue;
-    const choice: AIChoice = { provider: provider.id, accountId: account.id, models: suggestedModels(provider, slot) };
-    if (!choiceComplete(slot, choice, provider)) continue;
-    if (!groupMet(need.group, fields, {}, new Set(filledEnvs(slot, account)))) continue;
-    return { slotId: slot.id, choice };
-  }
-  return undefined;
+  const first = usableAccounts(need, fields, providers, accounts)[0];
+  return first && choiceFor(need, fields, providers, first);
+}
+
+// withNeedChoice replaces a need's choice: every slot of the need is cleared,
+// then the one slot is set (or none, to remove the need's choice).
+export function withNeedChoice(
+  choices: Record<string, AIChoice>,
+  need: AINeed,
+  pick: { slotId: string; choice: AIChoice } | undefined,
+): Record<string, AIChoice> {
+  const next = { ...choices };
+  for (const s of need.slots) delete next[s.id];
+  if (pick) next[pick.slotId] = pick.choice;
+  return next;
+}
+
+// defaultKeyLabel is the name a new key gets when the user gives none: the
+// base ("Anthropic key"), then "Anthropic key 2" and on, so a name is never
+// needed to go on.
+export function defaultKeyLabel(base: string, labels: string[]): string {
+  const taken = new Set(labels.map((l) => l.trim().toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`;
 }
 
 // ── Draft in session storage ────────────────────────────────────────────────
@@ -208,6 +295,8 @@ export type Draft = {
   mail: string;
   values: Record<string, string>;
   ai: Record<string, AIChoice>;
+  // aiService is the service picked on a need's grid, by need step.
+  aiService: Record<string, string>;
   // foldersReset is set when a change of scope put the folders back on their
   // defaults, so the last page can say so once.
   foldersReset: boolean;

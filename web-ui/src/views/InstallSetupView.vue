@@ -20,9 +20,9 @@
 // only), so a reload or a trip to a provider's site in another tab loses
 // nothing but a typed secret.
 //
-// Step 1 of the plan's build keeps today's pickers behind these pages
-// (AISlotPicker, MailAccountSection). Steps 2 and 3 replace them with the key
-// list, the service grid and the key form.
+// An AI need has its own pages (INSTALL_STEPS.md # 3): the key list, the
+// service grid and the key form, with no Save inside any of them. The email
+// page still uses today's picker (MailAccountSection) until step 3.
 //
 // Driven by GET /api/v1/catalog/:id/install-plan (advisory; the brain checks
 // everything again on POST /api/v1/apps). The UI owns all wording.
@@ -43,9 +43,27 @@ import {
 } from "../api";
 import { useAuth } from "../auth";
 import { useAppInstances, useInstallSubmit } from "../useInstall";
-import { aiSlots, bindingOf, findProvider, groupNeed, unmetGroups, type AIChoice } from "../aiProviders";
+import {
+  aiSlots,
+  bindingOf,
+  findProvider,
+  groupNeed,
+  isOther,
+  slotFor,
+  unmetGroups,
+  type AIChoice,
+} from "../aiProviders";
 import {
   STEP_AI_OPTIONAL,
+  SUB_KEY,
+  SUB_SERVICE,
+  aiNeeds,
+  choiceFor,
+  needOfStep,
+  needTiles,
+  tileOf,
+  usableAccounts,
+  withNeedChoice,
   STEP_EMAIL,
   STEP_EXTRA,
   STEP_FOLDERS,
@@ -63,7 +81,7 @@ import {
   saveDraft,
   sourceLabel,
   stepForError,
-  type AIGroupNeed,
+  type AINeed,
   type Draft,
 } from "../installSteps";
 import AppGlyph from "../components/AppGlyph.vue";
@@ -74,7 +92,9 @@ import ConfigFieldInput from "../components/install/ConfigFieldInput.vue";
 import FolderChoices from "../components/install/FolderChoices.vue";
 import InstallInfoBox from "../components/install/InstallInfoBox.vue";
 import MailAccountSection from "../components/install/MailAccountSection.vue";
-import AISlotPicker from "../components/AISlotPicker.vue";
+import AIKeyForm from "../components/install/AIKeyForm.vue";
+import AIKeyList from "../components/install/AIKeyList.vue";
+import ServiceGrid from "../components/install/ServiceGrid.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -122,7 +142,7 @@ const requires = computed(() => plan.value?.requires ?? []);
 const folders = computed(() => plan.value?.permissions.folders ?? []);
 const needs = computed(() => planNeeds(configFields.value, requires.value, providers.value));
 
-// The caller's AI accounts, the same query AISlotPicker uses. They decide
+// The caller's AI accounts (the same query as Settings). They decide
 // which AI group is already answered, and what a binding fills.
 const aiAccountsQuery = useQuery({
   queryKey: ["ai-accounts"],
@@ -153,6 +173,9 @@ const folderSubfolders = ref<Record<string, string>>({});
 const mailProviderId = ref(""); // "" is not set up
 const configValues = ref<Record<string, string>>({});
 const aiChoices = ref<Record<string, AIChoice>>({});
+// aiService is the service tile picked on a need's grid, by need step, so
+// its key page knows which service it is for.
+const aiService = ref<Record<string, string>>({});
 const foldersReset = ref(false);
 
 const secretEnvs = computed(() => new Set(configFields.value.filter((f) => f.secret).map((f) => f.app_env)));
@@ -190,21 +213,25 @@ function seed(p: InstallPlan) {
   const choices: Record<string, AIChoice> = {};
   for (const [slot, c] of Object.entries(saved?.ai ?? {})) if (slotIds.has(slot) && c?.accountId) choices[slot] = c;
 
+  aiService.value = { ...(saved?.aiService ?? {}) };
+
   if (saved?.flow) {
     flow.value = saved.flow;
     done.value = saved.done ?? [];
     reviewed.value = !!saved.reviewed;
     foldersReset.value = !!saved.foldersReset;
   } else {
-    // A first visit: an AI group a saved account can fill is answered, and
-    // its key is picked in advance. The other groups, and the required plain
-    // fields, are the first-time pages.
+    // A first visit: a required AI need a saved key can fill is answered, and
+    // that key is picked in advance. Any other required AI need asks for a
+    // service (the grid) and then a key, or only a key when one service fits.
+    // Then the required plain fields.
     const ask: string[] = [];
-    for (const g of needs.value.aiGroups) {
-      if (g.slots.some((s) => choices[s.id])) continue;
-      const pick = pickInAdvance(g, configFields.value, providers.value, accounts.value);
+    for (const need of aiNeedList.value) {
+      if (!need.required || need.slots.some((s) => choices[s.id])) continue;
+      const pick = pickInAdvance(need, configFields.value, providers.value, accounts.value);
       if (pick) choices[pick.slotId] = pick.choice;
-      else ask.push(g.step);
+      else if (needTiles(need, providers.value).length > 1) ask.push(need.step, need.step + SUB_KEY);
+      else ask.push(need.step);
     }
     if (needs.value.requiredFields.length > 0) ask.push(STEP_SETTINGS);
     flow.value = ask;
@@ -236,6 +263,7 @@ const draft = computed<Draft>(() => ({
   mail: mailProviderId.value,
   values: configValues.value,
   ai: aiChoices.value,
+  aiService: aiService.value,
   foldersReset: foldersReset.value,
 }));
 watch(
@@ -255,15 +283,49 @@ const plainValues = computed(() => {
 });
 const filled = computed(() => filledBy(needs.value.slots, aiChoices.value, accounts.value));
 
-function aiGroupOf(name: string): AIGroupNeed | undefined {
-  return needs.value.aiGroups.find((g) => g.step === name);
+// ── AI needs ────────────────────────────────────────────────────────────────
+// One set of AI pages per need (installSteps.ts # AI needs): <need> shows the
+// key list when the user has a usable key, else the service grid, else (one
+// service fits) the key form; <need>-service is the grid; <need>-key the form.
+const aiNeedList = computed(() => aiNeeds(needs.value));
+const aiPage = computed(() => needOfStep(aiNeedList.value, step.value));
+
+function needMet(need: AINeed): boolean {
+  return !need.group || groupMet(need.group, configFields.value, plainValues.value, filled.value);
+}
+
+function usableFor(need: AINeed) {
+  return usableAccounts(need, configFields.value, providers.value, accounts.value);
+}
+
+// aiMode is what an AI page shows.
+function aiMode(need: AINeed, page: "base" | "service" | "key"): "list" | "grid" | "key" {
+  if (page === "service") return "grid";
+  if (page === "key") return "key";
+  if (usableFor(need).length > 0) return "list";
+  return needTiles(need, providers.value).length > 1 ? "grid" : "key";
+}
+
+// keyService is the service a need's key form is for: the one picked on the
+// grid, else the only one that fits.
+function keyService(need: AINeed): AIProvider | undefined {
+  const tiles = needTiles(need, providers.value);
+  if (tiles.length === 1) return tiles[0];
+  return tiles.find((t) => t.id === aiService.value[need.step]);
 }
 
 // answered says whether a page's need has what it must have. Only required
-// pages can be unanswered; the others always are.
+// pages can be unanswered; the others always are. A required need's first
+// page counts as answered once a service is picked on its grid, so the flow
+// moves on to the key page.
 function answered(name: string): boolean {
-  const g = aiGroupOf(name);
-  if (g) return groupMet(g.group, configFields.value, plainValues.value, filled.value);
+  const ai = needOfStep(aiNeedList.value, name);
+  if (ai) {
+    if (needMet(ai.need)) return true;
+    if (ai.page === "service") return true;
+    if (ai.page === "base" && aiMode(ai.need, "base") === "grid") return !!keyService(ai.need);
+    return false;
+  }
   if (name === STEP_SETTINGS) return requiredFieldsMet(needs.value, configFields.value, plainValues.value);
   return true;
 }
@@ -273,10 +335,15 @@ const requiredSteps = computed(() => [
   ...(needs.value.requiredFields.length > 0 ? [STEP_SETTINGS] : []),
 ]);
 
-// validSteps is every page this app has.
+// validSteps is every page this app has. A key page with no service to be
+// for is not one.
 const validSteps = computed(() => {
-  const out = new Set(requiredSteps.value);
-  if (needs.value.optionalSlots.length > 0) out.add(STEP_AI_OPTIONAL);
+  const out = new Set(needs.value.requiredFields.length > 0 ? [STEP_SETTINGS] : []);
+  for (const need of aiNeedList.value) {
+    out.add(need.step);
+    if (needTiles(need, providers.value).length > 1) out.add(need.step + SUB_SERVICE);
+    if (keyService(need)) out.add(need.step + SUB_KEY);
+  }
   if (plan.value?.mail) out.add(STEP_EMAIL);
   if (needs.value.extraFields.length > 0) out.add(STEP_EXTRA);
   if (folders.value.some((f) => folderHasChoice(f))) out.add(STEP_FOLDERS);
@@ -310,7 +377,10 @@ function redirect() {
 // A step this app does not have (an old link, a changed manifest) goes to
 // the last page, which redirects again if it must.
 function checkStep() {
-  if (!validSteps.value.has(step.value)) router.replace(to(""));
+  if (validSteps.value.has(step.value)) return;
+  // A key page whose service is not known yet goes back to its need.
+  const ai = needOfStep(aiNeedList.value, step.value);
+  router.replace(to(ai ? ai.need.step : ""));
 }
 
 watch([step, scope], () => {
@@ -323,7 +393,11 @@ watch([step, scope], () => {
 // else the next first-time page, else the last page.
 function next(from: string): string {
   if (reviewed.value) return "";
-  const i = flow.value.indexOf(from);
+  // A page that is not in the flow (the grid opened from the key list) goes
+  // on from its need's place in the flow.
+  let i = flow.value.indexOf(from);
+  const ai = needOfStep(aiNeedList.value, from);
+  if (i < 0 && ai) i = Math.max(flow.value.indexOf(ai.need.step + SUB_KEY), flow.value.indexOf(ai.need.step));
   return flow.value.slice(i + 1).find((n) => !done.value.includes(n) || !answered(n)) ?? "";
 }
 
@@ -349,7 +423,15 @@ const stepNumber = computed(() => {
 const pageTitle = computed(() => {
   const name = appName.value;
   if (isLast.value) return `Ready to install ${name}`;
-  if (aiGroupOf(step.value) || step.value === STEP_AI_OPTIONAL) return `Which AI service should ${name} use?`;
+  const ai = aiPage.value;
+  if (ai) {
+    const mode = aiMode(ai.need, ai.page);
+    if (mode === "list") return `Which key should ${name} use?`;
+    if (mode === "grid") return `Which AI service should ${name} use?`;
+    const service = keyService(ai.need);
+    if (!service) return name;
+    return isOther(service) ? "Your own server" : `Your ${service.name} key`;
+  }
   switch (step.value) {
     case STEP_SETTINGS:
       return `${name} needs these to run`;
@@ -391,6 +473,9 @@ const pageSources = ref<Record<string, string>>({});
 const pageSubfolders = ref<Record<string, string>>({});
 const pageScope = ref<Scope>("personal");
 const scopeOptions: Scope[] = ["personal", "household"];
+const pageAccount = ref("");
+const pageService = ref("");
+const keyForm = ref<InstanceType<typeof AIKeyForm> | null>(null);
 watch(
   [step, ready],
   () => {
@@ -405,13 +490,33 @@ watch(
       pageSubfolders.value = { ...folderSubfolders.value };
     }
     if (step.value === STEP_FOR) pageScope.value = scope.value;
+    const ai = aiPage.value;
+    if (ai) {
+      // The key list opens on the need's current key. With none, a required
+      // need opens on the newest usable key, and so does Set up on an
+      // optional one (INSTALL_STEPS.md # Decisions).
+      const current = ai.need.slots.map((sl) => aiChoices.value[sl.id]).find(Boolean);
+      pageAccount.value = current?.accountId ?? usableFor(ai.need)[0]?.id ?? "";
+      const tiles = needTiles(ai.need, providers.value);
+      pageService.value = aiService.value[ai.need.step] ?? current?.provider ?? "";
+      if (!tiles.some((t) => t.id === pageService.value)) pageService.value = "";
+    }
     // The "Folders reset" note is said once, on the last page.
     if (step.value !== "") foldersReset.value = false;
   },
   { immediate: true },
 );
 
-const canContinue = computed(() => answered(step.value));
+const canContinue = computed(() => {
+  const ai = aiPage.value;
+  if (ai) {
+    const mode = aiMode(ai.need, ai.page);
+    if (mode === "list") return pageAccount.value !== "" || !ai.need.required;
+    if (mode === "grid") return pageService.value !== "";
+    return !!keyForm.value?.valid && !keyForm.value?.pending;
+  }
+  return answered(step.value);
+});
 
 // settingsNeeded names what the "needs these to run" page still misses.
 const settingsNeeded = computed(() => [
@@ -423,10 +528,56 @@ const settingsNeeded = computed(() => [
   ),
 ]);
 
+// continueAI saves an AI page: the picked key, the picked service, or a new
+// key from the form. A new key is saved as the user's account right here, so
+// there is no Save inside the page.
+async function continueAI(need: AINeed, page: "base" | "service" | "key") {
+  const name = step.value;
+  const mode = aiMode(need, page);
+  if (mode === "list") {
+    const account = accounts.value.find((a) => a.id === pageAccount.value);
+    const pick = account ? choiceFor(need, configFields.value, providers.value, account) : undefined;
+    aiChoices.value = withNeedChoice(aiChoices.value, need, pick);
+    markDone(name);
+    router.push(to(next(name)));
+    return;
+  }
+  if (mode === "grid") {
+    aiService.value = { ...aiService.value, [need.step]: pageService.value };
+    markDone(name);
+    router.push(to(need.step + SUB_KEY));
+    return;
+  }
+  const saved = await keyForm.value?.save();
+  if (!saved) return;
+  const pick = choiceFor(need, configFields.value, providers.value, saved.account, saved.models);
+  if (!pick) {
+    pageError.value = { step: name, message: `${appName.value} cannot use this key. Pick another service.` };
+    return;
+  }
+  aiChoices.value = withNeedChoice(aiChoices.value, need, pick);
+  markDone(name);
+  markDone(need.step);
+  router.push(to(next(name)));
+}
+
+// useOtherService opens the grid, or the key form when one service fits.
+function useOtherService() {
+  const ai = aiPage.value;
+  if (!ai) return;
+  const one = needTiles(ai.need, providers.value).length === 1;
+  router.push(to(ai.need.step + (one ? SUB_KEY : SUB_SERVICE)));
+}
+
 function onContinue() {
   const name = step.value;
   if (!canContinue.value) return;
   if (pageError.value?.step === name) pageError.value = null;
+  const ai = aiPage.value;
+  if (ai) {
+    void continueAI(ai.need, ai.page);
+    return;
+  }
   if (name === STEP_EMAIL) mailProviderId.value = pageMail.value;
   if (name === STEP_FOLDERS) {
     folderSources.value = { ...pageSources.value };
@@ -457,9 +608,13 @@ function changeScope(s: Scope) {
 }
 
 function backLink() {
-  if (isLast.value || reviewed.value) return isLast.value ? `/store/${manifestId.value}` : to("");
+  if (isLast.value) return `/store/${manifestId.value}`;
   const i = flow.value.indexOf(step.value);
-  return i > 0 ? to(flow.value[i - 1]!) : `/store/${manifestId.value}`;
+  if (!reviewed.value && i > 0) return to(flow.value[i - 1]!);
+  // The grid and a key form off the flow go back to their need's first page.
+  const ai = aiPage.value;
+  if (ai && ai.page !== "base" && i < 0) return to(ai.need.step);
+  return reviewed.value ? to("") : `/store/${manifestId.value}`;
 }
 
 function cancel() {
@@ -516,7 +671,7 @@ const stillNeeded = computed(() => {
   const unmet = unmetGroups(requires.value, configFields.value, plainValues.value, filled.value);
   return [
     ...missing.map((f) => f.title),
-    ...unmet.map((g) => groupNeed(configFields.value, g).replace("an LLM provider", "an AI service")),
+    ...unmet.map((g) => groupNeed(configFields.value, g)),
   ];
 });
 
@@ -668,20 +823,33 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
       <!-- ── Question pages ─────────────────────────────────────────────── -->
       <template v-if="!isLast">
         <div class="px-4 sm:px-0">
-          <AISlotPicker
-            v-if="aiGroupOf(step)"
-            v-model="aiChoices"
-            :slots="aiGroupOf(step)!.slots"
-            :providers="providers"
-            :app-name="plan.name"
-          />
-          <AISlotPicker
-            v-else-if="step === 'ai-optional'"
-            v-model="aiChoices"
-            :slots="needs.optionalSlots"
-            :providers="providers"
-            :app-name="plan.name"
-          />
+          <template v-if="aiPage">
+            <AIKeyList
+              v-if="aiMode(aiPage.need, aiPage.page) === 'list'"
+              v-model="pageAccount"
+              :rows="usableFor(aiPage.need).map((a) => ({ account: a, service: tileOf(a, providers) }))"
+              :label="`Key for ${plan.name}`"
+              :optional="!aiPage.need.required"
+              :other-label="needTiles(aiPage.need, providers).length > 1 ? 'Use a different AI service' : 'Add another key'"
+              @other="useOtherService"
+            />
+            <ServiceGrid
+              v-else-if="aiMode(aiPage.need, aiPage.page) === 'grid'"
+              v-model="pageService"
+              :services="needTiles(aiPage.need, providers)"
+              :label="`AI service for ${plan.name}`"
+            />
+            <AIKeyForm
+              v-else-if="keyService(aiPage.need)"
+              ref="keyForm"
+              :service="keyService(aiPage.need)!"
+              :ai-slot="slotFor(keyService(aiPage.need)!, aiPage.need.slots)!"
+              :app-name="plan.name"
+              :household="scope === 'household'"
+              :labels="accounts.map((a) => a.label)"
+              :only="needTiles(aiPage.need, providers).length === 1"
+            />
+          </template>
           <div v-else-if="step === 'settings'" class="space-y-6">
             <ConfigFieldInput
               v-for="f in needs.requiredFields"
@@ -733,8 +901,14 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
         <div
           class="flex flex-col-reverse gap-3 border-t border-border px-4 pt-6 sm:flex-row sm:items-center sm:justify-end sm:px-0"
         >
-          <p v-if="!canContinue && aiGroupOf(step)" class="text-sm text-muted-foreground sm:mr-auto">
-            Pick an AI service and add it to go on.
+          <p v-if="!canContinue && aiPage" class="text-sm text-muted-foreground sm:mr-auto">
+            {{
+              aiMode(aiPage.need, aiPage.page) === "grid"
+                ? "Pick an AI service to go on."
+                : aiMode(aiPage.need, aiPage.page) === "list"
+                  ? "Pick a key to go on."
+                  : "Fill in the form to go on."
+            }}
           </p>
           <p v-else-if="!canContinue" class="text-sm text-muted-foreground sm:mr-auto">
             Still needed: {{ settingsNeeded.join("; ") }}.

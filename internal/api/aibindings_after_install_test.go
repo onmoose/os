@@ -123,7 +123,7 @@ func TestResolvePutWithAI(t *testing.T) {
 
 func TestSetupMissing(t *testing.T) {
 	man := parseAIAppManifest(t)
-	if got := setupMissing(man, map[string]string{"ACME_MODEL": "m"}); len(got) != 1 || got[0] != "Pick at least one LLM provider." {
+	if got := setupMissing(man, map[string]string{"ACME_MODEL": "m"}); len(got) != 1 || got[0] != "Pick at least one AI service." {
 		t.Fatalf("missing = %v", got)
 	}
 	if got := setupMissing(man, map[string]string{"ACME_API_KEY": "k"}); len(got) != 0 {
@@ -234,7 +234,7 @@ func TestAppConfigShowsBindingsAndNeedsSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg = decodeRaw[AppConfigDTO](t, mustOK(t, h, "GET", "/api/v1/apps/i_ai/config"))
-	if !cfg.NeedsSetup || len(cfg.Missing) != 1 || cfg.Missing[0] != "Pick at least one LLM provider." {
+	if !cfg.NeedsSetup || len(cfg.Missing) != 1 || cfg.Missing[0] != "Pick at least one AI service." {
 		t.Fatalf("config = %+v", cfg)
 	}
 	list := decodeRaw[struct {

@@ -1,7 +1,7 @@
 // Vue Router 4, history mode (WEB_UI.md: Caddy serves index.html for unmatched
 // routes). The four destinations mirror the dock in DASHBOARD.md # global
 // navigation. Settings is a left-nav shell (SettingsLayout) whose sections
-// (Account, Installed apps, LLM providers, Email, Notifications, Activity,
+// (Account, Installed apps, AI services, Email, Notifications, Activity,
 // Users, About) are nested child routes; the right pane is the shell's <RouterView>. Activity is open to
 // all signed-in users; Users is admin-only (the section guards the role, and the
 // shell hides its nav item from members). Role gating per AUTH.md # Roles.
@@ -47,7 +47,10 @@ const routes: RouteRecordRaw[] = [
       { path: "users", name: "settings-users", component: () => import("@/views/settings/UsersSection.vue") },
       // Integrations (INSTALL_SETUP.md, 2026-09-26): the user's own accounts
       // that connect their apps to outside services.
-      { path: "llm", name: "settings-llm", component: () => import("@/views/settings/LLMProvidersSection.vue") },
+      // The UI says "AI services" (INSTALL_STEPS.md # 6). The screen was LLM
+      // providers at /settings/llm, and old links still land on it.
+      { path: "ai", name: "settings-ai", component: () => import("@/views/settings/LLMProvidersSection.vue") },
+      { path: "llm", redirect: "/settings/ai" },
       { path: "email", name: "settings-email", component: () => import("@/views/settings/EmailSection.vue") },
       // Adding an account is two steps, and each is its own URL so the browser
       // Back button walks form → picker → list.

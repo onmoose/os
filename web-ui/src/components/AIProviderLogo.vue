@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// An LLM provider's logo in a rounded square, for Settings → Integrations →
-// LLM providers. The logo URL is a box route that proxies the catalog's image
+// An AI service's logo in a rounded square, for Settings → Integrations →
+// AI services. The logo URL is a box route that proxies the catalog's image
 // (INSTALL_SETUP.md # 4). A logo that fails to load, a provider with none, or
 // no provider at all (it left the provider data) falls back to an icon: a
 // server for Other, a bot for the rest.

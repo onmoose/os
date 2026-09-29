@@ -203,7 +203,7 @@ func (s *Server) appAIBindings(caller auth.Identity, instanceID string) ([]AppAI
 // setupMissing lists what an installed app still needs, one plain sentence
 // per item: each required field with no value, and each unmet requires group
 // (INSTALL_SETUP.md piece 4, "needs setup"). The wording follows the install
-// 422s. A group made only of AI kinds and slots is "an LLM provider", which is
+// 422s. A group made only of AI kinds and slots is "an AI service", which is
 // what the user reads on the app's page. values maps app_env to value.
 func setupMissing(man *manifest.Manifest, values map[string]string) []string {
 	out := []string{}
@@ -217,7 +217,7 @@ func setupMissing(man *manifest.Manifest, values map[string]string) []string {
 			continue
 		}
 		if isAIGroup(g) {
-			out = append(out, "Pick at least one LLM provider.")
+			out = append(out, "Pick at least one AI service.")
 			continue
 		}
 		out = append(out, "Fill in at least one of: "+groupTitles(man, g)+".")
@@ -226,7 +226,7 @@ func setupMissing(man *manifest.Manifest, values map[string]string) []string {
 }
 
 // isAIGroup reports whether every member of a requires group is the ai kind
-// or an ai slot, so the group reads as "an LLM provider".
+// or an ai slot, so the group reads as "an AI service".
 func isAIGroup(group []string) bool {
 	for _, m := range group {
 		if m != "ai" && !strings.HasPrefix(m, "ai.") {
