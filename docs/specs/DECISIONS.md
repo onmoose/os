@@ -21,6 +21,18 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-29 — The brain mounts the shared tree, and host-agent prepares home folders
+
+**Previously:** the brain prepared every folder source itself before an app install: it created and chowned `/home/<user>/<Folder>` for a personal source and created `/srv/moose/shared/<Folder>` for a shared one (#147, #156). `BRAIN_HOST_PROTOCOL.md` said the containerized brain "cannot touch `/home` or `/srv/moose`". Both were true at once, and nobody noticed, because the only lanes that installed a folder app ran a native brain. On a real box a household folder install failed, and a personal folder was made inside the brain's own container.
+
+**Now:** host-agent makes sure `/srv/moose/shared` exists as `root:moose-shared` `02770` on every start and mounts it into the brain at the same path, so the brain keeps preparing shared sources. Personal sources move to a new narrow host-agent op, `POST /v1/users/{username}/prepare-folder`, and the brain never mounts `/home`.
+
+**Why:** the two trees are not alike. The shared tree is household space that every member can already reach, and the brain already owned its preparation. A home is one user's `0750` space. A compromised brain is host compromise anyway (`THREAT_MODEL.md` B8), so the split is not a breach control. It keeps a bug or a bad path in the large, LAN-facing brain away from every home, and it keeps home access a narrow named host-agent op, which `CONTROL_PLANE.md` # Locked: host-agent hardening directives already asks for. The home op also has to be careful in a way the shared prep did not: the user owns the home, so it walks it without following a symlink.
+
+**Affected docs:** `CONTROL_PLANE.md` # Locked: host-agent launches the brain container, `BRAIN_HOST_PROTOCOL.md` # User info endpoints and # Files endpoints, `APP_ISOLATION.md` # Volumes, `STORAGE.md` # Permissions, `THREAT_MODEL.md` B2.
+
+---
+
 ## 2026-09-28 — Install asks one question per page, and repeat installs skip to the last page
 
 **Previously:** the install setup page showed every section at once, as rows: permissions, folders, email, AI providers, settings, size (`INSTALL_SETUP.md` # 6). The AI row asked for a provider, an account and the models, with its own Save inside the page. The provider tiles showed five featured providers and the rest behind More, in the catalog's order. Optional email was a row on every install of a mail-capable app.
@@ -31,6 +43,8 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 **Affected docs:** `INSTALL_STEPS.md` (new), `DASHBOARD.md` # Install authorization, `APP_STORE.md` # AI provider data, `INSTALL_SETUP.md`, `NEXT.md` # Install steps: deferred.
 
+---
+
 ## 2026-09-28 — Gmail and iCloud become the first email presets
 
 **Previously:** the email presets were sending services (SES, SendGrid, Mailgun, Postmark, Brevo, Resend, SMTP2GO), plus Google Workspace and Custom. iCloud was excluded as "465-only in practice, which hosted blocks" (`SERVICE_PROVISIONING.md` # BYO outgoing mail).
@@ -40,6 +54,8 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 **Why:** a household has a Gmail or iCloud address, not a SendGrid account, so the old list had nothing a non-technical user already owns. Gmail still allows SMTP with an app password: what ended in 2025 was sign-in with the normal password, and the 2026 Gmailify and POP change is about Gmail fetching mail, not other apps sending through it. Apple's own settings page gives iCloud's SMTP on port 587, so the old exclusion was wrong. The known risks: Google may remove app passwords one day, a Workspace admin can turn them off, and both are for low volume (Gmail allows about 500 emails a day).
 
 **Affected docs:** `INSTALL_STEPS.md` # 4, `SERVICE_PROVISIONING.md` # BYO outgoing mail.
+
+---
 
 ## 2026-09-26 — Editing or deleting an email or AI account reaches the apps that use it
 

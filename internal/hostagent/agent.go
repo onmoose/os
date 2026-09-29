@@ -11,7 +11,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +28,12 @@ import (
 // exist on the host system. The handler maps this to a 404 with code
 // "unknown-user" so the brain can distinguish "user gone" from "host error."
 var ErrUnknownUser = errors.New("unknown user")
+
+// ErrNotADirectory is returned by UserManager.PrepareFolder when a level of the
+// requested path already exists but is not a real directory: a file, or a
+// symlink, which the op never follows. The handler maps it to a 409 with code
+// "not-a-directory", so the brain can tell the person something is in the way.
+var ErrNotADirectory = errors.New("not a directory")
 
 // AgentVersion is the systemStatus handler's self-reported agent_version.
 // Despite living in a file full of fake-agent scaffolding, systemStatus is
@@ -243,6 +252,11 @@ type UserManager interface {
 	SetRole(user, role string) error
 	DeleteUser(user string) error
 	ResolveHome(user string) (home string, uid, gid int, err error)
+	// PrepareFolder makes sure <home>/<rel> exists for a personal folder
+	// source (POST /v1/users/{username}/prepare-folder). The handler has
+	// already checked rel with ValidUserFolderPath. It returns ErrUnknownUser
+	// or ErrNotADirectory for the two cases the brain tells apart.
+	PrepareFolder(user, rel string) error
 	WellKnownIdentity() (appUID, appGID, sharedGID int, err error)
 	AllocateAppService(instanceID string) (uid, gid int, err error)
 	ReleaseAppService(uid int) error
@@ -463,6 +477,7 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/jobs/{id}", a.jobStatus)
 	mux.HandleFunc("GET /v1/users/{username}/exists", a.userExists)
 	mux.HandleFunc("GET /v1/users/{username}/home", a.resolveHome)
+	mux.HandleFunc("POST /v1/users/{username}/prepare-folder", a.prepareUserFolder)
 	mux.HandleFunc("GET /v1/identity/well-known", a.wellKnownIdentity)
 	mux.HandleFunc("POST /v1/identity/app-service", a.allocateAppService)
 	mux.HandleFunc("POST /v1/identity/app-service/release", a.releaseAppService)
@@ -1116,6 +1131,82 @@ func (a *Agent) resolveHome(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("resolve-home (fake)", "username", username, "home", home, "uid", uid)
 	writeJSON(w, http.StatusOK, protocol.ResolveHomeResponse{HomePath: home, UID: uid, GID: gid})
+}
+
+// ValidUserFolderPath checks the path of a prepare-folder request. It must be a
+// clean relative path, with no empty, "." or ".." level, and its first level
+// must be one of protocol.UseCaseFolderDirs. So the op can only ever touch a
+// use-case folder or something below it, never another part of the home.
+func ValidUserFolderPath(rel string) error {
+	if rel == "" || strings.HasPrefix(rel, "/") {
+		return fmt.Errorf("path must be relative to the home")
+	}
+	parts := strings.Split(rel, "/")
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." {
+			return fmt.Errorf("path must not have empty, . or .. levels")
+		}
+	}
+	if !slices.Contains(protocol.UseCaseFolderDirs, parts[0]) {
+		return fmt.Errorf("path must start with a use-case folder")
+	}
+	return nil
+}
+
+// prepareUserFolder makes sure a personal folder source exists under the
+// user's home before the brain binds it into an app (#519). The brain runs in
+// a container with no /home mount, so it cannot do this itself.
+//
+// When UserMgr is wired (cmd/host-agent-real) the real op creates each missing
+// level owned by the user and never follows a symlink. The fake branch creates
+// the path under the dev operator's own home, the same home the fake
+// resolve-home hands out, with no chown: the operator already owns it.
+func (a *Agent) prepareUserFolder(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+	if username == "" {
+		writeErr(w, http.StatusBadRequest, "bad-request", "username is required")
+		return
+	}
+	var req protocol.PrepareUserFolderRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := ValidUserFolderPath(req.Path); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad-path", err.Error())
+		return
+	}
+
+	if a.UserMgr != nil {
+		err := a.UserMgr.PrepareFolder(username, req.Path)
+		switch {
+		case err == nil:
+			slog.Info("prepare-folder", "username", username, "dir", req.Path)
+			writeJSON(w, http.StatusOK, struct{}{})
+		case errors.Is(err, ErrUnknownUser):
+			writeErr(w, http.StatusNotFound, "unknown-user", "user not found")
+		case errors.Is(err, ErrNotADirectory):
+			slog.Warn("prepare-folder: something that is not a folder is in the way", "username", username, "dir", req.Path, "err", err)
+			writeErr(w, http.StatusConflict, "not-a-directory", "a file or link is in the way of the folder")
+		default:
+			slog.Error("prepare-folder: user-manager error", "username", username, "dir", req.Path, "err", err)
+			writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
+		}
+		return
+	}
+
+	home, _, _, err := devIdentity()
+	if err != nil {
+		slog.Error("prepare-folder (fake): resolve operator identity", "err", err)
+		writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
+		return
+	}
+	if err := os.MkdirAll(filepath.Join(home, filepath.FromSlash(req.Path)), 0o755); err != nil {
+		slog.Error("prepare-folder (fake)", "username", username, "dir", req.Path, "err", err)
+		writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
+		return
+	}
+	slog.Info("prepare-folder (fake)", "username", username, "dir", req.Path)
+	writeJSON(w, http.StatusOK, struct{}{})
 }
 
 // wellKnownIdentity returns the fixed service-account UIDs/GIDs for the

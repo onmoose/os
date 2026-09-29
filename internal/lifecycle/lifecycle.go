@@ -54,7 +54,7 @@ const (
 // Held as a Manager field (overridable in tests) so a shared source's bind path
 // and its on-disk preparation resolve under a temp root in hermetic tests rather
 // than the real /srv.
-const defaultSharedRoot = "/srv/moose/shared"
+const defaultSharedRoot = protocol.SharedRoot
 
 // folderDir maps a taxonomy folder name to its capitalized on-disk directory
 // (STORAGE.md # user content). Personal source binds <home>/<dir>, shared binds
@@ -742,32 +742,31 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 
 	// Prepare each elected PERSONAL folder source so the app can write user
 	// content into it. A docker-created bind source is root:root (the same
-	// daemon behavior as the private bind dirs above), so a pick-subfolder
-	// election whose subdir doesn't exist yet — e.g. ~/Documents/Notebooks for
-	// Jupyter — lands root-owned and the cap_drop:ALL container, running as the
-	// owner UID, can't write it. The runtime identity for a personal source IS
-	// the owner, so MkdirAll + chown to iso.uid/gid is safe: a pre-existing
-	// ~/Documents is already owner-owned (chown is a no-op) and only the new
-	// leaf is created. SHARED sources (/srv/moose/shared/…) are deliberately
-	// skipped here — that tree is group-owned via moose-shared and must NOT be
-	// chowned to a runtime UID; preparing shared subfolders is its own concern
-	// (#156). Same privilege posture as the bind-dir loop above:
-	// hard-fail under the root production brain, warn-and-skip under the
-	// unprivileged dev brain (where iso.uid is the operator that owns its home).
+	// daemon behavior as the private bind dirs above), so a folder that does not
+	// exist yet, such as ~/Documents on a new account or the pick-subfolder
+	// ~/Documents/Notebooks for Jupyter, would land root-owned, and the
+	// cap_drop:ALL container, running as the owner UID, could not write it.
+	//
+	// host-agent does this, not the brain (#519). The brain runs in a container
+	// that does not mount /home, so a MkdirAll + chown here made the folder in
+	// the container's own filesystem and never on the host. Mounting /home into
+	// the brain would give the LAN-facing brain every user's private files; a
+	// narrow named op keeps home access in host-agent, where
+	// BRAIN_HOST_PROTOCOL.md already puts it. host-agent creates each missing
+	// level owned by the owner, sets the owner of the last level, and never
+	// follows a symlink. Under the fake host-agent (make dev) it creates the
+	// folder in the operator's own home. SHARED sources are prepared below, by
+	// a different rule.
 	for _, mt := range iso.mounts {
 		if mt.Source != sourcePersonal {
 			continue
 		}
-		src := iso.hostSource(mt)
-		if err := os.MkdirAll(src, 0o755); err != nil {
-			return rollback(fmt.Errorf("create folder source %q: %w", src, err))
+		rel := folderDir[mt.Folder]
+		if mt.Subfolder != "" {
+			rel += "/" + filepath.ToSlash(filepath.Clean(mt.Subfolder))
 		}
-		if err := os.Chown(src, iso.uid, iso.gid); err != nil {
-			if os.Geteuid() == 0 {
-				return rollback(fmt.Errorf("chown folder source %q: %w", src, err))
-			}
-			slog.Warn("folder source chown skipped under unprivileged brain",
-				"instance_id", id, "src", src, "uid", iso.uid, "gid", iso.gid, "err", err)
+		if err := m.host.PrepareUserFolder(ctx, owner.Username, rel); err != nil {
+			return rollback(fmt.Errorf("prepare folder source %q: %w", iso.hostSource(mt), err))
 		}
 	}
 
@@ -2081,7 +2080,7 @@ func prepareSharedSource(root, src string, sharedGID int) error {
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("shared source %q is not under shared root %q", src, root)
 	}
-	if fi, err := os.Stat(root); err != nil {
+	if fi, err := os.Lstat(root); err != nil {
 		return fmt.Errorf("shared root %q: %w", root, err)
 	} else if !fi.IsDir() {
 		return fmt.Errorf("shared root %q is not a directory", root)
@@ -2089,7 +2088,15 @@ func prepareSharedSource(root, src string, sharedGID int) error {
 	cur := root
 	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
 		cur = filepath.Join(cur, part)
-		if _, err := os.Stat(cur); err == nil {
+		// Lstat, not Stat: every household member can write the shared tree, so
+		// any of them can put a symlink in it. Docker follows a symlink in a bind
+		// source on the host, so Documents -> /var/lib/moose would hand the
+		// brain's own state to a household app. Refuse it here, before compose
+		// up, along with a file where a folder should be (#519).
+		if fi, err := os.Lstat(cur); err == nil {
+			if !fi.IsDir() {
+				return fmt.Errorf("shared source level %q is not a real directory (a file or a symlink is in the way)", cur)
+			}
 			continue // pre-existing — never re-own a shared parent
 		} else if !os.IsNotExist(err) {
 			return err

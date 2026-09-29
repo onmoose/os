@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v22"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v23"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -144,6 +144,16 @@ docker pull "$WHOAMI_REF"
 docker tag "$WHOAMI_REF" traefik/whoami:v1.10.3
 docker save traefik/whoami:v1.10.3 -o "$EXTRA/var/lib/moose/control-plane-images/whoami.tar"
 
+# filedrop image (#519): busybox, pinned by the same index digest its manifest
+# promises and re-tagged to the tag its compose names. The access boot installs
+# filedrop twice, household and personal, to prove both folder sources on a
+# booted box. It is small (about 2 MB), so it rides the first-boot loader like
+# whoami instead of a test-only dir.
+BUSYBOX_REF="busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
+docker pull "$BUSYBOX_REF"
+docker tag "$BUSYBOX_REF" busybox:1.37.0
+docker save busybox:1.37.0 -o "$EXTRA/var/lib/moose/control-plane-images/filedrop.tar"
+
 # Stage a local catalog snapshot with a whoami app: the lane is air-gapped, so there
 # is no control plane to sync from, and the brain reads this file once at boot to
 # seed its store (internal/catalog/remote.go # loadSnapshotFile, MOOSE_CATALOG_FILE).
@@ -156,6 +166,7 @@ MKCATALOG_BIN="${WORK}/mkcatalog"
 stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
 "$MKCATALOG_BIN" \
     -pkg "${TEST_DIR}/catalog/whoami" \
+    -pkg "${TEST_DIR}/catalog/filedrop" \
     -out "$EXTRA/var/lib/moose/catalog-seed.json"
 
 # Offline-install env, layered over the shared 10-cloud-brain.conf drop-in (20- sorts
