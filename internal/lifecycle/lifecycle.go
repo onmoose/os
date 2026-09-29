@@ -1478,6 +1478,9 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 						"instance_id", inst.ID, "err", err, "output", out)
 				}
 			}
+			m.reassertSplash(ctx, inst)
+		case "failed":
+			m.reassertSplash(ctx, inst)
 		}
 	}
 	if avahiTotal > 0 {
@@ -1511,6 +1514,25 @@ func (m *Manager) reassertRouting(ctx context.Context, inst store.Instance) bool
 			"instance_id", inst.ID, "host", host, "upstream", upstream, "err", err)
 	}
 	return avahiOK
+}
+
+// reassertSplash re-registers the splash route of a stopped or failed
+// instance, the way reassertRouting does for a running one (#520). The brain
+// clears Caddy's route list on startup (EnsureIngress), so without this a
+// stopped or failed app answered with the catch-all 404 after every restart,
+// and a splash write that failed earlier stayed wrong until the user acted.
+// Like Stop, it does not re-announce the mDNS name: it uses the stored host.
+// Best-effort: a failure is logged and does not block startup.
+func (m *Manager) reassertSplash(ctx context.Context, inst store.Instance) {
+	host := m.routeHost(inst)
+	appName := inst.Name
+	if man, err := m.loadInstanceManifest(inst.ID); err == nil {
+		appName = man.Name
+	}
+	if err := m.caddy.AddSplashRoute(ctx, inst.ID, host, appName, inst.State); err != nil {
+		slog.Warn("reconcile: caddy splash route",
+			"instance_id", inst.ID, "host", host, "err", err)
+	}
 }
 
 func (m *Manager) teardownOrphan(ctx context.Context, id string) {

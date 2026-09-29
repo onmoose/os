@@ -61,6 +61,7 @@ On brain startup, a reconciliation pass walks SQLite, lists containers with `moo
 - `state=running` but no containers: `docker compose up -d`.
 - `state=running` with containers up but the instance is flagged *pending-recreate* (a config/mail edit committed the override/.env, then its `compose up` failed): `docker compose up -d` to apply the committed env, then clear the flag (#268). The brain sets the flag at the failed edit (brain-commits-first), so a container left running on stale env converges on the next startup pass instead of waiting for the user to retry.
 - `state=stopped` but containers running: `docker compose stop`.
+- Every instance gets its Caddy route written again, because the brain clears Caddy's route list on startup. A `running` instance gets its real upstream (and its mDNS name re-published). A `stopped` or `failed` instance gets its splash, keyed on the stored host, with no mDNS re-publish, as in Stop. This is also what repairs a route that a failed admin call left stale (#520).
 - Orphan containers (labeled but no SQLite row, e.g. crash mid-install): tear them down.
 
 **Why imperative:** single-node appliance, one user clicking at a time. A reconciler is overkill. The startup pass plus per-step rollback covers every realistic failure mode.
@@ -261,7 +262,7 @@ The same splash machinery serves three user-visible states with consistent vocab
 - **Stopped** — for manually stopped apps.
 - **Failed** — install or update failure, with a "view logs" link.
 
-Mechanically: the brain owns two route variants in Caddy's config per instance and swaps between them on state transitions. mDNS publish happens at the same moment as the splash registration — both make the hostname reachable.
+Mechanically: the brain owns two route variants in Caddy's config per instance and swaps between them on state transitions. A swap is one admin call that replaces the route in place by its `@id` (`PATCH /id/moose-app-<id>`), so it lands whole or changes nothing: if the call fails, the old variant keeps serving and the caller gets the error (#520). A call that got no answer at all is tried again a few times. Only when no route has the `@id` yet is the route inserted, at index 0. The brain never removes the old route before it writes the new one, because a failed write would then leave the app with no route and every request would fall through to the catch-all. mDNS publish happens at the same moment as the splash registration — both make the hostname reachable.
 
 If the box is enrolled with onmoose.io, the brain registers **two hostnames** per app (a `.local` HTTP route and a `<slug>.<box-id>.onmoose.io` HTTPS route). Both go through the same splash → real-upstream flip. Dashboard tile-clicks default to the `.local` URL; apps with `requires_https: true` in the manifest open the `.onmoose.io` URL instead. See `MOOSE_NETWORK.md` for why `.local` is the canonical user-facing URL.
 

@@ -618,6 +618,63 @@ func TestReconcileStopsStoppedButRunningInstance(t *testing.T) {
 	}
 }
 
+// The startup pass repairs an app route a failed write left wrong (#520). A
+// running app whose flip from splash to app failed still has its "starting"
+// splash; with its containers up, the pass puts the real upstream back.
+func TestReconcileRepairsRouteOfRunningInstance(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+	e.docker.digests[testImage] = testDigest
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// The flip failed: Caddy still holds the splash.
+	e.caddy.routes[inst.ID] = "splash:starting"
+	e.docker.psManaged = map[string]bool{inst.ID: true}
+
+	if err := e.m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := e.caddy.route(inst.ID); !strings.HasPrefix(got, "upstream:") {
+		t.Errorf("route after reconcile = %q, want the app upstream", got)
+	}
+}
+
+// Stopped and failed apps get their splash back from the startup pass (#520).
+// The brain clears Caddy's routes on startup, so before this they answered
+// with the catch-all 404 after a restart.
+func TestReconcileReassertsSplashForStoppedAndFailed(t *testing.T) {
+	for _, state := range []string{"stopped", "failed"} {
+		t.Run(state, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+			e.docker.digests[testImage] = testDigest
+			inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
+			if err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			if err := e.store.SetState(inst.ID, state); err != nil {
+				t.Fatal(err)
+			}
+			// Caddy lost the route (the startup reset, or a failed write).
+			delete(e.caddy.routes, inst.ID)
+			e.docker.psManaged = map[string]bool{}
+			e.caddy.calls = nil
+
+			if err := e.m.Reconcile(context.Background()); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if got, want := e.caddy.route(inst.ID), "splash:"+state; got != want {
+				t.Errorf("route after reconcile = %q, want %q", got, want)
+			}
+			if !methodsContainArg(e.caddy.calls, "AddSplashRoute", inst.Slug+".local") {
+				t.Errorf("splash not keyed on the app host: %v", e.caddy.calls)
+			}
+		})
+	}
+}
+
 func TestReconcileTearsDownOrphanContainers(t *testing.T) {
 	e := newTestEnv(t)
 	// No SQLite row; Docker reports a managed container for unknown instance.
