@@ -62,7 +62,7 @@ Plus the **Docker daemon** on the host, which the brain drives with the
   consumer), implementation in the same package.
 - **brain → Caddy:** the brain POSTs JSON to Caddy's admin API to add/remove
   site blocks per app. A splash route covers `<slug>.local` until the
-  container's health check passes, then flips to the real upstream. Each flip replaces the route in place by its `@id` in one admin call, so a failed call leaves the old route serving (#520). The startup pass writes every app's route again: the app for a running one, the splash for a stopped or failed one. It first waits up to 30s for Docker to answer through the proxy (`Manager.WaitDocker`), since after a reboot the brain can start before the proxy does (#540).
+  container's health check passes, then flips to the real upstream. Each flip replaces the route in place by its `@id` in one admin call, so a failed call leaves the old route serving (#520). The startup pass writes every app's route again: the app for a running one, the splash for a stopped or failed one. It first waits up to 15s for Docker to answer through the proxy (`Manager.WaitDocker`), since after a reboot the brain can start before the proxy does (#540).
 - **brain → host-agent:** HTTP/JSON over `MOOSE_AGENT_SOCK`. Two patterns,
   sync request/response and SSE-streamed jobs (`internal/protocol/host.go`
   defines the types; `internal/hostclient/` is the brain-side client). The routes

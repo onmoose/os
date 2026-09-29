@@ -57,7 +57,7 @@ const caddyReadyTimeout = 10 * time.Second
 // host-agent gives a recreated brain to answer /healthz. The other startup
 // budgets below come after it, so a box where several things are stuck at once
 // can still miss that window, as it could before.
-const dockerReadyTimeout = 30 * time.Second
+const dockerReadyTimeout = 15 * time.Second
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
