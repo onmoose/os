@@ -237,7 +237,7 @@ func TestInstallUnmetRequires422(t *testing.T) {
 
 // The install 422s name the part of the request they blame in
 // errors[0].location, so the install flow can route the error to its page
-// without reading the English message (INSTALL_STEPS.md # 2, Errors).
+// without reading the English message (INSTALL_STEPS.md # 1, Errors).
 func TestInstall422Location(t *testing.T) {
 	h := newHarness(t)
 	writeManifestFixture(t, h.catalogDir, "cfgapp", rolesManifestYML)

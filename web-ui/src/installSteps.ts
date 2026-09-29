@@ -23,7 +23,6 @@ import type {
   AIProvider,
   InstallPlan,
   InstallPlanConfigField,
-  InstallPlanFolder,
   InstallPlanFootprint,
   InstallPlanPermissions,
   RequiresGroup,
@@ -51,7 +50,7 @@ import {
 // shows only a warning. AI group steps are "ai", "ai-2", "ai-3" in requires
 // order.
 export const STEP_SETTINGS = "settings";
-export const STEP_AI_OPTIONAL = "ai-optional";
+const STEP_AI_OPTIONAL = "ai-optional";
 export const STEP_EMAIL = "email";
 export const STEP_EMAIL_SERVICE = "email-service";
 export const STEP_EMAIL_ADD = "email-add";
@@ -71,13 +70,13 @@ export type Needs = {
   aiGroups: AIGroupNeed[];
   // optionalSlots are the drawn slots that no AI group covers.
   optionalSlots: AISlot[];
-  // requiredFields are the plain fields of the "needs these to run" page:
+  // requiredFields are the plain fields of the "needs these to run" step:
   // required ones, and the members of a plain group, in manifest order.
+  // Optional plain fields are not in Needs: they have no step and keep their
+  // defaults.
   requiredFields: InstallPlanConfigField[];
-  // plainGroups gate that page's Continue.
+  // plainGroups gate that step's Continue.
   plainGroups: RequiresGroup[];
-  // extraFields are the optional plain fields of the "Extra settings" page.
-  extraFields: InstallPlanConfigField[];
 };
 
 function isAIMember(m: string): boolean {
@@ -131,22 +130,14 @@ export function planNeeds(
     optionalSlots: drawn.filter((s) => !inGroup.has(s.id)),
     requiredFields: plain.filter((f) => f.required || plainGroupEnvs.has(f.app_env)),
     plainGroups,
-    extraFields: plain.filter((f) => !f.required && !plainGroupEnvs.has(f.app_env)),
   };
-}
-
-// folderHasChoice says whether a folder has anything to choose under a scope:
-// more than one source (yours or the household's), or a subfolder to pick.
-// A folder with nothing to choose shows on the folder step with no radios.
-export function folderHasChoice(f: InstallPlanFolder, scope: "personal" | "household"): boolean {
-  return (f.sources[scope].options ?? []).length > 1 || f.scope === "pick-subfolder";
 }
 
 // stepList is the install flow's steps, in order (INSTALL_STEPS.md # Build
 // rules, rule 9): each AI need, then email, then the required plain fields,
 // then the folders (always, when the app uses one: the step is the consent
-// screen for folder access). Optional plain fields (Extra settings) and the scope have
-// no step. A step's sub-pages (<need>-service, <need>-key, email-service,
+// screen for folder access). Optional plain fields and the scope have no
+// step. A step's sub-pages (<need>-service, <need>-key, email-service,
 // email-add) share its number and are not in this list.
 export function stepList(needs: Needs, plan: InstallPlan): string[] {
   const out = aiNeeds(needs).map((n) => n.step);
@@ -270,7 +261,9 @@ export function needTiles(need: AINeed, providers: AIProvider[]): AIProvider[] {
 }
 
 // choiceFor is the choice one account gives a need, with the provider's
-// default models, or undefined when the account cannot fill the need.
+// default models, or undefined when the account cannot fill the need. A My
+// own server account has no model list, so it needs the model names the user
+// typed for it (models); without them it is not a complete choice.
 export function choiceFor(
   need: AINeed,
   fields: InstallPlanConfigField[],
@@ -288,7 +281,23 @@ export function choiceFor(
   return { slotId: slot.id, choice };
 }
 
+// serverSlot is the slot a My own server account fills for a need, when the
+// account fits it. Its model settings are the model names the step asks for.
+export function serverSlot(
+  need: AINeed,
+  fields: InstallPlanConfigField[],
+  account: AIAccount,
+): AISlot | undefined {
+  if (account.provider_id !== COMPATIBLE) return undefined;
+  const slot = slotFor(OTHER, need.slots);
+  if (!slot) return undefined;
+  if (need.group && !groupMet(need.group, fields, {}, new Set(filledEnvs(slot, account)))) return undefined;
+  return slot;
+}
+
 // usableAccounts are the user's accounts that can fill a need, newest first.
+// A My own server account that fits is always listed: when its model names
+// are not known yet, the step asks for them under its row.
 export function usableAccounts(
   need: AINeed,
   fields: InstallPlanConfigField[],
@@ -297,19 +306,7 @@ export function usableAccounts(
 ): AIAccount[] {
   return [...accounts]
     .sort((a, b) => b.created_at - a.created_at)
-    .filter((a) => !!choiceFor(need, fields, providers, a));
-}
-
-// pickInAdvance is the choice a saved account gives a need: the newest usable
-// account (INSTALL_STEPS.md # Build rules, rule 3). Undefined when none can.
-export function pickInAdvance(
-  need: AINeed,
-  fields: InstallPlanConfigField[],
-  providers: AIProvider[],
-  accounts: AIAccount[],
-): { slotId: string; choice: AIChoice } | undefined {
-  const first = usableAccounts(need, fields, providers, accounts)[0];
-  return first && choiceFor(need, fields, providers, first);
+    .filter((a) => !!choiceFor(need, fields, providers, a) || !!serverSlot(need, fields, a));
 }
 
 // withNeedChoice replaces a need's choice: every slot of the need is cleared,
@@ -349,6 +346,12 @@ export type Draft = {
   ai: Record<string, AIChoice>;
   // aiService is the service picked on a need's grid, by need step.
   aiService: Record<string, string>;
+  // serverModels are the model names typed for a My own server account, by
+  // account id and model setting ("model.chat"). They are not secret.
+  serverModels: Record<string, Record<string, string[]>>;
+  // declined are the optional steps the user answered with "Don't use", so
+  // Back shows that choice again rather than the newest account.
+  declined: string[];
   // mailService is the email service picked on the email grid.
   mailService: string;
   // warned is set once the duplicate warning was shown, so the install is

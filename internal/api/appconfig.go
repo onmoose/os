@@ -410,7 +410,7 @@ func resolveInstallConfig(man *manifest.Manifest, fields map[string]string) ([]s
 // config.ai_bindings.<slot>, config.requires[<i>] (an index into the
 // install plan's requires), config.mail_provider_id or config.folders.<name>.
 // The install flow routes the error to the page that owns that part
-// (INSTALL_STEPS.md # 2, Errors); the message is only the text it shows.
+// (INSTALL_STEPS.md # 1, Errors); the message is only the text it shows.
 func configError(location, message string) error {
 	return huma.Error422UnprocessableEntity(message, &huma.ErrorDetail{Location: location, Message: message})
 }

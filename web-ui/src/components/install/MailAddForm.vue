@@ -95,11 +95,17 @@ function onRegionChange() {
 // valid keeps Continue off until the form can pass. The brain checks every
 // rule again.
 // A custom server may need no login at all (a relay on the home network), so
-// its username and password are optional, as the brain allows. Every preset
-// signs in, so it needs the credential, and the username when it asks one.
+// its username and password are optional, as the brain allows. But the brain
+// signs in only when a username is set, so a password with no username would
+// be dropped: then the username is needed. Every preset signs in, so it needs
+// the credential, and the username when it asks one.
+const passwordWithoutUser = computed(
+  () => custom.value && form.value.password.trim() !== "" && form.value.username.trim() === "",
+);
 const valid = computed(() => {
   const f = form.value;
   if (!f.from_address.includes("@")) return false;
+  if (passwordWithoutUser.value) return false;
   if (!custom.value && f.password.trim() === "") return false;
   if (!custom.value && askUsername.value && f.username.trim() === "") return false;
   if ((custom.value || props.settings) && (f.host.trim() === "" || f.port < 1 || f.port > 65535)) return false;
@@ -189,6 +195,9 @@ const inputClass =
         Username<span v-if="custom" class="font-normal text-muted-foreground"> (optional)</span>
       </label>
       <input id="mail-add-username" v-model="form.username" autocomplete="off" :class="inputClass" />
+      <p v-if="passwordWithoutUser" class="mt-2 text-sm text-destructive">
+        A password needs a username too. Fill in both, or leave both empty.
+      </p>
     </div>
 
     <div>
