@@ -1,6 +1,6 @@
 # userns-remap on in both images, #530
 
-- **Status:** done, hosted lane proved; appliance lane not run yet (see Known gaps)
+- **Status:** done. The hosted lane passed. The appliance image booted once with the remap on, but the full appliance lane has not passed (see Known gaps)
 - **Date:** 2026-09-29
 - **Specs touched:** `BUILD.md` # User-namespace remap, `ENVIRONMENT.md` # How the profile is realized, `CONTROL_PLANE.md` # Locked: control-plane container hardening, `APP_ISOLATION.md` # User-namespace tiers, `APP_MANIFEST.md` # B (`root_setup`, `image_user` status), `TESTING.md` # Medium lane and the hosted lane paragraph, `docs/dev/hosted-boot-proof.md`, `docs/architecture.md`
 
@@ -33,6 +33,19 @@ cloud-assertions: userns-remap on (moose-remap:1000000:65536, SUB_UID_COUNT 0); 
 
 The access boot also printed "image_user imageuser runs remapped as its image's user (Config.User='1001', cap_add=null) and wrote data/id.txt as host uid 1001001" and the same for `named` at host uid 1001002. The update boot's happy path and revert both passed on the remapped store, and so did the household and personal folder installs (host tier).
 
+### Appliance boot
+
+The appliance medium lane (`make test-medium-qemu`) ran once on commit 49ee7ce. The image built, and its first boot passed the new step 2b:
+
+```
+control-plane: docker info: security options: ["name=apparmor,profile=default","name=seccomp,profile=builtin","name=userns","name=cgroupns"]
+control-plane: docker info: storage driver: overlay2, root dir: /var/lib/docker/1000000.1000000
+control-plane: userns-remap on; proxy + brain in the host userns, caddy + moose-ui remapped (host uid 1000000)
+control-plane M1b: stack up, proxy boundary held, dashboard + /api reachable
+```
+
+Later in the same boot the lane failed: "one-shot 'docker run --rm' (managed-DB provisioning transport) failed through the proxy: Unable to find image 'moose-brain:latest' locally". The remap did not cause it. The check ran the image `moose-brain` with no tag, which means `:latest`, but the lane only loads `moose-brain:dev`. It has been this way since the rename (9bdd991). This change fixes it: the check now runs `moose-brain:dev`. The second boot did not run. An earlier try stopped before it booted, because the build machine ran out of disk space.
+
 ### Docs
 
 `BUILD.md` # User-namespace remap now says the remap is built, and gives the #486 answer in place of "must not ship the remap before that is settled": nothing replaces `daemon.json` on a box today, so new boxes get the remap and boxes built before this keep it off, and both are safe. The rule for the OS update (keep each box's setting, or move a box over on purpose) lives on #486. `ENVIRONMENT.md`, `CONTROL_PLANE.md`, `APP_ISOLATION.md`, `APP_MANIFEST.md` and `architecture.md` no longer say that no image turns the remap on. `TESTING.md` and `hosted-boot-proof.md` describe the new per-boot check and the changed access step.
@@ -46,14 +59,14 @@ The access boot also printed "image_user imageuser runs remapped as its image's 
 
 ## Known gaps & deviations
 
-- **The appliance medium lane did not run.** `make test-medium-qemu` built the tools tree and the image root, then failed while writing the encrypted disk image: "Failed to copy bytes to partition: No space left on device". The machine's root filesystem has 13 GB free, and the LUKS image needs an 8.5 GB raw file plus the same again for its staging partition. Nothing in the lane or the change is at fault, but the result the issue asks for is still missing. It needs space freed on the build machine (Docker's build cache holds about 30 GB) and one more run.
+- **The full appliance medium lane has not passed.** The appliance image booted once with the remap on and passed step 2b (see # Appliance boot). The rest of the first boot and the whole second boot did not run: first because of the `moose-brain:latest` bug fixed here, and then because the maintainer stopped the run. It must not run again on this build machine, because the maintainer does not want images built there. A full run on another machine is still needed.
 - **No remap-off box in the lane.** The six boots all run the remap now, so the brain's no-remap path (refusals for `root_setup` and `image_user`, byte-for-byte overrides) is proved only by unit and golden tests, not on a booted box.
 - **Existing boxes keep the remap off.** That is by design, per the maintainer: no migration is built, and a box built before this change keeps working as it did.
 - **Not in this change:** the dedicated remap boots (`remap`, `remap-reboot`) with poznote, memos, managed Postgres and a reboot. That is #531.
 
 ## What's next
 
-1. **Run the appliance medium lane once** on this image (`make test-medium-qemu`) after freeing disk space, and record the result on #530.
+1. **Run the full appliance medium lane once**, on a machine other than the one used here, with the `moose-brain:dev` fix, and record the result on #530.
 2. **#531:** add the remap boots to `CI / Cloud image`. The per-boot remap check (step 5d) and `remap_base` in `cloud-assertions.sh` are ready to use. The access boot already covers the `imageuser` fixture on the remapped box, so #531 does not need to repeat it.
 3. **#486:** the image-based OS update must keep each box's remap setting, or move a box over on purpose.
 4. **`capabilities.yml`:** the `userns-remap` capability now exists on new boxes. Adding it is the signal that re-screens blocked apps such as plunk, so it should land with the first catalog app that is proven on it.

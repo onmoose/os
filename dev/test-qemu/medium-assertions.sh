@@ -574,7 +574,7 @@ echo "control-plane M1b: stack up, proxy boundary held, dashboard + /api reachab
 # on. The moose-brain image is reused as both the docker-client context (it ships
 # the docker CLI) and the throwaway run-image (it ships /bin/sh) — no extra image
 # is bundled.
-oneshot="$(docker exec moose-brain docker run --rm --entrypoint sh moose-brain -c 'echo MOOSE_ONESHOT_OK' 2>&1 || true)"
+oneshot="$(docker exec moose-brain docker run --rm --entrypoint sh moose-brain:dev -c 'echo MOOSE_ONESHOT_OK' 2>&1 || true)"
 grep -q 'MOOSE_ONESHOT_OK' <<<"$oneshot" \
     || fail "one-shot 'docker run --rm' (managed-DB provisioning transport) failed through the proxy: $oneshot"
 # EXEC must stay denied — the proxy boundary the provisioning re-architecture was
