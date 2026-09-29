@@ -55,6 +55,14 @@ watch([presetID, presetList], ([id, list]) => {
 const picked = ref("");
 const mailForm = ref<InstanceType<typeof MailAddForm> | null>(null);
 
+// goBack goes one page back, as the browser's Back does, when the page before
+// is this app's; a page opened by a link goes to fallback instead. Back and
+// Continue are the only buttons, as in the install flow.
+function goBack(fallback: string) {
+  if (window.history.state?.back) router.back();
+  else router.push(fallback);
+}
+
 async function submit() {
   const created = await mailForm.value?.save();
   // Back to the list, and replace so Back from there does not re-open the
@@ -67,13 +75,6 @@ async function submit() {
   <div class="space-y-6">
     <!-- Step 1: pick a service -->
     <section v-if="!presetID" class="space-y-3">
-      <RouterLink
-        to="/settings/email"
-        class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft class="size-4" /> Email accounts
-      </RouterLink>
-
       <div class="space-y-4 rounded-2xl border border-border bg-card p-5 sm:p-6">
         <h3 class="text-sm font-semibold text-foreground">Which email service?</h3>
         <p v-if="presets.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
@@ -86,21 +87,14 @@ async function submit() {
         </div>
         <MailServiceGrid v-else v-model="picked" :presets="presetList" label="Email service" />
         <div class="flex gap-2">
+          <Button variant="ghost" @click="goBack('/settings/email')"><ArrowLeft class="size-4" /> Back</Button>
           <Button :disabled="!picked" @click="router.push(`/settings/email/add/${picked}`)">Continue</Button>
-          <Button variant="ghost" :as="RouterLink" to="/settings/email">Cancel</Button>
         </div>
       </div>
     </section>
 
     <!-- Step 2: fill in what the preset cannot know. -->
     <section v-else-if="preset" class="space-y-3">
-      <RouterLink
-        to="/settings/email/add"
-        class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft class="size-4" /> Choose a different email service
-      </RouterLink>
-
       <div class="space-y-5 rounded-2xl border border-border bg-card p-5 sm:p-6">
         <div class="flex items-center gap-2.5">
           <MailProviderLogo :id="preset.id" :label="preset.label" size="inline" />
@@ -110,10 +104,10 @@ async function submit() {
         </div>
         <MailAddForm ref="mailForm" :preset="preset" :labels="labels" settings />
         <div class="flex gap-2">
+          <Button variant="ghost" @click="goBack('/settings/email/add')"><ArrowLeft class="size-4" /> Back</Button>
           <Button :disabled="!mailForm?.valid || mailForm?.pending" @click="submit">
-            {{ mailForm?.checking ? "Testing…" : mailForm?.pending ? "Adding…" : "Add account" }}
+            {{ mailForm?.checking ? "Testing…" : mailForm?.pending ? "Adding…" : "Continue" }}
           </Button>
-          <Button variant="ghost" :as="RouterLink" to="/settings/email">Cancel</Button>
         </div>
       </div>
     </section>

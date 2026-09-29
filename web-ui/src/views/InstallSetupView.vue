@@ -15,8 +15,11 @@
 //
 // An AI need and email have sub-pages under their step, which share its
 // number: <need>-service and email-service (the service grid) and <need>-key
-// and email-add (the form for a new account). There is no Save inside any of
-// them: Continue saves, and on the last step the primary button is Install.
+// and email-add (the form for a new account). Their bottom bar has only Back
+// and Continue: Continue on the form saves the account and goes back to the
+// step's list with it picked, and the step's own button then moves on (on
+// the last step, Install). Every page's bottom bar is Back and Continue or
+// Install; the one Cancel, which ends the install, is in the header.
 //
 // The bare path goes to the first step. For an app with no steps (the App
 // page sends it here only when there is a warning), the bare path is a page
@@ -28,7 +31,7 @@
 // Driven by GET /api/v1/catalog/:id/install-plan (advisory; the brain checks
 // everything again on POST /api/v1/apps). The UI owns all wording.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { useRoute, useRouter, RouterLink } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useQuery } from "@tanstack/vue-query";
 import { ArrowLeft, TriangleAlert } from "lucide-vue-next";
 import {
@@ -538,8 +541,19 @@ const opensSubPage = computed(() => {
   const mode = aiMode(ai.need, ai.page);
   return mode === "grid" || (mode === "offer" && pageOffer.value === "setup");
 });
-// The primary button installs on the last step's finishing page.
-const installsHere = computed(() => onLastStep.value && !opensSubPage.value);
+// onAddPage says whether this page is part of adding a new account: a
+// service grid or a key or account form. Its buttons act on that sub-flow
+// only (Back and Continue), never on the whole install.
+const onAddPage = computed(() => {
+  if (onEmailPage.value) return emailMode.value === "grid" || emailMode.value === "add";
+  const ai = aiPage.value;
+  if (!ai) return false;
+  const mode = aiMode(ai.need, ai.page);
+  return mode === "grid" || mode === "key";
+});
+// The primary button installs on the last step's own page. A grid or a form
+// always says Continue: after a save the user comes back to the step's list.
+const installsHere = computed(() => onLastStep.value && !onAddPage.value && !opensSubPage.value);
 
 // finishStep moves on from a step whose answer is saved: to the next step,
 // or, from the last one, to the install.
@@ -566,7 +580,10 @@ async function continueAI(need: AINeed, page: "base" | "service" | "key") {
   }
   if (mode === "offer") {
     if (pageOffer.value === "setup") useOtherService();
-    else skipAI(need);
+    else {
+      aiChoices.value = withNeedChoice(aiChoices.value, need, undefined);
+      finishStep(need.step);
+    }
     return;
   }
   if (mode === "grid") {
@@ -581,14 +598,11 @@ async function continueAI(need: AINeed, page: "base" | "service" | "key") {
     pageError.value = { step: step.value, message: `${appName.value} cannot use this key. Pick another service.` };
     return;
   }
+  // The new key is picked, and the user goes back to the step's list to see
+  // it there; the step's own button then moves on.
   aiChoices.value = withNeedChoice(aiChoices.value, need, pick);
-  finishStep(need.step);
-}
-
-// skipAI is "Don't use an AI service" on an optional need's grid or form.
-function skipAI(need: AINeed) {
-  aiChoices.value = withNeedChoice(aiChoices.value, need, undefined);
-  finishStep(need.step);
+  pageAccount.value = saved.account.id;
+  returnToStep(need.step);
 }
 
 // useOtherService opens the grid, or the key form when one service fits.
@@ -603,13 +617,6 @@ function presetLabel(id: string): string {
   return mailPresets.value.find((p) => p.id === id)?.label ?? "";
 }
 
-// skipEmail is "Don't send email" on the grid, the form, or a failed preset
-// list. Email is optional in v1, so it never blocks the install.
-function skipEmail() {
-  mailProviderId.value = "";
-  finishStep(STEP_EMAIL);
-}
-
 async function continueEmail() {
   if (emailMode.value === "list") {
     mailProviderId.value = pageMail.value;
@@ -618,7 +625,10 @@ async function continueEmail() {
   }
   if (emailMode.value === "offer") {
     if (pageOffer.value === "setup") router.push(to(STEP_EMAIL_SERVICE));
-    else skipEmail();
+    else {
+      mailProviderId.value = "";
+      finishStep(STEP_EMAIL);
+    }
     return;
   }
   if (emailMode.value === "grid") {
@@ -628,8 +638,10 @@ async function continueEmail() {
   }
   const created = await mailForm.value?.save();
   if (!created) return;
+  // The new account is picked on the step's list, where the user sees it.
   mailProviderId.value = created.id;
-  finishStep(STEP_EMAIL);
+  pageMail.value = created.id;
+  returnToStep(STEP_EMAIL);
 }
 
 function onContinue() {
@@ -654,12 +666,59 @@ function onContinue() {
   finishStep(name);
 }
 
-function backLink() {
-  const base = baseOf(step.value);
-  // A sub-page goes back to its step's first page.
-  if (step.value && base !== step.value) return to(base);
-  const i = steps.value.indexOf(step.value);
+// ── Back ────────────────────────────────────────────────────────────────────
+// Back goes one page back, the same as the browser's Back: form → grid → the
+// page the user came from (the step's list or offer), and a step's first page
+// → the previous step, or the App page from the first step. The history
+// position Vue Router keeps in history.state tells whether the page before
+// is one of the flow's own; a page opened by a link has none before it, and
+// then backTarget says where Back goes.
+function historyPos(): number | undefined {
+  const p = (history.state as { position?: unknown } | null)?.position;
+  return typeof p === "number" ? p : undefined;
+}
+const entryPos = historyPos() ?? 0;
+// stepPos is the history position of each step's own page, so a save on a
+// sub-page can go back to it as the browser's Back would.
+const stepPos = new Map<string, number>();
+watch(
+  () => route.fullPath,
+  () => {
+    const pos = historyPos();
+    if (pos !== undefined && steps.value.includes(step.value)) stepPos.set(step.value, pos);
+  },
+  { immediate: true },
+);
+
+function backTarget() {
+  const name = step.value;
+  const ai = aiPage.value;
+  if (ai && ai.page === "key") {
+    const grid = needTiles(ai.need, providers.value).length > 1 && aiMode(ai.need, "base") !== "grid";
+    return to(grid ? ai.need.step + SUB_SERVICE : ai.need.step);
+  }
+  if (ai && ai.page === "service") return to(ai.need.step);
+  if (name === STEP_EMAIL_ADD) return to(plan.value?.mail?.optional === false && mailAccounts.value.length === 0 ? STEP_EMAIL : STEP_EMAIL_SERVICE);
+  if (name === STEP_EMAIL_SERVICE) return to(STEP_EMAIL);
+  const i = steps.value.indexOf(name);
   return i > 0 ? to(steps.value[i - 1]!) : `/store/${manifestId.value}`;
+}
+
+function goBack() {
+  const pos = historyPos();
+  if (pos !== undefined && pos > entryPos) router.back();
+  else router.push(backTarget());
+}
+
+// returnToStep goes back from a sub-page to its step's own page after a save,
+// through the browser history when the step's page is in it, so Back from
+// there does not return to the form.
+function returnToStep(base: string) {
+  if (step.value === base) return; // the form was the step's first view
+  const pos = historyPos();
+  const at = stepPos.get(base);
+  if (pos !== undefined && at !== undefined && at < pos && at >= entryPos) router.go(at - pos);
+  else router.replace(to(base));
 }
 
 function cancel() {
@@ -667,6 +726,8 @@ function cancel() {
   seededFor = "";
   router.push(`/store/${manifestId.value}`);
 }
+
+const cancelClass = "shrink-0 cursor-pointer text-sm text-muted-foreground transition-colors hover:text-foreground";
 
 // ── Install ─────────────────────────────────────────────────────────────────
 function buildRequest(p: InstallPlan): InstallRequest {
@@ -797,12 +858,10 @@ watch(
 
 <template>
   <div class="mx-auto w-full max-w-3xl space-y-6 pt-2 pb-10">
-    <RouterLink
-      :to="backLink()"
-      class="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
-    >
-      <ArrowLeft class="size-4" aria-hidden="true" /> Back
-    </RouterLink>
+    <!-- Before the plan loads there is no header yet, so Cancel is here. -->
+    <div v-if="!plan" class="flex justify-end px-4 sm:px-0">
+      <button type="button" :class="cancelClass" @click="cancel">Cancel</button>
+    </div>
 
     <p v-if="planQuery.isLoading.value || (plan && !ready)" class="text-sm text-muted-foreground">Loading…</p>
     <div v-else-if="planQuery.isError.value" class="space-y-2">
@@ -830,10 +889,13 @@ watch(
             />
             <AppGlyph v-else :name="detailQuery.data.value?.icon_glyph" class="size-5" />
           </div>
-          <p class="text-sm text-muted-foreground">
+          <p class="min-w-0 flex-1 text-sm text-muted-foreground">
             <span class="font-medium text-foreground">{{ plan.name }}</span>
             <template v-if="stepNumber > 0 && steps.length > 1"> · Step {{ stepNumber }} of {{ steps.length }}</template>
           </p>
+          <!-- The one way to end the install, on every page: it clears the
+               draft and goes back to the App page. -->
+          <button type="button" :class="cancelClass" @click="cancel">Cancel</button>
         </div>
         <InstallInfoBox
           v-if="onFirstStep && !noSteps"
@@ -1029,22 +1091,11 @@ watch(
         <p v-else-if="!canContinue && step === 'settings' && !pending" class="text-sm text-muted-foreground sm:mr-auto">
           Still needed: {{ settingsNeeded.join("; ") }}.
         </p>
+        <!-- Back and Continue (or Install) only. On a grid or a form they act
+             on adding the account, never on the whole install. -->
         <div class="flex flex-wrap justify-end gap-2">
-          <Button variant="ghost" @click="cancel">Cancel</Button>
-          <!-- Not using an optional service, from its grid or form. -->
-          <Button
-            v-if="aiPage && !aiPage.need.required && !['list', 'offer'].includes(aiMode(aiPage.need, aiPage.page))"
-            variant="secondary"
-            @click="skipAI(aiPage.need)"
-          >
-            Don't use an AI service
-          </Button>
-          <Button
-            v-if="onEmailPage && emailMode !== 'list' && emailMode !== 'offer'"
-            variant="secondary"
-            @click="skipEmail"
-          >
-            Don't send email
+          <Button variant="ghost" @click="goBack">
+            <ArrowLeft class="size-4" aria-hidden="true" /> Back
           </Button>
           <HealthGated v-if="installsHere" blocks="apps">
             <Button :disabled="!canContinue || !!duplicateInfo" @click="noSteps ? install() : onContinue()">

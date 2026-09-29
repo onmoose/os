@@ -233,19 +233,12 @@ function fid(name: string, id = ""): string {
           </p>
         </template>
         <div class="flex gap-2">
+          <Button variant="ghost" @click="cancelAdd"><ArrowLeft class="size-4" /> Back</Button>
           <Button :disabled="!addService" @click="openForm">Continue</Button>
-          <Button variant="ghost" @click="cancelAdd">Cancel</Button>
         </div>
       </template>
 
       <template v-else>
-        <button
-          type="button"
-          class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-          @click="addProvider = null"
-        >
-          <ArrowLeft class="size-4" /> Choose a different AI service
-        </button>
         <div class="flex items-center gap-2.5">
           <AIProviderLogo :provider="addProvider" />
           <h3 class="text-sm font-semibold text-foreground">
@@ -253,11 +246,13 @@ function fid(name: string, id = ""): string {
           </h3>
         </div>
         <AIKeyForm ref="keyForm" :service="addProvider" :labels="accounts.map((a) => a.label)" />
+        <!-- Back and Continue only, as in the install flow: Back goes to the
+             grid, Continue saves and goes back to the list. -->
         <div class="flex gap-2">
+          <Button variant="ghost" @click="addProvider = null"><ArrowLeft class="size-4" /> Back</Button>
           <Button :disabled="!keyForm?.valid || keyForm?.pending" @click="submitAdd">
-            {{ keyForm?.pending ? "Adding…" : "Add account" }}
+            {{ keyForm?.pending ? "Adding…" : "Continue" }}
           </Button>
-          <Button variant="ghost" @click="cancelAdd">Cancel</Button>
         </div>
       </template>
     </section>
