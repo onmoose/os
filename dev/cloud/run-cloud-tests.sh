@@ -159,6 +159,10 @@ dump_serial() {
     [ -n "$CALLER" ] && chown "$CALLER":"$(id -gn "$CALLER" 2>/dev/null || echo "$CALLER")" "$saved" 2>/dev/null || true
     echo "--- serial: control-plane / assertion lines ---" >&2
     grep -niE 'cloud-assertions|moose|docker|caddy|brain|host-agent|networkd|fail' "$QEMU_SERIAL" 2>/dev/null | tail -40 >&2 || true
+    # The whole diag block too. The tail above keeps only 40 lines, and a red
+    # boot with many steps (the remap boots, #531) cuts the brain log out of it.
+    echo "--- serial: diag block ---" >&2
+    sed -n '/=== MOOSE_CLOUD_DIAG ===/,/=== END MOOSE_CLOUD_DIAG ===/p' "$QEMU_SERIAL" 2>/dev/null | grep -v '^-A \|^:\|^\*' | cut -c1-2000 >&2 || true
     echo "--- serial: tail 30 ---" >&2
     tail -30 "$QEMU_SERIAL" >&2 || true
     echo "--- full serial log saved (caller-readable): ${saved} ---" >&2

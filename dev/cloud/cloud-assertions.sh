@@ -1997,7 +1997,7 @@ remap|remap-reboot)
             fi
             sleep 1
         done
-        fail "remap: GET $2 on $1.$apex through Caddy never answered 200: status='$(status_of "$r")'"
+        fail "remap: GET $2 on $1.$apex through Caddy never answered 200: status='$(status_of "$r")'; caddy route ids: $(docker exec moose-caddy wget -qO- http://localhost:2019/config/apps/http/servers/moose/routes 2>&1 | grep -o '"@id":"[^"]*"' | tr '\n' ' ')"
     }
     remap_wait_file() { for _i in $(seq 1 60); do [ -s "$1" ] && return 0; sleep 1; done; return 1; }
     remap_owner() { stat -c '%u:%g' "$1" 2>/dev/null || echo "<missing $1>"; }
