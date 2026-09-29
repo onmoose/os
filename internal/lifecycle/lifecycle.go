@@ -101,6 +101,10 @@ type isolation struct {
 	// userns_mode and cap_add and the host owner of each bind dir.
 	tier      string
 	remapBase int
+	// imageIDs is each service's image user as in-container ids, read from
+	// the pulled images for the image tier only (imageuser.go). The owner of
+	// a service's bind dirs follows it.
+	imageIDs map[string]imageIDs
 }
 
 // hostSource resolves the host path bound for one mount: the owner's
@@ -513,6 +517,9 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	if err := admission.CheckManifest(man); err != nil {
 		return store.Instance{}, err
 	}
+	if err := admission.CheckManifestCompose(man, composeBytes); err != nil {
+		return store.Instance{}, err
+	}
 
 	// 2b. GPU capacity gate (APP_ISOLATION.md # GPU). One Pattern A probe
 	// answers both install-time questions: presence — refused right here,
@@ -546,8 +553,9 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// 2c. User-namespace tier (APP_ISOLATION.md # User-namespace tiers). Read
 	// the remap from host-agent and check that Docker agrees, then pick the
 	// tier from the manifest's grants. Refused here, before any state: an
-	// install while the two disagree, and a root_setup app on a daemon with no
-	// remap. The same read gives the well-known identities a folder app needs.
+	// install while the two disagree, and a root_setup or image_user app on a
+	// daemon with no remap. The same read gives the well-known identities a
+	// folder app needs.
 	wk, remapBase, err := m.hostIdentity(ctx)
 	if err != nil {
 		return store.Instance{}, err
@@ -728,6 +736,17 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		}
 		inst.ServiceUID, inst.ServiceGID = alloc.UID, alloc.GID
 		iso.uid, iso.gid = alloc.UID, alloc.GID
+	} else if tier == store.UsernsTierImage {
+		// Folderless app that runs as its image's own user (image_user: true):
+		// read each service's user from the image pulled in step 5, so its
+		// bind dirs get the right owner below. The override pins no user:.
+		// A user the brain cannot resolve refuses the install here, and the
+		// rollback removes the row and what step 5 did.
+		ids, err := m.resolveImageUsers(ctx, id, pins)
+		if err != nil {
+			return rollback(err)
+		}
+		iso.imageIDs = ids
 	}
 
 	// Create + align ownership of every *private* bind dir the app declares so
@@ -748,16 +767,23 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// On a remapped daemon the owner follows the tier (APP_ISOLATION.md # Data
 	// ownership follows the tier): base+uid for the default tier, where the
 	// container runs as uid inside, and base for the caps tier, the
-	// container's own root. The host tier keeps the real ids.
-	relDirs, err := relativeBindDirs(composeBytes)
+	// container's own root. In the image tier each service's dirs go to base
+	// plus its image user's ids. The host tier keeps the real ids.
+	dirsBySvc, err := bindDirsByService(composeBytes)
 	if err != nil {
 		return rollback(fmt.Errorf("parse compose volumes: %w", err))
 	}
-	ownUID, ownGID, err := iso.bindOwner()
+	owners, err := iso.bindDirOwners(dirsBySvc)
 	if err != nil {
 		return rollback(fmt.Errorf("bind dir owner: %w", err))
 	}
+	relDirs := make([]string, 0, len(owners))
+	for rel := range owners {
+		relDirs = append(relDirs, rel)
+	}
+	sort.Strings(relDirs)
 	for _, rel := range relDirs {
+		ownUID, ownGID := owners[rel].uid, owners[rel].gid
 		dir := filepath.Join(m.instanceDir(id), filepath.FromSlash(rel))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return rollback(fmt.Errorf("create bind dir %q: %w", rel, err))
@@ -2110,13 +2136,36 @@ func bindSource(n yaml.Node) (string, error) {
 // and named volumes are excluded by construction — only "./"-prefixed sources
 // qualify, and any that would escape the instance dir are dropped.
 func relativeBindDirs(composeBytes []byte) ([]string, error) {
-	svcs, err := parseComposeServices(composeBytes)
+	bySvc, err := bindDirsByService(composeBytes)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
 	var dirs []string
-	for _, svc := range svcs {
+	for _, svcDirs := range bySvc {
+		for _, rel := range svcDirs {
+			if !seen[rel] {
+				seen[rel] = true
+				dirs = append(dirs, rel)
+			}
+		}
+	}
+	sort.Strings(dirs)
+	return dirs, nil
+}
+
+// bindDirsByService is relativeBindDirs per service: each service's own
+// relative bind dirs, cleaned, sorted and without duplicates. A service with
+// none is left out. The image tier needs it, since each service's dirs go to
+// that service's image user.
+func bindDirsByService(composeBytes []byte) (map[string][]string, error) {
+	svcs, err := parseComposeServices(composeBytes)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for name, svc := range svcs {
+		seen := map[string]bool{}
 		for _, src := range svc.BindSources {
 			if !strings.HasPrefix(src, "./") {
 				continue
@@ -2127,12 +2176,12 @@ func relativeBindDirs(composeBytes []byte) ([]string, error) {
 			}
 			if !seen[rel] {
 				seen[rel] = true
-				dirs = append(dirs, rel)
+				out[name] = append(out[name], rel)
 			}
 		}
+		sort.Strings(out[name])
 	}
-	sort.Strings(dirs)
-	return dirs, nil
+	return out, nil
 }
 
 // sharedDirMode is the household shared tree's directory mode, 02770 — setgid

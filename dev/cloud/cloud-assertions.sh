@@ -992,6 +992,27 @@ access)
         || fail "folders: $pp_file is owned '$pp_file_owner', want the owner $pp_uid:$pp_gid"
     echo "cloud-assertions: personal folder app wrote $pp_file on the host as $pp_file_owner (Documents owned by the owner)"
 
+    # 4d. AN image_user APP IS REFUSED WITHOUT THE REMAP (#537). This image has
+    #     no userns remap, so the uid an image names would be a real host uid.
+    #     The brain must refuse the install with its plain message, before it
+    #     creates any container for it.
+    iu_resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"imageuser","scope":"household"}' 2>/dev/null)"
+    iu_job="$(json_str_of "$iu_resp" job_id)"
+    [ -n "$iu_job" ] || fail "image_user: install imageuser returned no job id: status='$(status_of "$iu_resp")' $(tail -1 <<<"$iu_resp" | cut -c1-400)"
+    iu_st=""; iu_jr=""
+    for _i in $(seq 1 120); do
+        iu_jr="$(full_get "/api/v1/jobs/${iu_job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+        iu_st="$(json_str_of "$iu_jr" status)"
+        case "$iu_st" in completed|failed|cancelled) break ;; esac
+        sleep 1
+    done
+    [ "$iu_st" = failed ] || fail "image_user: install imageuser on a box with no remap ended '$iu_st', want failed"
+    grep -q "Docker on this box does not" <<<"$iu_jr" \
+        || fail "image_user: the refusal is not the plain message: $(grep -o '"error":{[^}]*}' <<<"$iu_jr" | cut -c1-600)"
+    [ -z "$(docker ps -aq --filter label=moose.manifest_id=imageuser)" ] \
+        || fail "image_user: a container exists for the refused imageuser install"
+    echo "cloud-assertions: image_user app refused on a box with no remap, with the plain message, and no container made"
+
     # 5. THE HOSTED CONFIRM STEP (os#469). Destructive admin writes sit behind a
     #    re-auth gate, and until now a hosted owner could not pass it: the portal
     #    signs them in and the box gives their PAM account a random password nobody

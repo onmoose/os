@@ -1,0 +1,20 @@
+# Author's compose, held verbatim by moose. A test fixture, not a catalog app.
+# Both images are built on the build host by dev/cloud/test/bootstrap.sh from
+# busybox, with a baked /baked dir owned by the image's own user:
+#   - moose-test/imageuser:1 sets USER 1001 (a number).
+#   - moose-test/imageuser-named:1 sets USER app2, which is uid 1002 in its
+#     /etc/passwd (a name the brain looks up).
+# At start each service writes its id into its baked dir and into its bind dir,
+# as the user its image sets. If a write fails the container exits.
+# The manifest sets image_user: true, so the compose sets no user: (#537).
+services:
+  imageuser:
+    image: moose-test/imageuser:1
+    command: ["sh", "-c", "id > /baked/id.txt && id > /data/id.txt && exec httpd -f -p 8080 -h /data"]
+    volumes:
+      - ./data:/data
+  named:
+    image: moose-test/imageuser-named:1
+    command: ["sh", "-c", "id > /baked/id.txt && id > /work/id.txt && exec sleep 2147483647"]
+    volumes:
+      - ./work:/work
