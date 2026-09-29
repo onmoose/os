@@ -399,10 +399,18 @@ const SharedRoot = "/srv/moose/shared"
 // MooseAppUID/GID is the shared service identity (compose user:).
 // MooseSharedGID is the GID of the moose-shared group (apps electing a shared
 // folder source are added to it via group_add).
+//
+// RemapBase is the first host id of the moose-remap subordinate range: uid N
+// inside a remapped container is host uid RemapBase+N (APP_ISOLATION.md #
+// User-namespace tiers). host-agent reads it from /etc/subuid and /etc/subgid.
+// nil (the field absent on the wire) means the box has no remap range. The
+// fake host-agent always leaves it out. The brain does not trust it alone: it
+// also checks that Docker reports the remap.
 type WellKnownIdentityResponse struct {
-	MooseAppUID    int `json:"moose_app_uid"`
-	MooseAppGID    int `json:"moose_app_gid"`
-	MooseSharedGID int `json:"moose_shared_gid"`
+	MooseAppUID    int  `json:"moose_app_uid"`
+	MooseAppGID    int  `json:"moose_app_gid"`
+	MooseSharedGID int  `json:"moose_shared_gid"`
+	RemapBase      *int `json:"remap_base,omitempty"`
 }
 
 // AppServiceUIDMin/Max bound the reserved app-service identity band host-agent

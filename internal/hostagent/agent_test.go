@@ -177,6 +177,19 @@ type stubUserMgr struct {
 	wellKnownIdentityResult *struct {
 		appUID, appGID, sharedGID int
 	}
+	// remapBase, when non-nil, is what RemapBase reports; nil means no range.
+	remapBase    *int
+	remapBaseErr error
+}
+
+func (s *stubUserMgr) RemapBase() (int, bool, error) {
+	if s.remapBaseErr != nil {
+		return 0, false, s.remapBaseErr
+	}
+	if s.remapBase == nil {
+		return 0, false, nil
+	}
+	return *s.remapBase, true, nil
 }
 
 func (s *stubUserMgr) UpsertPassword(user, password string) error {
@@ -1206,6 +1219,62 @@ func TestWellKnownIdentity_UserMgrError_Returns500(t *testing.T) {
 	}
 	if bytes.Contains(w.Body.Bytes(), []byte("moose-app")) {
 		t.Errorf("response leaked system detail: %s", w.Body.String())
+	}
+}
+
+// The fake host-agent never reports remap_base: the dev loop's Docker runs no
+// remap. The key must be absent on the wire, not null or 0.
+func TestWellKnownIdentity_FakeBranch_OmitsRemapBase(t *testing.T) {
+	_, mux := newTestAgent(&stubVerifier{})
+	w := get(t, mux, "/v1/identity/well-known")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("remap_base")) {
+		t.Errorf("fake response carries remap_base: %s", w.Body.String())
+	}
+}
+
+func TestWellKnownIdentity_RemapBase(t *testing.T) {
+	base := 1000000
+	for _, tc := range []struct {
+		name      string
+		mgr       *stubUserMgr
+		wantCode  int
+		wantBase  *int
+		wantInRaw bool
+	}{
+		{name: "range present", mgr: &stubUserMgr{remapBase: &base}, wantCode: http.StatusOK, wantBase: &base, wantInRaw: true},
+		{name: "no range", mgr: &stubUserMgr{}, wantCode: http.StatusOK},
+		{name: "files disagree", mgr: &stubUserMgr{remapBaseErr: errors.New("usermgr: moose-remap subuid start 1000000 and subgid start 2000000 differ")}, wantCode: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := New(&stubVerifier{}, NewFakePublisher(".local"))
+			a.UserMgr = tc.mgr
+			mux := http.NewServeMux()
+			a.Mount(mux)
+			w := get(t, mux, "/v1/identity/well-known")
+			if w.Code != tc.wantCode {
+				t.Fatalf("want %d, got %d: %s", tc.wantCode, w.Code, w.Body.String())
+			}
+			if tc.wantCode != http.StatusOK {
+				// An error, not a guess, and no host detail in the body.
+				if bytes.Contains(w.Body.Bytes(), []byte("subuid")) || bytes.Contains(w.Body.Bytes(), []byte("remap_base")) {
+					t.Errorf("error body leaked detail or a base: %s", w.Body.String())
+				}
+				return
+			}
+			if got := bytes.Contains(w.Body.Bytes(), []byte(`"remap_base"`)); got != tc.wantInRaw {
+				t.Errorf("remap_base key present = %v, want %v: %s", got, tc.wantInRaw, w.Body.String())
+			}
+			resp := decodeBody[protocol.WellKnownIdentityResponse](t, w)
+			if (resp.RemapBase == nil) != (tc.wantBase == nil) || (resp.RemapBase != nil && *resp.RemapBase != *tc.wantBase) {
+				t.Errorf("remap_base = %v, want %v", resp.RemapBase, tc.wantBase)
+			}
+			if resp.MooseAppUID != 2000 || resp.MooseSharedGID != 2001 {
+				t.Errorf("the other fields changed: %+v", resp)
+			}
+		})
 	}
 }
 
