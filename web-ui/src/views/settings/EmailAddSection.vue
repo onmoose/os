@@ -118,6 +118,16 @@ async function submit() {
       </div>
     </section>
 
+    <!-- A direct link to a form whose preset list could not load: say so, with
+         a retry and a way back. An id that names no preset goes to the grid
+         once the list loads (the watch above). -->
+    <div v-else-if="presets.isError.value" class="space-y-3">
+      <p class="text-sm text-destructive" role="alert">Could not load the list of email services.</p>
+      <div class="flex flex-wrap gap-2">
+        <Button variant="secondary" size="sm" @click="presets.refetch()">Try again</Button>
+        <Button variant="ghost" size="sm" :as="RouterLink" to="/settings/email">Email accounts</Button>
+      </div>
+    </div>
     <p v-else class="text-sm text-muted-foreground">Loading…</p>
   </div>
 </template>

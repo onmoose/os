@@ -94,10 +94,14 @@ function onRegionChange() {
 
 // valid keeps Continue off until the form can pass. The brain checks every
 // rule again.
+// A custom server may need no login at all (a relay on the home network), so
+// its username and password are optional, as the brain allows. Every preset
+// signs in, so it needs the credential, and the username when it asks one.
 const valid = computed(() => {
   const f = form.value;
-  if (!f.from_address.includes("@") || f.password.trim() === "") return false;
-  if (askUsername.value && f.username.trim() === "") return false;
+  if (!f.from_address.includes("@")) return false;
+  if (!custom.value && f.password.trim() === "") return false;
+  if (!custom.value && askUsername.value && f.username.trim() === "") return false;
   if ((custom.value || props.settings) && (f.host.trim() === "" || f.port < 1 || f.port > 65535)) return false;
   return true;
 });
@@ -181,13 +185,15 @@ const inputClass =
     </div>
 
     <div v-if="askUsername">
-      <label for="mail-add-username" class="block text-sm/6 font-medium text-foreground">Username</label>
+      <label for="mail-add-username" class="block text-sm/6 font-medium text-foreground">
+        Username<span v-if="custom" class="font-normal text-muted-foreground"> (optional)</span>
+      </label>
       <input id="mail-add-username" v-model="form.username" autocomplete="off" :class="inputClass" />
     </div>
 
     <div>
       <label for="mail-add-password" class="block text-sm/6 font-medium text-foreground">
-        {{ preset.credential_label }}
+        {{ preset.credential_label }}<span v-if="custom" class="font-normal text-muted-foreground"> (optional)</span>
       </label>
       <input id="mail-add-password" v-model="form.password" type="password" autocomplete="new-password" :class="inputClass" />
     </div>
