@@ -1,0 +1,35 @@
+# Test-only catalog app for the hosted cloud access boot (#519). A folder app
+# with a documents write grant and nothing else. It proves the path a real
+# folder app takes on a booted box: the folder source is prepared (the shared
+# tree by the brain through its mount, a home folder by host-agent), the app
+# runs as the identity moose picks, and the file it writes lands on the host
+# with the expected owner.
+#
+# The image is baked into the offline bundle by digest, like whoami, and the
+# lane installs air-gapped (MOOSE_OFFLINE_INSTALL), so the promised digest is
+# the trust anchor (APP_LIFECYCLE.md # image digest pinning).
+id: filedrop
+manifest_version: 1
+name: Filedrop
+version: "1.37"
+description:
+  short: "Test fixture: writes one file into its Documents folder."
+icon_glyph: flask-conical
+compose_file: compose.yml
+main_service: filedrop
+main_port: 8080
+preferred_slugs: [filedrop]
+
+permissions:
+  internet: false
+  lan: false
+  folders:
+    - folder: documents
+      mode: write
+      scope: whole
+
+images:
+  busybox:1.37.0:
+    digest: sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    download_bytes: 2211514
+    disk_bytes: 4421262

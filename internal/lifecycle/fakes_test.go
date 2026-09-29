@@ -378,6 +378,10 @@ type fakeHost struct {
 	// fallback (a published name differing from the primary <slug>.local).
 	publishErr  error
 	publishName string
+
+	// prepareErr forces PrepareUserFolder to fail (a host-agent refusal, such as
+	// a symlink in the way). Every call is also recorded in calls.
+	prepareErr error
 }
 
 func newFakeHost() *fakeHost { return &fakeHost{published: map[string]bool{}} }
@@ -413,6 +417,13 @@ func (h *fakeHost) ResolveHome(_ context.Context, user string) (protocol.Resolve
 		return protocol.ResolveHomeResponse{}, h.resolveHomeErr
 	}
 	return protocol.ResolveHomeResponse{HomePath: filepath.Join(h.homeRoot, user), UID: 3000, GID: 3000}, nil
+}
+
+func (h *fakeHost) PrepareUserFolder(_ context.Context, user, rel string) error {
+	h.mu.Lock()
+	h.calls = append(h.calls, call{method: "PrepareUserFolder", args: []any{user, rel}})
+	h.mu.Unlock()
+	return h.prepareErr
 }
 
 func (h *fakeHost) WellKnownIdentity(_ context.Context) (protocol.WellKnownIdentityResponse, error) {
@@ -503,4 +514,17 @@ func (h *fakeHost) called(method string) bool {
 		}
 	}
 	return false
+}
+
+// callsTo returns every recorded call to one method, in order.
+func (h *fakeHost) callsTo(method string) []call {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []call
+	for _, c := range h.calls {
+		if c.method == method {
+			out = append(out, c)
+		}
+	}
+	return out
 }

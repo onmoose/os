@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/onmoose/os/internal/hostagent/netstate"
@@ -157,6 +159,8 @@ type stubUserMgr struct {
 	wellKnownIdentityCalls int
 	allocateCalls          []string
 	releaseCalls           []int
+	prepareCalls           []struct{ user, rel string }
+	prepareErr             error
 	err                    error
 	roleErr                error
 	deleteErr              error
@@ -204,6 +208,11 @@ func (s *stubUserMgr) ResolveHome(user string) (string, int, int, error) {
 		return s.resolveHomeResult.home, s.resolveHomeResult.uid, s.resolveHomeResult.gid, nil
 	}
 	return "/home/" + user, 3000, 3000, nil
+}
+
+func (s *stubUserMgr) PrepareFolder(user, rel string) error {
+	s.prepareCalls = append(s.prepareCalls, struct{ user, rel string }{user, rel})
+	return s.prepareErr
 }
 
 func (s *stubUserMgr) WellKnownIdentity() (int, int, int, error) {
@@ -443,6 +452,96 @@ func TestDeleteUser_UserMgrError_Returns500(t *testing.T) {
 // synthetic fakeUID + /home/<user>), so the unprivileged dev brain — running as
 // the same operator — owns every bind dir it creates and Part A's chowns are
 // no-op successes (#147).
+// --- prepare-folder tests (#519) ---
+
+func TestValidUserFolderPath(t *testing.T) {
+	for _, ok := range []string{"Documents", "Documents/Notebooks", "Photos/2026/Trip", "Downloads"} {
+		if err := ValidUserFolderPath(ok); err != nil {
+			t.Errorf("%q: want valid, got %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"", "/home/alex/Documents", ".ssh", ".ssh/authorized_keys", "documents",
+		"Documents/../.ssh", "Documents/./x", "Documents//x", "Documents/", "Shared",
+	} {
+		if err := ValidUserFolderPath(bad); err == nil {
+			t.Errorf("%q: want refused", bad)
+		}
+	}
+}
+
+func TestPrepareFolder_DelegatesToUserMgr(t *testing.T) {
+	mgr := &stubUserMgr{}
+	a := New(&stubVerifier{}, NewFakePublisher(".local"))
+	a.UserMgr = mgr
+	mux := http.NewServeMux()
+	a.Mount(mux)
+
+	w := post(t, mux, "/v1/users/cindy/prepare-folder", protocol.PrepareUserFolderRequest{Path: "Documents/Work"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if len(mgr.prepareCalls) != 1 || mgr.prepareCalls[0].user != "cindy" || mgr.prepareCalls[0].rel != "Documents/Work" {
+		t.Errorf("PrepareFolder calls = %+v", mgr.prepareCalls)
+	}
+}
+
+func TestPrepareFolder_ErrorMapping(t *testing.T) {
+	for _, tc := range []struct {
+		err      error
+		status   int
+		wantCode string
+	}{
+		{ErrUnknownUser, http.StatusNotFound, "unknown-user"},
+		{fmt.Errorf("wrapped: %w", ErrNotADirectory), http.StatusConflict, "not-a-directory"},
+		{errors.New("disk on fire"), http.StatusInternalServerError, "prepare-folder-failed"},
+	} {
+		mgr := &stubUserMgr{prepareErr: tc.err}
+		a := New(&stubVerifier{}, NewFakePublisher(".local"))
+		a.UserMgr = mgr
+		mux := http.NewServeMux()
+		a.Mount(mux)
+		w := post(t, mux, "/v1/users/cindy/prepare-folder", protocol.PrepareUserFolderRequest{Path: "Photos"})
+		if w.Code != tc.status {
+			t.Errorf("%v: status = %d, want %d", tc.err, w.Code, tc.status)
+			continue
+		}
+		if e := decodeBody[protocol.Error](t, w); e.Code != tc.wantCode {
+			t.Errorf("%v: code = %q, want %q", tc.err, e.Code, tc.wantCode)
+		}
+	}
+}
+
+// A bad path never reaches the user manager, on either branch.
+func TestPrepareFolder_BadPathRefusedBeforeTheHost(t *testing.T) {
+	mgr := &stubUserMgr{}
+	a := New(&stubVerifier{}, NewFakePublisher(".local"))
+	a.UserMgr = mgr
+	mux := http.NewServeMux()
+	a.Mount(mux)
+	w := post(t, mux, "/v1/users/cindy/prepare-folder", protocol.PrepareUserFolderRequest{Path: ".ssh"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", w.Code)
+	}
+	if len(mgr.prepareCalls) != 0 {
+		t.Errorf("user manager was called for a bad path: %+v", mgr.prepareCalls)
+	}
+}
+
+func TestPrepareFolder_FakeBranch_CreatesUnderOperatorHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, mux := newTestAgent(&stubVerifier{})
+
+	w := post(t, mux, "/v1/users/alice/prepare-folder", protocol.PrepareUserFolderRequest{Path: "Documents/Notebooks"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if fi, err := os.Stat(filepath.Join(home, "Documents", "Notebooks")); err != nil || !fi.IsDir() {
+		t.Errorf("fake did not create the folder under the operator home: %v", err)
+	}
+}
+
 func TestResolveHome_FakeBranch_ReturnsOperatorIdentity(t *testing.T) {
 	_, mux := newTestAgent(&stubVerifier{})
 

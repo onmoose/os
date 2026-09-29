@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +96,18 @@ func startFakeAuthAgent(t *testing.T) string {
 			UID:      3001,
 			GID:      3001,
 		})
+	})
+
+	mux.HandleFunc("POST /v1/users/{username}/prepare-folder", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.PrepareUserFolderRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if r.PathValue("username") != "alice" || req.Path != "Documents/Notebooks" {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "not-a-directory", Message: "a file or link is in the way of the folder"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(struct{}{})
 	})
 
 	mux.HandleFunc("GET /v1/identity/well-known", func(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +224,19 @@ func TestResolveHome(t *testing.T) {
 	_, err = c.ResolveHome(ctx, "ghost")
 	if !errors.Is(err, ErrUnknownUser) {
 		t.Fatalf("ResolveHome(unknown user) = %v; want ErrUnknownUser", err)
+	}
+}
+
+func TestPrepareUserFolder(t *testing.T) {
+	c := New(startFakeAuthAgent(t))
+	ctx := context.Background()
+	if err := c.PrepareUserFolder(ctx, "alice", "Documents/Notebooks"); err != nil {
+		t.Fatalf("PrepareUserFolder: %v", err)
+	}
+	// Any non-2xx is an install error the brain rolls back on.
+	err := c.PrepareUserFolder(ctx, "alice", "Music")
+	if err == nil || !strings.Contains(err.Error(), "not-a-directory") {
+		t.Fatalf("PrepareUserFolder(conflict) = %v; want a not-a-directory error", err)
 	}
 }
 

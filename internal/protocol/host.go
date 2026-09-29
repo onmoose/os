@@ -362,6 +362,36 @@ type ResolveHomeResponse struct {
 	GID      int    `json:"gid"`
 }
 
+// PrepareUserFolderRequest is POST /v1/users/{username}/prepare-folder. It asks
+// host-agent to make sure a personal folder source exists before an app binds
+// it (APP_ISOLATION.md # Runtime identity & data ownership, #519). Path is
+// relative to the user's home and starts with one of UseCaseFolderDirs, for
+// example "Documents" or "Documents/Notebooks".
+//
+// The brain cannot do this itself: it runs in a container that does not mount
+// /home, so a directory it made would land in the container, not on the host.
+// host-agent resolves the home from the username, never from a path the brain
+// sends, creates each missing level owned by the user, sets the owner of the
+// last level, and never follows a symlink on the way. 200 with an empty body
+// on success. 404 "unknown-user", 400 "bad-path", 409 "not-a-directory" when a
+// level exists but is a file or a symlink.
+type PrepareUserFolderRequest struct {
+	Path string `json:"path"`
+}
+
+// UseCaseFolderDirs are the capitalized use-case folders under a user's home
+// and the shared tree (STORAGE.md # What apps and users actually see). The
+// first level of a PrepareUserFolderRequest path must be one of them, so the op
+// can never create or re-own anything else in a home, such as ~/.ssh.
+var UseCaseFolderDirs = []string{"Photos", "Documents", "Movies", "Music", "Notes", "Downloads"}
+
+// SharedRoot is the household shared tree, owned root:moose-shared with mode
+// 02770 (STORAGE.md # Permissions). host-agent makes sure it exists before it
+// launches the brain and mounts it into the brain container at this same path.
+// The brain prepares shared folder sources under it and binds them into app
+// containers by this host path.
+const SharedRoot = "/srv/moose/shared"
+
 // WellKnownIdentityResponse is GET /v1/identity/well-known. Returns the fixed
 // service-account identities the brain needs to emit correct user:/group_add
 // directives in compose overrides for household-scope app instances.

@@ -21,6 +21,18 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-29 — The brain mounts the shared tree, and host-agent prepares home folders
+
+**Previously:** the brain prepared every folder source itself before an app install: it created and chowned `/home/<user>/<Folder>` for a personal source and created `/srv/moose/shared/<Folder>` for a shared one (#147, #156). `BRAIN_HOST_PROTOCOL.md` said the containerized brain "cannot touch `/home` or `/srv/moose`". Both were true at once, and nobody noticed, because the only lanes that installed a folder app ran a native brain. On a real box a household folder install failed, and a personal folder was made inside the brain's own container.
+
+**Now:** host-agent makes sure `/srv/moose/shared` exists as `root:moose-shared` `02770` on every start and mounts it into the brain at the same path, so the brain keeps preparing shared sources. Personal sources move to a new narrow host-agent op, `POST /v1/users/{username}/prepare-folder`, and the brain never mounts `/home`.
+
+**Why:** the two trees are not alike. The shared tree is household space that every member can already reach, and the brain already owned its preparation. A home is one user's `0750` space. A compromised brain is host compromise anyway (`THREAT_MODEL.md` B8), so the split is not a breach control. It keeps a bug or a bad path in the large, LAN-facing brain away from every home, and it keeps home access a narrow named host-agent op, which `CONTROL_PLANE.md` # Locked: host-agent hardening directives already asks for. The home op also has to be careful in a way the shared prep did not: the user owns the home, so it walks it without following a symlink.
+
+**Affected docs:** `CONTROL_PLANE.md` # Locked: host-agent launches the brain container, `BRAIN_HOST_PROTOCOL.md` # User info endpoints and # Files endpoints, `APP_ISOLATION.md` # Volumes, `STORAGE.md` # Permissions, `THREAT_MODEL.md` B2.
+
+---
+
 ## 2026-09-26 — Editing or deleting an email or AI account reaches the apps that use it
 
 **Previously:** editing or deleting an outgoing email account did not touch the apps bound to it. They kept the old values in their `.env` until their next rebind or reinstall. This lag was accepted on purpose, "rather than a fleet-restart side effect hidden inside a settings save" (2026-06-12), and `NEXT.md` held re-stamp-on-edit as a deferral whose answer would be visible restarts.
