@@ -53,8 +53,9 @@ type Instance struct {
 	Exposure string
 	// UsernsTier is the user-namespace tier the instance was installed in
 	// (APP_ISOLATION.md # User-namespace tiers): UsernsTierDefault,
-	// UsernsTierCaps or UsernsTierHost. It is picked once at install and never
-	// changes, because the host owner of the instance's data follows it. An
+	// UsernsTierCaps, UsernsTierImage or UsernsTierHost. It is picked once at
+	// install and never changes, because the host owner of the instance's data
+	// follows it. An
 	// instance installed on a daemon with no remap is UsernsTierHost: all of
 	// its containers run in the host user namespace and its data has real
 	// host owners. That is also the value every row from before the column
@@ -83,6 +84,10 @@ const (
 	// UsernsTierCaps is a remapped container with five capabilities back and
 	// no user: pin (a root_setup app). Its data is owned by the remap base.
 	UsernsTierCaps = "caps"
+	// UsernsTierImage is a remapped container with no capability back and no
+	// user: pin, so it runs as the user its image sets (an image_user app).
+	// Each service's data is owned by the remap base + its image's uid.
+	UsernsTierImage = "image"
 	// UsernsTierHost is a container in the host user namespace, so its data
 	// has real host owners: a folder, GPU or device app on a remapped daemon,
 	// and every app on a daemon with no remap.
@@ -166,7 +171,7 @@ func (s *Store) migrate() error {
 			service_gid INTEGER NOT NULL DEFAULT 0,
 			pending_recreate INTEGER NOT NULL DEFAULT 0,
 			exposure    TEXT NOT NULL DEFAULT 'public' CHECK (exposure IN ('public','restricted')),
-			userns_tier TEXT NOT NULL DEFAULT 'host' CHECK (userns_tier IN ('default','caps','host')),
+			userns_tier TEXT NOT NULL DEFAULT 'host' CHECK (userns_tier IN ('default','caps','image','host')),
 			created_at  INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS instance_images (
@@ -925,7 +930,7 @@ func (s *Store) Create(i Instance) error {
 		i.UsernsTier = UsernsTierHost
 	}
 	switch i.UsernsTier {
-	case UsernsTierDefault, UsernsTierCaps, UsernsTierHost:
+	case UsernsTierDefault, UsernsTierCaps, UsernsTierImage, UsernsTierHost:
 	default:
 		return fmt.Errorf("invalid instance userns tier %q", i.UsernsTier)
 	}

@@ -83,6 +83,15 @@ type fakeDocker struct {
 	usernsRemap    bool
 	usernsRemapErr error
 
+	// imageUsers is what ImageUser reports per image ref (Config.User); a
+	// ref not in it has no user. imagePasswd and imageGroup are what
+	// ImageUserFiles returns per ref (nil: the file is missing).
+	// imageFilesErr forces the probe failure.
+	imageUsers    map[string]string
+	imagePasswd   map[string]string
+	imageGroup    map[string]string
+	imageFilesErr error
+
 	calls []call
 }
 
@@ -273,6 +282,26 @@ func (f *fakeDocker) RemoveImage(_ context.Context, ref string) error {
 func (f *fakeDocker) UsernsRemap(_ context.Context) (bool, error) {
 	f.record("UsernsRemap")
 	return f.usernsRemap, f.usernsRemapErr
+}
+
+func (f *fakeDocker) ImageUser(_ context.Context, ref string) (string, error) {
+	f.record("ImageUser", ref)
+	return f.imageUsers[ref], nil
+}
+
+func (f *fakeDocker) ImageUserFiles(_ context.Context, instanceID, ref string) ([]byte, []byte, error) {
+	f.record("ImageUserFiles", instanceID, ref)
+	if f.imageFilesErr != nil {
+		return nil, nil, f.imageFilesErr
+	}
+	var passwd, group []byte
+	if p, ok := f.imagePasswd[ref]; ok {
+		passwd = []byte(p)
+	}
+	if g, ok := f.imageGroup[ref]; ok {
+		group = []byte(g)
+	}
+	return passwd, group, nil
 }
 
 // --- caddy fake ----------------------------------------------------------

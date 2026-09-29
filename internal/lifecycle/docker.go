@@ -1,10 +1,13 @@
 package lifecycle
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -84,6 +87,17 @@ type DockerDriver interface {
 	// against host-agent's remap_base before every install (APP_ISOLATION.md
 	// # User-namespace tiers). Needs only the proxy's INFO endpoint.
 	UsernsRemap(ctx context.Context) (bool, error)
+	// ImageUser returns the user a local image sets (its Config.User, the
+	// Dockerfile USER), "" when it sets none. The image tier reads it after the
+	// pull (APP_ISOLATION.md # User-namespace tiers).
+	ImageUser(ctx context.Context, ref string) (string, error)
+	// ImageUserFiles returns a local image's /etc/passwd and /etc/group, nil
+	// for one that is missing or is not a regular file. It creates a container
+	// from the image without starting it, copies /etc out of it and removes
+	// it, so no code from the image runs. The container carries the
+	// moose.instance_id label, so an install rollback removes it if the
+	// brain stops half way.
+	ImageUserFiles(ctx context.Context, instanceID, ref string) (passwd, group []byte, err error)
 }
 
 // ManagedContainer is one managed container's identity and liveness, as read
@@ -305,6 +319,137 @@ func (cliDocker) UsernsRemap(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("docker info: %w", err)
 	}
 	return usernsInSecurityOptions(out)
+}
+
+func (cliDocker) ImageUser(ctx context.Context, ref string) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{json .Config.User}}", ref).Output()
+	if err != nil {
+		return "", fmt.Errorf("inspect the user of %s: %w", ref, err)
+	}
+	var user string
+	if err := json.Unmarshal(bytes.TrimSpace(out), &user); err != nil {
+		return "", fmt.Errorf("parse the user of %s %q: %w", ref, strings.TrimSpace(string(out)), err)
+	}
+	return user, nil
+}
+
+func (cliDocker) ImageUserFiles(ctx context.Context, instanceID, ref string) ([]byte, []byte, error) {
+	// --pull never: the image was pulled or loaded by resolveImages. The
+	// entrypoint is a path that does not exist, and the container is never
+	// started anyway; it only has to exist so docker cp can read its files.
+	var stderr bytes.Buffer
+	create := exec.CommandContext(ctx, "docker", "create", "--pull", "never", "--network", "none",
+		"--entrypoint", "/moose-image-user-probe",
+		"--label", "moose.instance_id="+instanceID, "--label", "moose.image_user_probe=true", ref)
+	create.Stderr = &stderr
+	out, err := create.Output()
+	if err != nil {
+		return nil, nil, fmt.Errorf("create a probe container from %s: %w: %s", ref, err, strings.TrimSpace(stderr.String()))
+	}
+	cid := strings.TrimSpace(string(out))
+	defer func() {
+		if out, err := exec.Command("docker", "rm", "-f", cid).CombinedOutput(); err != nil {
+			slog.Warn("image user probe container not removed",
+				"instance_id", instanceID, "image", ref, "err", err, "output", strings.TrimSpace(string(out)))
+		}
+	}()
+	stderr.Reset()
+	cp := exec.CommandContext(ctx, "docker", "cp", cid+":/etc", "-")
+	cp.Stderr = &stderr
+	pipe, err := cp.StdoutPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := cp.Start(); err != nil {
+		return nil, nil, fmt.Errorf("copy /etc out of %s: %w", ref, err)
+	}
+	passwd, group, readErr := readUserFiles(pipe)
+	// Read what is left, so docker cp is not stuck on a full pipe. After a
+	// read error the rest is not needed, so stop instead.
+	if readErr == nil {
+		if _, err := io.Copy(io.Discard, pipe); err != nil {
+			readErr = err
+		}
+	} else if cp.Process != nil {
+		if err := cp.Process.Kill(); err != nil {
+			slog.Warn("docker cp not stopped", "image", ref, "err", err)
+		}
+	}
+	waitErr := cp.Wait()
+	if readErr != nil {
+		return nil, nil, fmt.Errorf("read /etc of %s: %w", ref, readErr)
+	}
+	if waitErr != nil {
+		// An image with no /etc at all: docker cp fails, and there is no
+		// user list to read.
+		if strings.Contains(stderr.String(), "Could not find the file") {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("copy /etc out of %s: %w: %s", ref, waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return passwd, group, nil
+}
+
+// maxEtcTar bounds how much of an image's /etc the brain reads, and
+// maxUserFile the size of /etc/passwd or /etc/group it accepts.
+const (
+	maxEtcTar   = 64 << 20
+	maxUserFile = 1 << 20
+)
+
+// readUserFiles reads etc/passwd and etc/group from the tar stream docker cp
+// writes for /etc. Only regular files count: a symlink or anything else is
+// left out, as if the file were missing, since its target is not in the
+// stream.
+func readUserFiles(r io.Reader) (passwd, group []byte, err error) {
+	tr := tar.NewReader(&capReader{r: r, left: maxEtcTar})
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return passwd, group, nil
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		if h.Name != "etc/passwd" && h.Name != "etc/group" {
+			continue
+		}
+		if h.Typeflag != tar.TypeReg {
+			continue
+		}
+		if h.Size > maxUserFile {
+			return nil, nil, fmt.Errorf("%s is %d bytes, more than the %d this reads", h.Name, h.Size, maxUserFile)
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, nil, err
+		}
+		if h.Name == "etc/passwd" {
+			passwd = b
+		} else {
+			group = b
+		}
+	}
+}
+
+// capReader fails once more than left bytes are read. io.LimitReader would
+// end the stream quietly instead, and the tar reader could take that for the
+// end of the archive.
+type capReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		return 0, fmt.Errorf("/etc is more than %d bytes", maxEtcTar)
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	return n, err
 }
 
 // usernsInSecurityOptions parses `docker info`'s SecurityOptions (a JSON list

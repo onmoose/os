@@ -74,12 +74,14 @@ func parseOverrideServices(t *testing.T, raw string) map[string]overrideService 
 
 // TestUsernsNeverHostWithCaps is #516 proof 9 as a real test. It runs the real
 // tier pick and the real override generator over every manifest shape that
-// picks a tier, each with and without root_setup, on a daemon with and without
-// the remap. For every service it checks: never userns_mode: host together
-// with cap_add, cap_drop: [ALL] in every tier, the expected tier, and no user:
-// in the caps tier. It also pins which shapes the install refuses: admission
-// for root_setup with a host-tier grant, and the tier pick for root_setup with
-// no remap.
+// picks a tier, each with no intent, root_setup, image_user and both, on a
+// daemon with and without the remap. For every service it checks: never
+// userns_mode: host together with cap_add, never userns_mode: host without a
+// user: pin, cap_drop: [ALL] in every tier, the expected tier, no user: in
+// the caps and image tiers, and no cap_add in the image tier. It also pins
+// which shapes the install refuses: admission for root_setup or image_user
+// with a host-tier grant, with service_user or with each other, and the tier
+// pick for either of them with no remap.
 func TestUsernsNeverHostWithCaps(t *testing.T) {
 	const compose = `
 services:
@@ -104,12 +106,15 @@ services:
 		{name: "devices", devices: true, hostTier: true},
 		{name: "folders-and-gpu", folders: true, gpu: true, hostTier: true},
 	}
+	type intent struct{ rootSetup, imageUser bool }
+	intents := []intent{{}, {rootSetup: true}, {imageUser: true}, {rootSetup: true, imageUser: true}}
 	for _, base := range []int{0, testRemapBase} {
 		for _, sh := range shapes {
-			for _, rootSetup := range []bool{false, true} {
-				name := fmt.Sprintf("base-%d/%s/root_setup=%v", base, sh.name, rootSetup)
+			for _, in := range intents {
+				name := fmt.Sprintf("base-%d/%s/root_setup=%v/image_user=%v", base, sh.name, in.rootSetup, in.imageUser)
 				t.Run(name, func(t *testing.T) {
-					man := &manifest.Manifest{ID: "app-" + sh.name, Name: "App", MainService: "app", MainPort: 80, ServiceUser: sh.svcUser, RootSetup: rootSetup}
+					man := &manifest.Manifest{ID: "app-" + sh.name, Name: "App", MainService: "app", MainPort: 80,
+						ServiceUser: sh.svcUser, RootSetup: in.rootSetup, ImageUser: in.imageUser}
 					if sh.folders {
 						man.Permissions.Folders = []manifest.Folder{{Folder: "documents", Mode: "write"}}
 					}
@@ -120,14 +125,19 @@ services:
 
 					// What the install refuses, and where.
 					admitErr := admission.CheckManifest(man)
-					wantAdmitRefuse := rootSetup && (sh.hostTier || sh.svcUser)
+					anyIntent := in.rootSetup || in.imageUser
+					wantAdmitRefuse := anyIntent && (sh.hostTier || sh.svcUser) || in.rootSetup && in.imageUser
 					if (admitErr != nil) != wantAdmitRefuse {
 						t.Fatalf("CheckManifest err = %v, want refused=%v", admitErr, wantAdmitRefuse)
 					}
 					tier, pickErr := pickTier(man, base)
-					if rootSetup && base == 0 {
-						if !errors.Is(pickErr, ErrRootSetupNeedsRemap) {
-							t.Fatalf("pickTier with no remap = %q, %v; want ErrRootSetupNeedsRemap", tier, pickErr)
+					if anyIntent && base == 0 {
+						want := ErrImageUserNeedsRemap
+						if in.rootSetup {
+							want = ErrRootSetupNeedsRemap
+						}
+						if !errors.Is(pickErr, want) {
+							t.Fatalf("pickTier with no remap = %q, %v; want %v", tier, pickErr, want)
 						}
 						return
 					}
@@ -138,8 +148,10 @@ services:
 					switch {
 					case base == 0 || sh.hostTier:
 						wantTier = store.UsernsTierHost
-					case rootSetup:
+					case in.rootSetup:
 						wantTier = store.UsernsTierCaps
+					case in.imageUser:
+						wantTier = store.UsernsTierImage
 					}
 					if tier != wantTier {
 						t.Fatalf("pickTier = %q, want %q", tier, wantTier)
@@ -168,11 +180,14 @@ services:
 						if got.UsernsMode == "host" && len(got.CapAdd) > 0 {
 							t.Fatalf("%s: userns_mode host WITH cap_add %v", svc, got.CapAdd)
 						}
+						if got.UsernsMode == "host" && got.User == "" {
+							t.Fatalf("%s: userns_mode host with NO user: pin", svc)
+						}
 						if !slices.Equal(got.CapDrop, []string{"ALL"}) {
 							t.Fatalf("%s: cap_drop = %v, want [ALL] in every tier", svc, got.CapDrop)
 						}
-						if base == 0 && (got.UsernsMode != "" || len(got.CapAdd) > 0) {
-							t.Fatalf("%s: no remap but userns_mode %q cap_add %v", svc, got.UsernsMode, got.CapAdd)
+						if base == 0 && (got.UsernsMode != "" || len(got.CapAdd) > 0 || got.User == "") {
+							t.Fatalf("%s: no remap but userns_mode %q cap_add %v user %q", svc, got.UsernsMode, got.CapAdd, got.User)
 						}
 						var rendered string
 						switch {
@@ -182,6 +197,8 @@ services:
 							rendered = store.UsernsTierCaps
 						case base == 0:
 							rendered = store.UsernsTierHost // the whole daemon is in the host namespace
+						case got.User == "":
+							rendered = store.UsernsTierImage
 						default:
 							rendered = store.UsernsTierDefault
 						}
@@ -195,6 +212,10 @@ services:
 							}
 							if !slices.Equal(got.CapAdd, capsTierCaps) {
 								t.Fatalf("%s: cap_add = %v, want %v", svc, got.CapAdd, capsTierCaps)
+							}
+						case store.UsernsTierImage:
+							if got.User != "" || len(got.CapAdd) > 0 || got.UsernsMode != "" {
+								t.Fatalf("%s: image tier = %+v, want remapped with no user: and no cap_add", svc, got)
 							}
 						default:
 							if got.User != "2100:2100" {
@@ -500,6 +521,7 @@ func TestCheckTierKept(t *testing.T) {
 	folders := &manifest.Manifest{ID: "app"}
 	folders.Permissions.Folders = []manifest.Folder{{Folder: "documents", Mode: "read"}}
 	rootSetup := &manifest.Manifest{ID: "app", RootSetup: true}
+	imageUser := &manifest.Manifest{ID: "app", ImageUser: true}
 
 	for _, tc := range []struct {
 		name   string
@@ -511,6 +533,10 @@ func TestCheckTierKept(t *testing.T) {
 		{"default gains folders", store.UsernsTierDefault, folders, true},
 		{"caps drops root_setup", store.UsernsTierCaps, folderless, true},
 		{"caps stays caps", store.UsernsTierCaps, rootSetup, false},
+		{"image stays image", store.UsernsTierImage, imageUser, false},
+		{"image drops image_user", store.UsernsTierImage, folderless, true},
+		{"image moves to root_setup", store.UsernsTierImage, rootSetup, true},
+		{"default gains image_user", store.UsernsTierDefault, imageUser, true},
 		// An instance from before the remap is host tier: its data has real
 		// host owners, so a folderless update may not move it into the remap.
 		{"old host instance, folderless update", store.UsernsTierHost, folderless, true},
@@ -529,5 +555,8 @@ func TestCheckTierKept(t *testing.T) {
 	}
 	if err := off.m.checkTierKept(context.Background(), store.Instance{ID: "i", UsernsTier: store.UsernsTierHost}, rootSetup); !errors.Is(err, ErrRootSetupNeedsRemap) {
 		t.Errorf("no remap, root_setup update = %v, want ErrRootSetupNeedsRemap", err)
+	}
+	if err := off.m.checkTierKept(context.Background(), store.Instance{ID: "i", UsernsTier: store.UsernsTierHost}, imageUser); !errors.Is(err, ErrImageUserNeedsRemap) {
+		t.Errorf("no remap, image_user update = %v, want ErrImageUserNeedsRemap", err)
 	}
 }
