@@ -64,6 +64,8 @@ On brain startup, a reconciliation pass walks SQLite, lists containers with `moo
 - Every instance gets its Caddy route written again, because the brain clears Caddy's route list on startup. A `running` instance gets its real upstream (and its mDNS name re-published). A `stopped` or `failed` instance gets its splash, keyed on the stored host, with no mDNS re-publish, as in Stop. The splashes are written after every running instance's work, so a slow Caddy cannot spend the startup deadline on them first. They have their own short budget, so they still get a try if that work used the deadline up. This is also what repairs a route that a failed admin call left stale (#520).
 - Orphan containers (labeled but no SQLite row, e.g. crash mid-install): tear them down.
 
+The pass runs once, so it first waits for Docker to answer, for up to 30 seconds. The brain reaches Docker only through the socket proxy, and after a reboot Docker starts the proxy and the brain together, so the brain can be up a few seconds before the proxy answers. Without the wait the pass failed at its first `docker ps`, and every app answered 404 until someone stopped and started it (#540).
+
 **Why imperative:** single-node appliance, one user clicking at a time. A reconciler is overkill. The startup pass plus per-step rollback covers every realistic failure mode.
 
 ## Locked: same reconciler pattern extends to all host-managed state
