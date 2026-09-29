@@ -30,8 +30,13 @@ type AIAccount struct {
 	Label       string
 	APIKey      string
 	BaseURL     string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// Models are the model ids an OpenAI-compatible account (a server of the
+	// user's own, with no model list) serves, by model type ("chat" to
+	// ["llama3"]). A binding that names no model for a type takes them from
+	// here. Empty for a listed provider.
+	Models    map[string][]string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // aiAccountsDDL creates the ai_accounts table.
@@ -46,6 +51,9 @@ type AIAccount struct {
 // stored id the catalog later drops stays readable.
 //
 // base_url is the empty string when the account has no address of its own.
+//
+// models is a JSON object from model type to model ids, never NULL: '{}' when
+// the account has none (every listed-provider account).
 const aiAccountsDDL = `CREATE TABLE IF NOT EXISTS ai_accounts (
 	id            TEXT    PRIMARY KEY,
 	owner_user_id TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -53,12 +61,25 @@ const aiAccountsDDL = `CREATE TABLE IF NOT EXISTS ai_accounts (
 	label         TEXT    NOT NULL,
 	api_key       TEXT    NOT NULL DEFAULT '',
 	base_url      TEXT    NOT NULL DEFAULT '',
+	models        TEXT    NOT NULL DEFAULT '{}',
 	created_at    INTEGER NOT NULL,
 	updated_at    INTEGER NOT NULL,
 	UNIQUE (owner_user_id, label)
 )`
 
-const aiAccountCols = `id, owner_user_id, provider_id, label, api_key, base_url, created_at, updated_at`
+const aiAccountCols = `id, owner_user_id, provider_id, label, api_key, base_url, models, created_at, updated_at`
+
+// encodeAccountModels is the stored form of an account's models.
+func encodeAccountModels(m map[string][]string) (string, error) {
+	if m == nil {
+		m = map[string][]string{}
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("encode ai account models: %w", err)
+	}
+	return string(raw), nil
+}
 
 // CreateAIAccount inserts an account. The caller generates the ID and sets
 // the owner and both times. Returns ErrConflict on a duplicate id, or on a
@@ -70,9 +91,13 @@ func (s *Store) CreateAIAccount(a AIAccount) error {
 	if a.ProviderID == "" {
 		return errors.New("ai account has no provider")
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO ai_accounts (`+aiAccountCols+`) VALUES (?,?,?,?,?,?,?,?)`,
-		a.ID, a.OwnerUserID, a.ProviderID, a.Label, a.APIKey, a.BaseURL, a.CreatedAt.Unix(), a.UpdatedAt.Unix())
+	models, err := encodeAccountModels(a.Models)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO ai_accounts (`+aiAccountCols+`) VALUES (?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.OwnerUserID, a.ProviderID, a.Label, a.APIKey, a.BaseURL, models, a.CreatedAt.Unix(), a.UpdatedAt.Unix())
 	if err != nil && isUniqueErr(err) {
 		return ErrConflict
 	}
@@ -113,7 +138,7 @@ func (s *Store) listAIAccounts(where string, args ...any) ([]AIAccount, error) {
 	return out, rows.Err()
 }
 
-// UpdateAIAccount replaces the provider, label, key, base URL and updated_at
+// UpdateAIAccount replaces the provider, label, key, base URL, models and updated_at
 // of the account identified by a.ID and owned by a.OwnerUserID. The owner and
 // created_at never change. Returns ErrNotFound when that owner has no such
 // account and ErrConflict when the new label collides with another of the
@@ -126,10 +151,14 @@ func (s *Store) UpdateAIAccount(a AIAccount) error {
 	if a.ProviderID == "" {
 		return errors.New("ai account has no provider")
 	}
+	models, err := encodeAccountModels(a.Models)
+	if err != nil {
+		return err
+	}
 	res, err := s.db.Exec(
-		`UPDATE ai_accounts SET provider_id=?, label=?, api_key=COALESCE(NULLIF(?, ''), api_key), base_url=?, updated_at=?
+		`UPDATE ai_accounts SET provider_id=?, label=?, api_key=COALESCE(NULLIF(?, ''), api_key), base_url=?, models=?, updated_at=?
 		 WHERE id=? AND owner_user_id=?`,
-		a.ProviderID, a.Label, a.APIKey, a.BaseURL, a.UpdatedAt.Unix(), a.ID, a.OwnerUserID)
+		a.ProviderID, a.Label, a.APIKey, a.BaseURL, models, a.UpdatedAt.Unix(), a.ID, a.OwnerUserID)
 	if err != nil {
 		if isUniqueErr(err) {
 			return ErrConflict
@@ -158,12 +187,18 @@ func (s *Store) DeleteAIAccount(id, ownerID string) error {
 func scanAIAccount(row scanner) (AIAccount, error) {
 	var a AIAccount
 	var created, updated int64
-	err := row.Scan(&a.ID, &a.OwnerUserID, &a.ProviderID, &a.Label, &a.APIKey, &a.BaseURL, &created, &updated)
+	var models string
+	err := row.Scan(&a.ID, &a.OwnerUserID, &a.ProviderID, &a.Label, &a.APIKey, &a.BaseURL, &models, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AIAccount{}, ErrNotFound
 	}
 	if err != nil {
 		return AIAccount{}, fmt.Errorf("scan ai_account: %w", err)
+	}
+	if models != "" && models != "{}" {
+		if err := json.Unmarshal([]byte(models), &a.Models); err != nil {
+			return AIAccount{}, fmt.Errorf("decode ai account models: %w", err)
+		}
 	}
 	a.CreatedAt = time.Unix(created, 0)
 	a.UpdatedAt = time.Unix(updated, 0)

@@ -53,17 +53,23 @@ export function useAppInstances(manifestId: Ref<string>) {
   return { householdInstance, ownPersonalInstance, installing, canInstallHousehold };
 }
 
-export function useInstallSubmit(manifestId: Ref<string>) {
+// onStarted runs when the brain accepted the install (202), before the page
+// moves on. The setup flow clears its draft there.
+export function useInstallSubmit(manifestId: Ref<string>, onStarted?: () => void) {
   const qc = useQueryClient();
   const router = useRouter();
 
   const submitError = ref<string | null>(null); // 422 and other POST failures, shown inline
+  // submitLocation is the part of the request a 422 blames (errors[0].location),
+  // so the setup flow can show it on the page that owns that part.
+  const submitLocation = ref<string | undefined>(undefined);
   const duplicateInfo = ref<string | null>(null); // 409 duplicate-install, warn-don't-block
   const lastRequest = ref<InstallRequest | null>(null); // kept for the confirm retry
 
   const mutation = useMutation({
     mutationFn: (req: InstallRequest) => api.post<Job>("/apps", req),
     onSuccess: (job, req) => {
+      onStarted?.();
       // The instance row appears early in the job; refetch so the detail page
       // shows "Installing…" if the user goes back to it.
       qc.invalidateQueries({ queryKey: ["apps"] });
@@ -82,6 +88,7 @@ export function useInstallSubmit(manifestId: Ref<string>) {
       if (err instanceof ApiError && err.code === "duplicate-install") {
         duplicateInfo.value = err.message;
       } else {
+        submitLocation.value = err instanceof ApiError ? err.location : undefined;
         submitError.value = err instanceof Error ? err.message : "The install could not start.";
       }
     },
@@ -89,15 +96,19 @@ export function useInstallSubmit(manifestId: Ref<string>) {
 
   function submit(req: InstallRequest) {
     submitError.value = null;
+    submitLocation.value = undefined;
     duplicateInfo.value = null;
     lastRequest.value = req;
     mutation.mutate(req);
   }
 
   // confirmDuplicate retries the last request past the duplicate warning.
-  function confirmDuplicate() {
-    if (!lastRequest.value) return;
-    submit({ ...lastRequest.value, confirm: true });
+  // fallback is the request to send when this page did not send the first
+  // one (the App page's direct install got the 409 and opened this page).
+  function confirmDuplicate(fallback?: InstallRequest) {
+    const req = lastRequest.value ?? fallback;
+    if (!req) return;
+    submit({ ...req, confirm: true });
   }
 
   function dismissDuplicate() {
@@ -117,6 +128,7 @@ export function useInstallSubmit(manifestId: Ref<string>) {
     confirmDuplicate,
     dismissDuplicate,
     submitError,
+    submitLocation,
     duplicateInfo,
     pending: mutation.isPending,
   };

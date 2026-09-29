@@ -68,6 +68,18 @@ type Preset struct {
 	Help            string
 	DocsURL         string
 	Region          *Region
+	// Personal marks an account most people already have (Gmail, iCloud),
+	// as opposed to a sending service. The install flow shows these first
+	// and says "For personal use". The username is the full address, the
+	// same as the from address, so the form asks for the address once.
+	Personal bool
+	// AccountName is the default name of a new account, when it differs from
+	// Label ("Gmail" for "Gmail or Google Workspace"). Empty means Label.
+	AccountName string
+	// Steps are numbered steps for making the credential, shown on the add
+	// form. SetupURL is the page the first steps happen on.
+	Steps    []string
+	SetupURL string
 }
 
 // sesRegions is a common subset, not every SES region. SES SMTP exists in ~19
@@ -90,7 +102,8 @@ func sesRegions() *Region {
 	}
 }
 
-// presets is the shipped table. Every entry is 587 / STARTTLS except SMTP2GO,
+// presets is the shipped table, in display order: the personal accounts, then
+// the sending services, then custom. Every entry is 587 / STARTTLS except SMTP2GO,
 // which documents 2525 as the port open in the most places. Hosted boxes reach
 // 587 and 2525 but not 25 or 465 (SERVICE_PROVISIONING.md # BYO outgoing
 // mail), so no preset can default to implicit TLS.
@@ -99,6 +112,48 @@ func sesRegions() *Region {
 // 2026-08-27. Re-check them when this table is next touched — they are exactly
 // the kind of fact that goes stale.
 var presets = []Preset{
+	// The two accounts people already have come first (INSTALL_STEPS.md # 4).
+	// Both send over 587 with STARTTLS and an app password, which works from
+	// hosted boxes too. Both are for low volume: Gmail allows about 500 emails
+	// a day. The id google_workspace stays although the label now covers
+	// personal Gmail too, because saved accounts and the logo use it.
+	{
+		ID:              "google_workspace",
+		Label:           "Gmail or Google Workspace",
+		AccountName:     "Gmail",
+		Host:            "smtp.gmail.com",
+		Port:            587,
+		Encryption:      "starttls",
+		UsernameMode:    UsernameUser,
+		CredentialLabel: "App password",
+		Help:            "Works with a personal Gmail address and with Google Workspace. The username is your full address. The password is a 16-character app password, not your normal Google password. A Workspace admin can turn app passwords off.",
+		DocsURL:         "https://support.google.com/accounts/answer/185833",
+		Personal:        true,
+		SetupURL:        "https://myaccount.google.com/apppasswords",
+		Steps: []string{
+			"Turn on 2-Step Verification for your Google account, in Security. App passwords need it.",
+			"Open App passwords in your Google account. Type a name, like moose, and choose Create.",
+			"Copy the 16-character password, and paste it into the App password box.",
+		},
+	},
+	{
+		ID:              "icloud",
+		Label:           "iCloud",
+		Host:            "smtp.mail.me.com",
+		Port:            587,
+		Encryption:      "starttls",
+		UsernameMode:    UsernameUser,
+		CredentialLabel: "App-specific password",
+		Help:            "The username is your full iCloud address. The password is an app-specific password, not your Apple Account password.",
+		DocsURL:         "https://support.apple.com/en-us/102654",
+		Personal:        true,
+		SetupURL:        "https://account.apple.com",
+		Steps: []string{
+			"Turn on two-factor authentication for your Apple Account. App-specific passwords need it.",
+			"Sign in to your Apple Account, open Sign-In and Security, then App-Specific Passwords, and make one.",
+			"Copy the password, and paste it into the App-specific password box.",
+		},
+	},
 	{
 		ID:              "ses",
 		Label:           "Amazon SES",
@@ -187,19 +242,8 @@ var presets = []Preset{
 		DocsURL:         "https://support.smtp2go.com/hc/en-gb/articles/223087627-SMTP-Settings",
 	},
 	{
-		ID:              "google_workspace",
-		Label:           "Google Workspace",
-		Host:            "smtp.gmail.com",
-		Port:            587,
-		Encryption:      "starttls",
-		UsernameMode:    UsernameUser,
-		CredentialLabel: "App password",
-		Help:            "The username is the full Google Workspace address. The password is a 16-character app password, which needs 2-Step Verification turned on for that account. Your normal Google password will not work.",
-		DocsURL:         "https://knowledge.workspace.google.com/admin/gmail/send-email-from-a-printer-scanner-or-app",
-	},
-	{
 		ID:              "custom",
-		Label:           "Custom SMTP server",
+		Label:           "Custom server",
 		Port:            587,
 		Encryption:      "starttls",
 		UsernameMode:    UsernameUser,
@@ -242,4 +286,13 @@ func LabelFor(id string) string {
 		return p.Label
 	}
 	return id
+}
+
+// DefaultAccountName is the name a new account from this preset gets when the
+// user gives none.
+func (p Preset) DefaultAccountName() string {
+	if p.AccountName != "" {
+		return p.AccountName
+	}
+	return p.Label
 }

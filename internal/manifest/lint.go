@@ -139,6 +139,23 @@ func lintRequires(m *Manifest, slotOrder []string, slots map[string][]Role, e, w
 				e("config[%s]: required: true conflicts with requires[%d], which lists the field; remove one of the two", member, i)
 			}
 		}
+		// A group mixes kinds when it names a kind or slot and a plain field.
+		// The install flow draws an AI group as its own pages and plain fields
+		// on another (INSTALL_STEPS.md # Build rules), so it cannot ask one
+		// question that either answer meets.
+		var kindMember, fieldMember string
+		for _, member := range req.OneOf {
+			if _, isField := byEnv[member]; isField {
+				if fieldMember == "" {
+					fieldMember = member
+				}
+			} else if isKindOrSlot(member) && kindMember == "" {
+				kindMember = member
+			}
+		}
+		if kindMember != "" && fieldMember != "" {
+			e("requires[%d]: the group mixes %q and the plain field %q; list them in separate groups, or give the field a role", i, kindMember, fieldMember)
+		}
 		if len(req.OneOf) == 1 {
 			if f, ok := byEnv[req.OneOf[0]]; ok && f.Role == "" {
 				w("requires[%d]: the group has only %q; set required: true on that field instead", i, f.AppEnv)
