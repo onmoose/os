@@ -257,6 +257,10 @@ func TestWellKnownIdentity(t *testing.T) {
 	if resp.MooseSharedGID != 2001 {
 		t.Errorf("moose_shared_gid: want 2001, got %d", resp.MooseSharedGID)
 	}
+	// This fake agent sends no remap_base, like an un-remapped box.
+	if resp.RemapBase != nil {
+		t.Errorf("remap_base: want absent, got %d", *resp.RemapBase)
+	}
 }
 
 func TestAppServiceIdentity(t *testing.T) {
