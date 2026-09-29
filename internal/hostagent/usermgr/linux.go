@@ -47,6 +47,10 @@ type LinuxUserManager struct {
 	// capability. Empty → "sudo" (per USERS_AND_GROUPS.md # Roles and the
 	// CLAUDE.md "admins in `sudo`" load-bearing decision).
 	AdminGroup string
+	// SubUIDPath and SubGIDPath are the subordinate id files RemapBase reads.
+	// Empty means /etc/subuid and /etc/subgid. Only a test sets them.
+	SubUIDPath string
+	SubGIDPath string
 }
 
 func (m *LinuxUserManager) adminGroup() string {
