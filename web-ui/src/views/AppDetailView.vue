@@ -23,7 +23,7 @@ import DOMPurify from "dompurify";
 import { ChevronLeft, ChevronRight, Cpu, Folder, Globe, HardDrive, Info, Network, X } from "lucide-vue-next";
 import { api, type CatalogDetail, type CatalogHome, type InstallPlan } from "../api";
 import { useAppInstances, useInstallSubmit } from "../useInstall";
-import { installWarnings, needsNoPages, permissionLines, type PermissionLine } from "../installSteps";
+import { defaultFieldValues, installWarnings, needsNoPages, permissionLines, type PermissionLine } from "../installSteps";
 import { formatSize, safeExternalUrl } from "../utils";
 import AppGlyph from "../components/AppGlyph.vue";
 import SplitButton from "../components/SplitButton.vue";
@@ -103,17 +103,25 @@ function goInstall(household = false) {
     if (planQuery.isError.value) router.push(pagesPath(household));
     return;
   }
+  const scope = household ? "household" : "personal";
   if (!needsNoPages(p) || installWarnings(p)) {
     router.push(pagesPath(household));
     return;
   }
-  directScope.value = household ? "household" : "personal";
-  submit({ manifest_id: p.manifest_id, scope: directScope.value, config: { folders: [] } });
+  directScope.value = scope;
+  // Optional plain fields have no step, so they go with their defaults, as
+  // they would from the install pages.
+  const fields = defaultFieldValues(p);
+  submit({
+    manifest_id: p.manifest_id,
+    scope,
+    config: { folders: [], ...(Object.keys(fields).length > 0 ? { fields } : {}) },
+  });
 }
 
-// A direct install that fails opens the last page with the error there, so
+// A direct install that fails opens the install pages with the error there, so
 // the user is never left here with nothing. A 409 (a copy made after the
-// plan was read) shows the last page's duplicate box.
+// plan was read) shows the duplicate box there.
 watch([submitError, duplicateInfo], ([err, dup]) => {
   if (!err && !dup) return;
   router.push({

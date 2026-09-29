@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-29 — Every install need is a step, and the last step installs
+
+**Previously:** a last page with every answer and a Change link; a user with saved accounts went straight there. Optional email, optional AI and Extra settings were rows on it with Set up, and the scope had its own "For" row (`INSTALL_STEPS.md` # 2).
+**Now:** every need is a step with the saved accounts listed and one picked; the last step installs. The order is AI needs, email, required settings, folders. Optional AI and email steps have a "Don't use" choice, and with no saved account they are a small offer, "Not now" (picked) or "Set up …". The folder step is the consent screen for folder access and shows for every app that uses a folder, with what the app can do in each folder. Optional plain settings have no step and keep their defaults, and the scope comes only from the App page's button. An app with no steps installs from the App page, as before.
+**Why:** the user wants to see and confirm the account in one place, and a summary page added a click without adding information.
+**Affected docs:** `INSTALL_STEPS.md` (Decisions, Build rules 1, 2, 8 and 9, # 1, # 2), `DASHBOARD.md` # Install authorization.
+
+---
+
 ## 2026-09-29 — An app that asks nothing installs from the App page
 
 **Previously:** an app with no questions still showed the last page of the install flow ("Ready to install Memos") before the install started (`INSTALL_STEPS.md` # 1).

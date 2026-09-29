@@ -1,14 +1,16 @@
 <script setup lang="ts">
-// The folders page of the install flow: which copy of each folder the app
-// gets (yours or the household's), and the subfolder for a folder the app
-// manages part of (DASHBOARD.md # Install authorization). Every folder has a
-// default, so this is never a first-time question. The last page opens it
-// from a folder row's Change link.
+// The folder step of the install flow: the consent screen for folder access
+// (INSTALL_STEPS.md # Build rules, rule 9). It shows every folder the app
+// uses, each with one line saying what the app can do there (write access in
+// red), in the same words as the permission lines (folderAccess). A folder
+// with a real choice has radios (yours or the household's), and one the app
+// manages part of has the subfolder box. A folder with one possible source
+// shows only its name and that line. Every folder has a default, picked.
 import type { InstallPlanFolder, Scope } from "../../api";
 import { useAuth } from "../../auth";
-import { folderName, sourceLabel } from "../../installSteps";
+import { folderAccess, folderName, sourceLabel } from "../../installSteps";
 
-const props = defineProps<{ folders: InstallPlanFolder[]; scope: Scope }>();
+const props = defineProps<{ folders: InstallPlanFolder[]; scope: Scope; appName: string }>();
 const sources = defineModel<Record<string, string>>("sources", { required: true });
 const subfolders = defineModel<Record<string, string>>("subfolders", { required: true });
 
@@ -22,8 +24,11 @@ function options(f: InstallPlanFolder): string[] {
 <template>
   <div class="space-y-8">
     <div v-for="f in folders" :key="f.folder" class="space-y-3">
-      <p class="text-sm/6 font-medium text-foreground">{{ folderName(f.folder) }}</p>
-      <p v-if="options(f).length === 1" class="text-sm text-muted-foreground">
+      <p v-if="folders.length > 1" class="text-sm/6 font-medium text-foreground">{{ folderName(f.folder) }}</p>
+      <p class="text-sm" :class="f.mode === 'write' ? 'font-medium text-destructive' : 'text-muted-foreground'">
+        {{ appName }} can {{ folderAccess(f.mode) }} in this folder.
+      </p>
+      <p v-if="options(f).length === 1" class="text-sm text-foreground">
         {{ sourceLabel(f.folder, options(f)[0] ?? "", singleUserMode) }}
       </p>
       <fieldset v-else :aria-label="`Which ${folderName(f.folder)} folder`" class="space-y-2">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The info box of the install flow (INSTALL_STEPS.md # 2). It belongs to the
-// app header: it sits right under the app's name on the first page and the
-// last page only. It is quiet on purpose: grey, small text, no controls.
+// app header: it sits right under the app's name on the first step only.
+// It is quiet on purpose: grey, small text, no controls.
 //
 // The size comes first, as its own line ("Takes about 2.0 GB."), with the
 // not-enough-space warning under it. Then a title ("What OpenClaw can do")

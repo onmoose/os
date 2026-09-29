@@ -1,19 +1,20 @@
-// The install flow as pages (docs/specs/INSTALL_STEPS.md): one question per
-// page, then a last page that shows every answer with a Change link.
+// The install flow as steps (docs/specs/INSTALL_STEPS.md): one need per step,
+// with the saved accounts listed and one picked. The last step installs.
 //
 // This module is the pure part. It turns the install plan (flat `config`
 // fields and `requires` groups) and the AI provider data into the needs the
-// pages ask about, says which need is answered, keeps the draft in the tab's
-// session storage, and says which page owns a 422. The view
-// (views/InstallSetupView.vue) holds the state and draws the pages.
+// steps ask about, says which need is answered, keeps the draft in the tab's
+// session storage, and says which step owns a 422. The view
+// (views/InstallSetupView.vue) holds the state and draws the steps.
 //
-// The mapping from plan to pages is INSTALL_STEPS.md # Build rules, rule 1:
-//   - a requires group of AI members only: required AI pages, one per group;
-//   - AI slots in no group: the optional "AI service" row on the last page;
-//   - the mail block: the optional "Email" row;
-//   - required plain fields, and the fields of a plain group: one page,
+// The mapping from plan to steps is INSTALL_STEPS.md # Build rules:
+//   - a requires group of AI members only: a required AI step, one per group;
+//   - AI slots in no group: one optional AI step;
+//   - the mail block: the email step (optional in v1);
+//   - required plain fields, and the fields of a plain group: one step,
 //     "<App> needs these to run";
-//   - optional plain fields: the "Extra settings" row.
+//   - folders with something to choose: one folder step;
+//   - optional plain fields: no step; they keep their defaults.
 // A mixed group and a required field with a role are lint errors. When the
 // box meets one anyway, the fields of that group or slot become plain fields
 // on the "needs these" page.
@@ -22,6 +23,7 @@ import type {
   AIProvider,
   InstallPlan,
   InstallPlanConfigField,
+  InstallPlanFolder,
   InstallPlanFootprint,
   InstallPlanPermissions,
   RequiresGroup,
@@ -44,16 +46,16 @@ import {
 } from "./aiProviders";
 
 // ── Step names ──────────────────────────────────────────────────────────────
-// A question page is /store/:id/install?step=<name>. The last page has no
-// step. AI group pages are "ai", "ai-2", "ai-3" in requires order.
+// A step is /store/:id/install?step=<name>. The bare path, with no step,
+// goes to the first step, or, for an app with no steps, is the page that
+// shows only a warning. AI group steps are "ai", "ai-2", "ai-3" in requires
+// order.
 export const STEP_SETTINGS = "settings";
 export const STEP_AI_OPTIONAL = "ai-optional";
 export const STEP_EMAIL = "email";
 export const STEP_EMAIL_SERVICE = "email-service";
 export const STEP_EMAIL_ADD = "email-add";
-export const STEP_EXTRA = "extra";
 export const STEP_FOLDERS = "folders";
-export const STEP_FOR = "for";
 
 function aiStep(i: number): string {
   return i === 0 ? "ai" : `ai-${i + 1}`;
@@ -133,21 +135,52 @@ export function planNeeds(
   };
 }
 
-// needsNoPages says whether an app asks the user nothing at all, so Install
-// on the App page can start the install with no install pages (INSTALL_STEPS.md
-// # Build rules, rule 8): no config field of any kind (so no first-time page,
-// no AI row and no Extra settings), no requires group, no email, and no folder
-// to choose. It reads only the plan, so it does not wait for provider data or
-// the user's accounts. The scope is already chosen by the button pressed.
+// folderHasChoice says whether a folder has anything to choose under a scope:
+// more than one source (yours or the household's), or a subfolder to pick.
+// A folder with nothing to choose shows on the folder step with no radios.
+export function folderHasChoice(f: InstallPlanFolder, scope: "personal" | "household"): boolean {
+  return (f.sources[scope].options ?? []).length > 1 || f.scope === "pick-subfolder";
+}
+
+// stepList is the install flow's steps, in order (INSTALL_STEPS.md # Build
+// rules, rule 9): each AI need, then email, then the required plain fields,
+// then the folders (always, when the app uses one: the step is the consent
+// screen for folder access). Optional plain fields (Extra settings) and the scope have
+// no step. A step's sub-pages (<need>-service, <need>-key, email-service,
+// email-add) share its number and are not in this list.
+export function stepList(needs: Needs, plan: InstallPlan): string[] {
+  const out = aiNeeds(needs).map((n) => n.step);
+  if (plan.mail) out.push(STEP_EMAIL);
+  if (needs.requiredFields.length > 0) out.push(STEP_SETTINGS);
+  // The folder step is the consent screen for folder access, so it shows
+  // for every app that uses a folder, even with nothing to choose.
+  if ((plan.permissions.folders ?? []).length > 0) out.push(STEP_FOLDERS);
+  return out;
+}
+
+// needsNoPages says whether an app has no install step at all, so Install on
+// the App page can start the install with no pages (rule 8). It reads only
+// the plan, so it does not wait for provider data: any field with an AI role
+// counts as an AI step, because the provider data would draw it as one, and
+// any folder counts, because the folder step is its consent screen. Optional
+// plain fields do not count; they keep their defaults.
 export function needsNoPages(plan: InstallPlan): boolean {
   const needs = planNeeds(plan.config ?? [], plan.requires ?? [], []);
   return (
+    aiSlots(plan.config ?? []).length === 0 &&
     needs.requiredFields.length === 0 &&
-    needs.extraFields.length === 0 &&
     needs.plainGroups.length === 0 &&
     !plan.mail &&
     (plan.permissions.folders ?? []).length === 0
   );
+}
+
+// defaultFieldValues are the manifest defaults of the optional plain fields,
+// which have no step: an install sends them as they are.
+export function defaultFieldValues(plan: InstallPlan): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of plan.config ?? []) if (f.default) out[f.app_env] = f.default;
+  return out;
 }
 
 // installWarnings says whether the plan has something to warn about before
@@ -308,18 +341,9 @@ export function defaultKeyLabel(base: string, labels: string[]): string {
 // they live in the AI and email forms until the account is saved.
 
 export type Draft = {
-  // flow is the question pages this user was shown when the install started,
-  // in order. It is fixed then, so the step counter does not jump when a page
-  // is answered.
-  flow: string[];
-  // done is the pages the user pressed Continue on.
-  done: string[];
-  // reviewed is set once the last page was shown. From then on Continue goes
-  // back to the last page (the "Check your answers" pattern).
-  reviewed: boolean;
   sources: Record<string, string>;
   subfolders: Record<string, string>;
-  // mail is the picked email account id, "" when not set up.
+  // mail is the picked email account id, "" when email is not used.
   mail: string;
   values: Record<string, string>;
   ai: Record<string, AIChoice>;
@@ -330,12 +354,9 @@ export type Draft = {
   // warned is set once the duplicate warning was shown, so the install is
   // sent with confirm: true only then.
   warned: boolean;
-  // foldersReset is set when a change of scope put the folders back on their
-  // defaults, so the last page can say so once.
-  foldersReset: boolean;
 };
 
-const PREFIX = "moose.install.v1";
+const PREFIX = "moose.install.v2";
 
 export function draftKey(userId: string, manifestId: string, scope: string): string {
   return `${PREFIX}.${userId}.${manifestId}.${scope}`;
@@ -377,12 +398,13 @@ export function clearDrafts(userId: string, manifestId: string) {
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
-// stepForError names the page that owns a 422 from POST /api/v1/apps, so the
-// error shows there and not as red text on the last page. It reads the
+// stepForError names the step that owns a 422 from POST /api/v1/apps, so the
+// error shows there. It reads the
 // location the brain puts on the error (BRAIN_UI_PROTOCOL.md # POST
 // /api/v1/apps): config.fields.<APP_ENV>, config.ai_bindings.<slot>,
 // config.requires[<i>], config.mail_provider_id or config.folders.<name>.
-// The message is never read, only shown. "" means the last page keeps it.
+// The message is never read, only shown. "" means no step owns it, and the
+// last step shows it above its Install button.
 export function stepForError(
   location: string | undefined,
   needs: Needs,
@@ -412,7 +434,6 @@ export function stepForError(
     const slot = needs.slots.find((s) => s.fields.some((x) => x.app_env === env));
     if (slot) return stepOfSlot(slot.id);
     if (needs.requiredFields.some((f) => f.app_env === env)) return STEP_SETTINGS;
-    if (needs.extraFields.some((f) => f.app_env === env)) return STEP_EXTRA;
   }
   return "";
 }
@@ -440,6 +461,12 @@ export type PermissionLine = {
   danger: boolean;
 };
 
+// folderAccess is what an app can do in a folder, as a verb phrase: the one
+// wording both the permission lines and the folder step use.
+export function folderAccess(mode: string): string {
+  return mode === "write" ? "add, change, and delete files" : "read files";
+}
+
 export function permissionLines(p: InstallPlanPermissions): PermissionLine[] {
   const out: PermissionLine[] = [];
   if (p.internet) out.push({ key: "internet", kind: "internet", text: "Connect to the internet", danger: false });
@@ -451,7 +478,7 @@ export function permissionLines(p: InstallPlanPermissions): PermissionLine[] {
     out.push({
       key: `folder-${f.folder}`,
       kind: "folder",
-      text: write ? `Add, change, and delete files in ${folderName(f.folder)}` : `Read files in ${folderName(f.folder)}`,
+      text: `${capitalize(folderAccess(f.mode))} in ${folderName(f.folder)}`,
       danger: write,
     });
   }
@@ -459,6 +486,10 @@ export function permissionLines(p: InstallPlanPermissions): PermissionLine[] {
 }
 
 // ── Folder words ────────────────────────────────────────────────────────────
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 export function folderName(folder: string): string {
   return folder.charAt(0).toUpperCase() + folder.slice(1);

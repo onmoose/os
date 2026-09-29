@@ -134,7 +134,7 @@ async function save(): Promise<MailProvider | null> {
   try {
     const created = await create.mutateAsync(bodyOf(f));
     qc.invalidateQueries({ queryKey: ["mail-providers"] });
-    // The install plan lists the user's accounts, so the last page can name
+    // The install plan lists the user's accounts, so the email step can name
     // the new one.
     if (props.manifestId) await qc.invalidateQueries({ queryKey: ["install-plan", props.manifestId] });
     form.value.password = "";

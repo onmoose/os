@@ -24,14 +24,16 @@ This builds the design in [install-steps-design.md](install-steps-design.md): st
 
 **Step 3: the email pages and the presets.** `email` shows the user's accounts (newest picked, "Don't send email", "Use a different email service"), else the grid; `email-service` is `MailServiceGrid.vue` (Gmail and iCloud with "For personal use", then "Sending services", then "Custom server"); `email-add` is `MailAddForm.vue`, which asks only what the preset needs, keeps "Test the settings first", and saves the account on Continue. In `internal/mailpreset` the Google Workspace preset is now "Gmail or Google Workspace" (id `google_workspace` kept), `icloud` is new (`smtp.mail.me.com`, 587, STARTTLS), and presets carry `Personal`, `AccountName`, `Steps` and `SetupURL`. The table order is the display order, in Settings too. `MailAccountSection.vue` is gone.
 
+**After the user test (same branch, 2026-09-29).** The user tried the built UI, and the flow changed on this branch before it merged. What steps 1 to 3 above call "the last page" is gone: every need is now a step (AI needs, email, required settings, folders with a choice), each step with saved accounts lists them with the newest picked, and the last step's button is Install. Optional plain settings have no step and keep their defaults; they stay editable on the app's settings screen (`InstalledAppDetailSection.vue`). The scope comes only from the App page's button. An app with no steps (Memos) installs straight from the App page, whose right column now lists the app's permissions; with a duplicate or space warning it opens a page with only the warning. Other changes from the test: the step counter starts at 1, the info box is a titled list under the app name on the first step, the key and email forms put the password box first and fold the help at the bottom, the key form has no cost line, help steps name the box instead of "below", and Settings → AI services and Email use the same grids and forms. Two parts are built in their simplest form while the design is decided: the first view of an AI or email step for a user with no saved account, and the folder step's wording (`INSTALL_STEPS.md` # Build rules, rule 9).
+
 **Tests.** Go: `TestInstallPlan_Existing`, `TestInstallPlan_NoExisting`, `TestInstall422Location` (six cases through `POST /api/v1/apps`), the mixed-group lint cases, and `TestICloudPreset`, `TestGmailPreset`, `TestPresetOrderAndPersonal`. `make check` and `make check-web` are green.
 
 **Checked against a real brain.** A private stack (the stamped brain and fake host-agent from `make build`, Vite on another port, its own Caddy container) drove the flow in headless Chrome. Installed for real through the new pages: Excalidraw (no questions); a second Excalidraw past the first-page warning (the audit shows `confirm: true`, no 409); OpenClaw after the grid and the key form with a (fake) Anthropic key, and the stored binding is `ai.anthropic` on "Anthropic key"; Gitea after adding a Gmail account through the email grid and form, and its `.env` has `MOOSE_MAIL_HOST=smtp.gmail.com`. "Test the settings first" reached `smtp.gmail.com` and showed Google's refusal of the fake password on the form. Also checked: reload keeps the answers and asks for a typed secret again, Change and Continue, the grid's arrow keys, "Don't use an AI service" and "Don't send email", a single-service need (firecrawl), the scope change and "Folders reset", Cancel clears the draft.
 
 ## How it maps to the specs
 
-- **`INSTALL_STEPS.md`**: # Build rules and one "As built" note per step. Its status now points at `DASHBOARD.md` as the source of truth for the built flow.
-- **`DASHBOARD.md` # Install authorization**: rewritten for the pages, the last page, the email and AI pages, and the scope change on the last page.
+- **`INSTALL_STEPS.md`**: # Build rules and one "As built" note per step. `DECISIONS.md` has the two 2026-09-29 entries (install from the App page; every need is a step). Its status now points at `DASHBOARD.md` as the source of truth for the built flow.
+- **`DASHBOARD.md` # Install authorization**: rewritten for the steps, the email and AI steps, and the install from the App page.
 - **`BRAIN_UI_PROTOCOL.md`**: `existing` and `created_at` on the install plan, and the 422 `location`.
 - **`SERVICE_PROVISIONING.md` # BYO outgoing mail**: the Gmail and iCloud presets, first in the table.
 - **`APP_MANIFEST.md`**: the mixed-group lint rule.
@@ -44,7 +46,7 @@ This builds the design in [install-steps-design.md](install-steps-design.md): st
 - **`recommends` (step 4) is not started,** so a need is either required or optional, and no page has Skip.
 - **The user test with non-technical people** (`INSTALL_STEPS.md` # Suggested order, item 5) has not happened.
 - **There is no web-ui unit-test runner.** The page logic in `installSteps.ts` was checked with a one-off Node script and in the browser, not with checked-in tests.
-- **Only the config and mail 422s carry a location.** Any other 422 has none, so it stays on the last page.
+- **Only the config and mail 422s carry a location.** Any other 422 has none, so it shows on the last step.
 - **A provider with no default model for a type it offers** still gets its tile (rule 6). Every provider in the store has defaults today.
 - **The iCloud logo** is a plain cloud drawn for moose, not Apple's mark.
 
