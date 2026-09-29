@@ -207,6 +207,24 @@ export function modelIdProblem(id: string, separator?: string): string {
   return "";
 }
 
+// serverModelsBody is the models an edit of a My own server account sends:
+// the saved models, with each typed type applied. A box shows only the first
+// saved id, so an untouched box keeps the whole saved list, and a changed one
+// replaces it. The brain needs a chat name, so the forms never send it empty.
+export function serverModelsBody(
+  saved: Record<string, string[] | null> | undefined,
+  typed: Record<string, string>,
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [t, ids] of Object.entries(saved ?? {})) if (ids?.length) out[t] = [...ids];
+  for (const [t, raw] of Object.entries(typed)) {
+    const id = raw.trim();
+    const had = saved?.[t] ?? [];
+    if (id && (had.length === 0 || id !== had[0])) out[t] = [id];
+  }
+  return out;
+}
+
 // modelProblem says why one model setting cannot be saved yet, or "". A
 // listed provider with a default may leave it empty, and the brain then uses
 // the default; the pickers start on it anyway.

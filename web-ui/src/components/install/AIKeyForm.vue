@@ -19,7 +19,7 @@ import { computed, ref, watch } from "vue";
 import { useMutation, useQueryClient } from "@tanstack/vue-query";
 import { ExternalLink } from "lucide-vue-next";
 import { api, ApiError, type AIAccount, type AIAccountBody, type AIProvider } from "../../api";
-import { accountProviderId, isOther, keyLooksWrong, modelIdProblem, type AISlot } from "../../aiProviders";
+import { accountProviderId, isOther, keyLooksWrong, modelIdProblem, serverModelsBody, type AISlot } from "../../aiProviders";
 import { defaultKeyLabel } from "../../installSteps";
 import Button from "../ui/Button.vue";
 
@@ -126,16 +126,10 @@ async function save(): Promise<{ account: AIAccount } | null> {
   if (key.value.trim()) body.api_key = key.value.trim();
   if (other.value) {
     body.base_url = address.value.trim();
-    const own: Record<string, string[]> = {};
-    for (const [t, ids] of Object.entries(props.account?.models ?? {})) if (ids?.length) own[t] = [...ids];
-    // A box shows only the first saved id, so an untouched box keeps the
-    // whole saved list; a changed one replaces it.
-    for (const t of modelTypes.value) {
-      const typed = (models.value[t] ?? "").trim();
-      const saved = props.account?.models?.[t] ?? [];
-      if (saved.length === 0 || typed !== saved[0]) own[t] = [typed];
-    }
-    body.models = own;
+    body.models = serverModelsBody(
+      props.account?.models,
+      Object.fromEntries(modelTypes.value.map((t) => [t, models.value[t] ?? ""])),
+    );
   }
   try {
     const created = await create.mutateAsync(body);

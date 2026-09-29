@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/onmoose/os/internal/audit"
 	"github.com/onmoose/os/internal/store"
@@ -322,11 +323,11 @@ func TestAIAccountAcceptedShapes(t *testing.T) {
 		t.Fatalf("key not trimmed: %q", got.APIKey)
 	}
 
-	keyless := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home server", "base_url": "http://192.168.1.20:11434/v1"})
+	keyless := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home server", "models": map[string][]string{"chat": {"llama3"}}, "base_url": "http://192.168.1.20:11434/v1"})
 	if keyless.KeySet || keyless.ProviderID != "openai_compatible" {
 		t.Fatalf("keyless compatible = %+v", keyless)
 	}
-	keyed := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Proxy", "api_key": "sk-proxy", "base_url": "https://llm.example.com/v1"})
+	keyed := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Proxy", "models": map[string][]string{"chat": {"llama3"}}, "api_key": "sk-proxy", "base_url": "https://llm.example.com/v1"})
 	if !keyed.KeySet {
 		t.Fatalf("keyed compatible = %+v", keyed)
 	}
@@ -351,6 +352,40 @@ func TestAIAccountAcceptedShapes(t *testing.T) {
 // With no provider data (the catalog has not loaded), a listed provider cannot
 // be checked and is refused with its own message. An OpenAI-compatible server
 // still works, and an existing account can still be renamed.
+// TestAIAccountServerNeedsModel: an OpenAI-compatible account needs a chat
+// model name, on create and after an edit. An account stored without one (from
+// before the rule) cannot be saved until it gets one.
+func TestAIAccountServerNeedsModel(t *testing.T) {
+	h := newHarness(t)
+	alice := h.setupAdmin("alice", "pass1")
+
+	code, raw := h.doRaw("POST", "/api/v1/ai-accounts", map[string]any{"provider_id": "openai_compatible", "label": "Home", "base_url": "http://192.168.1.20:11434/v1"})
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), `"location":"body.models.chat"`) {
+		t.Fatalf("create without a model = %d %s", code, raw)
+	}
+
+	old := store.AIAccount{ID: "ai_old", OwnerUserID: alice.ID, ProviderID: "openai_compatible", Label: "Old", BaseURL: "http://10.0.0.2/v1", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := h.st.CreateAIAccount(old); err != nil {
+		t.Fatal(err)
+	}
+	rename := map[string]any{"provider_id": "openai_compatible", "label": "Renamed", "base_url": "http://10.0.0.2/v1"}
+	if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_old", rename); code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), `"location":"body.models.chat"`) {
+		t.Fatalf("rename without a model = %d %s", code, raw)
+	}
+	rename["models"] = map[string][]string{"chat": {"llama3"}}
+	if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_old", rename); code != http.StatusOK {
+		t.Fatalf("rename with a model = %d %s", code, raw)
+	}
+	if got, _ := h.st.GetAIAccount("ai_old"); len(got.Models["chat"]) != 1 || got.Models["chat"][0] != "llama3" {
+		t.Fatalf("stored models = %v", got.Models)
+	}
+	// Left out on a later edit, the stored name stays and the edit passes.
+	delete(rename, "models")
+	if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_old", rename); code != http.StatusOK {
+		t.Fatalf("edit keeping the model = %d %s", code, raw)
+	}
+}
+
 func TestAIAccountEmptyProviderData(t *testing.T) {
 	h := newHarness(t)
 	alice := h.setupAdmin("alice", "pass1")
@@ -359,7 +394,7 @@ func TestAIAccountEmptyProviderData(t *testing.T) {
 	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "the list of AI services is not loaded yet") {
 		t.Fatalf("listed provider with no data = %d %s", code, raw)
 	}
-	a := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home", "base_url": "http://192.168.1.20:11434/v1"})
+	a := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home", "models": map[string][]string{"chat": {"llama3"}}, "base_url": "http://192.168.1.20:11434/v1"})
 
 	// An account made while the data was there can still be renamed.
 	stored := store.AIAccount{ID: "ai_old", OwnerUserID: alice.ID, ProviderID: "acme", Label: "Old", APIKey: "sk-old"}

@@ -29,7 +29,7 @@ import {
   type AIProvider,
 } from "@/api";
 import { withElevation } from "@/elevate";
-import { COMPATIBLE, OTHER, findProvider, isOther, modelIdProblem, withOther } from "@/aiProviders";
+import { COMPATIBLE, OTHER, findProvider, isOther, modelIdProblem, serverModelsBody, withOther } from "@/aiProviders";
 import { errorMessage, fieldClass } from "@/mailProviderForm";
 import Button from "@/components/ui/Button.vue";
 import AIProviderLogo from "@/components/AIProviderLogo.vue";
@@ -168,7 +168,9 @@ function restartsApps(a: AIAccount): boolean {
 function editValid(a: AIAccount): boolean {
   if (editLabel.value.trim() === "") return false;
   if (a.provider_id === COMPATIBLE) {
-    return /^https?:\/\/\S+$/.test(editUrl.value.trim()) && !modelIdProblem(editModel.value.trim());
+    // The model name is required: the brain refuses a server without one.
+    const model = editModel.value.trim();
+    return /^https?:\/\/\S+$/.test(editUrl.value.trim()) && model !== "" && !modelIdProblem(model);
   }
   const url = editUrl.value.trim();
   return url === "" || /^https?:\/\/\S+$/.test(url);
@@ -181,17 +183,7 @@ const update = useMutation({
     if (editKey.value.trim()) body.api_key = editKey.value.trim();
     if (editUrl.value.trim()) body.base_url = editUrl.value.trim();
     if (a.provider_id === COMPATIBLE) {
-      // The box shows only the first chat id. Untouched, the whole saved list
-      // stays; changed, it replaces the list, and emptied, it clears it.
-      // Other types the account has stay.
-      const models: Record<string, string[]> = {};
-      for (const [t, ids] of Object.entries(a.models ?? {})) if (ids?.length) models[t] = [...ids];
-      const typed = editModel.value.trim();
-      if (typed !== (a.models?.chat?.[0] ?? "")) {
-        if (typed) models.chat = [typed];
-        else delete models.chat;
-      }
-      body.models = models;
+      body.models = serverModelsBody(a.models, { chat: editModel.value });
     }
     return api.put<AIAccountSaved>(`/ai-accounts/${a.id}`, body);
   },

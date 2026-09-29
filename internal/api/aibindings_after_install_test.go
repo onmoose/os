@@ -347,7 +347,7 @@ func TestAIAccountEditReachesApps(t *testing.T) {
 	}
 
 	// The provider cannot change while apps use the account.
-	code, raw = h.doRaw("PUT", "/api/v1/ai-accounts/"+acct.ID, map[string]any{"provider_id": "openai_compatible", "label": "Renamed", "base_url": "http://10.0.0.2/v1"})
+	code, raw = h.doRaw("PUT", "/api/v1/ai-accounts/"+acct.ID, map[string]any{"provider_id": "openai_compatible", "label": "Renamed", "models": map[string][]string{"chat": {"llama3"}}, "base_url": "http://10.0.0.2/v1"})
 	if code != http.StatusConflict || !strings.Contains(string(raw), "its provider cannot change") {
 		t.Fatalf("provider change = %d %s", code, raw)
 	}

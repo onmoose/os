@@ -151,7 +151,8 @@ type AIAccountBody struct {
 	// Models are the model ids an openai_compatible server serves, by model
 	// type ("chat": ["llama3"]). A binding that names no model for a type
 	// takes them. Only openai_compatible accepts them. On update, leaving
-	// the field out keeps the stored models; {} clears them.
+	// the field out keeps the stored models. An OpenAI-compatible account
+	// must keep a chat model name (requireServerModel).
 	Models map[string][]string `json:"models,omitempty"`
 }
 
@@ -245,6 +246,16 @@ func validateAIAccountBody(b *AIAccountBody) error {
 		}
 	}
 	return validateAccountModels(b.ProviderID, b.Models)
+}
+
+// requireServerModel refuses an OpenAI-compatible account with no chat model.
+// A server has no model list, so without a stored name the install flow would
+// have to ask for one on every install (INSTALL_STEPS.md # 3).
+func requireServerModel(providerID string, models map[string][]string) error {
+	if providerID == manifest.ProtocolOpenAICompatible && len(models["chat"]) == 0 {
+		return configError("body.models.chat", "give the model name your server uses for chat")
+	}
+	return nil
 }
 
 // validateAIBaseURL accepts an absolute http or https URL with a host. Plain
@@ -380,6 +391,9 @@ func (s *Server) createAIAccount(ctx context.Context, in *struct {
 	if err := requireAIKey(in.Body.ProviderID, in.Body.APIKey); err != nil {
 		return nil, err
 	}
+	if err := requireServerModel(in.Body.ProviderID, in.Body.Models); err != nil {
+		return nil, err
+	}
 
 	now := time.Now()
 	a := store.AIAccount{
@@ -447,6 +461,9 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 	}
 	if a.ProviderID != manifest.ProtocolOpenAICompatible {
 		a.Models = nil
+	}
+	if err := requireServerModel(a.ProviderID, a.Models); err != nil {
+		return nil, err
 	}
 	a.UpdatedAt = time.Now()
 	meta := aiAccountMeta(a)
