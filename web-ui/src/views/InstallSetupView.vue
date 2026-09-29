@@ -1051,8 +1051,8 @@ watch(
 
       <div v-if="!noSteps" class="-mt-3 px-4 sm:px-0" role="group" aria-labelledby="install-question">
         <template v-if="aiPage">
+          <template v-if="aiMode(aiPage.need, aiPage.page) === 'list'">
           <AccountList
-            v-if="aiMode(aiPage.need, aiPage.page) === 'list'"
             v-model="pageAccount"
             :rows="usableFor(aiPage.need).map((a) => ({ id: a.id, label: a.label, detail: tileOf(a, providers)?.name }))"
             :label="`Key for ${plan.name}`"
@@ -1066,7 +1066,7 @@ watch(
           </AccountList>
           <!-- A picked My own server account whose model names are not known
                yet: the names, required, right under the list. -->
-          <div v-if="aiMode(aiPage.need, aiPage.page) === 'list' && serverNames" class="mt-4 space-y-4">
+          <div v-if="serverNames" class="mt-4 space-y-4">
             <div v-for="m in serverNames" :key="m.key">
               <label :for="`server-model-${m.key}`" class="block text-sm/6 font-medium text-foreground">
                 {{ serverNames.length > 1 ? m.field.title : "Model name" }}
@@ -1080,6 +1080,7 @@ watch(
               <p class="mt-2 text-sm text-muted-foreground">The name your server gives the model.</p>
             </div>
           </div>
+          </template>
           <OptionalOffer
             v-else-if="aiMode(aiPage.need, aiPage.page) === 'offer'"
             v-model="pageOffer"

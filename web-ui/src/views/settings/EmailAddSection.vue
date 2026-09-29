@@ -56,10 +56,11 @@ const picked = ref("");
 const mailForm = ref<InstanceType<typeof MailAddForm> | null>(null);
 
 // goBack goes one page back, as the browser's Back does, when the page before
-// is this app's; a page opened by a link goes to fallback instead. Back and
-// Continue are the only buttons, as in the install flow.
+// is the fallback page; any other page before (a link from elsewhere) goes to
+// fallback instead. Back and Continue are the only buttons, as in the install
+// flow.
 function goBack(fallback: string) {
-  if (window.history.state?.back) router.back();
+  if (window.history.state?.back === fallback) router.back();
   else router.push(fallback);
 }
 
