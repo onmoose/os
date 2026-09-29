@@ -885,6 +885,107 @@ access)
         || fail "access: public app upstream did not receive its own cookie (probe=leakcheck) — the strip is removing more than moose_forward_auth: $(grep -i '^Cookie:' <<<"$pl_resp" | tr -d '\r')"
     echo "cloud-assertions: public app also strips only moose_forward_auth (no forward-auth cookie leaks to a public upstream, app's own cookie intact)"
 
+    # 4c. FOLDER APPS ON BOTH SOURCES (#519). A folder app is the path the other
+    #     steps never touch: before compose up the folder source must exist on
+    #     the HOST, owned so the app's identity can write it. The brain runs in a
+    #     container, so this only works if the shared tree is mounted into it
+    #     (household) and host-agent prepares the home folder (personal). Until
+    #     #519 a household install failed with "stat /srv/moose/shared: no such
+    #     file or directory", and a personal folder was made inside the brain's
+    #     own container. filedrop writes one file into its Documents folder at
+    #     start, as the identity moose runs it as. The proof is that file, on the
+    #     host, with the expected owner.
+    brain_mounts="$(docker inspect moose-brain --format '{{range .Mounts}}{{.Source}}->{{.Destination}} {{end}}' 2>/dev/null)"
+    grep -q '/srv/moose/shared->/srv/moose/shared' <<<"$brain_mounts" \
+        || fail "folders: the brain does not mount the shared tree at the same path: $brain_mounts"
+    grep -qE '(^| )/home->' <<<"$brain_mounts" \
+        && fail "folders: the brain mounts /home; personal folders are host-agent's job and the brain must not hold every home: $brain_mounts"
+    sr_stat="$(stat -c '%u:%g %a' /srv/moose/shared 2>/dev/null)"
+    [ "$sr_stat" = "0:2001 2770" ] \
+        || fail "folders: /srv/moose/shared is '$sr_stat', want '0:2001 2770' (root:moose-shared, setgid) before any app installs"
+    echo "cloud-assertions: shared tree ready before the first install (root:moose-shared 2770) and mounted into the brain; /home is not"
+
+    # filedrop_install BODY LABEL sets FD_ID to the new instance id, or fails. It
+    # polls the install job so a red run names the brain's own error, not just a
+    # timeout. These helpers set globals instead of printing: a fail inside $(...)
+    # would only leave the subshell, and the scenario would carry on.
+    filedrop_install() {
+        local resp job st jr
+        resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" "$1" 2>/dev/null)"
+        grep -qE ' 20[02]' <<<"$(status_of "$resp")" \
+            || fail "folders: install filedrop ($2) did not start: status='$(status_of "$resp")' body=$(tail -1 <<<"$resp" | cut -c1-400)"
+        job="$(json_str_of "$resp" job_id)"
+        [ -n "$job" ] || fail "folders: install filedrop ($2) returned no job id: $(tail -1 <<<"$resp" | cut -c1-400)"
+        st=""; jr=""
+        for _i in $(seq 1 240); do
+            jr="$(full_get "/api/v1/jobs/${job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+            st="$(json_str_of "$jr" status)"
+            case "$st" in completed|failed|cancelled) break ;; esac
+            sleep 1
+        done
+        [ "$st" = "completed" ] \
+            || fail "folders: install filedrop ($2) ended '$st': $(grep -o '"error":{[^}]*}' <<<"$jr" | cut -c1-600)"
+        FD_ID="$(json_str_of "$jr" instance_id)"
+        [ -n "$FD_ID" ] || fail "folders: install filedrop ($2) completed with no instance id: $(tail -1 <<<"$jr" | cut -c1-400)"
+    }
+
+    # filedrop_user INSTANCE_ID sets FD_USER to the running container's "uid:gid".
+    filedrop_user() {
+        local c=""
+        for _i in $(seq 1 60); do
+            c="$(docker ps --filter "label=moose.instance_id=$1" --format '{{.Names}}' | head -1)"
+            [ -n "$c" ] && break
+            sleep 1
+        done
+        [ -n "$c" ] || fail "folders: no running container for filedrop instance $1: $(docker ps -a --format '{{.Names}} {{.Status}}' | grep -i filedrop | tr '\n' ' ')"
+        FD_USER="$(docker inspect "$c" --format '{{.Config.User}}')"
+    }
+
+    # wait_file PATH returns 0 once PATH exists (the app writes it at start).
+    wait_file() {
+        for _i in $(seq 1 30); do [ -f "$1" ] && return 0; sleep 1; done
+        return 1
+    }
+
+    # Household: the admin default. Runs as moose-app (2000) with the moose-shared
+    # group (2001) added, and binds /srv/moose/shared/Documents, which the brain
+    # creates root:moose-shared 2770 through its mount.
+    filedrop_install '{"manifest_id":"filedrop","scope":"household"}' household
+    filedrop_user "$FD_ID"; hh_user="$FD_USER"
+    [ "$hh_user" = "2000:2000" ] || fail "folders: household filedrop runs as '$hh_user', want moose-app 2000:2000"
+    hh_file=/srv/moose/shared/Documents/filedrop.txt
+    wait_file "$hh_file" \
+        || fail "folders: household filedrop wrote no file at $hh_file on the host: $(ls -la /srv/moose/shared /srv/moose/shared/Documents 2>&1 | tr '\n' ' ')"
+    hh_dir_stat="$(stat -c '%u:%g %a' /srv/moose/shared/Documents)"
+    [ "$hh_dir_stat" = "0:2001 2770" ] \
+        || fail "folders: /srv/moose/shared/Documents is '$hh_dir_stat', want '0:2001 2770' (made by the brain, root:moose-shared, setgid)"
+    hh_file_owner="$(stat -c '%u:%g' "$hh_file")"
+    [ "$hh_file_owner" = "2000:2001" ] \
+        || fail "folders: $hh_file is owned '$hh_file_owner', want 2000:2001 (moose-app, group moose-shared by the setgid folder)"
+    grep -q 'uid=2000' "$hh_file" || fail "folders: $hh_file does not say the app ran as 2000: $(cat "$hh_file")"
+    echo "cloud-assertions: household folder app wrote $hh_file on the host as $hh_file_owner (Documents $hh_dir_stat)"
+
+    # Personal: the owner's own copy (confirm, because the household copy above
+    # triggers the duplicate warning). Runs as the owner, and binds ~/Documents,
+    # which host-agent creates owned by the owner. The SSO owner is a new
+    # account, so ~/Documents does not exist until this install asks for it.
+    filedrop_install '{"manifest_id":"filedrop","scope":"personal","confirm":true}' personal
+    filedrop_user "$FD_ID"; pp_user="$FD_USER"
+    pp_uid="${pp_user%%:*}"; pp_gid="${pp_user##*:}"
+    pp_home="$(getent passwd "$pp_uid" | cut -d: -f6)"
+    [ -n "$pp_home" ] && [ "$pp_uid" -ge 3000 ] 2>/dev/null \
+        || fail "folders: personal filedrop runs as '$pp_user', want the owner's own account (uid >= 3000 with a home); getent: $(getent passwd "$pp_uid")"
+    pp_file="$pp_home/Documents/filedrop.txt"
+    wait_file "$pp_file" \
+        || fail "folders: personal filedrop wrote no file at $pp_file on the host: $(ls -la "$pp_home" "$pp_home/Documents" 2>&1 | tr '\n' ' ')"
+    pp_dir_owner="$(stat -c '%u:%g' "$pp_home/Documents")"
+    [ "$pp_dir_owner" = "$pp_user" ] \
+        || fail "folders: $pp_home/Documents is owned '$pp_dir_owner', want the owner $pp_user (made by host-agent, not root:root by Docker)"
+    pp_file_owner="$(stat -c '%u:%g' "$pp_file")"
+    [ "$pp_file_owner" = "$pp_uid:$pp_gid" ] \
+        || fail "folders: $pp_file is owned '$pp_file_owner', want the owner $pp_uid:$pp_gid"
+    echo "cloud-assertions: personal folder app wrote $pp_file on the host as $pp_file_owner (Documents owned by the owner)"
+
     # 5. THE HOSTED CONFIRM STEP (os#469). Destructive admin writes sit behind a
     #    re-auth gate, and until now a hosted owner could not pass it: the portal
     #    signs them in and the box gives their PAM account a random password nobody
@@ -954,7 +1055,7 @@ access)
         || fail "access: the off-box-return landing minted no session; sign-in must still succeed"
     echo "cloud-assertions: an off-box return path is refused and the owner lands on the box's own front page"
 
-    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes)"
+    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes), and folder apps write to the host on both sources"
     ;;
 ssh)
     # SSH end-to-end on a booted hosted box (#467). #464 built the whole path from

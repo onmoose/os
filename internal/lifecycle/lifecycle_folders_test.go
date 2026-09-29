@@ -6,6 +6,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -123,14 +124,49 @@ func TestInstallFolders_PersonalSourceReadWithSubfolder(t *testing.T) {
 	if _, ok := app["group_add"]; ok {
 		t.Errorf("group_add: want absent for personal source, got %v", app["group_add"])
 	}
-	// The brain creates the elected personal source (the pick-subfolder subdir)
-	// before compose up, so docker can't create it root-owned and the owner-UID
+	// The elected personal source (the pick-subfolder subdir) is prepared before
+	// compose up, so docker can't create it root-owned and the owner-UID
 	// container can write user content into it (#147 personal-folder follow-up).
-	// Fails before the fix: the subdir was never created by the brain.
-	if fi, err := os.Stat(src); err != nil {
-		t.Errorf("personal folder source must be created: %v", err)
-	} else if !fi.IsDir() {
-		t.Errorf("personal folder source %q is not a directory", src)
+	// host-agent does it, since the brain's container has no /home (#519): the
+	// brain asks for the owner's folder by name, relative to the home.
+	if got := e.host.callsTo("PrepareUserFolder"); len(got) != 1 ||
+		got[0].args[0] != "alex" || got[0].args[1] != "Documents/Work" {
+		t.Errorf("PrepareUserFolder calls = %+v, want one for alex Documents/Work", got)
+	}
+	// And the brain no longer makes it itself: that folder would land in the
+	// brain container's own filesystem, not on the host.
+	if _, err := os.Stat(src); err == nil {
+		t.Errorf("brain created %q itself; it must leave that to host-agent", src)
+	}
+}
+
+// A host-agent refusal (a file or a symlink where the folder should be) fails
+// the install and rolls the brain row back.
+func TestInstallFolders_PersonalPrepareFailureRollsBack(t *testing.T) {
+	e := newTestEnv(t)
+	e.host.prepareErr = errors.New("a file or link is in the way of the folder (not-a-directory)")
+	e.writeCatalogApp(t, "filesapp", foldersCompose, foldersManifest("write", "whole"))
+	e.docker.digests[testImage] = testDigest
+
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "filesapp"),
+		Owner{UserID: "u_alex", Username: "alex"}, store.ScopePersonal,
+		[]FolderMount{{Folder: "documents", Source: sourcePersonal}}, "", nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "not-a-directory") {
+		t.Fatalf("want the host refusal to fail the install, got %v", err)
+	}
+	if insts, _ := e.store.List(); len(insts) != 0 {
+		t.Errorf("want no instance rows after rollback, got %d", len(insts))
+	}
+}
+
+// A household instance on the shared tree never asks for a personal folder.
+func TestInstallFolders_SharedSourceDoesNotPrepareAHomeFolder(t *testing.T) {
+	e := newTestEnv(t)
+	installFolders(t, e, store.ScopeHousehold, Owner{UserID: "u_admin", Username: "admin"},
+		foldersManifest("write", "whole"),
+		[]FolderMount{{Folder: "documents", Source: sourceShared}})
+	if got := e.host.callsTo("PrepareUserFolder"); len(got) != 0 {
+		t.Errorf("shared source asked host-agent for a home folder: %+v", got)
 	}
 }
 

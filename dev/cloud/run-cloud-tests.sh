@@ -482,7 +482,8 @@ if should_run access; then
     # Wider outer ceiling: the access scenario's in-guest work (SSO + app install +
     # exposure toggle) adds ~180s of worst-case internal poll time over the shared
     # prechecks, which alone can approach the 480s default under CI's TCG-only QEMU.
-    VERDICT_TIMEOUT=720
+    # The two folder-app installs (#519) add up to ~240s more.
+    VERDICT_TIMEOUT=960
     if ! run_boot "access" "access" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_ACCESS" "$ACCESS_KEY")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$ACCESS_TOKEN" | base64 -w0)" \
@@ -491,7 +492,7 @@ if should_run access; then
         echo "cloud gate proof: ${VERDICT}" >&2
         exit 1
     fi
-    echo "boot access OK — per-app forward-auth access modes verified end-to-end (restricted gate + owner proxy-through, public, Cookie strip) and the hosted confirm step opened the elevation window, box_id=${BOX_ID_ACCESS}"
+    echo "boot access OK — per-app forward-auth access modes verified end-to-end (restricted gate + owner proxy-through, public, Cookie strip), household and personal folder apps wrote to the host, and the hosted confirm step opened the elevation window, box_id=${BOX_ID_ACCESS}"
 fi
 
 # --- 9. update boot: the control-plane updater, for real (#382). Its OWN fresh

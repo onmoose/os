@@ -123,6 +123,30 @@ func TestPrepareSharedSource_Rejects(t *testing.T) {
 	if err := prepareSharedSource(froot, filepath.Join(froot, "Documents", "sub"), gid); err == nil {
 		t.Error("want error when a path component is a file")
 	}
+	// A symlink at any level is refused, and nothing is created through it.
+	// Any household member can write the shared tree, and Docker follows a
+	// symlink in a bind source on the host (#519).
+	for _, rel := range []string{"Documents", "Documents/Sub"} {
+		sroot := t.TempDir()
+		target := t.TempDir()
+		if err := os.Symlink(target, filepath.Join(sroot, "Documents")); err != nil {
+			t.Fatal(err)
+		}
+		if err := prepareSharedSource(sroot, filepath.Join(sroot, filepath.FromSlash(rel)), gid); err == nil {
+			t.Errorf("%s: want error when a level is a symlink", rel)
+		}
+		if entries, _ := os.ReadDir(target); len(entries) != 0 {
+			t.Errorf("%s: prep wrote through the symlink: %v", rel, entries)
+		}
+	}
+	// A file at the leaf is refused too, not bound as if it were a folder.
+	lroot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(lroot, "Photos"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSharedSource(lroot, filepath.Join(lroot, "Photos"), gid); err == nil {
+		t.Error("want error when the leaf is a file")
+	}
 	// The remaining failure paths need an unprivileged process — root ignores
 	// directory write bits and can chgrp to any group.
 	if os.Geteuid() == 0 {
