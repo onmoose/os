@@ -18,8 +18,9 @@
 // and email-add (the form for a new account). Their bottom bar has only Back
 // and Continue: Continue on the form saves the account and goes back to the
 // step's list with it picked, and the step's own button then moves on (on
-// the last step, Install). Every page's bottom bar is Back and Continue or
-// Install; the one Cancel, which ends the install, is in the header.
+// the last step, Install). Every page has two buttons at the bottom: on the
+// first step's own page and on the warning-only page the left one is Cancel
+// (it ends the install), everywhere else it is Back.
 //
 // The bare path goes to the first step. For an app with no steps (the App
 // page sends it here only when there is a warning), the bare path is a page
@@ -826,7 +827,10 @@ function cancel() {
   router.push(`/store/${manifestId.value}`);
 }
 
-const cancelClass = "shrink-0 cursor-pointer text-sm text-muted-foreground transition-colors hover:text-foreground";
+// leftIsCancel: the bottom bar's left button ends the install on the first
+// step's own page (list, offer, a grid that is its first view, settings,
+// folders) and on the warning-only page. Everywhere else it is Back.
+const leftIsCancel = computed(() => noSteps.value || step.value === steps.value[0]);
 
 // ── Install ─────────────────────────────────────────────────────────────────
 function buildRequest(p: InstallPlan): InstallRequest {
@@ -957,17 +961,15 @@ watch(
 
 <template>
   <div class="mx-auto w-full max-w-3xl space-y-6 pt-2 pb-10">
-    <!-- Before the plan loads there is no header yet, so Cancel is here. -->
-    <div v-if="!plan" class="flex justify-end px-4 sm:px-0">
-      <button type="button" :class="cancelClass" @click="cancel">Cancel</button>
-    </div>
-
     <p v-if="planQuery.isLoading.value || (plan && !ready)" class="text-sm text-muted-foreground">Loading…</p>
     <div v-else-if="planQuery.isError.value" class="space-y-2">
       <p class="text-sm text-destructive">
         Couldn't load what this app needs. {{ (planQuery.error.value as Error)?.message }}
       </p>
-      <Button variant="secondary" size="sm" @click="planQuery.refetch()">Try again</Button>
+      <div class="flex flex-wrap gap-2">
+        <Button variant="ghost" size="sm" @click="cancel">Cancel</Button>
+        <Button variant="secondary" size="sm" @click="planQuery.refetch()">Try again</Button>
+      </div>
     </div>
 
     <template v-else-if="plan">
@@ -992,9 +994,6 @@ watch(
             <span class="font-medium text-foreground">{{ plan.name }}</span>
             <template v-if="stepNumber > 0 && steps.length > 1"> · Step {{ stepNumber }} of {{ steps.length }}</template>
           </p>
-          <!-- The one way to end the install, on every page: it clears the
-               draft and goes back to the App page. -->
-          <button type="button" :class="cancelClass" @click="cancel">Cancel</button>
         </div>
         <InstallInfoBox
           v-if="onFirstStep && !noSteps"
@@ -1209,10 +1208,13 @@ watch(
         <p v-else-if="!canContinue && step === 'settings' && !pending" class="text-sm text-muted-foreground sm:mr-auto">
           Still needed: {{ settingsNeeded.join("; ") }}.
         </p>
-        <!-- Back and Continue (or Install) only. On a grid or a form they act
-             on adding the account, never on the whole install. -->
+        <!-- Two buttons only. The left one is Cancel on the first step's own
+             page and on the warning-only page (it clears the draft and goes
+             to the App page), else Back. On a grid or a form they act on
+             adding the account, never on the whole install. -->
         <div class="flex flex-wrap justify-end gap-2">
-          <Button variant="ghost" @click="goBack">
+          <Button v-if="leftIsCancel" variant="ghost" @click="cancel">Cancel</Button>
+          <Button v-else variant="ghost" @click="goBack">
             <ArrowLeft class="size-4" aria-hidden="true" /> Back
           </Button>
           <HealthGated v-if="installsHere" blocks="apps">
