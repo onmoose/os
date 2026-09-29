@@ -60,6 +60,15 @@ func (CLIDocker) ContainerExists(ctx context.Context, name string) (bool, error)
 }
 
 func (CLIDocker) Run(ctx context.Context, spec RunSpec) error {
+	if out, err := exec.CommandContext(ctx, "docker", runArgs(spec)...).CombinedOutput(); err != nil {
+		return fmt.Errorf("docker run %s: %w\n%s", spec.Image, err, out)
+	}
+	return nil
+}
+
+// runArgs turns a RunSpec into the `docker run` argument list. It is a
+// function of its own so a test can check the flags without a Docker daemon.
+func runArgs(spec RunSpec) []string {
 	args := []string{"run", "-d", "--name", spec.Name}
 	if spec.Restart != "" {
 		args = append(args, "--restart", spec.Restart)
@@ -86,11 +95,13 @@ func (CLIDocker) Run(ctx context.Context, spec RunSpec) error {
 	for _, o := range spec.SecurityOpt {
 		args = append(args, "--security-opt", o)
 	}
-	args = append(args, spec.Image)
-	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("docker run %s: %w\n%s", spec.Image, err, out)
+	if spec.UsernsMode != "" {
+		args = append(args, "--userns", spec.UsernsMode)
 	}
-	return nil
+	for _, t := range spec.Tmpfs {
+		args = append(args, "--tmpfs", t)
+	}
+	return append(args, spec.Image)
 }
 
 // ContainerSandboxed reads the container's capability drop set and security
