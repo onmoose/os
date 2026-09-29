@@ -1049,6 +1049,9 @@ export interface components {
             api_key?: string;
             base_url?: string;
             label: string;
+            models?: {
+                [key: string]: string[] | null;
+            };
             provider_id: string;
         };
         AIAccountDTO: {
@@ -1064,6 +1067,9 @@ export interface components {
             id: string;
             key_set: boolean;
             label: string;
+            models: {
+                [key: string]: string[] | null;
+            };
             provider_id: string;
             /** Format: int64 */
             updated_at: number;
@@ -1083,6 +1089,9 @@ export interface components {
             job_id?: string;
             key_set: boolean;
             label: string;
+            models: {
+                [key: string]: string[] | null;
+            };
             provider_id: string;
             /** Format: int64 */
             updated_at: number;

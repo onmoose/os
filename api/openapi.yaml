@@ -16,6 +16,14 @@ components:
           type: string
         label:
           type: string
+        models:
+          additionalProperties:
+            items:
+              type: string
+            type:
+              - array
+              - "null"
+          type: object
         provider_id:
           type: string
       required:
@@ -43,6 +51,14 @@ components:
           type: boolean
         label:
           type: string
+        models:
+          additionalProperties:
+            items:
+              type: string
+            type:
+              - array
+              - "null"
+          type: object
         provider_id:
           type: string
         updated_at:
@@ -60,6 +76,7 @@ components:
         - label
         - base_url
         - key_set
+        - models
         - created_at
         - updated_at
         - used_by
@@ -87,6 +104,14 @@ components:
           type: boolean
         label:
           type: string
+        models:
+          additionalProperties:
+            items:
+              type: string
+            type:
+              - array
+              - "null"
+          type: object
         provider_id:
           type: string
         updated_at:
@@ -104,6 +129,7 @@ components:
         - label
         - base_url
         - key_set
+        - models
         - created_at
         - updated_at
         - used_by

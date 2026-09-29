@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -24,7 +25,7 @@ func TestAIAccountCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got != a {
+	if !reflect.DeepEqual(got, a) {
 		t.Fatalf("roundtrip: got %+v, want %+v", got, a)
 	}
 
@@ -46,7 +47,7 @@ func TestAIAccountCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(list) != 2 || list[0] != home || list[1].Label != "Work" {
+	if len(list) != 2 || !reflect.DeepEqual(list[0], home) || list[1].Label != "Work" {
 		t.Fatalf("list order: got %+v", list)
 	}
 
@@ -658,5 +659,36 @@ func TestDeleteAIAccountAndValuesRecordedEnvs(t *testing.T) {
 	}
 	if got := configMap(t, s, "a"); len(got) != 1 || got["P"] != "keep" {
 		t.Fatalf("config = %v", got)
+	}
+}
+
+// The models of an OpenAI-compatible account round-trip through create and
+// update, and an account from before the column reads as having none.
+func TestAIAccountModelsRoundTrip(t *testing.T) {
+	s := openWithOwner(t)
+	a := sampleAIAccount("ai_srv", "My server")
+	a.ProviderID = "openai_compatible"
+	a.Models = map[string][]string{"chat": {"llama3"}, "embedding": {"nomic"}}
+	if err := s.CreateAIAccount(a); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.GetAIAccount("ai_srv")
+	if err != nil || !reflect.DeepEqual(got.Models, a.Models) {
+		t.Fatalf("get: %+v, %v; want models %v", got.Models, err, a.Models)
+	}
+	a.Models = map[string][]string{"chat": {"qwen2"}}
+	a.UpdatedAt = a.UpdatedAt.Add(time.Second)
+	if err := s.UpdateAIAccount(a); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if got, _ := s.GetAIAccount("ai_srv"); !reflect.DeepEqual(got.Models, a.Models) {
+		t.Fatalf("after update models = %v; want %v", got.Models, a.Models)
+	}
+	plain := sampleAIAccount("ai_plain", "Plain")
+	if err := s.CreateAIAccount(plain); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetAIAccount("ai_plain"); len(got.Models) != 0 {
+		t.Fatalf("plain account models = %v; want none", got.Models)
 	}
 }

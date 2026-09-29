@@ -211,7 +211,7 @@ func resolveSlot(slot string, fields []slotField, chosen map[string][]string, ac
 				out.values[env] = baseURL
 			}
 		case manifest.AttrModel, manifest.AttrModels:
-			ids, err := slotModels(sf, chosen, prov)
+			ids, err := slotModels(sf, chosen, prov, acct.Models)
 			if err != nil {
 				return boundSlot{}, err
 			}
@@ -226,11 +226,21 @@ func resolveSlot(slot string, fields []slotField, chosen map[string][]string, ac
 // else the provider's default for the field's type, checked the same way.
 // Only a listed provider has defaults; an openai_compatible account, or a
 // provider that has left the data, has none.
-func slotModels(sf slotField, chosen map[string][]string, prov *catalog.AIProvider) ([]string, error) {
+func slotModels(sf slotField, chosen map[string][]string, prov *catalog.AIProvider, acctModels map[string][]string) ([]string, error) {
 	title := sf.field.Title
 	key := modelKey(sf.role)
 	list := sf.role.Attribute == manifest.AttrModels
 	raw, given := chosen[key]
+	// A server of the user's own (an openai_compatible account) has no model
+	// list, so its own model names for the type take the default's place: all
+	// of them for a list, the first for a single model. They are checked
+	// below like chosen ids.
+	if own := acctModels[sf.role.ModelType]; !given && len(own) > 0 {
+		raw, given = own, true
+		if !list {
+			raw = own[:1]
+		}
+	}
 	if !given {
 		if prov == nil || prov.Defaults[sf.role.ModelType] == "" {
 			return nil, configError("config.ai_bindings."+sf.role.Slot(), fmt.Sprintf("config.ai_bindings: pick a model for %s", title))

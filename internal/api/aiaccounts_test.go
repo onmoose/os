@@ -409,3 +409,68 @@ func TestDeleteUserAIAccounts(t *testing.T) {
 		t.Fatalf("deleted user's AI accounts survived: %+v", got)
 	}
 }
+
+// A server of the user's own keeps its model names on the account: they are
+// set on create, returned on read, replaced on update, kept when an update
+// leaves them out, and refused for a listed provider with a location.
+func TestAIAccountModels(t *testing.T) {
+	h := newHarness(t)
+	h.setupAdmin("alice", "pass1")
+
+	created := h.createAIAccount(map[string]any{
+		"provider_id": "openai_compatible", "label": "My server", "base_url": "http://llm.lan:8000/v1",
+		"models": map[string][]string{"chat": {" llama3 "}},
+	})
+	if strings.Join(created.Models["chat"], ",") != "llama3" {
+		t.Fatalf("created models = %v", created.Models)
+	}
+
+	code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/"+created.ID, map[string]any{
+		"provider_id": "openai_compatible", "label": "My server", "base_url": "http://llm.lan:8000/v1",
+		"models": map[string][]string{"chat": {"qwen2"}, "embedding": {"nomic"}},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("update = %d %s", code, raw)
+	}
+	updated := decodeRaw[AIAccountSavedDTO](t, raw)
+	if updated.Models["chat"][0] != "qwen2" || updated.Models["embedding"][0] != "nomic" {
+		t.Fatalf("updated models = %v", updated.Models)
+	}
+
+	// Left out: kept.
+	code, raw = h.doRaw("PUT", "/api/v1/ai-accounts/"+created.ID, map[string]any{
+		"provider_id": "openai_compatible", "label": "Renamed", "base_url": "http://llm.lan:8000/v1",
+	})
+	if code != http.StatusOK || decodeRaw[AIAccountSavedDTO](t, raw).Models["chat"][0] != "qwen2" {
+		t.Fatalf("rename = %d %s; want the models kept", code, raw)
+	}
+
+	cases := []struct {
+		name string
+		body map[string]any
+		loc  string
+	}{
+		{"listed provider", map[string]any{"provider_id": "acme", "label": "Acme", "api_key": testAIKey,
+			"models": map[string][]string{"chat": {"x"}}}, "body.models"},
+		{"unknown type", map[string]any{"provider_id": "openai_compatible", "label": "S2", "base_url": "http://a.lan/v1",
+			"models": map[string][]string{"poem": {"x"}}}, "body.models.poem"},
+		{"empty name", map[string]any{"provider_id": "openai_compatible", "label": "S3", "base_url": "http://a.lan/v1",
+			"models": map[string][]string{"chat": {" "}}}, "body.models.chat"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, raw := h.doRaw("POST", "/api/v1/ai-accounts", c.body)
+			if code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d %s; want 422", code, raw)
+			}
+			body := decodeRaw[struct {
+				Errors []struct {
+					Location string `json:"location"`
+				} `json:"errors"`
+			}](t, raw)
+			if len(body.Errors) == 0 || body.Errors[0].Location != c.loc {
+				t.Fatalf("errors = %+v; want location %q", body.Errors, c.loc)
+			}
+		})
+	}
+}

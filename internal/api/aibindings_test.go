@@ -97,8 +97,10 @@ var testAccounts = map[string]store.AIAccount{
 	"a_nobase":     {ID: "a_nobase", Label: "No Base", ProviderID: "nobase", APIKey: "sk-nb"},
 	"a_other":      {ID: "a_other", Label: "Home server", ProviderID: "openai_compatible", BaseURL: "http://192.168.1.10:11434/v1"},
 	"a_other_key":  {ID: "a_other_key", Label: "Home server 2", ProviderID: "openai_compatible", APIKey: "sk-local", BaseURL: "http://192.168.1.11/v1"},
-	"a_gone":       {ID: "a_gone", Label: "Gone", ProviderID: "gone", APIKey: "sk-gone"},
-	"a_gone_url":   {ID: "a_gone_url", Label: "Gone with URL", ProviderID: "gone", APIKey: "sk-gone", BaseURL: "https://gone.invalid/v1"},
+	"a_other_models": {ID: "a_other_models", Label: "Home server 3", ProviderID: "openai_compatible", BaseURL: "http://192.168.1.12/v1",
+		Models: map[string][]string{"chat": {"llama3", "phi3"}, "embedding": {"nomic", "bge"}}},
+	"a_gone":     {ID: "a_gone", Label: "Gone", ProviderID: "gone", APIKey: "sk-gone"},
+	"a_gone_url": {ID: "a_gone_url", Label: "Gone with URL", ProviderID: "gone", APIKey: "sk-gone", BaseURL: "https://gone.invalid/v1"},
 }
 
 func lookupTestAccount(id string) (store.AIAccount, error) {
@@ -430,5 +432,33 @@ func TestDeleteUserRestoresAIBindings(t *testing.T) {
 	got, err := h.st.ListInstanceAIBindings("i_1")
 	if err != nil || len(got) != 1 || got[0].AccountID != acct.ID || got[0].Models["model.chat"][0] != "acme-1" {
 		t.Fatalf("rollback lost the AI bindings: %+v (%v)", got, err)
+	}
+}
+
+// A binding to a server of the user's own that names no model takes the
+// account's model names: all of them for a list, the first for one model.
+// A model the request names still wins.
+func TestResolveAIBindings_AccountModels(t *testing.T) {
+	got, bs, err := resolveTest(t, nil, AIBindingBody{Slot: "ai.openai_compatible", AccountID: "a_other_models"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValues(t, got, map[string]string{
+		"CUSTOM_BASE_URL": "http://192.168.1.12/v1", "CUSTOM_MODELS": "llama3;phi3", "CUSTOM_EMBED": "nomic",
+	})
+	if len(bs) != 1 || strings.Join(bs[0].Models["models.chat"], ",") != "llama3,phi3" || bs[0].Models["model.embedding"][0] != "nomic" {
+		t.Fatalf("bindings = %+v", bs)
+	}
+	got, _, err = resolveTest(t, nil, AIBindingBody{Slot: "ai.openai_compatible", AccountID: "a_other_models",
+		Models: map[string][]string{"model.embedding": {"e5"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["CUSTOM_EMBED"] != "e5" || got["CUSTOM_MODELS"] != "llama3;phi3" {
+		t.Fatalf("values = %v", got)
+	}
+	// A server with no model names still needs them in the request.
+	if _, _, err := resolveTest(t, nil, AIBindingBody{Slot: "ai.openai_compatible", AccountID: "a_other"}); err == nil {
+		t.Fatal("a server account with no models and none in the request resolved")
 	}
 }

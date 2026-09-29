@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -41,6 +42,9 @@ const (
 	aiAccountLabelMax   = 100
 	aiAccountKeyMax     = 4096
 	aiAccountBaseURLMax = 2048
+	// A server's model names: a few per type, each a plain name.
+	aiAccountModelsMax = 20
+	aiAccountModelMax  = 200
 )
 
 // auditTargetAIAccount is the audit target kind for an AI account.
@@ -80,10 +84,14 @@ type AIAccountDTO struct {
 	ProviderID string `json:"provider_id"`
 	Label      string `json:"label"`
 	// BaseURL is empty when the account uses the provider's own address.
-	BaseURL   string `json:"base_url"`
-	KeySet    bool   `json:"key_set"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	BaseURL string `json:"base_url"`
+	KeySet  bool   `json:"key_set"`
+	// Models are the model ids an OpenAI-compatible account serves, by model
+	// type ("chat"). Always empty for a listed provider, whose model list
+	// comes from the provider data.
+	Models    map[string][]string `json:"models"`
+	CreatedAt int64               `json:"created_at"`
+	UpdatedAt int64               `json:"updated_at"`
 	// UsedBy lists the apps that use the account, each once, ordered by
 	// name. An edit of the key or base URL restarts them, and a delete clears
 	// the account from them, so the UI names them before the user confirms.
@@ -108,6 +116,7 @@ func aiAccountDTO(a store.AIAccount, uses []store.AppUse) AIAccountDTO {
 	return AIAccountDTO{
 		ID: a.ID, ProviderID: a.ProviderID, Label: a.Label, BaseURL: a.BaseURL,
 		KeySet:    a.APIKey != "",
+		Models:    accountModelsOut(a.Models),
 		CreatedAt: a.CreatedAt.Unix(), UpdatedAt: a.UpdatedAt.Unix(),
 		UsedBy: appUseDTOs(uses),
 	}
@@ -139,6 +148,68 @@ type AIAccountBody struct {
 	APIKey     string `json:"api_key,omitempty"`
 	// BaseURL is required for openai_compatible and optional otherwise.
 	BaseURL string `json:"base_url,omitempty"`
+	// Models are the model ids an openai_compatible server serves, by model
+	// type ("chat": ["llama3"]). A binding that names no model for a type
+	// takes them. Only openai_compatible accepts them. On update, leaving
+	// the field out keeps the stored models; {} clears them.
+	Models map[string][]string `json:"models,omitempty"`
+}
+
+// accountModelsOut is the models a DTO shows: never null.
+func accountModelsOut(m map[string][]string) map[string][]string {
+	if m == nil {
+		return map[string][]string{}
+	}
+	return m
+}
+
+// validateAccountModels checks the models of an account body: a known model
+// type, and one or more ids per type, each a plain model name. Only an
+// openai_compatible account may carry them, because a listed provider's
+// models come from the provider data. Each refusal names body.models in its
+// location.
+func validateAccountModels(providerID string, m map[string][]string) error {
+	if len(m) == 0 {
+		return nil
+	}
+	if providerID != manifest.ProtocolOpenAICompatible {
+		return configError("body.models", "models can be set only on an OpenAI-compatible server; this service's models come from its model list")
+	}
+	types := make([]string, 0, len(m))
+	for t := range m {
+		types = append(types, t)
+	}
+	slices.Sort(types)
+	for _, t := range types {
+		loc := "body.models." + t
+		if !manifest.IsModelType(t) {
+			return configError(loc, fmt.Sprintf("%q is not a model type", t))
+		}
+		ids := m[t]
+		if len(ids) == 0 {
+			return configError(loc, fmt.Sprintf("give at least one model name for %s", t))
+		}
+		if len(ids) > aiAccountModelsMax {
+			return configError(loc, fmt.Sprintf("give at most %d model names for %s", aiAccountModelsMax, t))
+		}
+		seen := map[string]bool{}
+		for i, id := range ids {
+			id = strings.TrimSpace(id)
+			switch {
+			case id == "":
+				return configError(loc, fmt.Sprintf("a model name for %s is empty", t))
+			case len(id) > aiAccountModelMax:
+				return configError(loc, fmt.Sprintf("a model name for %s is too long: use at most %d characters", t, aiAccountModelMax))
+			case hasControl(id):
+				return configError(loc, fmt.Sprintf("a model name for %s must not contain line breaks or control characters", t))
+			case seen[id]:
+				return configError(loc, fmt.Sprintf("model %q is given twice for %s", id, t))
+			}
+			seen[id] = true
+			ids[i] = id
+		}
+	}
+	return nil
 }
 
 // validateAIAccountBody trims and checks the fields that need no stored state
@@ -173,7 +244,7 @@ func validateAIAccountBody(b *AIAccountBody) error {
 			return err
 		}
 	}
-	return nil
+	return validateAccountModels(b.ProviderID, b.Models)
 }
 
 // validateAIBaseURL accepts an absolute http or https URL with a host. Plain
@@ -313,7 +384,7 @@ func (s *Server) createAIAccount(ctx context.Context, in *struct {
 	now := time.Now()
 	a := store.AIAccount{
 		ID: newID(), OwnerUserID: id.User.ID, ProviderID: in.Body.ProviderID, Label: in.Body.Label,
-		APIKey: in.Body.APIKey, BaseURL: in.Body.BaseURL, CreatedAt: now, UpdatedAt: now,
+		APIKey: in.Body.APIKey, BaseURL: in.Body.BaseURL, Models: in.Body.Models, CreatedAt: now, UpdatedAt: now,
 	}
 	meta := aiAccountMeta(a)
 	if err := s.store.CreateAIAccount(a); err != nil {
@@ -368,6 +439,14 @@ func (s *Server) updateAIAccount(ctx context.Context, in *struct {
 	a.ProviderID, a.Label, a.BaseURL = in.Body.ProviderID, in.Body.Label, in.Body.BaseURL
 	if in.Body.APIKey != "" {
 		a.APIKey = in.Body.APIKey
+	}
+	// Models left out keep the stored ones. Editing them changes no app: an
+	// app's binding keeps the models it was given.
+	if in.Body.Models != nil {
+		a.Models = in.Body.Models
+	}
+	if a.ProviderID != manifest.ProtocolOpenAICompatible {
+		a.Models = nil
 	}
 	a.UpdatedAt = time.Now()
 	meta := aiAccountMeta(a)

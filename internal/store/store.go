@@ -461,6 +461,9 @@ func (s *Store) migrate() error {
 		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
 		// before it: an account delete falls back to the manifest for those.
 		{"instance_ai_bindings", "envs", "ALTER TABLE instance_ai_bindings ADD COLUMN envs TEXT NOT NULL DEFAULT ''"},
+		// The model ids an OpenAI-compatible account serves (aiaccounts.go).
+		// '{}' on rows from before it: the account has none yet.
+		{"ai_accounts", "models", "ALTER TABLE ai_accounts ADD COLUMN models TEXT NOT NULL DEFAULT '{}'"},
 	} {
 		has, hErr := s.hasColumn(col.table, col.name)
 		if hErr != nil {

@@ -54,11 +54,10 @@ import {
   bindingOf,
   groupNeed,
   isOther,
-  modelIdProblem,
+  OTHER,
   slotFor,
   unmetGroups,
   type AIChoice,
-  type AISlot,
 } from "../aiProviders";
 import {
   STEP_EMAIL,
@@ -67,6 +66,7 @@ import {
   STEP_FOLDERS,
   STEP_SETTINGS,
   SUB_KEY,
+  SUB_SERVER,
   SUB_SERVICE,
   aiNeeds,
   choiceFor,
@@ -81,6 +81,7 @@ import {
   planNeeds,
   requiredFieldsMet,
   serverSlot,
+  missingModelTypes,
   saveDraft,
   spaceTight,
   stepForError,
@@ -185,9 +186,9 @@ const aiChoices = ref<Record<string, AIChoice>>({});
 const aiService = ref<Record<string, string>>({});
 // mailService is the email service picked on the email grid, for the add form.
 const mailService = ref("");
-// serverModels are the model names typed for each My own server account
-// (it has no model list), by account id and model setting.
-const serverModels = ref<Record<string, Record<string, string[]>>>({});
+// editServer is the saved My own server account whose form is open, when a
+// picked one lacks a model name the slot needs (the <need>-server page).
+const editServer = ref("");
 // declined are the optional steps answered with "Don't use", so a return to
 // the step shows that choice, not the newest account.
 const declined = ref<string[]>([]);
@@ -249,7 +250,7 @@ function seed(p: InstallPlan) {
 
   aiService.value = { ...(saved?.aiService ?? {}) };
   mailService.value = typeof saved?.mailService === "string" ? saved.mailService : "";
-  serverModels.value = { ...(saved?.serverModels ?? {}) };
+  editServer.value = typeof saved?.editServer === "string" ? saved.editServer : "";
   declined.value = Array.isArray(saved?.declined) ? saved.declined : [];
   warned.value = !!saved?.warned;
 }
@@ -262,7 +263,7 @@ const draft = computed<Draft>(() => ({
   ai: aiChoices.value,
   aiService: aiService.value,
   mailService: mailService.value,
-  serverModels: serverModels.value,
+  editServer: editServer.value,
   declined: declined.value,
   warned: warned.value,
 }));
@@ -310,9 +311,9 @@ function usableFor(need: AINeed) {
 // aiMode is what an AI page shows: the usable keys, or, with none, for an
 // optional need a small offer ("Not now" or "Set up an AI service"), and for
 // a required one the service grid (or the key form when one service fits).
-function aiMode(need: AINeed, page: "base" | "service" | "key"): "list" | "offer" | "grid" | "key" {
+function aiMode(need: AINeed, page: "base" | "service" | "key" | "server"): "list" | "offer" | "grid" | "key" {
   if (page === "service") return "grid";
-  if (page === "key") return "key";
+  if (page === "key" || page === "server") return "key";
   if (usableFor(need).length > 0) return "list";
   if (!need.required) return "offer";
   return needTiles(need, providers.value).length > 1 ? "grid" : "key";
@@ -321,6 +322,7 @@ function aiMode(need: AINeed, page: "base" | "service" | "key"): "list" | "offer
 // keyService is the service a need's key form is for: the one picked on the
 // grid, else the only one that fits.
 function keyService(need: AINeed): AIProvider | undefined {
+  if (aiPage.value?.need === need && aiPage.value.page === "server") return OTHER;
   const tiles = needTiles(need, providers.value);
   if (tiles.length === 1) return tiles[0];
   return tiles.find((t) => t.id === aiService.value[need.step]);
@@ -350,6 +352,7 @@ const validSteps = computed(() => {
   for (const need of aiNeedList.value) {
     if (needTiles(need, providers.value).length > 1) out.add(need.step + SUB_SERVICE);
     if (keyService(need)) out.add(need.step + SUB_KEY);
+    if (serverToEdit.value) out.add(need.step + SUB_SERVER);
   }
   if (plan.value?.mail) {
     out.add(STEP_EMAIL_SERVICE);
@@ -478,9 +481,7 @@ const pageValues = ref<Record<string, string>>({});
 // from the seeded draft, not from the empty one before it.
 const seedTick = ref(0);
 const pageAccount = ref("");
-// pageModels are the model name boxes shown under a picked My own server
-// account whose model names are not known yet, by model setting.
-const pageModels = ref<Record<string, string>>({});
+
 // pageOffer is the choice on an optional step's offer: "later" (Not now,
 // picked in advance) or "setup".
 const pageOffer = ref<"later" | "setup">("later");
@@ -506,7 +507,6 @@ watch(
       pageSources.value = { ...folderSources.value };
       pageSubfolders.value = { ...folderSubfolders.value };
     }
-    pageModels.value = {};
     const ai = aiPage.value;
     if (ai) {
       // The key list opens on the need's current key, else the newest usable
@@ -554,7 +554,7 @@ const canContinue = computed(() => {
     const mode = aiMode(ai.need, ai.page);
     if (mode === "list") {
       if (pageAccount.value === "") return !ai.need.required;
-      return !serverNames.value || serverNames.value.every((m) => modelNameOk(m, pageModels.value[m.key] ?? ""));
+      return true;
     }
     if (mode === "offer") return true;
     if (mode === "grid") return pageService.value !== "";
@@ -571,6 +571,11 @@ const opensSubPage = computed(() => {
   const ai = aiPage.value;
   if (!ai) return false;
   const mode = aiMode(ai.need, ai.page);
+  if (mode === "list") {
+    // A picked server account that lacks a model name opens its form first.
+    const account = accounts.value.find((x) => x.id === pageAccount.value);
+    return !!account && needsModelName(ai.need, account);
+  }
   return mode === "grid" || (mode === "offer" && pageOffer.value === "setup");
 });
 // onAddPage says whether this page is part of adding a new account: a
@@ -602,53 +607,30 @@ function finishStep(base: string) {
 // key from the form. A new key is saved as the user's account right here, so
 // there is no Save inside the page.
 // ── My own server ───────────────────────────────────────────────────────────
-// A My own server account has no model list, so its choice needs the model
-// names the user typed for it. They are kept per account (serverModels).
+// A My own server account has no model list, so its model names are saved on
+// the account (its `models`). One saved before that may lack a name the slot
+// needs; picking it opens its form (the <need>-server page) to add the name.
 
-// storedModels are the known model names of an account for a slot, when
-// every model setting of the slot has one.
-function storedModels(accountId: string, slot: AISlot): Record<string, string[]> | undefined {
-  // The names typed for the account, else the ones its current choice holds
-  // (a draft from before names were kept per account).
-  const known =
-    serverModels.value[accountId] ?? Object.values(aiChoices.value).find((c) => c.accountId === accountId)?.models;
-  if (!known || !slot.models.every((m) => (known[m.key] ?? []).length > 0)) return undefined;
-  return Object.fromEntries(slot.models.map((m) => [m.key, known[m.key]!]));
-}
+// serverToEdit is the saved server account the <need>-server page edits.
+const serverToEdit = computed(() => accounts.value.find((a) => a.id === editServer.value));
 
-// modelsOf are the models to build a choice with: the known names for a My
-// own server account, else the provider's defaults (undefined).
-function modelsOf(need: AINeed, account: AIAccount): Record<string, string[]> | undefined {
+// needsModelName says whether a picked account is a My own server that lacks
+// a model name the need's slot needs.
+function needsModelName(need: AINeed, account: AIAccount): boolean {
   const slot = serverSlot(need, configFields.value, account);
-  return slot ? storedModels(account.id, slot) : undefined;
+  return !!slot && missingModelTypes(slot, account).length > 0;
 }
 
-// modelNameOk says whether a typed model name can be used for a setting.
-function modelNameOk(m: AISlot["models"][number], v: string): boolean {
-  const id = v.trim();
-  return id !== "" && !modelIdProblem(id, m.multiple ? m.separator : undefined);
-}
-
-// serverNames are the model settings the step still has to ask for: the
-// picked account is a My own server whose names for this slot are unknown.
-const serverNames = computed(() => {
-  const ai = aiPage.value;
-  if (!ai) return null;
-  const account = accounts.value.find((a) => a.id === pageAccount.value);
-  const slot = account && serverSlot(ai.need, configFields.value, account);
-  if (!slot || slot.models.length === 0 || storedModels(account.id, slot)) return null;
-  return slot.models;
-});
-
-async function continueAI(need: AINeed, page: "base" | "service" | "key") {
+async function continueAI(need: AINeed, page: "base" | "service" | "key" | "server") {
   const mode = aiMode(need, page);
   if (mode === "list") {
     const account = accounts.value.find((a) => a.id === pageAccount.value);
-    if (account && serverNames.value) {
-      const typed = Object.fromEntries(serverNames.value.map((m) => [m.key, [(pageModels.value[m.key] ?? "").trim()]]));
-      serverModels.value = { ...serverModels.value, [account.id]: { ...(serverModels.value[account.id] ?? {}), ...typed } };
+    if (account && needsModelName(need, account)) {
+      editServer.value = account.id;
+      router.push(to(need.step + SUB_SERVER));
+      return;
     }
-    const pick = account ? choiceFor(need, configFields.value, providers.value, account, modelsOf(need, account)) : undefined;
+    const pick = account ? choiceFor(need, configFields.value, providers.value, account) : undefined;
     // An account that cannot be built into a choice now never clears the
     // choice it already is.
     const current = need.slots.map((sl) => aiChoices.value[sl.id]).find(Boolean);
@@ -677,14 +659,14 @@ async function continueAI(need: AINeed, page: "base" | "service" | "key") {
   }
   const saved = await keyForm.value?.save();
   if (!saved) return;
-  const pick = choiceFor(need, configFields.value, providers.value, saved.account, saved.models);
+  const pick = choiceFor(need, configFields.value, providers.value, saved.account);
   if (!pick) {
     pageError.value = { step: step.value, message: `${appName.value} cannot use this key. Pick another service.` };
     return;
   }
   // The new key is picked, and the user goes back to the step's list to see
   // it there; the step's own button then moves on.
-  if (saved.models) serverModels.value = { ...serverModels.value, [saved.account.id]: saved.models };
+  editServer.value = "";
   aiChoices.value = withNeedChoice(aiChoices.value, need, pick);
   declined.value = declined.value.filter((n) => n !== need.step);
   pageAccount.value = saved.account.id;
@@ -788,7 +770,7 @@ function backTarget() {
     const grid = needTiles(ai.need, providers.value).length > 1 && aiMode(ai.need, "base") !== "grid";
     return to(grid ? ai.need.step + SUB_SERVICE : ai.need.step);
   }
-  if (ai && ai.page === "service") return to(ai.need.step);
+  if (ai && (ai.page === "service" || ai.page === "server")) return to(ai.need.step);
   if (name === STEP_EMAIL_ADD) return to(plan.value?.mail?.optional === false && mailAccounts.value.length === 0 ? STEP_EMAIL : STEP_EMAIL_SERVICE);
   if (name === STEP_EMAIL_SERVICE) return to(STEP_EMAIL);
   const i = steps.value.indexOf(name);
@@ -1063,22 +1045,6 @@ watch(
               <AIProviderLogo :provider="tileOfId(row.id)" />
             </template>
           </AccountList>
-          <!-- A picked My own server account whose model names are not known
-               yet: the names, required, right under the list. -->
-          <div v-if="serverNames" class="mt-4 space-y-4">
-            <div v-for="m in serverNames" :key="m.key">
-              <label :for="`server-model-${m.key}`" class="block text-sm/6 font-medium text-foreground">
-                {{ serverNames.length > 1 ? m.field.title : "Model name" }}
-              </label>
-              <input
-                :id="`server-model-${m.key}`"
-                v-model="pageModels[m.key]"
-                autocomplete="off"
-                class="mt-2 block w-full rounded-md bg-card px-3 py-1.5 text-base text-foreground outline-1 -outline-offset-1 outline-border placeholder:text-muted-foreground focus:outline-2 focus:-outline-offset-2 focus:outline-accent sm:text-sm/6"
-              />
-              <p class="mt-2 text-sm text-muted-foreground">The name your server gives the model.</p>
-            </div>
-          </div>
           </template>
           <OptionalOffer
             v-else-if="aiMode(aiPage.need, aiPage.page) === 'offer'"
@@ -1100,7 +1066,8 @@ watch(
             :app-name="plan.name"
             :household="scope === 'household'"
             :labels="accounts.map((a) => a.label)"
-            :only="needTiles(aiPage.need, providers).length === 1"
+            :only="aiPage.page !== 'server' && needTiles(aiPage.need, providers).length === 1"
+            :account="aiPage.page === 'server' ? serverToEdit : undefined"
           />
         </template>
         <div v-else-if="step === 'settings'" class="space-y-6">
@@ -1199,9 +1166,7 @@ watch(
             aiMode(aiPage.need, aiPage.page) === "grid"
               ? "Pick an AI service to go on."
               : aiMode(aiPage.need, aiPage.page) === "list"
-                ? serverNames && pageAccount
-                  ? "Type the model name to go on."
-                  : "Pick a key to go on."
+                ? "Pick a key to go on."
                 : "Fill in the form to go on."
           }}
         </p>

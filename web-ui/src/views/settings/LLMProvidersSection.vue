@@ -29,7 +29,7 @@ import {
   type AIProvider,
 } from "@/api";
 import { withElevation } from "@/elevate";
-import { COMPATIBLE, OTHER, findProvider, isOther, withOther } from "@/aiProviders";
+import { COMPATIBLE, OTHER, findProvider, isOther, modelIdProblem, withOther } from "@/aiProviders";
 import { errorMessage, fieldClass } from "@/mailProviderForm";
 import Button from "@/components/ui/Button.vue";
 import AIProviderLogo from "@/components/AIProviderLogo.vue";
@@ -141,6 +141,9 @@ const editFor = ref<string | null>(null);
 const editLabel = ref("");
 const editKey = ref("");
 const editUrl = ref("");
+// editModel is a server's chat model name, saved on the account, so apps
+// that bind it do not ask for it. Only My own server accounts have it.
+const editModel = ref("");
 
 function startEdit(a: AIAccount) {
   confirmDeleteFor.value = null;
@@ -153,6 +156,7 @@ function startEdit(a: AIAccount) {
   editLabel.value = a.label;
   editKey.value = "";
   editUrl.value = a.base_url;
+  editModel.value = (a.models?.chat ?? [])[0] ?? "";
 }
 
 // restartsApps: would saving restart the apps? The brain's rule: a new key or
@@ -163,7 +167,9 @@ function restartsApps(a: AIAccount): boolean {
 
 function editValid(a: AIAccount): boolean {
   if (editLabel.value.trim() === "") return false;
-  if (a.provider_id === COMPATIBLE) return /^https?:\/\/\S+$/.test(editUrl.value.trim());
+  if (a.provider_id === COMPATIBLE) {
+    return /^https?:\/\/\S+$/.test(editUrl.value.trim()) && !modelIdProblem(editModel.value.trim());
+  }
   const url = editUrl.value.trim();
   return url === "" || /^https?:\/\/\S+$/.test(url);
 }
@@ -174,6 +180,13 @@ const update = useMutation({
     const body: AIAccountBody = { provider_id: a.provider_id, label: editLabel.value.trim() };
     if (editKey.value.trim()) body.api_key = editKey.value.trim();
     if (editUrl.value.trim()) body.base_url = editUrl.value.trim();
+    if (a.provider_id === COMPATIBLE) {
+      // The chat name is set or cleared; other types the account has stay.
+      const models: Record<string, string[]> = {};
+      for (const [t, ids] of Object.entries(a.models ?? {})) if (t !== "chat" && ids?.length) models[t] = [...ids];
+      if (editModel.value.trim()) models.chat = [editModel.value.trim()];
+      body.models = models;
+    }
     return api.put<AIAccountSaved>(`/ai-accounts/${a.id}`, body);
   },
   onSuccess: (saved, a) => {
@@ -350,6 +363,13 @@ function fid(name: string, id = ""): string {
               />
               <p v-if="a.provider_id !== COMPATIBLE" class="text-xs text-muted-foreground">
                 Leave empty to use {{ providerName(a) }}'s own address.
+              </p>
+            </div>
+            <div v-if="a.provider_id === COMPATIBLE" class="space-y-1.5">
+              <label class="text-sm font-medium" :for="fid('model', a.id)">Model name</label>
+              <input :id="fid('model', a.id)" v-model="editModel" :class="fieldClass" autocomplete="off" />
+              <p class="text-xs text-muted-foreground">
+                The name your server gives the model. Apps you install later use it; apps already installed keep theirs.
               </p>
             </div>
             <div class="space-y-1.5">

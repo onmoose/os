@@ -12,8 +12,9 @@
 // <service>" button) folded under "Where do I find my API key?". There is no
 // cost line: what a service costs depends too much on the model. For My own
 // server:
-// the address, an optional key, and a model name box for each model setting
-// the app's slot has, since such a server has no model list.
+// the address, an optional key, and a model name box for each model type the
+// app's slot needs, saved on the account, since such a server has no model
+// list.
 import { computed, ref, watch } from "vue";
 import { useMutation, useQueryClient } from "@tanstack/vue-query";
 import { ExternalLink } from "lucide-vue-next";
@@ -23,11 +24,17 @@ import { defaultKeyLabel } from "../../installSteps";
 import Button from "../ui/Button.vue";
 
 // The same form adds an account in Settings → Integrations → AI services.
-// There it has no app: no slot (so no model box), no app name and no
-// household line.
+// There it has no app: no slot, no app name and no household line, and My
+// own server asks one model name, for chat.
+//
+// With `account`, the form edits that saved account instead (a My own server
+// account saved before its model names were kept on it): the address and name
+// are filled, an empty key box keeps the stored key, and the model names the
+// slot needs are asked.
 const props = defineProps<{
   service: AIProvider;
   aiSlot?: AISlot;
+  account?: AIAccount;
   appName?: string;
   household?: boolean;
   // labels are the names of the user's accounts, so the default name is free.
@@ -36,7 +43,22 @@ const props = defineProps<{
   only?: boolean;
 }>();
 
-const slotModels = computed(() => props.aiSlot?.models ?? []);
+// modelTypes are the model types My own server is asked a name for, saved on
+// the account (its `models`, by type): the ones the app's slot needs, or chat
+// in Settings. A server has no model list, so the name is the only way to
+// pick one; the install flow then never asks again.
+const modelTypes = computed(() =>
+  props.aiSlot ? [...new Set(props.aiSlot.models.map((m) => m.type))] : ["chat"],
+);
+// separatorOf is the list separator a type's name must not hold, when the
+// slot takes a list of that type.
+function separatorOf(type: string): string | undefined {
+  return props.aiSlot?.models.find((m) => m.type === type && m.multiple)?.separator;
+}
+function modelTitle(type: string): string {
+  if (modelTypes.value.length === 1) return "Model name";
+  return props.aiSlot?.models.find((m) => m.type === type)?.field.title ?? `Model name (${type})`;
+}
 
 const qc = useQueryClient();
 
@@ -46,16 +68,20 @@ const name = ref("");
 const models = ref<Record<string, string>>({});
 const error = ref("");
 
-// A new service starts the form fresh.
+// A new service (or account) starts the form fresh; an account being edited
+// fills it.
 watch(
-  () => props.service.id,
+  () => [props.service.id, props.account?.id],
   () => {
     key.value = "";
-    address.value = "";
-    name.value = "";
-    models.value = {};
+    address.value = props.account?.base_url ?? "";
+    name.value = props.account?.label ?? "";
+    models.value = Object.fromEntries(
+      Object.entries(props.account?.models ?? {}).map(([t, ids]) => [t, (ids ?? [])[0] ?? ""]),
+    );
     error.value = "";
   },
+  { immediate: true },
 );
 
 const other = computed(() => isOther(props.service));
@@ -65,8 +91,8 @@ const defaultName = computed(() =>
 const keyWarning = computed(() => keyLooksWrong(props.service, key.value));
 const keyLink = computed(() => (props.service.key_url && /^https?:\/\//i.test(props.service.key_url) ? props.service.key_url : ""));
 
-function modelProblemOf(k: string, separator: string, multiple: boolean): string {
-  return modelIdProblem((models.value[k] ?? "").trim(), multiple ? separator : undefined);
+function modelProblemOf(type: string): string {
+  return modelIdProblem((models.value[type] ?? "").trim(), separatorOf(type));
 }
 
 // valid keeps Continue off until the brain can accept the form. The brain
@@ -74,29 +100,37 @@ function modelProblemOf(k: string, separator: string, multiple: boolean): string
 const valid = computed(() => {
   if (other.value) {
     if (!/^https?:\/\/\S+$/.test(address.value.trim())) return false;
-    return slotModels.value.every(
-      (m) => (models.value[m.key] ?? "").trim() !== "" && !modelProblemOf(m.key, m.separator, m.multiple),
-    );
+    return modelTypes.value.every((t) => (models.value[t] ?? "").trim() !== "" && !modelProblemOf(t));
   }
   return key.value.trim() !== "";
 });
 
 const create = useMutation({
-  mutationFn: (body: AIAccountBody) => api.post<AIAccount>("/ai-accounts", body),
+  mutationFn: (body: AIAccountBody) =>
+    props.account
+      ? api.put<AIAccount>(`/ai-accounts/${encodeURIComponent(props.account.id)}`, body)
+      : api.post<AIAccount>("/ai-accounts", body),
 });
 
-// save stores the key as the user's account. It returns the account, and the
-// model ids typed for My own server, or null when it failed (the form then
-// shows why).
-async function save(): Promise<{ account: AIAccount; models?: Record<string, string[]> } | null> {
+// save stores the key as the user's account (or saves the account being
+// edited), with a My own server's model names on it. It returns the account,
+// or null when it failed (the form then shows why).
+async function save(): Promise<{ account: AIAccount } | null> {
   if (!valid.value || create.isPending.value) return null;
   error.value = "";
   const body: AIAccountBody = {
     provider_id: accountProviderId(props.service),
     label: name.value.trim() || defaultName.value,
   };
+  // On an edit an empty key keeps the stored one.
   if (key.value.trim()) body.api_key = key.value.trim();
-  if (other.value) body.base_url = address.value.trim();
+  if (other.value) {
+    body.base_url = address.value.trim();
+    const own: Record<string, string[]> = {};
+    for (const [t, ids] of Object.entries(props.account?.models ?? {})) if (ids?.length) own[t] = [...ids];
+    for (const t of modelTypes.value) own[t] = [(models.value[t] ?? "").trim()];
+    body.models = own;
+  }
   try {
     const created = await create.mutateAsync(body);
     // Put the new account in the list at once, so the page can pick it even
@@ -106,10 +140,7 @@ async function save(): Promise<{ account: AIAccount; models?: Record<string, str
     }));
     void qc.invalidateQueries({ queryKey: ["ai-accounts"] });
     key.value = "";
-    if (!other.value) return { account: created };
-    const typed: Record<string, string[]> = {};
-    for (const m of slotModels.value) typed[m.key] = [(models.value[m.key] ?? "").trim()];
-    return { account: created, models: typed };
+    return { account: created };
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : "The key could not be saved. Try again.";
     return null;
@@ -150,22 +181,19 @@ const inputClass =
           Key <span class="font-normal text-muted-foreground">(optional)</span>
         </label>
         <input id="ai-key-secret" v-model="key" type="password" autocomplete="new-password" :class="inputClass" />
-        <p class="mt-2 text-sm text-muted-foreground">Only needed if your server asks for one.</p>
-      </div>
-      <div v-for="m in slotModels" :key="m.key">
-        <label :for="`ai-key-model-${m.key}`" class="block text-sm/6 font-medium text-foreground">
-          {{ slotModels.length > 1 ? m.field.title : "Model name" }}
-        </label>
-        <input
-          :id="`ai-key-model-${m.key}`"
-          v-model="models[m.key]"
-          autocomplete="off"
-          :class="inputClass"
-        />
-        <p v-if="modelProblemOf(m.key, m.separator, m.multiple)" class="mt-2 text-sm text-destructive">
-          {{ modelProblemOf(m.key, m.separator, m.multiple) }}
+        <p class="mt-2 text-sm text-muted-foreground">
+          {{ account ? "Leave it empty to keep the saved key." : "Only needed if your server asks for one." }}
         </p>
-        <p v-else class="mt-2 text-sm text-muted-foreground">The name your server gives the model.</p>
+      </div>
+      <div v-for="t in modelTypes" :key="t">
+        <label :for="`ai-key-model-${t}`" class="block text-sm/6 font-medium text-foreground">
+          {{ modelTitle(t) }}
+        </label>
+        <input :id="`ai-key-model-${t}`" v-model="models[t]" autocomplete="off" :class="inputClass" />
+        <p v-if="modelProblemOf(t)" class="mt-2 text-sm text-destructive">{{ modelProblemOf(t) }}</p>
+        <p v-else class="mt-2 text-sm text-muted-foreground">
+          The name your server gives the model. It is saved with the server, so apps do not ask again.
+        </p>
       </div>
     </template>
 

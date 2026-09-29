@@ -228,6 +228,9 @@ export type AINeed = { step: string; slots: AISlot[]; required: boolean; group?:
 
 export const SUB_SERVICE = "-service";
 export const SUB_KEY = "-key";
+// SUB_SERVER is a saved My own server account's form, opened from the key
+// list when the account lacks a model name the slot needs.
+export const SUB_SERVER = "-server";
 
 export function aiNeeds(needs: Needs): AINeed[] {
   const out: AINeed[] = needs.aiGroups.map((g) => ({ step: g.step, slots: g.slots, required: true, group: g.group }));
@@ -239,11 +242,12 @@ export function aiNeeds(needs: Needs): AINeed[] {
 export function needOfStep(
   needs: AINeed[],
   step: string,
-): { need: AINeed; page: "base" | "service" | "key" } | undefined {
+): { need: AINeed; page: "base" | "service" | "key" | "server" } | undefined {
   for (const need of needs) {
     if (step === need.step) return { need, page: "base" };
     if (step === need.step + SUB_SERVICE) return { need, page: "service" };
     if (step === need.step + SUB_KEY) return { need, page: "key" };
+    if (step === need.step + SUB_SERVER) return { need, page: "server" };
   }
   return undefined;
 }
@@ -262,8 +266,8 @@ export function needTiles(need: AINeed, providers: AIProvider[]): AIProvider[] {
 
 // choiceFor is the choice one account gives a need, with the provider's
 // default models, or undefined when the account cannot fill the need. A My
-// own server account has no model list, so it needs the model names the user
-// typed for it (models); without them it is not a complete choice.
+// own server account has no model list, so its models come from the names
+// saved on it (serverModels); without them it is not a complete choice.
 export function choiceFor(
   need: AINeed,
   fields: InstallPlanConfigField[],
@@ -275,7 +279,12 @@ export function choiceFor(
   if (!provider) return undefined;
   const slot = slotFor(provider, need.slots);
   if (!slot) return undefined;
-  const choice: AIChoice = { provider: provider.id, accountId: account.id, models: models ?? suggestedModels(provider, slot) };
+  const own = account.provider_id === COMPATIBLE ? serverModels(slot, account) : undefined;
+  const choice: AIChoice = {
+    provider: provider.id,
+    accountId: account.id,
+    models: models ?? own ?? suggestedModels(provider, slot),
+  };
   if (!choiceComplete(slot, choice, provider)) return undefined;
   if (need.group && !groupMet(need.group, fields, {}, new Set(filledEnvs(slot, account)))) return undefined;
   return { slotId: slot.id, choice };
@@ -295,9 +304,31 @@ export function serverSlot(
   return slot;
 }
 
+// serverModels are the binding models a My own server account gives a slot,
+// from the model names saved on the account (by model type): all of them for
+// a list, the first for one model. Undefined when the account lacks a type
+// the slot needs (missingModelTypes).
+export function serverModels(slot: AISlot, account: AIAccount): Record<string, string[]> | undefined {
+  const out: Record<string, string[]> = {};
+  for (const m of slot.models) {
+    const ids = account.models?.[m.type] ?? [];
+    if (ids.length === 0) return undefined;
+    out[m.key] = m.multiple ? [...ids] : [ids[0]!];
+  }
+  return out;
+}
+
+// missingModelTypes are the model types a slot needs that a My own server
+// account has no name for yet (an account saved before names were kept on
+// it). The step then opens the account's form to add them.
+export function missingModelTypes(slot: AISlot, account: AIAccount): string[] {
+  const types = [...new Set(slot.models.map((m) => m.type))];
+  return types.filter((t) => (account.models?.[t] ?? []).length === 0);
+}
+
 // usableAccounts are the user's accounts that can fill a need, newest first.
-// A My own server account that fits is always listed: when its model names
-// are not known yet, the step asks for them under its row.
+// A My own server account that fits is always listed: when it lacks a model
+// name the slot needs, picking it opens its form to add the name.
 export function usableAccounts(
   need: AINeed,
   fields: InstallPlanConfigField[],
@@ -346,9 +377,9 @@ export type Draft = {
   ai: Record<string, AIChoice>;
   // aiService is the service picked on a need's grid, by need step.
   aiService: Record<string, string>;
-  // serverModels are the model names typed for a My own server account, by
-  // account id and model setting ("model.chat"). They are not secret.
-  serverModels: Record<string, Record<string, string[]>>;
+  // editServer is the saved My own server account whose form is open (the
+  // <need>-server page), so a reload opens the same one. "" when none.
+  editServer: string;
   // declined are the optional steps the user answered with "Don't use", so
   // Back shows that choice again rather than the newest account.
   declined: string[];
@@ -359,7 +390,7 @@ export type Draft = {
   warned: boolean;
 };
 
-const PREFIX = "moose.install.v2";
+const PREFIX = "moose.install.v3";
 
 export function draftKey(userId: string, manifestId: string, scope: string): string {
   return `${PREFIX}.${userId}.${manifestId}.${scope}`;
