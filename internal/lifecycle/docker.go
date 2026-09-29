@@ -79,6 +79,11 @@ type DockerDriver interface {
 	// reclaim). Un-forced: if the image is still referenced (another tag, a
 	// stopped container), docker refuses and the caller treats it as best-effort.
 	RemoveImage(ctx context.Context, ref string) error
+	// UsernsRemap reports whether the daemon runs with userns-remap: `docker
+	// info` lists "name=userns" in its security options. The brain checks it
+	// against host-agent's remap_base before every install (APP_ISOLATION.md
+	// # User-namespace tiers). Needs only the proxy's INFO endpoint.
+	UsernsRemap(ctx context.Context) (bool, error)
 }
 
 // ManagedContainer is one managed container's identity and liveness, as read
@@ -292,6 +297,32 @@ func (cliDocker) RemoveImage(ctx context.Context, ref string) error {
 		return fmt.Errorf("rmi %s: %w\n%s", ref, err, out)
 	}
 	return nil
+}
+
+func (cliDocker) UsernsRemap(ctx context.Context) (bool, error) {
+	out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{json .SecurityOptions}}").Output()
+	if err != nil {
+		return false, fmt.Errorf("docker info: %w", err)
+	}
+	return usernsInSecurityOptions(out)
+}
+
+// usernsInSecurityOptions parses `docker info`'s SecurityOptions (a JSON list
+// such as ["name=seccomp,profile=builtin","name=userns"]) and reports whether
+// the userns entry is there.
+func usernsInSecurityOptions(raw []byte) (bool, error) {
+	var opts []string
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &opts); err != nil {
+		return false, fmt.Errorf("parse docker security options %q: %w", strings.TrimSpace(string(raw)), err)
+	}
+	for _, o := range opts {
+		for _, kv := range strings.Split(o, ",") {
+			if kv == "name=userns" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (cliDocker) RestartCounts(ctx context.Context) (map[string]int, error) {

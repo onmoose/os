@@ -210,8 +210,10 @@ func TestInstallFolders_FolderlessRunsAsBrainIdentity(t *testing.T) {
 	if strings.Contains(string(ov), "volumes:") || strings.Contains(string(ov), "group_add:") {
 		t.Errorf("folderless override must bind no folders, got:\n%s", ov)
 	}
-	if e.host.called("WellKnownIdentity") || e.host.called("ResolveHome") {
-		t.Error("folderless install must not resolve host identity")
+	// WellKnownIdentity is read for every install now, for the remap base
+	// (#529). A folderless app still resolves no owner home.
+	if e.host.called("ResolveHome") {
+		t.Error("folderless install must not resolve an owner home")
 	}
 	dataDir := filepath.Join(e.stateDir, "instances", inst.ID, "data")
 	if fi, err := os.Stat(dataDir); err != nil {

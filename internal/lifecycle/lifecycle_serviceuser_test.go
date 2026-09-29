@@ -88,8 +88,9 @@ func TestInstallServiceUser_PinsAllocatedIdentity(t *testing.T) {
 	if !e.host.called("AllocateAppServiceIdentity") {
 		t.Error("install must allocate an app-service identity")
 	}
-	// service_user is a folderless path: no folder-identity resolution.
-	if e.host.called("WellKnownIdentity") || e.host.called("ResolveHome") {
+	// service_user is a folderless path: no owner home. (WellKnownIdentity is
+	// read for every install, for the remap base, #529.)
+	if e.host.called("ResolveHome") {
 		t.Error("service_user install must not resolve folder identities")
 	}
 }

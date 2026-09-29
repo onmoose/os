@@ -40,6 +40,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -166,7 +167,7 @@ func sortedServiceKeys(services map[string]manifest.ServiceDep) []string {
 // inside it. Returns nil for a manifest with no services. Postgres and the
 // MySQL family in v1; any other (schema-valid) type is a terminal install error
 // until its provisioning lands.
-func (m *Manager) provisionServices(ctx context.Context, instanceID, manifestID string, services map[string]manifest.ServiceDep) ([]store.ServiceGrant, error) {
+func (m *Manager) provisionServices(ctx context.Context, instanceID, manifestID string, services map[string]manifest.ServiceDep, remapBase int) ([]store.ServiceGrant, error) {
 	if len(services) == 0 {
 		return nil, nil
 	}
@@ -182,7 +183,7 @@ func (m *Manager) provisionServices(ctx context.Context, instanceID, manifestID 
 		if !provisionedKinds[engine] {
 			return nil, fmt.Errorf("managed service %q (%s) is not provisioned yet", key, engine)
 		}
-		if err := m.ensureServiceInstance(ctx, engine, engVersion); err != nil {
+		if err := m.ensureServiceInstance(ctx, engine, engVersion, remapBase); err != nil {
 			return nil, fmt.Errorf("ensure %s-%s: %w", engine, engVersion, err)
 		}
 		stem := sanitizeIdent(manifestID)
@@ -235,7 +236,7 @@ func (m *Manager) existingServicePW(kind, version string) (string, bool) {
 // ensureServiceInstance starts the shared service container of a kind+version if
 // it isn't already recorded (lazy spinup). Idempotent: an existing row means the
 // instance was spun up before and the reconcile pass keeps it running.
-func (m *Manager) ensureServiceInstance(ctx context.Context, kind, version string) error {
+func (m *Manager) ensureServiceInstance(ctx context.Context, kind, version string, remapBase int) error {
 	if _, err := m.store.GetServiceInstance(kind, version); err == nil {
 		return nil
 	} else if err != store.ErrNotFound {
@@ -251,7 +252,7 @@ func (m *Manager) ensureServiceInstance(ctx context.Context, kind, version strin
 		if err != nil {
 			return err
 		}
-		if err := m.writeServiceDir(kind, version, superuserPW); err != nil {
+		if err := m.writeServiceDir(kind, version, superuserPW, remapBase); err != nil {
 			return err
 		}
 	}
@@ -502,7 +503,13 @@ func (m *Manager) reconcileServices(ctx context.Context) {
 
 // writeServiceDir lays down the generated compose.yml + .env for a service
 // instance under <stateDir>/services/<kind>-<version>/.
-func (m *Manager) writeServiceDir(kind, version, superuserPW string) error {
+//
+// On a remapped daemon (remapBase > 0) the data dir and what is in it are then
+// given to base:base, the service container's own root, so the service image's
+// entrypoint can take it from there (Postgres lands at base+999). A managed
+// service is always in the default tier (APP_ISOLATION.md # User-namespace
+// tiers). With no remap nothing changes.
+func (m *Manager) writeServiceDir(kind, version, superuserPW string, remapBase int) error {
 	if !provisionedKinds[kind] {
 		return fmt.Errorf("managed service %q is not provisioned yet", kind)
 	}
@@ -533,7 +540,26 @@ func (m *Manager) writeServiceDir(kind, version, superuserPW string) error {
 		return err
 	}
 	env := pwVar + "=" + superuserPW + "\n"
-	return os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600)
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600); err != nil {
+		return err
+	}
+	if remapBase == 0 {
+		return nil
+	}
+	err := filepath.WalkDir(filepath.Join(dir, "data"), func(p string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		return m.chown(p, remapBase, remapBase)
+	})
+	// The unprivileged native dev brain cannot chown to the remap range, the
+	// same limit as an app's bind dirs. Say so and go on.
+	if err != nil && os.Geteuid() != 0 {
+		slog.Warn("managed service data chown skipped under unprivileged brain",
+			"service", kind, "uid", remapBase, "err", err)
+		return nil
+	}
+	return err
 }
 
 // postgresServiceCompose renders the shared-Postgres compose. The network is
