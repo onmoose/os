@@ -758,12 +758,12 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 		failMeta := map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}
 		if man.Mail == nil {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
-			return nil, huma.Error422UnprocessableEntity("this app does not support outgoing email")
+			return nil, configError("config.mail_provider_id", "this app does not support outgoing email")
 		}
 		caller, _ := auth.FromContext(ctx) // resolveOwnerScope already required it
 		if _, err := s.ownMailProvider(caller, mailProviderID); errors.Is(err, store.ErrNotFound) {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
-			return nil, huma.Error422UnprocessableEntity("no such mail provider")
+			return nil, configError("config.mail_provider_id", "no such mail provider")
 		} else if err != nil {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
 			slog.Error("install: mail provider lookup failed", "manifest_id", manifestID, "err", err)
@@ -853,15 +853,13 @@ func (s *Server) checkDuplicate(ctx context.Context, manifestID string, confirm 
 		return nil
 	}
 	id, _ := auth.FromContext(ctx)
-	existing, err := s.store.InstancesByManifest(manifestID)
+	// The same list the install plan warns with, so the two cannot drift.
+	existing, err := s.visibleCopies(id, manifestID)
 	if err != nil {
-		return huma.Error500InternalServerError("duplicate check failed", err)
+		return err
 	}
 	var summaries []error
 	for _, i := range existing {
-		if !canSee(id, i) {
-			continue
-		}
 		if i.Scope == store.ScopeHousehold {
 			summaries = append(summaries, fmt.Errorf("%s is already installed as a household app", i.Name))
 		} else {

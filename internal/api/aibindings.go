@@ -85,19 +85,19 @@ func resolveAIBindings(man *manifest.Manifest, bindings []AIBindingBody, account
 		slot := strings.TrimSpace(b.Slot)
 		fields, ok := slots[slot]
 		if !ok {
-			return aiResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: this app has no AI slot %q", slot))
+			return aiResolution{}, configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: this app has no AI slot %q", slot))
 		}
 		if seen[slot] {
-			return aiResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: slot %s is given more than once", slot))
+			return aiResolution{}, configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: slot %s is given more than once", slot))
 		}
 		seen[slot] = true
 		accountID := strings.TrimSpace(b.AccountID)
 		if accountID == "" {
-			return aiResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: pick an AI account for slot %s", slot))
+			return aiResolution{}, configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: pick an AI account for slot %s", slot))
 		}
 		acct, err := account(accountID)
 		if errors.Is(err, store.ErrNotFound) {
-			return aiResolution{}, huma.Error422UnprocessableEntity("config.ai_bindings: no such AI account")
+			return aiResolution{}, configError("config.ai_bindings."+slot, "config.ai_bindings: no such AI account")
 		}
 		if err != nil {
 			return aiResolution{}, huma.Error500InternalServerError("ai account lookup failed", err)
@@ -134,7 +134,7 @@ type boundSlot struct {
 func resolveSlot(slot string, fields []slotField, chosen map[string][]string, acct store.AIAccount, providers []catalog.AIProvider) (boundSlot, error) {
 	protocol := fields[0].role.Protocol
 	compatible := protocol == manifest.ProtocolOpenAICompatible
-	notFit := huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: the account %q does not work with this app's %s slot", acct.Label, slot))
+	notFit := configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: the account %q does not work with this app's %s slot", acct.Label, slot))
 
 	var prov *catalog.AIProvider
 	for i := range providers {
@@ -158,10 +158,10 @@ func resolveSlot(slot string, fields []slotField, chosen map[string][]string, ac
 		// A native slot cannot confirm the protocol without it. The compatible
 		// slot still works when the account has its own address.
 		if !compatible {
-			return boundSlot{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: the provider of the account %q is not in the provider list now, so it cannot fill the %s slot", acct.Label, slot))
+			return boundSlot{}, configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: the provider of the account %q is not in the provider list now, so it cannot fill the %s slot", acct.Label, slot))
 		}
 		if acct.BaseURL == "" {
-			return boundSlot{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: the provider of the account %q is not in the provider list now. Give the account its own base URL, or pick another account", acct.Label))
+			return boundSlot{}, configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: the provider of the account %q is not in the provider list now. Give the account its own base URL, or pick another account", acct.Label))
 		}
 		baseURL = acct.BaseURL
 	case compatible:
@@ -193,7 +193,7 @@ func resolveSlot(slot string, fields []slotField, chosen map[string][]string, ac
 	slices.Sort(keys)
 	for _, k := range keys {
 		if !declared[k] {
-			return boundSlot{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: the %s slot of this app does not take %s", slot, k))
+			return boundSlot{}, configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: the %s slot of this app does not take %s", slot, k))
 		}
 	}
 
@@ -211,7 +211,7 @@ func resolveSlot(slot string, fields []slotField, chosen map[string][]string, ac
 				out.values[env] = baseURL
 			}
 		case manifest.AttrModel, manifest.AttrModels:
-			ids, err := slotModels(sf, chosen, prov)
+			ids, err := slotModels(sf, chosen, prov, acct.Models)
 			if err != nil {
 				return boundSlot{}, err
 			}
@@ -226,14 +226,24 @@ func resolveSlot(slot string, fields []slotField, chosen map[string][]string, ac
 // else the provider's default for the field's type, checked the same way.
 // Only a listed provider has defaults; an openai_compatible account, or a
 // provider that has left the data, has none.
-func slotModels(sf slotField, chosen map[string][]string, prov *catalog.AIProvider) ([]string, error) {
+func slotModels(sf slotField, chosen map[string][]string, prov *catalog.AIProvider, acctModels map[string][]string) ([]string, error) {
 	title := sf.field.Title
 	key := modelKey(sf.role)
 	list := sf.role.Attribute == manifest.AttrModels
 	raw, given := chosen[key]
+	// A server of the user's own (an openai_compatible account) has no model
+	// list, so its own model names for the type take the default's place: all
+	// of them for a list, the first for a single model. They are checked
+	// below like chosen ids.
+	if own := acctModels[sf.role.ModelType]; !given && len(own) > 0 {
+		raw, given = own, true
+		if !list {
+			raw = own[:1]
+		}
+	}
 	if !given {
 		if prov == nil || prov.Defaults[sf.role.ModelType] == "" {
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: pick a model for %s", title))
+			return nil, configError("config.ai_bindings."+sf.role.Slot(), fmt.Sprintf("config.ai_bindings: pick a model for %s", title))
 		}
 		// The default goes through the same checks as a chosen id, so a default
 		// that holds the app's separator is refused, not split into a list.
@@ -245,21 +255,21 @@ func slotModels(sf slotField, chosen map[string][]string, prov *catalog.AIProvid
 		id = strings.TrimSpace(id)
 		switch {
 		case id == "":
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: a model name for %s is empty", title))
+			return nil, configError("config.ai_bindings."+sf.role.Slot(), fmt.Sprintf("config.ai_bindings: a model name for %s is empty", title))
 		case hasControl(id):
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: a model name for %s must not contain line breaks or control characters", title))
+			return nil, configError("config.ai_bindings."+sf.role.Slot(), fmt.Sprintf("config.ai_bindings: a model name for %s must not contain line breaks or control characters", title))
 		case slices.Contains(ids, id):
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: model %q is picked twice for %s", id, title))
+			return nil, configError("config.ai_bindings."+sf.role.Slot(), fmt.Sprintf("config.ai_bindings: model %q is picked twice for %s", id, title))
 		case list && strings.Contains(id, sep):
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: model %q for %s contains %q, which this app uses to separate models", id, title, sep))
+			return nil, configError("config.ai_bindings."+sf.role.Slot(), fmt.Sprintf("config.ai_bindings: model %q for %s contains %q, which this app uses to separate models", id, title, sep))
 		}
 		ids = append(ids, id)
 	}
 	if !list && len(ids) != 1 {
-		return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: pick exactly one model for %s", title))
+		return nil, configError("config.ai_bindings."+sf.role.Slot(), fmt.Sprintf("config.ai_bindings: pick exactly one model for %s", title))
 	}
 	if list && len(ids) == 0 {
-		return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: pick at least one model for %s", title))
+		return nil, configError("config.ai_bindings."+sf.role.Slot(), fmt.Sprintf("config.ai_bindings: pick at least one model for %s", title))
 	}
 	return ids, nil
 }
@@ -282,7 +292,7 @@ func resolveInstallWithAI(man *manifest.Manifest, fields map[string]string, bind
 	for _, env := range envs {
 		v := fields[env]
 		if v != "" && res.claimed[env] {
-			return nil, nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %s is filled from an AI account, so do not also send a value for it", env))
+			return nil, nil, configError("config.fields."+env, fmt.Sprintf("config.fields: %s is filled from an AI account, so do not also send a value for it", env))
 		}
 		merged[env] = v
 	}
@@ -348,10 +358,10 @@ func resolvePutWithAI(man *manifest.Manifest, current []store.InstanceConfig, cu
 	for _, b := range bindings {
 		slot := strings.TrimSpace(b.Slot)
 		if _, ok := slots[slot]; !ok {
-			return putAIResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: this app has no AI slot %q", slot))
+			return putAIResolution{}, configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: this app has no AI slot %q", slot))
 		}
 		if listed[slot] {
-			return putAIResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.ai_bindings: slot %s is given more than once", slot))
+			return putAIResolution{}, configError("config.ai_bindings."+slot, fmt.Sprintf("config.ai_bindings: slot %s is given more than once", slot))
 		}
 		listed[slot] = true
 		order = append(order, slot)
@@ -394,7 +404,7 @@ func resolvePutWithAI(man *manifest.Manifest, current []store.InstanceConfig, cu
 			continue
 		}
 		if v != "" {
-			return putAIResolution{}, huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %s is filled from an AI account, so do not also send a value for it", env))
+			return putAIResolution{}, configError("config.fields."+env, fmt.Sprintf("config.fields: %s is filled from an AI account, so do not also send a value for it", env))
 		}
 	}
 	// Every field of a listed slot gets the value its new binding gives, or is
@@ -443,7 +453,7 @@ func accountSlotResolver(account func(id string) (store.AIAccount, error), provi
 		}
 		fields, ok := fillableSlots(man)[b.Slot]
 		if !ok {
-			return nil, fmt.Errorf("the app has no LLM provider setting %s now", b.Slot)
+			return nil, fmt.Errorf("the app has no AI service setting %s now", b.Slot)
 		}
 		return restampSlot(fields, b, acct, providers, removedURL, current)
 	}

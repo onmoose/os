@@ -109,7 +109,11 @@ export type InstallRequest = Schemas["Install-appRequest"];
 export type InstallPlan = Schemas["InstallPlanDTO"];
 export type InstallPlanFolder = Schemas["InstallPlanFolder"];
 export type InstallPlanPermissions = Schemas["InstallPlanPermissions"];
+export type InstallPlanFootprint = Schemas["InstallPlanFootprint"];
 export type InstallPlanConfigField = Schemas["InstallPlanConfigField"];
+// InstallPlanExisting is a copy of the app the caller can already see: the
+// same copies that make POST /api/v1/apps answer 409 duplicate-install.
+export type InstallPlanExisting = Schemas["InstallPlanExisting"];
 export type AppConfig = Schemas["AppConfigDTO"];
 export type AppConfigField = Schemas["AppConfigFieldDTO"];
 export type SourceMenu = Schemas["SourceMenu"];

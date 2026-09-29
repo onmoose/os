@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/onmoose/os/internal/audit"
 	"github.com/onmoose/os/internal/store"
@@ -273,7 +274,7 @@ func TestAIAccountValidation422(t *testing.T) {
 		want string
 	}{
 		{"no provider", map[string]any{"provider_id": "  ", "label": "x", "api_key": "k"}, "provider_id is required"},
-		{"unknown provider", map[string]any{"provider_id": "nope", "label": "x", "api_key": "k"}, "unknown LLM provider"},
+		{"unknown provider", map[string]any{"provider_id": "nope", "label": "x", "api_key": "k"}, "unknown AI service"},
 		{"no label", map[string]any{"provider_id": "acme", "label": "   ", "api_key": "k"}, "label is required"},
 		{"long label", map[string]any{"provider_id": "acme", "label": long, "api_key": "k"}, "label is too long"},
 		{"label line break", map[string]any{"provider_id": "acme", "label": "a\nb", "api_key": "k"}, "label must not contain"},
@@ -322,11 +323,11 @@ func TestAIAccountAcceptedShapes(t *testing.T) {
 		t.Fatalf("key not trimmed: %q", got.APIKey)
 	}
 
-	keyless := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home server", "base_url": "http://192.168.1.20:11434/v1"})
+	keyless := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home server", "models": map[string][]string{"chat": {"llama3"}}, "base_url": "http://192.168.1.20:11434/v1"})
 	if keyless.KeySet || keyless.ProviderID != "openai_compatible" {
 		t.Fatalf("keyless compatible = %+v", keyless)
 	}
-	keyed := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Proxy", "api_key": "sk-proxy", "base_url": "https://llm.example.com/v1"})
+	keyed := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Proxy", "models": map[string][]string{"chat": {"llama3"}}, "api_key": "sk-proxy", "base_url": "https://llm.example.com/v1"})
 	if !keyed.KeySet {
 		t.Fatalf("keyed compatible = %+v", keyed)
 	}
@@ -338,7 +339,7 @@ func TestAIAccountAcceptedShapes(t *testing.T) {
 	}
 	// Moving a compatible account to an unknown provider is refused.
 	code, raw = h.doRaw("PUT", "/api/v1/ai-accounts/"+keyed.ID, map[string]any{"provider_id": "nope", "label": "Proxy"})
-	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "unknown LLM provider") {
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "unknown AI service") {
 		t.Fatalf("switch to unknown provider = %d %s", code, raw)
 	}
 	// Dropping the base URL of a compatible account is refused.
@@ -351,15 +352,54 @@ func TestAIAccountAcceptedShapes(t *testing.T) {
 // With no provider data (the catalog has not loaded), a listed provider cannot
 // be checked and is refused with its own message. An OpenAI-compatible server
 // still works, and an existing account can still be renamed.
+// TestAIAccountServerNeedsModel: an OpenAI-compatible account needs at least
+// one model name, of any type, on create and after an edit. An account stored without one (from
+// before the rule) cannot be saved until it gets one.
+func TestAIAccountServerNeedsModel(t *testing.T) {
+	h := newHarness(t)
+	alice := h.setupAdmin("alice", "pass1")
+
+	code, raw := h.doRaw("POST", "/api/v1/ai-accounts", map[string]any{"provider_id": "openai_compatible", "label": "Home", "base_url": "http://192.168.1.20:11434/v1"})
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), `"location":"body.models"`) {
+		t.Fatalf("create without a model = %d %s", code, raw)
+	}
+
+	old := store.AIAccount{ID: "ai_old", OwnerUserID: alice.ID, ProviderID: "openai_compatible", Label: "Old", BaseURL: "http://10.0.0.2/v1", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := h.st.CreateAIAccount(old); err != nil {
+		t.Fatal(err)
+	}
+	rename := map[string]any{"provider_id": "openai_compatible", "label": "Renamed", "base_url": "http://10.0.0.2/v1"}
+	if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_old", rename); code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), `"location":"body.models"`) {
+		t.Fatalf("rename without a model = %d %s", code, raw)
+	}
+	rename["models"] = map[string][]string{"chat": {"llama3"}}
+	if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_old", rename); code != http.StatusOK {
+		t.Fatalf("rename with a model = %d %s", code, raw)
+	}
+	if got, _ := h.st.GetAIAccount("ai_old"); len(got.Models["chat"]) != 1 || got.Models["chat"][0] != "llama3" {
+		t.Fatalf("stored models = %v", got.Models)
+	}
+	// Any model type counts: a server that serves only embeddings is fine.
+	emb := map[string]any{"provider_id": "openai_compatible", "label": "Embed", "base_url": "http://10.0.0.3/v1", "models": map[string][]string{"embedding": {"nomic-embed-text"}}}
+	if code, raw := h.doRaw("POST", "/api/v1/ai-accounts", emb); code != http.StatusOK {
+		t.Fatalf("embeddings-only server = %d %s", code, raw)
+	}
+	// Left out on a later edit, the stored name stays and the edit passes.
+	delete(rename, "models")
+	if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_old", rename); code != http.StatusOK {
+		t.Fatalf("edit keeping the model = %d %s", code, raw)
+	}
+}
+
 func TestAIAccountEmptyProviderData(t *testing.T) {
 	h := newHarness(t)
 	alice := h.setupAdmin("alice", "pass1")
 
 	code, raw := h.doRaw("POST", "/api/v1/ai-accounts", aiAccountBody("Work"))
-	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "the list of LLM providers is not loaded yet") {
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "the list of AI services is not loaded yet") {
 		t.Fatalf("listed provider with no data = %d %s", code, raw)
 	}
-	a := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home", "base_url": "http://192.168.1.20:11434/v1"})
+	a := h.createAIAccount(map[string]any{"provider_id": "openai_compatible", "label": "Home", "models": map[string][]string{"chat": {"llama3"}}, "base_url": "http://192.168.1.20:11434/v1"})
 
 	// An account made while the data was there can still be renamed.
 	stored := store.AIAccount{ID: "ai_old", OwnerUserID: alice.ID, ProviderID: "acme", Label: "Old", APIKey: "sk-old"}
@@ -407,5 +447,70 @@ func TestDeleteUserAIAccounts(t *testing.T) {
 	}
 	if got, _ := h.st.ListAIAccounts("u_carol"); len(got) != 0 {
 		t.Fatalf("deleted user's AI accounts survived: %+v", got)
+	}
+}
+
+// A server of the user's own keeps its model names on the account: they are
+// set on create, returned on read, replaced on update, kept when an update
+// leaves them out, and refused for a listed provider with a location.
+func TestAIAccountModels(t *testing.T) {
+	h := newHarness(t)
+	h.setupAdmin("alice", "pass1")
+
+	created := h.createAIAccount(map[string]any{
+		"provider_id": "openai_compatible", "label": "My server", "base_url": "http://llm.lan:8000/v1",
+		"models": map[string][]string{"chat": {" llama3 "}},
+	})
+	if strings.Join(created.Models["chat"], ",") != "llama3" {
+		t.Fatalf("created models = %v", created.Models)
+	}
+
+	code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/"+created.ID, map[string]any{
+		"provider_id": "openai_compatible", "label": "My server", "base_url": "http://llm.lan:8000/v1",
+		"models": map[string][]string{"chat": {"qwen2"}, "embedding": {"nomic"}},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("update = %d %s", code, raw)
+	}
+	updated := decodeRaw[AIAccountSavedDTO](t, raw)
+	if updated.Models["chat"][0] != "qwen2" || updated.Models["embedding"][0] != "nomic" {
+		t.Fatalf("updated models = %v", updated.Models)
+	}
+
+	// Left out: kept.
+	code, raw = h.doRaw("PUT", "/api/v1/ai-accounts/"+created.ID, map[string]any{
+		"provider_id": "openai_compatible", "label": "Renamed", "base_url": "http://llm.lan:8000/v1",
+	})
+	if code != http.StatusOK || decodeRaw[AIAccountSavedDTO](t, raw).Models["chat"][0] != "qwen2" {
+		t.Fatalf("rename = %d %s; want the models kept", code, raw)
+	}
+
+	cases := []struct {
+		name string
+		body map[string]any
+		loc  string
+	}{
+		{"listed provider", map[string]any{"provider_id": "acme", "label": "Acme", "api_key": testAIKey,
+			"models": map[string][]string{"chat": {"x"}}}, "body.models"},
+		{"unknown type", map[string]any{"provider_id": "openai_compatible", "label": "S2", "base_url": "http://a.lan/v1",
+			"models": map[string][]string{"poem": {"x"}}}, "body.models.poem"},
+		{"empty name", map[string]any{"provider_id": "openai_compatible", "label": "S3", "base_url": "http://a.lan/v1",
+			"models": map[string][]string{"chat": {" "}}}, "body.models.chat"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, raw := h.doRaw("POST", "/api/v1/ai-accounts", c.body)
+			if code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d %s; want 422", code, raw)
+			}
+			body := decodeRaw[struct {
+				Errors []struct {
+					Location string `json:"location"`
+				} `json:"errors"`
+			}](t, raw)
+			if len(body.Errors) == 0 || body.Errors[0].Location != c.loc {
+				t.Fatalf("errors = %+v; want location %q", body.Errors, c.loc)
+			}
+		})
 	}
 }

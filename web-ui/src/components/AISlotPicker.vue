@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The LLM provider picker for an app's AI slots (INSTALL_SETUP.md # 6 and
+// The AI service picker for an app's AI slots (INSTALL_SETUP.md # 6 and
 // piece 4). One component serves the install setup page and the app's
 // settings screen. The user picks a provider tile, then one of their accounts
 // for that provider (or adds one right here), then the models, and saves.
@@ -7,7 +7,7 @@
 // binding, and the brain fills the app's fields from the account. Which slot a
 // provider lands in, and which tiles show at all, comes from aiProviders.ts.
 //
-// The UI says "LLM provider"; the code and the API say `ai`.
+// The UI says "AI service"; the code and the API say `ai`.
 //
 // On the settings screen a slot can be filled from another user's account (an
 // admin's household app, rebound by another admin). That account is not in
@@ -382,11 +382,11 @@ const inputClass =
 <template>
   <div class="space-y-4">
     <p class="text-sm text-muted-foreground">
-      {{ appName }} uses an LLM provider. Pick one, then pick or add your account for it.
+      {{ appName }} uses an AI service. Pick one, then pick or add your account for it.
       <template v-if="slots.length > 1">You can add more than one.</template>
     </p>
 
-    <OptionCards label="LLM provider" :options="tileOptions" :selected="selectedTiles" multiple @pick="pick">
+    <OptionCards label="AI service" :options="tileOptions" :selected="selectedTiles" multiple @pick="pick">
       <template #icon="{ option }">
         <span class="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <img

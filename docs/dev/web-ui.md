@@ -54,8 +54,8 @@ web-ui/
     │   └── utils.ts        # cn() class-merge helper (shadcn convention)
     │
     ├── mailProviderForm.ts # outgoing-mail form shape + preset rules, shared by
-    │                       #   the add flow, the inline edit form, and the
-    │                       #   install setup page's inline add
+    │                       #   the Settings add flow, the inline edit form, and
+    │                       #   the install flow's email add form
     ├── sshDraft.ts         # the SSH screen's unsaved draft: the save body, and the
     │                       #   sessionStorage copy that survives a reload or the
     │                       #   hosted owner's portal confirm
@@ -63,14 +63,16 @@ web-ui/
     │                       #   (detail-page button state) and the POST with its
     │                       #   409/422 branches; see "Install flow" below
     ├── aiProviders.ts      # AI slots from manifest roles, provider tiles, model
-    │                       #   pickers, bindings and the requires gate for the
-    │                       #   install setup page
+    │                       #   pickers, bindings and the requires gate
+    ├── installSteps.ts     # the install flow as pages: plan -> pages, AI needs,
+    │                       #   the key picked in advance, the session-storage
+    │                       #   draft, and the page that owns a 422
     │
     ├── views/              # one component per route (lazy-loaded)
     │   ├── HomeView.vue        # installed-app grid
     │   ├── StoreView.vue       # catalog browse grid (cards → detail page)
     │   ├── AppDetailView.vue   # /store/:id — app detail page; Install starts here
-    │   ├── InstallSetupView.vue    # /store/:id/install: the install setup page
+    │   ├── InstallSetupView.vue    # /store/:id/install?step=: the install flow's pages
     │   ├── InstallProgressView.vue # /store/:id/install/:jobId: install job progress
     │   ├── CustomInstallView.vue  # Door-2 custom-container form (admin-only)
     │   ├── FilesView.vue
@@ -82,10 +84,10 @@ web-ui/
     │       ├── InstalledAppsSection.vue  # manage/uninstall/logs list
     │       ├── ActivitySection.vue       # audit-log browser (all users)
     │       ├── UsersSection.vue          # admin-only user management
-    │       ├── InstalledAppDetailSection.vue # one app: controls, email, secrets, settings + LLM pickers, logs
-    │       ├── LLMProvidersSection.vue   # Integrations → LLM providers: the user's own AI accounts
+    │       ├── InstalledAppDetailSection.vue # one app: controls, email, secrets, settings + AI service pickers, logs
+    │       ├── LLMProvidersSection.vue   # /settings/ai, Integrations → AI services: the user's own AI accounts (add: ServiceGrid + AIKeyForm)
     │       ├── EmailSection.vue          # Integrations → Email: the user's own SMTP account list
-    │       ├── EmailAddSection.vue       # /email/add + /email/add/:preset (/settings/mail/* redirect here)
+    │       ├── EmailAddSection.vue       # /email/add + /email/add/:preset (MailServiceGrid + MailAddForm; /settings/mail/* redirect here)
     │       └── AboutSection.vue          # product identity
     │
     └── components/         # reusable chrome + dialogs
@@ -96,17 +98,24 @@ web-ui/
         ├── AppGlyph.vue        # icon-less fallback: manifest icon_glyph → Lucide icon, else AppWindow
         ├── MailProviderLogo.vue # provider mark from assets/mail-providers/, by preset id
         │                        #   (that folder's README is the how-to for adding one)
-        ├── AIProviderLogo.vue   # LLM provider logo (box-proxied), icon fallback
-        ├── AISlotPicker.vue     # LLM provider row: tiles, account pick + inline add,
+        ├── AIProviderLogo.vue   # AI service logo (box-proxied), icon fallback
+        ├── AISlotPicker.vue     # AI service row: tiles, account pick + inline add,
         │                        #   model pickers; shared by the setup page and the
         │                        #   app's settings screen
         ├── SplitButton.vue
         ├── ElevateDialog.vue
         ├── ToastHost.vue
-        └── install/            # the rows of the install setup page
-            ├── OptionCards.vue       # selectable card grid + "More" divider + search
+        └── install/            # the steps of the install flow
+            ├── OptionCards.vue       # selectable card grid + "More" divider + search (AISlotPicker)
             ├── ConfigFieldInput.vue  # one config field (text / secret / enum / bool)
-            └── MailAccountSection.vue # Email row, with inline account add for any user
+            ├── InstallInfoBox.vue    # the quiet info box: permissions, size, space warning
+            ├── FolderChoices.vue     # the folder step: consent line, source and subfolder per folder
+            ├── OptionalOffer.vue     # an optional step with no saved account: Not now / Set up
+            ├── AccountList.vue       # the B layout: saved AI keys or email accounts
+            ├── ServiceGrid.vue       # the AI service grid (radio group)
+            ├── AIKeyForm.vue         # a new AI key, saved on the page's Continue
+            ├── MailServiceGrid.vue   # the email service grid: personal, then sending services
+            └── MailAddForm.vue       # a new email account, saved on the page's Continue
 ```
 
 A handful of top-level `.vue` files (`Login.vue`, `Setup.vue`, `NotificationBell.vue`, `LiveResources.vue`) sit directly in `src/` rather than `components/` — they're the pre-shell / standalone surfaces. New reusable components go in `components/`; new routed screens go in `views/`.
@@ -138,15 +147,17 @@ When an app has no raster icon (`icon_url`), both the card and the detail header
 
 ## Install flow
 
-A catalog install spans three pages. The detail page's Install button (and the split button's household item) only navigates to the setup page. The setup page fetches `GET /catalog/:id/install-plan` itself, keeps the form in local refs, and sends `POST /apps`. A 202 replaces the URL with the progress page, which polls `GET /jobs/:id` with a `useQuery` `refetchInterval` until the job ends. Because the job id is in the URL, a reload resumes it. A 404 on the job (the brain restarted and forgot it) stops the polling and says so.
+A catalog install goes from the detail page's Install button (and the split button's household item) to the install flow at `/store/:id/install`, then to the progress page. The flow is one need per step (`docs/specs/INSTALL_STEPS.md`, `DASHBOARD.md` # Install authorization). The detail page fetches the install plan too: for an app with no steps and nothing to warn about (`needsNoPages`, `installWarnings`) Install sends `POST /apps` from there and goes straight to the progress page, and the plan also feeds the detail page's Permissions group (`permissionLines`). `InstallSetupView.vue` fetches `GET /catalog/:id/install-plan` and draws every step: a step is `?step=<name>`, and the bare path opens the first step (for an app with no steps it is the warning-only page). The last step's button is Install; it sends `POST /apps`, and a 202 replaces the URL with the progress page, which polls `GET /jobs/:id` with a `useQuery` `refetchInterval` until the job ends. Because the job id is in the URL, a reload resumes it. A 404 on the job (the brain restarted and forgot it) stops the polling and says so.
+
+`src/installSteps.ts` is the pure part. `planNeeds` sorts the plan into needs, and `stepList` gives the steps in order: each AI need, email, the "needs these to run" step, the folder step. `aiNeeds`, `needOfStep`, `usableAccounts`, `choiceFor` and `serverSlot`, `serverModels` and `missingModelTypes` (a My own server account's model names are saved on the account) handle the AI steps, one need at a time, one service per need; `stepForError` maps a 422's `location` to its step. The view keeps a draft (the answers, the picked services, the saved My own server account whose form is open, the declined optional steps) and writes it to `sessionStorage` under `moose.install.v3.<user>.<app>.<scope>`, without secret field values. The draft is removed after the install starts or on Cancel. Opening a step after a required step with no answer redirects to that step. Every step saves on Continue: a page-local copy for the settings, email and folder steps (the settings copy stays in memory only, never in the draft), and for a new AI key or email account the form component's `save()`, which the view calls from Continue (`AIKeyForm`, `MailAddForm`, exposed with `defineExpose`); after a save the user goes back to the step's list with the new account picked. No page has a Save of its own. Every page has two buttons at the bottom: Cancel on the first step's own page and the warning-only page, else Back, then Continue or Install (`leftIsCancel`). Back follows the browser history (the position Vue Router keeps in `history.state`). The seeding watch sits at the end of the view's setup, because with the plan cached it runs at once and must see every value declared.
 
 `src/useInstall.ts` holds the shared parts. `useAppInstances(manifestId)` finds the caller's household and own-personal copies in the `["apps"]` cache. It says whether the detail page shows Open, Install, or "Installing…", and whether the household item is offered. "Installing…" comes from the instance row being in the `installing` state, which the brain creates at the start of the job, so it needs no local state and holds across a reload. `useInstallSubmit(manifestId)` is the POST with its two error branches: 409 `duplicate-install` becomes a warn-don't-block banner with "Install my own copy" (a retry with `confirm: true`), and any other failure (a 422 election) shows inline above the Install button.
 
 The progress page folds the brain's ~15 lifecycle steps into four phases in the order the brain runs them: Preparing, Downloading (`resolving_digests`, which pulls the images), Setting up, Starting. The phase never goes back, and an unknown step keeps the last known phase. The wording stays in the view.
 
-The setup page's rows live in `components/install/`. `OptionCards` is the shared card grid (about five cards, then a "More" divider button that shows the rest with a search box, and an optional "use what I typed" card for model ids). The Email row reuses `mailProviderForm.ts` for its inline add, the same rules as the Settings add flow; `useMailPresets` takes an `enabled` ref there so the presets load only when the user opens the add flow. The AI providers row gets its provider list from `GET /api/v1/ai-providers` (query key `["ai-providers"]`, fetched by the setup page), plus the "Other (OpenAI-compatible)" tile, which the UI owns and whose accounts carry provider id `openai_compatible`. `aiProviders.ts` is the one module that turns roles and provider data into tiles. It groups the fields that have a `role` of kind `ai` into slots by `kind.protocol`. A tile goes to the app's native slot when its `native_protocol` matches, else to the compatible slot when it has an `openai_base_url` (Other always fits), and it is hidden for a slot when the provider has no model of a type the slot declares. A native slot that no provider fits keeps its fields in the Settings row. Picking a tile lists the user's accounts for it (`GET /api/v1/ai-accounts`, query key `["ai-accounts"]`, owned by `AISlotPicker`) with an inline add that posts `/ai-accounts` and picks the new account, then one picker per model setting: single for `model.<type>`, multi for `models.<type>`, the provider's default first and chosen, plus a typed id. A saved choice becomes a `config.ai_bindings` entry (`bindingOf`), and the slot's fields are not sent in `config.fields`. The Install button also waits for the plan's `requires` groups (`unmetGroups`, `groupNeed`), counting a bound slot as filled. An empty provider list (the catalog is not reachable, or serves none) means no AI row: every field is a plain input, so an install is never blocked on provider data.
+The pages' parts live in `components/install/`. The AI pages read `GET /api/v1/ai-providers` (query key `["ai-providers"]`) and the user's accounts (`["ai-accounts"]`); the tile rule is still `aiProviders.ts` (`slotFor`, `fits`), and "My own server" is the UI's own tile, whose accounts carry provider id `openai_compatible`. An empty provider list (the catalog is not reachable, or serves none) means no AI pages: every field is a plain field, so an install is never blocked on provider data. The email pages read `GET /api/v1/mail-presets` through `useMailPresets` in `mailProviderForm.ts`; the preset table gives the order (Gmail and iCloud, marked `personal`, first) and the numbered steps. `AccountList` is shared by the AI key list and the email account list, with the logo in a slot. The grids are radio groups: one tile in the tab order, the arrow keys move the choice.
 
-The same `AISlotPicker` draws the app's settings screen (`InstalledAppDetailSection.vue`, `INSTALL_SETUP.md` piece 4). There the choices start from the `ai_bindings` of `GET /apps/{id}/config` (`choiceFromBinding`), a slot with values and no binding stays raw fields under "set by hand" until the user asks to pick an account, and Save sends the changed fields plus the changed slots (`bindingChanges`: a new or changed binding, or `account_id: ""` for a removed one) in one `PUT`. A choice whose account is not in the caller's `["ai-accounts"]` list is another user's, and the picker says "Someone else's account". A binding whose provider has no tile (it left the provider data, or the data did not load) gets its own card with **Remove**, which sends the `account_id: ""` clear, and its fields are never raw inputs. The choices are seeded when the page opens an app and again only when nothing is unsaved or right after a save, so a background refetch keeps what the user picked. User-facing text says "LLM provider"; code and API names keep `ai`. An account edit or delete may answer with a `job_id` for the apps it restarts: the Settings screens follow it with `waitForJobOk` (`api.ts`) and then invalidate `["apps"]` and `["app-config"]`, so tiles and the settings screen pick up `needs_setup`.
+The same `AISlotPicker` draws the app's settings screen (`InstalledAppDetailSection.vue`, `INSTALL_SETUP.md` piece 4). There the choices start from the `ai_bindings` of `GET /apps/{id}/config` (`choiceFromBinding`), a slot with values and no binding stays raw fields under "set by hand" until the user asks to pick an account, and Save sends the changed fields plus the changed slots (`bindingChanges`: a new or changed binding, or `account_id: ""` for a removed one) in one `PUT`. A choice whose account is not in the caller's `["ai-accounts"]` list is another user's, and the picker says "Someone else's account". A binding whose provider has no tile (it left the provider data, or the data did not load) gets its own card with **Remove**, which sends the `account_id: ""` clear, and its fields are never raw inputs. The choices are seeded when the page opens an app and again only when nothing is unsaved or right after a save, so a background refetch keeps what the user picked. User-facing text says "AI service"; code and API names keep `ai`. An account edit or delete may answer with a `job_id` for the apps it restarts: the Settings screens follow it with `waitForJobOk` (`api.ts`) and then invalidate `["apps"]` and `["app-config"]`, so tiles and the settings screen pick up `needs_setup`.
 
 ## Styling
 
