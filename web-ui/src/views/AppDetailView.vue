@@ -94,10 +94,15 @@ function pagesPath(household: boolean) {
 // goInstall starts the install at once for an app that asks nothing and has
 // nothing to warn about (INSTALL_STEPS.md # Build rules, rule 8): the 202
 // goes straight to the progress page. Anything else opens the install
-// pages. Without the plan nothing starts; the button waits for it.
+// pages. The button waits for the plan. If the plan fails, it opens the pages.
 function goInstall(household = false) {
   const p = plan.value;
-  if (!p || pending.value) return;
+  if (pending.value) return;
+  // A plan that failed to load: the install pages show the error and a retry.
+  if (!p) {
+    if (planQuery.isError.value) router.push(pagesPath(household));
+    return;
+  }
   if (!needsNoPages(p) || installWarnings(p)) {
     router.push(pagesPath(household));
     return;
@@ -341,7 +346,7 @@ watch(shots, (list) => {
             <SplitButton
               :label="installing ? 'Installing…' : pending ? 'Starting…' : 'Install'"
               :loading="installing || pending || planQuery.isPending.value"
-              :disabled="installing || pending || !plan"
+              :disabled="installing || pending || planQuery.isPending.value"
               :items="dropdownItems"
               @click="goInstall()"
             />
