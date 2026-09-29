@@ -106,7 +106,7 @@ func tarOf(t *testing.T, entries ...*tar.Header) []byte {
 		body := h.Linkname
 		if h.Typeflag == tar.TypeReg {
 			body = strings.Repeat("x", int(h.Size))
-			if h.Name == "etc/passwd" && h.Size == 0 {
+			if h.Name == "passwd" && h.Size == 0 {
 				body = "plunk:x:1001:1001::/:/bin/sh\n"
 				h.Size = int64(len(body))
 			}
@@ -129,27 +129,29 @@ func tarOf(t *testing.T, entries ...*tar.Header) []byte {
 	return buf.Bytes()
 }
 
-func TestReadUserFiles(t *testing.T) {
-	dir := &tar.Header{Name: "etc/", Typeflag: tar.TypeDir, Mode: 0o755}
-	passwd := &tar.Header{Name: "etc/passwd", Typeflag: tar.TypeReg, Mode: 0o644}
-	other := &tar.Header{Name: "etc/os-release", Typeflag: tar.TypeReg, Mode: 0o644, Size: 10}
-
-	p, g, err := readUserFiles(bytes.NewReader(tarOf(t, dir, other, passwd)))
-	if err != nil || !strings.Contains(string(p), "plunk:x:1001") || g != nil {
-		t.Fatalf("read = %q, %q, %v; want the passwd and no group", p, g, err)
+func TestReadUserFile(t *testing.T) {
+	// docker cp of one path writes a tar with that one entry, named by its
+	// base name.
+	passwd := &tar.Header{Name: "passwd", Typeflag: tar.TypeReg, Mode: 0o644}
+	p, err := readUserFile(bytes.NewReader(tarOf(t, passwd)))
+	if err != nil || !strings.Contains(string(p), "plunk:x:1001") {
+		t.Fatalf("read = %q, %v; want the passwd", p, err)
 	}
 
-	// A symlinked passwd is left out: its target is not in the stream.
-	link := &tar.Header{Name: "etc/passwd", Typeflag: tar.TypeSymlink, Linkname: "/usr/lib/passwd", Mode: 0o777}
-	if p, _, err := readUserFiles(bytes.NewReader(tarOf(t, dir, link))); err != nil || p != nil {
+	// A symlinked passwd counts as missing: its target is not in the stream.
+	link := &tar.Header{Name: "passwd", Typeflag: tar.TypeSymlink, Linkname: "/usr/lib/passwd", Mode: 0o777}
+	if p, err := readUserFile(bytes.NewReader(tarOf(t, link))); err != nil || p != nil {
 		t.Fatalf("symlink read = %q, %v; want nothing", p, err)
 	}
 
-	big := &tar.Header{Name: "etc/group", Typeflag: tar.TypeReg, Mode: 0o644, Size: maxUserFile + 1}
-	if _, _, err := readUserFiles(bytes.NewReader(tarOf(t, dir, big))); err == nil {
+	big := &tar.Header{Name: "group", Typeflag: tar.TypeReg, Mode: 0o644, Size: maxUserFile + 1}
+	if _, err := readUserFile(bytes.NewReader(tarOf(t, big))); err == nil {
 		t.Fatal("a group file over the limit was read")
 	}
 
+	if p, err := readUserFile(bytes.NewReader(nil)); err != nil || p != nil {
+		t.Fatalf("empty stream = %q, %v; want nothing", p, err)
+	}
 }
 
 // The cap fails the read once it is passed, instead of ending the stream the

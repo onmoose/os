@@ -9,7 +9,8 @@ package lifecycle
 // A number is used as it is. A name is looked up in the image's own
 // /etc/passwd and /etc/group, the same files Docker reads when it starts the
 // container. The brain reads them without starting the image: it creates a
-// container, copies /etc out and removes it, so no code from the image runs.
+// container, copies the two files out and removes it, so no code from the
+// image runs.
 //
 // Why reading the image's files is safe here: whatever they say, the result
 // is only used as an offset inside the remap range, and it must be below

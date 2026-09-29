@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -93,9 +94,9 @@ type DockerDriver interface {
 	ImageUser(ctx context.Context, ref string) (string, error)
 	// ImageUserFiles returns a local image's /etc/passwd and /etc/group, nil
 	// for one that is missing or is not a regular file. It creates a container
-	// from the image without starting it, copies /etc out of it and removes
-	// it, so no code from the image runs. The container is removed on every
-	// path, the error ones too. It carries the moose.image_user_probe and
+	// from the image without starting it, copies the two files out of it and
+	// removes it with its anonymous volumes, so no code from the image runs.
+	// The container is removed on every path, the error ones too. It carries the moose.image_user_probe and
 	// moose.instance_id labels, so one left by a brain that stopped half way
 	// can be found and removed.
 	ImageUserFiles(ctx context.Context, instanceID, ref string) (passwd, group []byte, err error)
@@ -349,88 +350,87 @@ func (cliDocker) ImageUserFiles(ctx context.Context, instanceID, ref string) ([]
 	}
 	cid := strings.TrimSpace(string(out))
 	defer func() {
-		if out, err := exec.Command("docker", "rm", "-f", cid).CombinedOutput(); err != nil {
+		// -v: an image that declares a VOLUME gets an anonymous volume for
+		// the probe too, and it would outlive the container.
+		if out, err := exec.Command("docker", "rm", "-f", "-v", cid).CombinedOutput(); err != nil {
 			slog.Warn("image user probe container not removed",
 				"instance_id", instanceID, "image", ref, "err", err, "output", strings.TrimSpace(string(out)))
 		}
 	}()
-	stderr.Reset()
-	cp := exec.CommandContext(ctx, "docker", "cp", cid+":/etc", "-")
-	cp.Stderr = &stderr
-	pipe, err := cp.StdoutPipe()
+	passwd, err := copyUserFile(ctx, cid, "/etc/passwd")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("read /etc/passwd of %s: %w", ref, err)
 	}
-	if err := cp.Start(); err != nil {
-		return nil, nil, fmt.Errorf("copy /etc out of %s: %w", ref, err)
-	}
-	passwd, group, readErr := readUserFiles(pipe)
-	// Read what is left, so docker cp is not stuck on a full pipe. After a
-	// read error the rest is not needed, so stop instead.
-	if readErr == nil {
-		if _, err := io.Copy(io.Discard, pipe); err != nil {
-			readErr = err
-		}
-	} else if cp.Process != nil {
-		if err := cp.Process.Kill(); err != nil {
-			slog.Warn("docker cp not stopped", "image", ref, "err", err)
-		}
-	}
-	waitErr := cp.Wait()
-	if readErr != nil {
-		return nil, nil, fmt.Errorf("read /etc of %s: %w", ref, readErr)
-	}
-	if waitErr != nil {
-		// An image with no /etc at all: docker cp fails, and there is no
-		// user list to read.
-		if strings.Contains(stderr.String(), "Could not find the file") {
-			return nil, nil, nil
-		}
-		return nil, nil, fmt.Errorf("copy /etc out of %s: %w: %s", ref, waitErr, strings.TrimSpace(stderr.String()))
+	group, err := copyUserFile(ctx, cid, "/etc/group")
+	if err != nil {
+		return nil, nil, fmt.Errorf("read /etc/group of %s: %w", ref, err)
 	}
 	return passwd, group, nil
 }
 
-// maxEtcTar bounds how much of an image's /etc the brain reads, and
-// maxUserFile the size of /etc/passwd or /etc/group it accepts.
+// copyUserFile copies one file out of a container with docker cp, and nil
+// when the image has no such file.
+func copyUserFile(ctx context.Context, cid, path string) ([]byte, error) {
+	var stderr bytes.Buffer
+	cp := exec.CommandContext(ctx, "docker", "cp", cid+":"+path, "-")
+	cp.Stderr = &stderr
+	pipe, err := cp.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cp.Start(); err != nil {
+		return nil, err
+	}
+	b, readErr := readUserFile(pipe)
+	// Read what is left, so docker cp is not stuck on a full pipe. After a
+	// read error the rest is not needed, so stop it instead.
+	if readErr == nil {
+		if _, err := io.Copy(io.Discard, pipe); err != nil {
+			readErr = err
+		}
+	} else if err := cp.Process.Kill(); err != nil {
+		slog.Warn("docker cp not stopped", "src", path, "err", err)
+	}
+	waitErr := cp.Wait()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if waitErr != nil {
+		// The daemon's answer for a path the image does not have.
+		if strings.Contains(stderr.String(), "Could not find the file") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("docker cp: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return b, nil
+}
+
+// maxUserFile is the largest /etc/passwd or /etc/group the brain reads, and
+// maxUserTar the tar stream docker cp writes around one such file.
 const (
-	maxEtcTar   = 64 << 20
 	maxUserFile = 1 << 20
+	maxUserTar  = maxUserFile + 64<<10
 )
 
-// readUserFiles reads etc/passwd and etc/group from the tar stream docker cp
-// writes for /etc. Only regular files count: a symlink or anything else is
-// left out, as if the file were missing, since its target is not in the
-// stream.
-func readUserFiles(r io.Reader) (passwd, group []byte, err error) {
-	tr := tar.NewReader(&capReader{r: r, left: maxEtcTar})
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			return passwd, group, nil
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		if h.Name != "etc/passwd" && h.Name != "etc/group" {
-			continue
-		}
-		if h.Typeflag != tar.TypeReg {
-			continue
-		}
-		if h.Size > maxUserFile {
-			return nil, nil, fmt.Errorf("%s is %d bytes, more than the %d this reads", h.Name, h.Size, maxUserFile)
-		}
-		b, err := io.ReadAll(tr)
-		if err != nil {
-			return nil, nil, err
-		}
-		if h.Name == "etc/passwd" {
-			passwd = b
-		} else {
-			group = b
-		}
+// readUserFile reads the one file in the tar stream docker cp writes for a
+// single path. Only a regular file counts: a symlink or anything else is
+// treated as missing, since its target is not in the stream.
+func readUserFile(r io.Reader) ([]byte, error) {
+	tr := tar.NewReader(&capReader{r: r, left: maxUserTar})
+	h, err := tr.Next()
+	if err == io.EOF {
+		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if h.Typeflag != tar.TypeReg {
+		return nil, nil
+	}
+	if h.Size > maxUserFile {
+		return nil, fmt.Errorf("%s is %d bytes, more than the %d this reads", h.Name, h.Size, maxUserFile)
+	}
+	return io.ReadAll(tr)
 }
 
 // capReader fails once more than left bytes are read. io.LimitReader would
@@ -443,7 +443,7 @@ type capReader struct {
 
 func (c *capReader) Read(p []byte) (int, error) {
 	if c.left <= 0 {
-		return 0, fmt.Errorf("/etc is more than %d bytes", maxEtcTar)
+		return 0, errors.New("the copied file is too big")
 	}
 	if int64(len(p)) > c.left {
 		p = p[:c.left]
