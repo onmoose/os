@@ -454,7 +454,7 @@ export function spaceTight(fp: InstallPlanFootprint | undefined): boolean {
 
 // ── Permission words ────────────────────────────────────────────────────────
 
-// PermissionLine is one thing an app can do, in the words the install flow's
+// PermissionLine is one permission an app needs, as a noun phrase, in the words the install flow's
 // info box and the App page's Permissions group both use. danger marks write
 // access to a folder, which is drawn in red (APP_ISOLATION.md # User content).
 export type PermissionLine = {
@@ -472,16 +472,16 @@ export function folderAccess(mode: string): string {
 
 export function permissionLines(p: InstallPlanPermissions): PermissionLine[] {
   const out: PermissionLine[] = [];
-  if (p.internet) out.push({ key: "internet", kind: "internet", text: "Connect to the internet", danger: false });
-  if (p.lan) out.push({ key: "lan", kind: "lan", text: "Reach other devices on your network", danger: false });
-  if (p.gpu) out.push({ key: "gpu", kind: "gpu", text: "Use the graphics card", danger: false });
-  for (const d of p.devices ?? []) out.push({ key: `device-${d}`, kind: "device", text: `Use the device ${d}`, danger: false });
+  if (p.internet) out.push({ key: "internet", kind: "internet", text: "Internet access", danger: false });
+  if (p.lan) out.push({ key: "lan", kind: "lan", text: "Access to other devices on your network", danger: false });
+  if (p.gpu) out.push({ key: "gpu", kind: "gpu", text: "The graphics card", danger: false });
+  for (const d of p.devices ?? []) out.push({ key: `device-${d}`, kind: "device", text: `The device ${d}`, danger: false });
   for (const f of p.folders ?? []) {
     const write = f.mode === "write";
     out.push({
       key: `folder-${f.folder}`,
       kind: "folder",
-      text: `${capitalize(folderAccess(f.mode))} in ${folderName(f.folder)}`,
+      text: `The ${folderName(f.folder)} folder (can ${folderAccess(f.mode)})`,
       danger: write,
     });
   }
@@ -489,10 +489,6 @@ export function permissionLines(p: InstallPlanPermissions): PermissionLine[] {
 }
 
 // ── Folder words ────────────────────────────────────────────────────────────
-
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
 
 export function folderName(folder: string): string {
   return folder.charAt(0).toUpperCase() + folder.slice(1);

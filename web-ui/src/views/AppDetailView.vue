@@ -508,7 +508,7 @@ watch(shots, (list) => {
             </div>
           </section>
 
-          <!-- Permissions: what the app can do, from the install plan, in the
+          <!-- Permissions: what the app needs, from the install plan, in the
                install flow's words (permissionLines). Hidden while the plan
                loads, and for an app that needs none. -->
           <section v-if="permissions.length > 0" class="space-y-3">
