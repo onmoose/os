@@ -68,14 +68,14 @@ func TestEnsureDashboardInstallsSplitRoute(t *testing.T) {
 		t.Fatalf("EnsureDashboard: %v", err)
 	}
 
-	// Idempotency: it deletes any prior route by @id before inserting.
-	if admin.find("DELETE", "/id/"+dashboardRouteID) == nil {
-		t.Error("expected a DELETE of the dashboard route @id before insert")
+	// Idempotency: it replaces any prior route in place by @id (#520), and
+	// never deletes it first.
+	if admin.find("DELETE", "/id/"+dashboardRouteID) != nil {
+		t.Error("did not expect a DELETE of the dashboard route before the write")
 	}
-	// The route is PUT at index 0 so it sorts before the catch-all.
-	put := admin.find("PUT", "/routes/0")
+	put := admin.find("PATCH", "/id/"+dashboardRouteID)
 	if put == nil {
-		t.Fatal("expected a PUT to routes/0 for the dashboard route")
+		t.Fatal("expected a PATCH of the dashboard route @id")
 	}
 	if put.body["@id"] != dashboardRouteID {
 		t.Errorf("route @id = %v, want %s", put.body["@id"], dashboardRouteID)
@@ -169,7 +169,9 @@ func TestEnsureWildcardTLS(t *testing.T) {
 	}
 }
 
-// routeHandle PUTs a RouteConfig and returns the route's decoded "handle" array.
+// routeHandle writes a RouteConfig and returns the route's decoded "handle"
+// array. recordingAdmin answers 200 to the in-place PATCH, so that is the one
+// write (upsertRouteByID).
 func routeHandle(t *testing.T, cfg RouteConfig) []any {
 	t.Helper()
 	admin := &recordingAdmin{}
@@ -178,9 +180,9 @@ func routeHandle(t *testing.T, cfg RouteConfig) []any {
 	if err := New(srv.URL).AddRoute(context.Background(), cfg); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
-	put := admin.find("PUT", "/routes/0")
+	put := admin.find("PATCH", "/id/"+routeID(cfg.InstanceID))
 	if put == nil {
-		t.Fatal("expected a PUT to routes/0 for the app route")
+		t.Fatal("expected a PATCH of the app route @id")
 	}
 	return put.body["handle"].([]any)
 }

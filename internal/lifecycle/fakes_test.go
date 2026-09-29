@@ -297,8 +297,12 @@ func (c *fakeCaddy) AddRoute(_ context.Context, cfg caddy.RouteConfig) error {
 	return nil
 }
 
-func (c *fakeCaddy) AddSplashRoute(_ context.Context, id, host, name, state string) error {
+func (c *fakeCaddy) AddSplashRoute(ctx context.Context, id, host, name, state string) error {
 	c.record("AddSplashRoute", id, host, name, state)
+	// Like the real client, a write on a dead context never lands.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	c.routes[id] = "splash:" + state
 	c.mu.Unlock()

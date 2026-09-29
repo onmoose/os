@@ -1387,6 +1387,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 
 	seen := map[string]bool{}
 	var avahiTotal, avahiOK, avahiFail int
+	var splashes []store.Instance // stopped and failed, written after the loop
 	for _, inst := range desired {
 		seen[inst.ID] = true
 		switch inst.State {
@@ -1478,7 +1479,23 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 						"instance_id", inst.ID, "err", err, "output", out)
 				}
 			}
+			splashes = append(splashes, inst)
+		case "failed":
+			splashes = append(splashes, inst)
 		}
+	}
+	// Splashes go last (#520). The whole pass runs under one startup deadline,
+	// and a slow Caddy makes each route write cost time. A running app's route
+	// and its compose up matter more than a stopped app's splash, so they must
+	// not wait behind them. They get their own short budget, cut loose from the
+	// caller's deadline: if the work above used it up, the splashes still get
+	// a try instead of failing at once on an expired context.
+	if len(splashes) > 0 {
+		splashCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), splashBudget)
+		for _, inst := range splashes {
+			m.reassertSplash(splashCtx, inst)
+		}
+		cancel()
 	}
 	if avahiTotal > 0 {
 		slog.Info("avahi replay", "total", avahiTotal, "ok", avahiOK, "failed", avahiFail)
@@ -1511,6 +1528,30 @@ func (m *Manager) reassertRouting(ctx context.Context, inst store.Instance) bool
 			"instance_id", inst.ID, "host", host, "upstream", upstream, "err", err)
 	}
 	return avahiOK
+}
+
+// splashBudget bounds the time the startup pass spends writing splash routes
+// for stopped and failed apps, apart from the caller's deadline (#520). A
+// healthy Caddy answers each write in milliseconds.
+const splashBudget = 10 * time.Second
+
+// reassertSplash re-registers the splash route of a stopped or failed
+// instance, the way reassertRouting does for a running one (#520). The brain
+// clears Caddy's route list on startup (EnsureIngress), so without this a
+// stopped or failed app answered with the catch-all 404 after every restart,
+// and a splash write that failed earlier stayed wrong until the user acted.
+// Like Stop, it does not re-announce the mDNS name: it uses the stored host.
+// Best-effort: a failure is logged and does not block startup.
+func (m *Manager) reassertSplash(ctx context.Context, inst store.Instance) {
+	host := m.routeHost(inst)
+	appName := inst.Name
+	if man, err := m.loadInstanceManifest(inst.ID); err == nil {
+		appName = man.Name
+	}
+	if err := m.caddy.AddSplashRoute(ctx, inst.ID, host, appName, inst.State); err != nil {
+		slog.Warn("reconcile: caddy splash route",
+			"instance_id", inst.ID, "host", host, "err", err)
+	}
 }
 
 func (m *Manager) teardownOrphan(ctx context.Context, id string) {
