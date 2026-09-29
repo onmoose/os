@@ -168,9 +168,12 @@ function restartsApps(a: AIAccount): boolean {
 function editValid(a: AIAccount): boolean {
   if (editLabel.value.trim() === "") return false;
   if (a.provider_id === COMPATIBLE) {
-    // The model name is required: the brain refuses a server without one.
+    // The brain refuses a server with no model name at all, so the chat box
+    // is required only when the account has no other type saved (an
+    // embeddings-only server keeps its names without one).
     const model = editModel.value.trim();
-    return /^https?:\/\/\S+$/.test(editUrl.value.trim()) && model !== "" && !modelIdProblem(model);
+    const otherTypes = Object.entries(a.models ?? {}).some(([t, ids]) => t !== "chat" && (ids?.length ?? 0) > 0);
+    return /^https?:\/\/\S+$/.test(editUrl.value.trim()) && (model !== "" || otherTypes) && !modelIdProblem(model);
   }
   const url = editUrl.value.trim();
   return url === "" || /^https?:\/\/\S+$/.test(url);
