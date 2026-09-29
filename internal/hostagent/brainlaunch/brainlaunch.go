@@ -447,11 +447,11 @@ const sharedTreeMode = os.ModeSetgid | 0o770
 //     repaired on the next start. The owner matters too: a user who owned the
 //     root could change its mode again. Only the root is touched, never
 //     anything inside it.
+//   - A symlink or a file at that path is an error. Nothing is changed, and the
+//     caller must not mount it.
 //
 // ownerUID is 0 on a box (host-agent runs as root, and STORAGE.md says
 // root:moose-shared). It is a parameter only so a test can run unprivileged.
-//   - A symlink or a file at that path is an error. Nothing is changed, and the
-//     caller must not mount it.
 func EnsureSharedTree(root string, ownerUID, sharedGID int) error {
 	fi, err := os.Lstat(root)
 	switch {
