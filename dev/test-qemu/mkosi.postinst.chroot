@@ -46,6 +46,28 @@ getent group moose-shared >/dev/null || groupadd -g 2001 moose-shared
 getent passwd moose-app >/dev/null   || useradd -r -u 2000 -g moose-app \
     -M -d /nonexistent -s /usr/sbin/nologin moose-app
 
+# Docker's daemon-wide userns-remap (#530, BUILD.md # User-namespace remap).
+# daemon.json names moose-remap, and dockerd reads that account's range from
+# /etc/subuid and /etc/subgid. The range is host ids 1000000 to 1065535, far above
+# every moose band (2000/2001, app services from 2100, users from 3000). It is
+# written here, before any user exists. SUB_UID_COUNT 0 and SUB_GID_COUNT 0 in
+# login.defs stop useradd from giving each new user a range of its own, so no
+# account can use newuidmap to reach the remap range. The hosted image does
+# the same in dev/cloud/mkosi.postinst.chroot. Idempotent.
+getent passwd moose-remap >/dev/null || useradd -r -U -M -d /nonexistent \
+    -s /usr/sbin/nologin moose-remap
+for f in /etc/subuid /etc/subgid; do
+    touch "$f"
+    grep -q '^moose-remap:' "$f" || echo 'moose-remap:1000000:65536' >> "$f"
+done
+for k in SUB_UID_COUNT SUB_GID_COUNT; do
+    if grep -qE "^[#[:space:]]*${k}[[:space:]]" /etc/login.defs; then
+        sed -i -E "s/^[#[:space:]]*${k}[[:space:]].*/${k} 0/" /etc/login.defs
+    else
+        echo "${k} 0" >> /etc/login.defs
+    fi
+done
+
 # /etc/pam.d/moose staged into the image overlay by bootstrap.sh (dev/pam/moose).
 
 # tmpfiles.d entry for /run/moose/health (cleaner than the reporter's

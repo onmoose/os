@@ -301,6 +301,45 @@ for c in moose-caddy moose-ui; do
 done
 echo "cloud-assertions: control-plane containers sandboxed — cap_drop ALL, no-new-privileges, read-only root on caddy + moose-ui (#431)"
 
+# --- 5d. the daemon runs with the userns-remap (#530, BUILD.md # User-namespace
+# remap), and the control plane splits across it. The image sets the remap, so
+# every boot runs on it and every boot checks it. docker info must list
+# name=userns and the classic overlay2 store (the remap turns the containerd
+# store off). The socket proxy and the brain opt out with --userns=host
+# (brainlaunch), so they run as real host root. Caddy and moose-ui keep the daemon
+# default, the remap, so their root is host uid 1000000.
+remap_base=1000000
+# The host uid a container's init process runs as (the lean image has no procps).
+host_uid_of() { awk '/^Uid:/{print $2}' "/proc/$(docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null)/status" 2>/dev/null; }
+sec_opts="$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null || true)"
+store_driver="$(docker info --format '{{.Driver}}' 2>/dev/null || true)"
+docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+echo "cloud-assertions: docker info: security options: $sec_opts"
+echo "cloud-assertions: docker info: storage driver: $store_driver, root dir: $docker_root"
+grep -q 'name=userns' <<<"$sec_opts" || fail "userns-remap is not on: docker info security options are $sec_opts, want name=userns (#530)"
+[ "$store_driver" = overlay2 ] || fail "docker storage driver is '$store_driver', want overlay2 (the store the remap uses, #530)"
+[ "$docker_root" = "/var/lib/docker/${remap_base}.${remap_base}" ] \
+    || fail "docker root dir is '$docker_root', want /var/lib/docker/${remap_base}.${remap_base} (the remapped root, #530)"
+for f in /etc/subuid /etc/subgid; do
+    grep -qx "moose-remap:${remap_base}:65536" "$f" || fail "$f has no moose-remap:${remap_base}:65536 line: $(cat "$f" 2>&1 | tr '\n' ' ')"
+done
+for k in SUB_UID_COUNT SUB_GID_COUNT; do
+    grep -qE "^${k}[[:space:]]+0$" /etc/login.defs || fail "/etc/login.defs does not set $k 0: $(grep -E "$k" /etc/login.defs | tr '\n' ' ')"
+done
+for c in moose-docker-proxy moose-brain; do
+    um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}' 2>/dev/null || true)"
+    [ "$um" = host ] || fail "$c UsernsMode is '${um:-<empty>}', want host (#526)"
+    puid="$(host_uid_of "$c")"
+    [ "$puid" = 0 ] || fail "$c runs as host uid '${puid:-<none>}', want 0 (host userns, #526)"
+done
+for c in moose-caddy moose-ui; do
+    um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}' 2>/dev/null || true)"
+    [ -z "$um" ] || fail "$c UsernsMode is '$um', want the daemon default (remapped)"
+    puid="$(host_uid_of "$c")"
+    [ "$puid" = "$remap_base" ] || fail "$c runs as host uid '${puid:-<none>}', want $remap_base (remapped root)"
+done
+echo "cloud-assertions: userns-remap on (moose-remap:${remap_base}:65536, SUB_UID_COUNT 0); proxy + brain in the host userns (host uid 0), caddy + moose-ui remapped (host uid ${remap_base})"
+
 # --- 6. proxy boundary: the brain reaches Docker only through the socket-proxy,
 # never the raw socket (CONTROL_PLANE.md # Docker socket exposure).
 brain_sock="$(docker inspect moose-brain --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null | grep -c 'docker.sock' || true)"
@@ -992,26 +1031,44 @@ access)
         || fail "folders: $pp_file is owned '$pp_file_owner', want the owner $pp_uid:$pp_gid"
     echo "cloud-assertions: personal folder app wrote $pp_file on the host as $pp_file_owner (Documents owned by the owner)"
 
-    # 4d. AN image_user APP IS REFUSED WITHOUT THE REMAP (#537). This image has
-    #     no userns remap, so the uid an image names would be a real host uid.
-    #     The brain must refuse the install with its plain message, before it
-    #     creates any container for it.
+    # 4d. AN image_user APP RUNS AS ITS IMAGE'S OWN USER, REMAPPED (#537, #530).
+    #     The image turns the userns remap on, so the brain puts this app in the
+    #     image tier: no user: pin, no capability back, and the daemon's remap.
+    #     Each service writes its id into its bind dir at start, as the user its
+    #     image sets (1001 by number, app2 = 1002 by name). The proof is that
+    #     file on the host, owned by base plus that uid. Until #530 this step
+    #     checked the refusal on a box with no remap; that refusal is covered by
+    #     the brain's tests (internal/lifecycle/userns_test.go) and no lane box
+    #     runs without the remap any more.
     iu_resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"imageuser","scope":"household"}' 2>/dev/null)"
     iu_job="$(json_str_of "$iu_resp" job_id)"
     [ -n "$iu_job" ] || fail "image_user: install imageuser returned no job id: status='$(status_of "$iu_resp")' $(tail -1 <<<"$iu_resp" | cut -c1-400)"
     iu_st=""; iu_jr=""
-    for _i in $(seq 1 120); do
+    for _i in $(seq 1 240); do
         iu_jr="$(full_get "/api/v1/jobs/${iu_job}" "$apex" "$session_cookie" 2>/dev/null || true)"
         iu_st="$(json_str_of "$iu_jr" status)"
         case "$iu_st" in completed|failed|cancelled) break ;; esac
         sleep 1
     done
-    [ "$iu_st" = failed ] || fail "image_user: install imageuser on a box with no remap ended '$iu_st', want failed"
-    grep -q "Docker on this box does not" <<<"$iu_jr" \
-        || fail "image_user: the refusal is not the plain message: $(grep -o '"error":{[^}]*}' <<<"$iu_jr" | cut -c1-600)"
-    [ -z "$(docker ps -aq --filter label=moose.manifest_id=imageuser)" ] \
-        || fail "image_user: a container exists for the refused imageuser install"
-    echo "cloud-assertions: image_user app refused on a box with no remap, with the plain message, and no container made"
+    [ "$iu_st" = completed ] \
+        || fail "image_user: install imageuser on the remapped box ended '$iu_st', want completed: $(grep -o '"error":{[^}]*}' <<<"$iu_jr" | cut -c1-600)"
+    iu_id="$(json_str_of "$iu_jr" instance_id)"
+    [ -n "$iu_id" ] || fail "image_user: install imageuser completed with no instance id: $(tail -1 <<<"$iu_jr" | cut -c1-400)"
+    for svc_dir_uid in imageuser:data:1001 named:work:1002; do
+        svc="${svc_dir_uid%%:*}"; rest="${svc_dir_uid#*:}"; dir="${rest%%:*}"; want_uid="$((remap_base + ${rest#*:}))"
+        c="$(docker ps --filter "label=moose.instance_id=$iu_id" --filter "label=com.docker.compose.service=$svc" --format '{{.Names}}' | head -1)"
+        [ -n "$c" ] || fail "image_user: no running container for service $svc: $(docker ps -a --filter "label=moose.instance_id=$iu_id" --format '{{.Names}} {{.Status}}' | tr '\n' ' ')"
+        c_um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}')"
+        c_user="$(docker inspect "$c" --format '{{.Config.User}}')"
+        c_capadd="$(docker inspect "$c" --format '{{json .HostConfig.CapAdd}}')"
+        [ -z "$c_um" ] || fail "image_user: $svc UsernsMode is '$c_um', want the daemon default (remapped)"
+        case "$c_capadd" in null|'[]') ;; *) fail "image_user: $svc cap_add is $c_capadd, want none (image tier)" ;; esac
+        id_file="/var/lib/moose/state/instances/$iu_id/$dir/id.txt"
+        wait_file "$id_file" || fail "image_user: $svc wrote no $id_file on the host: $(ls -lan "/var/lib/moose/state/instances/$iu_id" 2>&1 | tr '\n' ' ')"
+        id_owner="$(stat -c '%u' "$id_file")"
+        [ "$id_owner" = "$want_uid" ] || fail "image_user: $id_file is owned by host uid $id_owner, want $want_uid (base + the image's user)"
+        echo "cloud-assertions: image_user $svc runs remapped as its image's user (Config.User='$c_user', cap_add=$c_capadd) and wrote $dir/id.txt as host uid $id_owner: $(cat "$id_file")"
+    done
 
     # 5. THE HOSTED CONFIRM STEP (os#469). Destructive admin writes sit behind a
     #    re-auth gate, and until now a hosted owner could not pass it: the portal

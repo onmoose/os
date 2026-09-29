@@ -166,7 +166,7 @@ The rules:
 
 **Versioning.** `root_setup` is an optional field with a default that keeps today's behaviour, so it is an additive change: `manifest_version` stays `1` (# Format). A brain that does not model the field ignores it (`APP_STORE.md` # Catalog schema), so it installs a `root_setup` app in the default tier, where it fails at start as it does today. The catalog must not offer such an app to a box that cannot run it.
 
-**Status.** The field is parsed, and the four refusals above run at install and in `moose manifest check` (#528). The brain acts on it (#529): on a remapped box it picks the caps tier, and on a box without the remap it refuses the install with a plain message. No image turns the remap on yet (#530), so today every box refuses a `root_setup` app.
+**Status.** The field is parsed, and the four refusals above run at install and in `moose manifest check` (#528). The brain acts on it (#529): on a remapped box it picks the caps tier, and on a box without the remap it refuses the install with a plain message. Both images turn the remap on (#530), so a new box accepts a `root_setup` app, and a box built before that refuses it.
 
 **`image_user`** declares that the app must **run as the user its image already sets** (the Dockerfile `USER`), because it writes files baked with that owner: its own `/app`, a Prisma engines dir, a `.next` cache. Without it the brain pins `user:` to another uid, and under `cap_drop: [ALL]` that uid cannot write the baked files. When `true`, the brain runs the app in the **image tier** (`APP_ISOLATION.md` # User-namespace tiers): remapped into the box's user-namespace range, with `cap_drop: [ALL]`, **no capability back** and **no `user:` pin**, so the image's own user runs. It is least privilege: the app gets nothing a default-tier app does not have, only its own user. plunk needs it.
 
@@ -183,7 +183,7 @@ The rules:
 
 **Versioning.** Like `root_setup`, an optional field with a default that keeps today's behaviour, so `manifest_version` stays `1`. A brain that does not model it ignores it and installs the app in the default tier, where it fails at start as it does today. The catalog must not offer such an app to a box that cannot run it.
 
-**Status.** Built (#537): parsed, the refusals above run at install and in `moose manifest check`, and on a remapped box the brain picks the image tier. No image turns the remap on yet (#530), so today every box refuses an `image_user` app.
+**Status.** Built (#537): parsed, the refusals above run at install and in `moose manifest check`, and on a remapped box the brain picks the image tier. Both images turn the remap on (#530), so a new box accepts an `image_user` app, and a box built before that refuses it.
 
 ### B2. Resources (recommended, never a limit)
 
