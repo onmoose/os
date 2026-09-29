@@ -379,7 +379,9 @@ const validSteps = computed(() => {
   if (plan.value?.mail) {
     out.add(STEP_EMAIL);
     out.add(STEP_EMAIL_SERVICE);
-    if (mailService.value) out.add(STEP_EMAIL_ADD);
+    // While the presets load, a saved service is trusted; once they are
+    // loaded, only a preset that exists makes the add form a page.
+    if (mailService.value && (presetsQuery.isPending.value || mailPreset.value)) out.add(STEP_EMAIL_ADD);
   }
   if (needs.value.extraFields.length > 0) out.add(STEP_EXTRA);
   if (folders.value.some((f) => folderHasChoice(f))) out.add(STEP_FOLDERS);
@@ -424,10 +426,25 @@ function redirect() {
 // the last page, which redirects again if it must.
 function checkStep() {
   if (validSteps.value.has(step.value)) return;
-  // A key page whose service is not known yet goes back to its need.
+  // A key page whose service is not known yet goes back to its need, and an
+  // email add form whose service is gone goes back to the email grid.
   const ai = needOfStep(aiNeedList.value, step.value);
-  router.replace(to(ai ? ai.need.step : ""));
+  if (ai) router.replace(to(ai.need.step));
+  else if (step.value === STEP_EMAIL_ADD) router.replace(to(STEP_EMAIL_SERVICE));
+  else router.replace(to(""));
 }
+
+// A saved email service that names no preset (a stale draft, or a preset
+// the brain dropped) is forgotten once the presets load, and an open add
+// form for it goes back to the grid.
+watch(
+  () => presetsQuery.data.value,
+  () => {
+    if (!presetsQuery.data.value || !mailService.value || mailPreset.value) return;
+    mailService.value = "";
+    if (seededFor === key.value && step.value) checkStep();
+  },
+);
 
 watch([step, scope], () => {
   if (seededFor !== key.value) return;
@@ -523,13 +540,24 @@ const pageMail = ref("");
 const pageSources = ref<Record<string, string>>({});
 const pageSubfolders = ref<Record<string, string>>({});
 const pageScope = ref<Scope>("personal");
+// pageValues is the "needs these to run" or Extra settings page's copy of its
+// fields. It goes back to configValues only on Continue, so Back drops an
+// edit. It lives in memory only, never in the draft.
+const pageValues = ref<Record<string, string>>({});
+// seedTick changes after each seeding, so the page copies below are taken
+// from the seeded draft, not from the empty one before it.
+const seedTick = ref(0);
 const scopeOptions: Scope[] = ["personal", "household"];
 const pageAccount = ref("");
 const pageService = ref("");
 const keyForm = ref<InstanceType<typeof AIKeyForm> | null>(null);
 watch(
-  [step, ready],
+  [step, ready, seedTick],
   () => {
+    if (step.value === STEP_SETTINGS || step.value === STEP_EXTRA) {
+      const fields = step.value === STEP_SETTINGS ? needs.value.requiredFields : needs.value.extraFields;
+      pageValues.value = Object.fromEntries(fields.map((f) => [f.app_env, configValues.value[f.app_env] ?? ""]));
+    }
     if (step.value === STEP_EMAIL && ready.value) {
       // Set up opens with the newest saved account picked (INSTALL_STEPS.md
       // # Decisions); Change opens with the current one.
@@ -572,15 +600,19 @@ const canContinue = computed(() => {
     if (mode === "grid") return pageService.value !== "";
     return !!keyForm.value?.valid && !keyForm.value?.pending;
   }
+  if (step.value === STEP_SETTINGS) return requiredFieldsMet(needs.value, configFields.value, pagePlain.value);
   return answered(step.value);
 });
+
+// pagePlain is the plain values as they would be after this page's Continue.
+const pagePlain = computed(() => ({ ...plainValues.value, ...pageValues.value }));
 
 // settingsNeeded names what the "needs these to run" page still misses.
 const settingsNeeded = computed(() => [
   ...needs.value.requiredFields
-    .filter((f) => f.required && (plainValues.value[f.app_env] ?? "").trim() === "")
+    .filter((f) => f.required && (pagePlain.value[f.app_env] ?? "").trim() === "")
     .map((f) => f.title),
-  ...unmetGroups(needs.value.plainGroups, configFields.value, plainValues.value, new Set()).map((g) =>
+  ...unmetGroups(needs.value.plainGroups, configFields.value, pagePlain.value, new Set()).map((g) =>
     groupNeed(configFields.value, g),
   ),
 ]);
@@ -627,6 +659,13 @@ function presetLabel(id: string): string {
   return mailPresets.value.find((p) => p.id === id)?.label ?? "";
 }
 
+// installWithoutEmail leaves email not set up and goes back to the last
+// page. Email is optional in v1, so a failed preset list never blocks.
+function installWithoutEmail() {
+  mailProviderId.value = "";
+  router.push(to(""));
+}
+
 async function continueEmail() {
   if (emailMode.value === "list") {
     mailProviderId.value = pageMail.value;
@@ -666,6 +705,7 @@ function onContinue() {
     void continueEmail();
     return;
   }
+  if (name === STEP_SETTINGS || name === STEP_EXTRA) configValues.value = { ...configValues.value, ...pageValues.value };
   if (name === STEP_FOLDERS) {
     folderSources.value = { ...pageSources.value };
     folderSubfolders.value = { ...pageSubfolders.value };
@@ -856,6 +896,7 @@ watch(
     if (seededFor === key.value) return;
     seededFor = key.value;
     seed(plan.value);
+    seedTick.value++;
     route.query.step ? checkStep() : redirect();
     // The page may already be the one with the warning, with no route change
     // to follow (an app whose only page is the last page).
@@ -978,7 +1019,7 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
             <ConfigFieldInput
               v-for="f in needs.requiredFields"
               :key="f.app_env"
-              v-model="configValues[f.app_env]!"
+              v-model="pageValues[f.app_env]!"
               :field="f"
             />
           </div>
@@ -989,14 +1030,13 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
             <ConfigFieldInput
               v-for="f in needs.extraFields"
               :key="f.app_env"
-              v-model="configValues[f.app_env]!"
+              v-model="pageValues[f.app_env]!"
               :field="f"
             />
           </div>
           <template v-else-if="onEmailPage && plan.mail">
-            <p v-if="presetsQuery.isPending.value" class="text-sm text-muted-foreground">Loading…</p>
             <AccountList
-              v-else-if="emailMode === 'list'"
+              v-if="emailMode === 'list'"
               v-model="pageMail"
               :rows="mailAccounts.map((m) => ({ id: m.id, label: m.label, detail: presetLabel(m.provider_type) }))"
               :label="`Email account for ${plan.name}`"
@@ -1012,6 +1052,18 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
                 />
               </template>
             </AccountList>
+            <div
+              v-else-if="presetsQuery.isError.value"
+              class="space-y-3 rounded-md bg-destructive/10 px-3 py-3 text-sm text-destructive"
+              role="alert"
+            >
+              <p>Could not load the list of email services.</p>
+              <div class="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" @click="presetsQuery.refetch()">Try again</Button>
+                <Button size="sm" variant="ghost" @click="installWithoutEmail">Don't send email</Button>
+              </div>
+            </div>
+            <p v-else-if="presetsQuery.isPending.value" class="text-sm text-muted-foreground">Loading…</p>
             <MailServiceGrid
               v-else-if="emailMode === 'grid'"
               v-model="pageMailService"

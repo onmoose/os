@@ -70,7 +70,7 @@ These rules were set when the build started (steps 1 to 3 of # Suggested order).
 - **Continue after the last page was shown** goes back to the last page. Before that, it goes to the next first-time page.
 - **Folders are one page.** Every folder's source and subfolder are on the `folders` page, opened by the Change link of any folder row. A folder with no choice has no Change link.
 - **"For" is its own page** with two choices, "Just you" and "Everyone at home". A change moves the draft to the other scope with the folders on their defaults, and the last page says "Folders reset for …" once.
-- **Optional pages save on Continue.** Email, folders and "For" keep a copy while the page is open, so leaving with Back changes nothing. Email opens with the newest saved account picked.
+- **Every page saves on Continue.** The settings, Extra settings, email, folders and "For" pages keep a copy while the page is open, so leaving with Back changes nothing. A reload drops an edit not yet saved with Continue. If the email service list cannot load, the page says so, with Try again and Don't send email. A saved email service that no longer exists sends the user to the grid. Email opens with the newest saved account picked.
 - **Step 1 kept today's pickers** behind the pages. Steps 2 and 3 replaced them.
 
 **As built (step 2, 2026-09-29).** The AI pages are `components/install/AIKeyList.vue`, `ServiceGrid.vue` and `AIKeyForm.vue`, and the need logic is in `installSteps.ts` (# AI needs). `AISlotPicker.vue` is now used only by the app's settings screen. The choices made:
