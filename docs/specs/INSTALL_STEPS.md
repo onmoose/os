@@ -63,7 +63,7 @@ These rules were set when the build started (steps 1 to 3 of # Suggested order).
 5. **Session storage.** The draft is kept in the tab's session storage under one key per user, app and scope. It is removed after a successful install or on Cancel. Only non-secret answers are stored: picked account ids, folder choices, and non-secret plain fields. A `secret: true` field and a key that is typed but not saved stay in the page's memory only. The URL carries only the step and the scope, not the answers.
 6. **Default models.** A provider with no default model for a type it offers still gets its tile for now. The stricter rule in # 3 (hide such a tile) waits for the store lint that makes every provider carry a default for every type it offers. On 2026-09-29 every provider in `onmoose/store` `ai_providers.yml` has a default for every type it offers, so no tile is affected today.
 
-7. **After the user test of the built UI (2026-09-29).** The step counter starts at 1 on the first page after Install. On every page the order is: the app's icon and name, the info box right under it (first and last page), then the question as the heading of the choice under it. The info box is a titled list of permissions with the size as its own line. The key form and the email form put the password box first and fold the steps into "Where do I find my API key?" and "Where do I find my app password?". The optional name is an always-visible input with only a bottom border.
+7. **After the user test of the built UI (2026-09-29).** The step counter starts at 1 on the first page after Install. On every page the order is: the app's icon and name, the info box right under it (first and last page), then the question as the heading of the choice under it. The info box is a titled list of permissions with the size as its own line. The key form and the email form read, top to bottom: the password box, the optional name (an always-visible input with only a bottom border, no hint), the cost line (key form) and the household line, then the steps folded into "Where do I find my API key?" or "Where do I find my app password?" at the bottom, above "Test the settings first" (email form) and Continue. Neither form says "Saved on your box".
 
 **As built (step 1, 2026-09-29).** The page logic is `web-ui/src/installSteps.ts` and the pages are `web-ui/src/views/InstallSetupView.vue`. The choices made while building it:
 
@@ -161,10 +161,9 @@ Use a different AI service →
 
 **Your Anthropic key** (the new-key form)
 
-- The password box comes first and is the main thing on the page. Under it, a closed section "Where do I find my API key?" holds the numbered steps, with an "Open Anthropic" button that opens a new tab. The user opens it only if they need it. The steps come from the provider data's `help` and `key_url`. A plain line says that the service charges for use: "Anthropic charges for use, so it may ask for a card on file." It does not say a card is needed, because some services have a free tier.
+- Top to bottom: the password box (the main thing on the page, with the prefix warning), the name, the cost line, the household line when it applies, and at the bottom, above Continue, a closed section "Where do I find my API key?". It holds the numbered steps, with an "Open Anthropic" button that opens a new tab. The user opens it only if they need it. The steps come from the provider data's `help` and `key_url`. The cost line says that the service charges for use: "Anthropic charges for use, so it may ask for a card on file." It does not say a card is needed, because some services have a free tier.
 - One password box. The prefix warning stays.
-- The name is an input that is always there, with only a bottom border and the placeholder "Name this key (optional)". A small hint under it says the default ("Saved as 'Anthropic key' if empty"). The default name is the service name plus "key" ("Anthropic key"), then "Anthropic key 2" and so on, so a name is never needed to go on.
-- Under the box: "Saved on your box. Your other apps can use it too."
+- The name is an input that is always there, right under the key box, with only a bottom border and the placeholder "Name this key (optional)". Left empty, the key gets the default name without a word on the page. The default name is the service name plus "key" ("Anthropic key"), then "Anthropic key 2" and so on, so a name is never needed to go on.
 - Continue saves the key as the user's account and picks it. If the user then leaves the install, the key stays saved and shows in Settings. That is on purpose, because they can reuse it.
 - **My own server:** the address box, the key marked optional, and a model name box when the app's slot has a model setting.
 - **Household install:** the page adds "Your key pays for everyone at home who uses Openclaw."
@@ -186,7 +185,7 @@ Use a different AI service →
 
 - It asks only what the preset needs: the address, and the app password. For SES and Mailgun it also asks the region and the username. "Server settings" appear only for Custom.
 - The account name is optional, with a default like the AI key's ("Gmail").
-- Gmail and iCloud get numbered steps for making an app password, in a closed section "Where do I find my app password?" under the password box. The first step is turning on 2-Step Verification (Google) or two-factor authentication (Apple), because that is where people get stuck. The account name is the same quiet input as the key's name.
+- Gmail and iCloud get numbered steps for making an app password, in a closed section "Where do I find my app password?" at the bottom of the form, above "Test the settings first" and Continue. The name input is right under the password box. The first step is turning on 2-Step Verification (Google) or two-factor authentication (Apple), because that is where people get stuck. The account name is the same quiet input as the key's name.
 - The "Test the settings first" check stays as it is today.
 
 **Gmail and iCloud presets.** Both send over SMTP on port 587 with STARTTLS and an app password. Port 587 is open from hosted boxes (`SERVICE_PROVISIONING.md` # BYO outgoing mail).

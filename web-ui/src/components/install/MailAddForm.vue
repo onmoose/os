@@ -198,21 +198,16 @@ const inputClass =
       <input id="mail-add-password" v-model="form.password" type="password" autocomplete="new-password" :class="inputClass" />
     </div>
 
-    <!-- Gmail and iCloud: the app-password steps, folded under the box. -->
-    <details v-if="(preset.steps ?? []).length > 0" class="rounded-md border border-border px-4 py-3">
-      <summary class="cursor-pointer text-sm font-medium text-foreground">Where do I find my app password?</summary>
-      <ol class="mt-3 list-decimal space-y-3 pl-5 text-sm text-foreground marker:text-muted-foreground">
-        <li v-for="(s, i) in preset.steps ?? []" :key="i">
-          {{ s }}
-          <div v-if="i === 1 && setupLink" class="mt-2">
-            <Button size="sm" variant="secondary" as="a" :href="setupLink" target="_blank" rel="noopener noreferrer">
-              Open your {{ preset.id === "icloud" ? "Apple" : "Google" }} account
-              <ExternalLink class="size-3.5" aria-hidden="true" />
-            </Button>
-          </div>
-        </li>
-      </ol>
-    </details>
+    <!-- The name: always there, a quiet underlined box. Empty means the
+         default name ("Gmail", then "Gmail 2"). -->
+    <input
+      id="mail-add-label"
+      v-model="form.label"
+      placeholder="Name this account (optional)"
+      aria-label="Name this account (optional)"
+      autocomplete="off"
+      class="block w-full border-0 border-b border-border bg-transparent px-0 py-1.5 text-base text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none sm:text-sm/6"
+    />
 
     <!-- Server settings: open for a custom server, which has nothing filled
          in. In Settings a preset's settings are here too, closed. -->
@@ -239,18 +234,24 @@ const inputClass =
       </div>
     </details>
 
-    <div>
-      <input
-        id="mail-add-label"
-        v-model="form.label"
-        placeholder="Name this account (optional)"
-        aria-label="Name this account (optional)"
-        aria-describedby="mail-add-label-hint"
-        autocomplete="off"
-        class="block w-full border-0 border-b border-border bg-transparent px-0 py-1.5 text-base text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none sm:text-sm/6"
-      />
-      <p id="mail-add-label-hint" class="mt-1 text-xs text-muted-foreground">Saved as "{{ defaultName }}" if empty.</p>
-    </div>
+    <!-- Gmail and iCloud: the app-password steps, folded, at the bottom. -->
+    <details v-if="(preset.steps ?? []).length > 0" class="rounded-md border border-border px-4 py-3">
+      <summary class="cursor-pointer text-sm font-medium text-foreground">Where do I find my app password?</summary>
+      <ol class="mt-3 list-decimal space-y-3 pl-5 text-sm text-foreground marker:text-muted-foreground">
+        <li v-for="(s, i) in preset.steps ?? []" :key="i">
+          {{ s }}
+          <div v-if="i === 1 && setupLink" class="mt-2">
+            <Button size="sm" variant="secondary" as="a" :href="setupLink" target="_blank" rel="noopener noreferrer">
+              Open your {{ preset.id === "icloud" ? "Apple" : "Google" }} account
+              <ExternalLink class="size-3.5" aria-hidden="true" />
+            </Button>
+          </div>
+        </li>
+      </ol>
+    </details>
+
+
+
 
     <label class="flex cursor-pointer items-start gap-2.5">
       <input v-model="testOnAdd" type="checkbox" class="mt-0.5 size-4 shrink-0 cursor-pointer accent-accent" />
@@ -260,7 +261,6 @@ const inputClass =
       </span>
     </label>
 
-    <p class="text-sm text-muted-foreground">Saved on your box. Your other apps can use it too.</p>
     <p v-if="checking" class="text-sm text-muted-foreground" role="status">Testing the settings…</p>
     <p v-if="error" class="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">{{ error }}</p>
   </div>
