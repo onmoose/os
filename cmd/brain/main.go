@@ -53,9 +53,10 @@ const caddyReadyTimeout = 10 * time.Second
 // dockerReadyTimeout bounds the wait for Docker, through the socket proxy,
 // before the startup Docker work (#540). After a reboot the proxy answers a few
 // seconds after the brain starts; on a first boot or an update it is already up
-// and the wait returns at once. It stays well under the 60s host-agent gives a
-// recreated brain to answer /healthz, so a Docker that never answers only
-// delays startup, it does not turn an update into a revert.
+// and the wait returns at once. On its own it stays well under the 60s
+// host-agent gives a recreated brain to answer /healthz. The other startup
+// budgets below come after it, so a box where several things are stuck at once
+// can still miss that window, as it could before.
 const dockerReadyTimeout = 30 * time.Second
 
 func main() {
