@@ -133,23 +133,30 @@ func TestReadUserFile(t *testing.T) {
 	// docker cp of one path writes a tar with that one entry, named by its
 	// base name.
 	passwd := &tar.Header{Name: "passwd", Typeflag: tar.TypeReg, Mode: 0o644}
-	p, err := readUserFile(bytes.NewReader(tarOf(t, passwd)))
-	if err != nil || !strings.Contains(string(p), "plunk:x:1001") {
+	p, kind, err := readUserFile(bytes.NewReader(tarOf(t, passwd)))
+	if err != nil || kind != entryRegular || !strings.Contains(string(p), "plunk:x:1001") {
 		t.Fatalf("read = %q, %v; want the passwd", p, err)
 	}
 
 	// A symlinked passwd counts as missing: its target is not in the stream.
 	link := &tar.Header{Name: "passwd", Typeflag: tar.TypeSymlink, Linkname: "/usr/lib/passwd", Mode: 0o777}
-	if p, err := readUserFile(bytes.NewReader(tarOf(t, link))); err != nil || p != nil {
+	if p, kind, err := readUserFile(bytes.NewReader(tarOf(t, link))); err != nil || p != nil || kind != entryOther {
 		t.Fatalf("symlink read = %q, %v; want nothing", p, err)
 	}
 
+	// A directory in place of the file counts as missing, and only its first
+	// header is read.
+	dir := &tar.Header{Name: "passwd/", Typeflag: tar.TypeDir, Mode: 0o755}
+	if p, kind, err := readUserFile(bytes.NewReader(tarOf(t, dir))); err != nil || p != nil || kind != entryOther {
+		t.Fatalf("directory read = %q, %d, %v; want entryOther", p, kind, err)
+	}
+
 	big := &tar.Header{Name: "group", Typeflag: tar.TypeReg, Mode: 0o644, Size: maxUserFile + 1}
-	if _, err := readUserFile(bytes.NewReader(tarOf(t, big))); err == nil {
+	if _, _, err := readUserFile(bytes.NewReader(tarOf(t, big))); err == nil {
 		t.Fatal("a group file over the limit was read")
 	}
 
-	if p, err := readUserFile(bytes.NewReader(nil)); err != nil || p != nil {
+	if p, kind, err := readUserFile(bytes.NewReader(nil)); err != nil || p != nil || kind != entryNone {
 		t.Fatalf("empty stream = %q, %v; want nothing", p, err)
 	}
 }

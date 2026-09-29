@@ -43,4 +43,22 @@ func TestLiveImageUserProbe(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("probe container left behind: %q, %v", out, err)
 	}
+
+	// A path the image does not have, and a directory in place of the file,
+	// both count as missing.
+	cidOut, err := exec.Command("docker", "create", "--pull", "never", "--entrypoint", "/x", ref).Output()
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	cid := strings.TrimSpace(string(cidOut))
+	t.Cleanup(func() {
+		if out, err := exec.Command("docker", "rm", "-f", "-v", cid).CombinedOutput(); err != nil {
+			t.Logf("rm %s: %v %s", cid, err, out)
+		}
+	})
+	for _, p := range []string{"/etc/nope", "/etc"} {
+		if b, err := copyUserFile(ctx, cid, p); err != nil || b != nil {
+			t.Errorf("copyUserFile(%s) = %d bytes, %v; want missing", p, len(b), err)
+		}
+	}
 }

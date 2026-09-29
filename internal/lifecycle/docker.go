@@ -369,7 +369,7 @@ func (cliDocker) ImageUserFiles(ctx context.Context, instanceID, ref string) ([]
 }
 
 // copyUserFile copies one file out of a container with docker cp, and nil
-// when the image has no such file.
+// when the image has no such file or it is not a regular file.
 func copyUserFile(ctx context.Context, cid, path string) ([]byte, error) {
 	var stderr bytes.Buffer
 	cp := exec.CommandContext(ctx, "docker", "cp", cid+":"+path, "-")
@@ -381,26 +381,41 @@ func copyUserFile(ctx context.Context, cid, path string) ([]byte, error) {
 	if err := cp.Start(); err != nil {
 		return nil, err
 	}
-	b, readErr := readUserFile(pipe)
-	// Read what is left, so docker cp is not stuck on a full pipe. After a
-	// read error the rest is not needed, so stop it instead.
-	if readErr == nil {
-		if _, err := io.Copy(io.Discard, pipe); err != nil {
-			readErr = err
+	capped := &capReader{r: pipe, left: maxUserTar}
+	b, kind, readErr := readUserFile(capped)
+	switch {
+	case readErr != nil || kind == entryOther:
+		// Nothing more is needed: an error, or a symlink or a directory in
+		// place of the file, whose archive could be large. Stop docker cp
+		// rather than read the rest.
+		if err := cp.Process.Kill(); err != nil {
+			slog.Warn("docker cp not stopped", "src", path, "err", err)
 		}
-	} else if err := cp.Process.Kill(); err != nil {
-		slog.Warn("docker cp not stopped", "src", path, "err", err)
+		waitErr := cp.Wait()
+		if readErr != nil {
+			return nil, readErr
+		}
+		slog.Info("image user file is not a regular file, treated as missing", "src", path, "err", waitErr)
+		return nil, nil
+	case kind == entryRegular:
+		// Only the tar padding is left. Read it, still capped, so docker cp
+		// is not stuck on a full pipe.
+		if _, err := io.Copy(io.Discard, capped); err != nil {
+			if kerr := cp.Process.Kill(); kerr != nil {
+				slog.Warn("docker cp not stopped", "src", path, "err", kerr)
+			}
+			if werr := cp.Wait(); werr != nil {
+				slog.Info("docker cp stopped", "src", path, "err", werr)
+			}
+			return nil, err
+		}
 	}
-	waitErr := cp.Wait()
-	if readErr != nil {
-		return nil, readErr
-	}
-	if waitErr != nil {
+	if err := cp.Wait(); err != nil {
 		// The daemon's answer for a path the image does not have.
 		if strings.Contains(stderr.String(), "Could not find the file") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("docker cp: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("docker cp: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return b, nil
 }
@@ -412,25 +427,37 @@ const (
 	maxUserTar  = maxUserFile + 64<<10
 )
 
-// readUserFile reads the one file in the tar stream docker cp writes for a
-// single path. Only a regular file counts: a symlink or anything else is
-// treated as missing, since its target is not in the stream.
-func readUserFile(r io.Reader) ([]byte, error) {
-	tr := tar.NewReader(&capReader{r: r, left: maxUserTar})
+// What the first entry of a docker cp stream is.
+const (
+	entryNone    = iota // an empty stream: docker cp found nothing
+	entryRegular        // a regular file, read
+	entryOther          // a symlink, a directory or anything else
+)
+
+// readUserFile reads the first entry of the tar stream docker cp writes for
+// a single path. Only a regular file is read: a symlink or anything else is
+// reported as entryOther and treated as missing, since its target is not in
+// the stream.
+func readUserFile(r io.Reader) ([]byte, int, error) {
+	tr := tar.NewReader(r)
 	h, err := tr.Next()
 	if err == io.EOF {
-		return nil, nil
+		return nil, entryNone, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, entryNone, err
 	}
 	if h.Typeflag != tar.TypeReg {
-		return nil, nil
+		return nil, entryOther, nil
 	}
 	if h.Size > maxUserFile {
-		return nil, fmt.Errorf("%s is %d bytes, more than the %d this reads", h.Name, h.Size, maxUserFile)
+		return nil, entryOther, fmt.Errorf("%s is %d bytes, more than the %d this reads", h.Name, h.Size, maxUserFile)
 	}
-	return io.ReadAll(tr)
+	b, err := io.ReadAll(tr)
+	if err != nil {
+		return nil, entryOther, err
+	}
+	return b, entryRegular, nil
 }
 
 // capReader fails once more than left bytes are read. io.LimitReader would
