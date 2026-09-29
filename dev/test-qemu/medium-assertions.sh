@@ -487,6 +487,42 @@ brain_dockerhost="$(docker inspect moose-brain \
 [ "$brain_dockerhost" = "tcp://docker-proxy:2375" ] \
     || fail "brain DOCKER_HOST='$brain_dockerhost', want tcp://docker-proxy:2375"
 
+# 2b. the daemon runs with the userns-remap (#530, BUILD.md # User-namespace
+# remap), the same check as the hosted lane's cloud-assertions.sh step 5d. docker
+# info must list name=userns and the classic overlay2 store. The socket proxy and
+# the brain run with --userns=host (real host root); Caddy and moose-ui keep the
+# remap, so their root is host uid 1000000.
+remap_base=1000000
+host_uid_of() { awk '/^Uid:/{print $2}' "/proc/$(docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null)/status" 2>/dev/null; }
+sec_opts="$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null || true)"
+store_driver="$(docker info --format '{{.Driver}}' 2>/dev/null || true)"
+docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+echo "control-plane: docker info: security options: $sec_opts"
+echo "control-plane: docker info: storage driver: $store_driver, root dir: $docker_root"
+grep -q 'name=userns' <<<"$sec_opts" || fail "userns-remap is not on: docker info security options are $sec_opts, want name=userns"
+[ "$store_driver" = overlay2 ] || fail "docker storage driver is '$store_driver', want overlay2 (the store the remap uses)"
+[ "$docker_root" = "/var/lib/docker/${remap_base}.${remap_base}" ] \
+    || fail "docker root dir is '$docker_root', want /var/lib/docker/${remap_base}.${remap_base}"
+for f in /etc/subuid /etc/subgid; do
+    grep -qx "moose-remap:${remap_base}:65536" "$f" || fail "$f has no moose-remap:${remap_base}:65536 line: $(tr '\n' ' ' < "$f" 2>&1)"
+done
+for k in SUB_UID_COUNT SUB_GID_COUNT; do
+    grep -qE "^${k}[[:space:]]+0$" /etc/login.defs || fail "/etc/login.defs does not set $k 0"
+done
+for c in moose-docker-proxy moose-brain; do
+    um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}' 2>/dev/null || true)"
+    [ "$um" = host ] || fail "$c UsernsMode is '${um:-<empty>}', want host"
+    puid="$(host_uid_of "$c")"
+    [ "$puid" = 0 ] || fail "$c runs as host uid '${puid:-<none>}', want 0 (host userns)"
+done
+for c in moose-caddy moose-ui; do
+    um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}' 2>/dev/null || true)"
+    [ -z "$um" ] || fail "$c UsernsMode is '$um', want the daemon default (remapped)"
+    puid="$(host_uid_of "$c")"
+    [ "$puid" = "$remap_base" ] || fail "$c runs as host uid '${puid:-<none>}', want $remap_base (remapped root)"
+done
+echo "control-plane: userns-remap on; proxy + brain in the host userns, caddy + moose-ui remapped (host uid $remap_base)"
+
 # 3. dashboard loads through Caddy. Caddy publishes :80 on the host; the dashboard
 # host route serves the SPA from moose-ui and proxies /api to the brain. No curl
 # in the image — use bash /dev/tcp. Poll: the brain configures the route a beat

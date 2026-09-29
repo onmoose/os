@@ -1,9 +1,9 @@
 # Test-only catalog app for the image tier (#537). A folderless app with
 # image_user: true, whose two images each set their own USER and write files
 # baked with that owner. On a box with no userns remap the brain refuses it
-# with a plain message, which the access boot checks. On a remapped box it runs
+# with a plain message. The image runs the remap (#530), so in the lane it runs
 # remapped, with no capability back and no user: pin, and each bind dir belongs
-# to base plus its image user's ids (the remap boot, #531).
+# to base plus its image user's ids. The access boot checks that.
 #
 # The images are built on the build host, not pulled, so the digests below are
 # not registry digests. The lane installs air-gapped (MOOSE_OFFLINE_INSTALL),
