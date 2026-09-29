@@ -7,9 +7,11 @@
 //
 // For a listed service, top to bottom: the password box with the soft prefix
 // warning, the optional name (a quiet underlined box; empty means the default
-// name), a line on cost, and at the bottom the numbered steps from the
-// provider data (`key_url` and `help`, with an "Open <service>" button)
-// folded under "Where do I find my API key?". For My own server:
+// name), the household line on a household install, and at the bottom the
+// numbered steps from the provider data (`key_url` and `help`, with an "Open
+// <service>" button) folded under "Where do I find my API key?". There is no
+// cost line: what a service costs depends too much on the model. For My own
+// server:
 // the address, an optional key, and a model name box for each model setting
 // the app's slot has, since such a server has no model list.
 import { computed, ref, watch } from "vue";
@@ -195,10 +197,9 @@ const inputClass =
       class="block w-full border-0 border-b border-border bg-transparent px-0 py-1.5 text-base text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none sm:text-sm/6"
     />
 
-    <div v-if="!other || (household && appName)" class="space-y-1 text-sm text-muted-foreground">
-      <p v-if="!other">{{ service.name }} charges for use, so it may ask for a card on file.</p>
-      <p v-if="household && appName">Your key pays for everyone at home who uses {{ appName }}.</p>
-    </div>
+    <p v-if="household && appName" class="text-sm text-muted-foreground">
+      Your key pays for everyone at home who uses {{ appName }}.
+    </p>
 
     <!-- The steps, folded, at the bottom: most users only need the box. -->
     <details v-if="!other" class="rounded-md border border-border px-4 py-3">
@@ -213,7 +214,7 @@ const inputClass =
           </div>
         </li>
         <li v-if="service.help">{{ service.help }}</li>
-        <li>Copy the key, and paste it above.</li>
+        <li>Copy the key, and paste it into the {{ service.name }} key box.</li>
       </ol>
     </details>
 

@@ -133,7 +133,7 @@ var presets = []Preset{
 		Steps: []string{
 			"Turn on 2-Step Verification for your Google account, in Security. App passwords need it.",
 			"Open App passwords in your Google account. Type a name, like moose, and choose Create.",
-			"Copy the 16-character password, and paste it below.",
+			"Copy the 16-character password, and paste it into the App password box.",
 		},
 	},
 	{
@@ -151,7 +151,7 @@ var presets = []Preset{
 		Steps: []string{
 			"Turn on two-factor authentication for your Apple Account. App-specific passwords need it.",
 			"Sign in to your Apple Account, open Sign-In and Security, then App-Specific Passwords, and make one.",
-			"Copy the password, and paste it below.",
+			"Copy the password, and paste it into the App-specific password box.",
 		},
 	},
 	{

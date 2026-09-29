@@ -14,20 +14,12 @@ import { computed } from "vue";
 import { TriangleAlert } from "lucide-vue-next";
 import type { InstallPlanFootprint, InstallPlanPermissions } from "../../api";
 import { formatSize } from "../../utils";
-import { folderName, spaceTight } from "../../installSteps";
+import { permissionLines, spaceTight } from "../../installSteps";
 
 const props = defineProps<{ appName: string; permissions: InstallPlanPermissions; footprint?: InstallPlanFootprint }>();
 
-const devices = computed(() => props.permissions.devices ?? []);
-const folders = computed(() => props.permissions.folders ?? []);
-const anyPermission = computed(
-  () =>
-    props.permissions.internet ||
-    props.permissions.lan ||
-    props.permissions.gpu ||
-    devices.value.length > 0 ||
-    folders.value.length > 0,
-);
+// The words are shared with the App page's Permissions group.
+const lines = computed(() => permissionLines(props.permissions));
 const size = computed(() => props.footprint?.image_disk_bytes ?? 0);
 const tight = computed(() => spaceTight(props.footprint));
 </script>
@@ -39,20 +31,15 @@ const tight = computed(() => spaceTight(props.footprint));
       <TriangleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       This might not fit. Only about {{ formatSize(footprint.free_bytes) }} is free on your box. You can still install.
     </p>
-    <template v-if="anyPermission">
+    <template v-if="lines.length > 0">
       <p class="font-medium text-foreground">What {{ appName }} can do</p>
       <ul class="list-disc space-y-0.5 pl-5">
-        <li v-if="permissions.internet">Connect to the internet</li>
-        <li v-if="permissions.lan">Reach other devices on your network</li>
-        <li v-if="permissions.gpu">Use the graphics card</li>
-        <li v-for="d in devices" :key="d">Use the device {{ d }}</li>
         <li
-          v-for="f in folders"
-          :key="f.folder"
-          :class="f.mode === 'write' ? 'font-medium text-destructive marker:text-destructive' : ''"
+          v-for="l in lines"
+          :key="l.key"
+          :class="l.danger ? 'font-medium text-destructive marker:text-destructive' : ''"
         >
-          <template v-if="f.mode === 'write'">Add, change, and delete files in {{ folderName(f.folder) }}</template>
-          <template v-else>Read files in {{ folderName(f.folder) }}</template>
+          {{ l.text }}
         </li>
       </ul>
     </template>

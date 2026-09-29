@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-29 — An app that asks nothing installs from the App page
+
+**Previously:** an app with no questions still showed the last page of the install flow ("Ready to install Memos") before the install started (`INSTALL_STEPS.md` # 1).
+**Now:** an app that needs no input from the user (no settings, no email, no AI, no folders) shows no install pages. Install on the App page starts the install and goes to the progress page. The App page lists what the app can do in a Permissions group in its right column, so the user still sees it before the install starts. When there is something to warn about (a copy the user can already see, or not enough space), the last page still opens with the warning, and so does any error from the install.
+**Why:** in the user test, the last page for such an app had nothing on it but the Install button, a page that asks nothing. Skipping it removes a click that tells the user nothing new.
+**Affected docs:** `INSTALL_STEPS.md` (Decisions, # 1, Build rules), `DASHBOARD.md` # Install authorization.
+
+---
+
 ## 2026-09-29 — Docker runs with a daemon-wide userns-remap, and the brain picks a tier per container (#516)
 
 **Previously:** moose ran no user-namespace remap. `APP_ISOLATION.md` # Not in v1 said it "breaks too many images". Every app container ran in the host user namespace, so a folderless app on the default identity was real host root with no capabilities. No app could get a capability back (2026-05-13), and images that must `chown` or drop privileges as root at start (poznote, mealie), or that hardcode their own internal UID, stayed curation-rejects (2026-06-10). The June spike recommended sysbox-runc, because it would give each container its own range.

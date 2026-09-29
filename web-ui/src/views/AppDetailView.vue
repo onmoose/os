@@ -5,9 +5,11 @@
 // charges plus the third-party costs the manifest declares. Both are imported
 // from the marketing store's app page (cloud internal/web/templates/pages/app.html)
 // so the two store surfaces show one catalog the same way. This is
-// where Install starts (the browse grid only navigates here): the button goes
-// to the setup page (/store/:id/install), and the household item of the split
-// button adds ?scope=household. Which copies the caller already has, and so
+// where Install starts (the browse grid only navigates here). For an app that
+// asks nothing and has nothing to warn about, Install starts the install at
+// once and goes to the progress page. Any other app goes to the install pages
+// (/store/:id/install). The household item of the split button follows the
+// same rule with ?scope=household. Which copies the caller already has, and so
 // whether the button reads Install, Open, or "Installing…", comes from
 // useAppInstances.
 //
@@ -18,9 +20,10 @@ import { useRoute, useRouter, RouterLink } from "vue-router";
 import { useQuery } from "@tanstack/vue-query";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { ChevronLeft, ChevronRight, Info, X } from "lucide-vue-next";
-import { api, type CatalogDetail, type CatalogHome } from "../api";
-import { useAppInstances } from "../useInstall";
+import { ChevronLeft, ChevronRight, Cpu, Folder, Globe, HardDrive, Info, Network, X } from "lucide-vue-next";
+import { api, type CatalogDetail, type CatalogHome, type InstallPlan } from "../api";
+import { useAppInstances, useInstallSubmit } from "../useInstall";
+import { installWarnings, needsNoPages, permissionLines, type PermissionLine } from "../installSteps";
 import { formatSize, safeExternalUrl } from "../utils";
 import AppGlyph from "../components/AppGlyph.vue";
 import SplitButton from "../components/SplitButton.vue";
@@ -58,12 +61,61 @@ const categoryLabels = computed(() => {
 
 const { householdInstance, ownPersonalInstance, installing, canInstallHousehold } = useAppInstances(manifestId);
 
-function goInstall(household = false) {
-  router.push({
+// The install plan, the same query the install pages read. It decides
+// whether Install needs the install pages at all, and feeds the Permissions
+// group in the right column.
+const planQuery = useQuery({
+  queryKey: computed(() => ["install-plan", manifestId.value]),
+  queryFn: () => api.get<InstallPlan>(`/catalog/${encodeURIComponent(manifestId.value)}/install-plan`),
+  refetchOnWindowFocus: false,
+});
+const plan = computed(() => planQuery.data.value ?? null);
+
+// The Permissions group in the right column, in the install flow's words.
+const permissions = computed(() => (plan.value ? permissionLines(plan.value.permissions) : []));
+const permissionIcons: Record<PermissionLine["kind"], unknown> = {
+  internet: Globe,
+  lan: Network,
+  gpu: Cpu,
+  device: HardDrive,
+  folder: Folder,
+};
+
+const { submit, submitError, submitLocation, duplicateInfo, pending } = useInstallSubmit(manifestId);
+const directScope = ref<"personal" | "household">("personal");
+
+function pagesPath(household: boolean) {
+  return {
     path: `/store/${encodeURIComponent(manifestId.value)}/install`,
     query: household ? { scope: "household" } : undefined,
-  });
+  };
 }
+
+// goInstall starts the install at once for an app that asks nothing and has
+// nothing to warn about (INSTALL_STEPS.md # Build rules, rule 8): the 202
+// goes straight to the progress page. Anything else opens the install
+// pages. Without the plan nothing starts; the button waits for it.
+function goInstall(household = false) {
+  const p = plan.value;
+  if (!p || pending.value) return;
+  if (!needsNoPages(p) || installWarnings(p)) {
+    router.push(pagesPath(household));
+    return;
+  }
+  directScope.value = household ? "household" : "personal";
+  submit({ manifest_id: p.manifest_id, scope: directScope.value, config: { folders: [] } });
+}
+
+// A direct install that fails opens the last page with the error there, so
+// the user is never left here with nothing. A 409 (a copy made after the
+// plan was read) shows the last page's duplicate box.
+watch([submitError, duplicateInfo], ([err, dup]) => {
+  if (!err && !dup) return;
+  router.push({
+    ...pagesPath(directScope.value === "household"),
+    state: { installError: err ?? undefined, installErrorLocation: submitLocation.value, installDuplicate: dup ?? undefined },
+  });
+});
 
 // The split button's menu. Only admins outside single-user mode get the
 // household item; everyone else gets a plain Install button.
@@ -287,9 +339,9 @@ watch(shots, (list) => {
             blocks="apps"
           >
             <SplitButton
-              :label="installing ? 'Installing…' : 'Install'"
-              :loading="installing"
-              :disabled="installing"
+              :label="installing ? 'Installing…' : pending ? 'Starting…' : 'Install'"
+              :loading="installing || pending || planQuery.isPending.value"
+              :disabled="installing || pending || !plan"
               :items="dropdownItems"
               @click="goInstall()"
             />
@@ -441,6 +493,29 @@ watch(shots, (list) => {
                 </div>
               </details>
             </div>
+          </section>
+
+          <!-- Permissions: what the app can do, from the install plan, in the
+               install flow's words (permissionLines). Hidden while the plan
+               loads, and for an app that needs none. -->
+          <section v-if="permissions.length > 0" class="space-y-3">
+            <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Permissions</h2>
+            <ul class="space-y-2">
+              <li
+                v-for="l in permissions"
+                :key="l.key"
+                class="flex items-start gap-2"
+                :class="l.danger ? 'font-medium text-destructive' : ''"
+              >
+                <component
+                  :is="permissionIcons[l.kind]"
+                  class="mt-0.5 size-4 shrink-0"
+                  :class="l.danger ? '' : 'text-muted-foreground'"
+                  aria-hidden="true"
+                />
+                <span>{{ l.text }}</span>
+              </li>
+            </ul>
           </section>
 
           <!-- Info panel -->

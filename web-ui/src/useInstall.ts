@@ -103,9 +103,12 @@ export function useInstallSubmit(manifestId: Ref<string>, onStarted?: () => void
   }
 
   // confirmDuplicate retries the last request past the duplicate warning.
-  function confirmDuplicate() {
-    if (!lastRequest.value) return;
-    submit({ ...lastRequest.value, confirm: true });
+  // fallback is the request to send when this page did not send the first
+  // one (the App page's direct install got the 409 and opened this page).
+  function confirmDuplicate(fallback?: InstallRequest) {
+    const req = lastRequest.value ?? fallback;
+    if (!req) return;
+    submit({ ...req, confirm: true });
   }
 
   function dismissDuplicate() {

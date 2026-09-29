@@ -858,6 +858,22 @@ function onInstall() {
   submit(buildRequest(plan.value));
 }
 
+// The App page's direct install (an app that asks nothing) hands its
+// failure over in the history state: an error, or a 409 from a copy made
+// after the plan was read. The last page shows it, as if it had sent the
+// install itself. The state is cleared, so a reload does not show it again.
+{
+  const st = (history.state ?? {}) as { installError?: string; installErrorLocation?: string; installDuplicate?: string };
+  if (st.installDuplicate) duplicateInfo.value = st.installDuplicate;
+  else if (st.installError) {
+    submitLocation.value = st.installErrorLocation;
+    submitError.value = st.installError;
+  }
+  if (st.installError || st.installDuplicate) {
+    history.replaceState({ ...history.state, installError: undefined, installErrorLocation: undefined, installDuplicate: undefined }, "");
+  }
+}
+
 // A 422 goes to the page that owns the field, with the error there
 // (INSTALL_STEPS.md # 2, Errors). One the flow cannot place stays on the
 // last page.
@@ -1231,7 +1247,7 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
         <div v-if="duplicateInfo" class="mx-4 space-y-3 rounded-lg border border-border bg-card px-4 py-3 sm:mx-0">
           <p class="text-sm">{{ duplicateInfo }}</p>
           <div class="flex flex-wrap gap-2">
-            <Button size="sm" :disabled="pending" @click="confirmDuplicate">Install my own copy</Button>
+            <Button size="sm" :disabled="pending" @click="confirmDuplicate(buildRequest(plan))">Install my own copy</Button>
             <Button size="sm" variant="ghost" @click="dismissDuplicate">Cancel</Button>
           </div>
         </div>

@@ -20,8 +20,10 @@
 import type {
   AIAccount,
   AIProvider,
+  InstallPlan,
   InstallPlanConfigField,
   InstallPlanFootprint,
+  InstallPlanPermissions,
   RequiresGroup,
 } from "./api";
 import {
@@ -129,6 +131,30 @@ export function planNeeds(
     plainGroups,
     extraFields: plain.filter((f) => !f.required && !plainGroupEnvs.has(f.app_env)),
   };
+}
+
+// needsNoPages says whether an app asks the user nothing at all, so Install
+// on the App page can start the install with no install pages (INSTALL_STEPS.md
+// # Build rules, rule 8): no config field of any kind (so no first-time page,
+// no AI row and no Extra settings), no requires group, no email, and no folder
+// to choose. It reads only the plan, so it does not wait for provider data or
+// the user's accounts. The scope is already chosen by the button pressed.
+export function needsNoPages(plan: InstallPlan): boolean {
+  const needs = planNeeds(plan.config ?? [], plan.requires ?? [], []);
+  return (
+    needs.requiredFields.length === 0 &&
+    needs.extraFields.length === 0 &&
+    needs.plainGroups.length === 0 &&
+    !plan.mail &&
+    (plan.permissions.folders ?? []).length === 0
+  );
+}
+
+// installWarnings says whether the plan has something to warn about before
+// an install: a copy the user can already see, or not enough space. Then the
+// install pages open, even for an app that asks nothing.
+export function installWarnings(plan: InstallPlan): boolean {
+  return (plan.existing ?? []).length > 0 || spaceTight(plan.footprint);
 }
 
 // filledBy is every field the bound slots will really get a value for, by the
@@ -400,6 +426,36 @@ export function spaceTight(fp: InstallPlanFootprint | undefined): boolean {
   if (!fp) return false;
   const need = fp.image_disk_bytes + (fp.estimated_state_bytes ?? 0);
   return fp.free_bytes > 0 && need >= fp.free_bytes * 0.9;
+}
+
+// ── Permission words ────────────────────────────────────────────────────────
+
+// PermissionLine is one thing an app can do, in the words the install flow's
+// info box and the App page's Permissions group both use. danger marks write
+// access to a folder, which is drawn in red (APP_ISOLATION.md # User content).
+export type PermissionLine = {
+  key: string;
+  kind: "internet" | "lan" | "gpu" | "device" | "folder";
+  text: string;
+  danger: boolean;
+};
+
+export function permissionLines(p: InstallPlanPermissions): PermissionLine[] {
+  const out: PermissionLine[] = [];
+  if (p.internet) out.push({ key: "internet", kind: "internet", text: "Connect to the internet", danger: false });
+  if (p.lan) out.push({ key: "lan", kind: "lan", text: "Reach other devices on your network", danger: false });
+  if (p.gpu) out.push({ key: "gpu", kind: "gpu", text: "Use the graphics card", danger: false });
+  for (const d of p.devices ?? []) out.push({ key: `device-${d}`, kind: "device", text: `Use the device ${d}`, danger: false });
+  for (const f of p.folders ?? []) {
+    const write = f.mode === "write";
+    out.push({
+      key: `folder-${f.folder}`,
+      kind: "folder",
+      text: write ? `Add, change, and delete files in ${folderName(f.folder)}` : `Read files in ${folderName(f.folder)}`,
+      danger: write,
+    });
+  }
+  return out;
 }
 
 // ── Folder words ────────────────────────────────────────────────────────────

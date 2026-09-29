@@ -1,6 +1,9 @@
 package mailpreset
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The table is data, so the tests guard its invariants rather than restate
 // every constant: a wrong hostname is caught by the live test-send, but a
@@ -170,6 +173,18 @@ func TestPresetOrderAndPersonal(t *testing.T) {
 		}
 		if len(p.Steps) == 0 || p.SetupURL == "" || p.UsernameMode != UsernameUser {
 			t.Errorf("%s: a personal preset needs steps, a setup URL and username_mode user", p.ID)
+		}
+		// The steps name the box by its label, never by where it is on the
+		// page, so a change of layout cannot make them wrong.
+		if len(p.Steps) > 0 && !strings.Contains(p.Steps[len(p.Steps)-1], "the "+p.CredentialLabel+" box") {
+			t.Errorf("%s: the last step should name the %q box", p.ID, p.CredentialLabel)
+		}
+		for _, step := range p.Steps {
+			for _, word := range []string{"below", "above"} {
+				if strings.Contains(step, word) {
+					t.Errorf("%s: step %q says %q; name the box instead", p.ID, step, word)
+				}
+			}
 		}
 	}
 }
