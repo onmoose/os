@@ -2,6 +2,7 @@ package admission
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -310,6 +311,49 @@ func TestCheckManifest(t *testing.T) {
 			}
 			if err != nil && !strings.Contains(err.Error(), "service_user") {
 				t.Errorf("error %q must name service_user", err.Error())
+			}
+		})
+	}
+}
+
+// root_setup is folderless only: admission refuses it with every grant that
+// puts the app in the host user namespace, and with service_user
+// (APP_MANIFEST.md # B). Each refusal names root_setup and the grant.
+func TestCheckManifestRootSetup(t *testing.T) {
+	folders := []manifest.Folder{{Folder: "documents", Mode: "read"}}
+	cases := []struct {
+		name     string
+		man      manifest.Manifest
+		wantName string // "" means accepted
+	}{
+		{name: "folderless", man: manifest.Manifest{RootSetup: true}},
+		{name: "with internet and lan", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{Internet: true, LAN: true}}},
+		{name: "with folders", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{Folders: folders}}, wantName: "folders"},
+		{name: "with gpu", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{GPU: true}}, wantName: "gpu: true"},
+		{name: "with devices", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{Devices: []string{"/dev/ttyUSB0"}}}, wantName: "devices"},
+		{name: "with service_user", man: manifest.Manifest{RootSetup: true, ServiceUser: true}, wantName: "service_user"},
+		// Without root_setup the same grants are fine.
+		{name: "gpu alone", man: manifest.Manifest{Permissions: manifest.Permissions{GPU: true}}},
+		{name: "devices alone", man: manifest.Manifest{Permissions: manifest.Permissions{Devices: []string{"/dev/ttyUSB0"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckManifest(&tc.man)
+			if tc.wantName == "" {
+				if err != nil {
+					t.Fatalf("want nil, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("want rejection, got nil")
+			}
+			var ae *Error
+			if !errors.As(err, &ae) {
+				t.Errorf("want an *admission.Error, got %T", err)
+			}
+			if !strings.Contains(err.Error(), "root_setup") || !strings.Contains(err.Error(), tc.wantName) {
+				t.Errorf("error %q must name root_setup and %q", err.Error(), tc.wantName)
 			}
 		})
 	}

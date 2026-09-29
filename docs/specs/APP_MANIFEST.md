@@ -165,6 +165,8 @@ The rules:
 
 **Versioning.** `root_setup` is an optional field with a default that keeps today's behaviour, so it is an additive change: `manifest_version` stays `1` (# Format). A brain that does not model the field ignores it (`APP_STORE.md` # Catalog schema), so it installs a `root_setup` app in the default tier, where it fails at start as it does today. The catalog must not offer such an app to a box that cannot run it.
 
+**Status.** The field is parsed, and the four refusals above run at install and in `moose manifest check` (#528). The brain does not act on it yet: it does not pick the caps tier and does not refuse a `root_setup` install on a box without the remap (#529). Until then a `root_setup` app installs like any folderless app.
+
 ### B2. Resources (recommended, never a limit)
 
 The author declares **recommended** specs — advice only, never a ceiling.

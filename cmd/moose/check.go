@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/onmoose/os/internal/admission"
 	"github.com/onmoose/os/internal/manifest"
 )
 
@@ -41,6 +42,12 @@ func check(ctx context.Context, admit composeChecker, manifestPath string, opts 
 	}
 	man, err := manifest.Parse(data)
 	if err != nil {
+		return warnings, err
+	}
+	// The manifest-side admission rules (service_user and root_setup against
+	// the grants they cannot sit with). The brain runs the same function at
+	// install, so a manifest that passes here is not refused there for these.
+	if err := admission.CheckManifest(man); err != nil {
 		return warnings, err
 	}
 	composePath := filepath.Join(filepath.Dir(manifestPath), man.ComposeFile)
