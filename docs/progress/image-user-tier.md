@@ -36,13 +36,13 @@ This follows [brain-userns-tiers.md](brain-userns-tiers.md) (#529), whose What's
 ## Verification
 
 - `make check`: green, the full suite with the PAM package.
-- `CI / Cloud image` with `publish=false` on this branch (the six usual boots): run 36609935235, all six pass (`unseeded seeded bios access update ssh`). The access boot now includes the refusal: "image_user app refused on a box with no remap, with the plain message, and no container made".
+- `CI / Cloud image` with `publish=false` on this branch (the six usual boots): run 36609935235 on commit 7c7b3a5, all six pass (`unseeded seeded bios access update ssh`). The later commits change only the probe, which none of the six boots reaches; the pull request's own `CI / Cloud image` check (the update boot) ran on the final code. The access boot now includes the refusal: "image_user app refused on a box with no remap, with the plain message, and no container made".
 
 ### The remapped half, on the booted image
 
-A throwaway branch, `test/537-remap-proof` off this branch, turned the remap on in the hosted image the way #529 did (`daemon.json`, the `moose-remap` account and range, `SUB_UID_COUNT 0` and `SUB_GID_COUNT 0`), with a `remap` boot on a 40 GB disk and 8 GB of memory. It added two test-only fixtures: `imageuser-ghost` (an image whose `USER ghost` is not in its passwd) and `plunk-iu` (plunk with `image_user: true`, on the managed Postgres and Valkey). It was never merged and is deleted from origin. Run: https://github.com/onmoose/os/actions/runs/36609452121 (`boots=remap`).
+A throwaway branch, `test/537-remap-proof` off this branch, turned the remap on in the hosted image the way #529 did (`daemon.json`, the `moose-remap` account and range, `SUB_UID_COUNT 0` and `SUB_GID_COUNT 0`), with a `remap` boot on a 40 GB disk and 8 GB of memory. It added two test-only fixtures: `imageuser-ghost` (an image whose `USER ghost` is not in its passwd) and `plunk-iu` (plunk with `image_user: true`, on the managed Postgres and Valkey). It was never merged and is deleted from origin. It ran three times with `boots=remap`, each time on the PR head of the moment: https://github.com/onmoose/os/actions/runs/36609452121 (the first code), https://github.com/onmoose/os/actions/runs/36613039852 (after the probe copied only the two files and removed its volumes) and https://github.com/onmoose/os/actions/runs/36615206322 (the final code, after the directory fix). All three passed with the same results.
 
-It passed, with part 1 all green. Quotes are from the run's serial log. `base` is 1000000.
+Part 1 was all green each time. Quotes are from the serial log of the first run; the later two say the same. `base` is 1000000.
 
 | Check | Result |
 |---|---|
