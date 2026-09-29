@@ -714,6 +714,32 @@ func TestReconcileWritesSplashesAfterRunningRoutes(t *testing.T) {
 	}
 }
 
+// The splashes get their own budget, so they are still written when the work
+// before them used up the caller's startup deadline (#520).
+func TestReconcileWritesSplashesAfterTheDeadline(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+	e.docker.digests[testImage] = testDigest
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := e.store.SetState(inst.ID, "stopped"); err != nil {
+		t.Fatal(err)
+	}
+	delete(e.caddy.routes, inst.ID)
+	e.docker.psManaged = map[string]bool{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the deadline is already gone
+	if err := e.m.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := e.caddy.route(inst.ID); got != "splash:stopped" {
+		t.Errorf("route after reconcile = %q, want splash:stopped", got)
+	}
+}
+
 func TestReconcileTearsDownOrphanContainers(t *testing.T) {
 	e := newTestEnv(t)
 	// No SQLite row; Docker reports a managed container for unknown instance.

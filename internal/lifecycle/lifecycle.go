@@ -1487,9 +1487,15 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	// Splashes go last (#520). The whole pass runs under one startup deadline,
 	// and a slow Caddy makes each route write cost time. A running app's route
 	// and its compose up matter more than a stopped app's splash, so they must
-	// not wait behind them.
-	for _, inst := range splashes {
-		m.reassertSplash(ctx, inst)
+	// not wait behind them. They get their own short budget, cut loose from the
+	// caller's deadline: if the work above used it up, the splashes still get
+	// a try instead of failing at once on an expired context.
+	if len(splashes) > 0 {
+		splashCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), splashBudget)
+		for _, inst := range splashes {
+			m.reassertSplash(splashCtx, inst)
+		}
+		cancel()
 	}
 	if avahiTotal > 0 {
 		slog.Info("avahi replay", "total", avahiTotal, "ok", avahiOK, "failed", avahiFail)
@@ -1523,6 +1529,11 @@ func (m *Manager) reassertRouting(ctx context.Context, inst store.Instance) bool
 	}
 	return avahiOK
 }
+
+// splashBudget bounds the time the startup pass spends writing splash routes
+// for stopped and failed apps, apart from the caller's deadline (#520). A
+// healthy Caddy answers each write in milliseconds.
+const splashBudget = 10 * time.Second
 
 // reassertSplash re-registers the splash route of a stopped or failed
 // instance, the way reassertRouting does for a running one (#520). The brain

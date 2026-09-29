@@ -30,7 +30,7 @@ The issue asked whether the reconciler repairs a missing route on its next pass.
 
 For a **stopped** or **failed** app it did not. The brain clears Caddy's routes on startup (`EnsureIngress` sends an empty route list), and nothing wrote the splash back. So after any brain restart a stopped or failed app answered with the catch-all 404 ("No app at this hostname") instead of its splash. The new `reassertSplash` writes the stopped or failed splash for those apps during the pass. It keys the route on the stored host and does not re-publish the mDNS name, the same as Stop.
 
-The splashes are written **after** the loop over all instances, not in it. The whole pass runs under one 30 s startup deadline in `cmd/brain`, and instances come in install order. Without this, a slow Caddy could spend that deadline on older stopped apps' splashes and leave no time for a running app's route or compose up. Both reviewers found this (see # Review).
+The splashes are written **after** the loop over all instances, not in it. The whole pass runs under one 30 s startup deadline in `cmd/brain`, and instances come in install order. Without this, a slow Caddy could spend that deadline on older stopped apps' splashes and leave no time for a running app's route or compose up. Both reviewers found this (see # Review). The splashes then get their own 10 s budget (`splashBudget`), cut loose from the caller's deadline, so they still get a try when the work before them used it all.
 
 ### Tests
 
@@ -39,7 +39,7 @@ The splashes are written **after** the loop over all instances, not in it. The w
   - `TestAddRouteOneFailedCallNeverLeavesNoRoute`: calls 1 to 4 of the flip fail one at a time. The host always serves the old splash (with an error) or the new app, never the catch-all. With the old code this fails at call 2, with the same "connection reset by peer" on the PUT that CI logged.
   - `TestAddRouteRetryAfterAnAppliedWrite`: a PATCH, and a first-write PUT, that landed but lost their answer. The retry succeeds and no duplicate route is added.
   - `TestAddRouteRetriesAWriteWithNoAnswer`, `TestAddRouteDoesNotRetryAnAnsweredError`, `TestAddRouteDoesNotRetryATimeout`, `TestAddRouteInsertsOnceThenReplacesInPlace`.
-- `internal/lifecycle/lifecycle_test.go`: `TestReconcileRepairsRouteOfRunningInstance` (a running app left on its splash gets its upstream back) and `TestReconcileReassertsSplashForStoppedAndFailed`, and `TestReconcileWritesSplashesAfterRunningRoutes` (an older stopped app's splash is written after a newer running app's route). The last two fail without the change.
+- `internal/lifecycle/lifecycle_test.go`: `TestReconcileRepairsRouteOfRunningInstance` (a running app left on its splash gets its upstream back) and `TestReconcileReassertsSplashForStoppedAndFailed`, and `TestReconcileWritesSplashesAfterRunningRoutes` (an older stopped app's splash is written after a newer running app's route), and `TestReconcileWritesSplashesAfterTheDeadline` (a stopped app's splash is still written when the caller's context is already done). The last three fail without the change.
 - The existing request-shape tests in `caddy_test.go` now look for the PATCH instead of the PUT, and the dashboard test checks that no DELETE is sent.
 - **Against a real Caddy.** A throwaway probe (not checked in) ran the client against `caddy:2.11.4` with `dev/caddy.json`: splash, flip to the app, stopped splash, a PATCH Caddy refuses (the stopped splash keeps serving and the 500 comes back), and two dashboard writes. The route list ended as `[moose-dashboard, moose-app-a1, moose-catchall]`, one route each with the catch-all last.
 
@@ -56,6 +56,8 @@ The splashes are written **after** the loop over all instances, not in it. The w
 - **Agent review (Block) and Greptile (P1), the same finding: splash replay could use up the startup deadline.** Confirmed. Before this change a stopped or failed app made no Caddy call in the pass, and a write was never retried. Fixed two ways: splashes are written after every running app's work, and a timed-out call is not retried, so a hanging Caddy costs one client timeout per write as before. A refused or reset connection still costs up to about 1 s per write. Covered by `TestReconcileWritesSplashesAfterRunningRoutes` and `TestAddRouteDoesNotRetryATimeout`.
 - **Agent review (Note) and Greptile (P2), the same finding: no test for a write that landed but lost its answer.** Confirmed as a coverage gap, not a bug. Added `TestAddRouteRetryAfterAnAppliedWrite`.
 - **Agent review (Note): the retry log line had no route identity.** Confirmed. It now logs `host`.
+- **Greptile re-review (P1): with splashes last, they could start on an expired deadline and never be written.** Confirmed. The splash loop now runs on its own 10 s budget, apart from the caller's deadline. This can make startup up to 10 s longer, only when Caddy is slow. Covered by `TestReconcileWritesSplashesAfterTheDeadline`.
+- **Greptile re-review (P2): the timeout test waited a fixed 250 ms for the slow fake to record its call.** Confirmed. The fake now records a call before its delay, and the test has no sleep.
 
 ## Known gaps & deviations
 

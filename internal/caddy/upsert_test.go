@@ -53,13 +53,18 @@ func newRouteAdmin() *routeAdmin {
 func (a *routeAdmin) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		// Record the call before any delay, so a test can count a call the
+		// client gave up on without waiting for the handler.
+		a.mu.Lock()
+		a.calls = append(a.calls, r.Method+" "+r.URL.Path)
+		n := len(a.calls)
+		a.mu.Unlock()
 		if a.delay > 0 {
 			time.Sleep(a.delay)
 		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		a.calls = append(a.calls, r.Method+" "+r.URL.Path)
-		failing := a.fail != nil && a.fail(len(a.calls))
+		failing := a.fail != nil && a.fail(n)
 		if failing && !a.failAfterApply && !a.failReset {
 			http.Error(w, `{"error":"injected failure"}`, http.StatusInternalServerError)
 			return
@@ -364,7 +369,6 @@ func TestAddRouteDoesNotRetryATimeout(t *testing.T) {
 	if err := c.AddRoute(context.Background(), testRoute()); err == nil {
 		t.Fatal("AddRoute: want the timeout as an error")
 	}
-	time.Sleep(250 * time.Millisecond) // let the slow handler record its call
 	if n := admin.callCount() - base; n != 1 {
 		t.Errorf("admin calls = %d, want 1", n)
 	}
