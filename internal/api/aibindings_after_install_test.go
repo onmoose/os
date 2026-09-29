@@ -102,7 +102,7 @@ func TestResolvePutWithAI(t *testing.T) {
 		bindings []AIBindingBody
 		want     string
 	}{
-		{"clearing the only provider", nil, []AIBindingBody{{Slot: "ai.acme"}}, "keep at least one LLM provider"},
+		{"clearing the only provider", nil, []AIBindingBody{{Slot: "ai.acme"}}, "keep at least one AI service"},
 		{"typed value for a listed slot", map[string]string{"ACME_MODEL": "x"}, []AIBindingBody{{Slot: "ai.acme", AccountID: "a_acme"}}, "ACME_MODEL is filled from an AI account"},
 		{"typed value for a bound slot not listed", map[string]string{"ACME_API_KEY": "typed"}, nil, "ACME_API_KEY is filled from an AI account"},
 		{"slot twice", nil, []AIBindingBody{{Slot: "ai.acme", AccountID: "a_acme"}, {Slot: "ai.acme"}}, "given more than once"},
@@ -123,7 +123,7 @@ func TestResolvePutWithAI(t *testing.T) {
 
 func TestSetupMissing(t *testing.T) {
 	man := parseAIAppManifest(t)
-	if got := setupMissing(man, map[string]string{"ACME_MODEL": "m"}); len(got) != 1 || got[0] != "Pick at least one LLM provider." {
+	if got := setupMissing(man, map[string]string{"ACME_MODEL": "m"}); len(got) != 1 || got[0] != "Pick at least one AI service." {
 		t.Fatalf("missing = %v", got)
 	}
 	if got := setupMissing(man, map[string]string{"ACME_API_KEY": "k"}); len(got) != 0 {
@@ -234,7 +234,7 @@ func TestAppConfigShowsBindingsAndNeedsSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg = decodeRaw[AppConfigDTO](t, mustOK(t, h, "GET", "/api/v1/apps/i_ai/config"))
-	if !cfg.NeedsSetup || len(cfg.Missing) != 1 || cfg.Missing[0] != "Pick at least one LLM provider." {
+	if !cfg.NeedsSetup || len(cfg.Missing) != 1 || cfg.Missing[0] != "Pick at least one AI service." {
 		t.Fatalf("config = %+v", cfg)
 	}
 	list := decodeRaw[struct {
@@ -290,7 +290,7 @@ func TestAppConfigPutBinding(t *testing.T) {
 	code, raw = h.doRaw("PUT", "/api/v1/apps/i_ai/config", map[string]any{
 		"ai_bindings": []map[string]any{{"slot": "ai.acme", "account_id": ""}},
 	})
-	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "keep at least one LLM provider") {
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), "keep at least one AI service") {
 		t.Fatalf("clearing the only provider = %d %s", code, raw)
 	}
 	if !h.hasAuditEvent(audit.ActionAppConfigUpdate, "i_ai", false) {
@@ -347,7 +347,7 @@ func TestAIAccountEditReachesApps(t *testing.T) {
 	}
 
 	// The provider cannot change while apps use the account.
-	code, raw = h.doRaw("PUT", "/api/v1/ai-accounts/"+acct.ID, map[string]any{"provider_id": "openai_compatible", "label": "Renamed", "base_url": "http://10.0.0.2/v1"})
+	code, raw = h.doRaw("PUT", "/api/v1/ai-accounts/"+acct.ID, map[string]any{"provider_id": "openai_compatible", "label": "Renamed", "models": map[string][]string{"chat": {"llama3"}}, "base_url": "http://10.0.0.2/v1"})
 	if code != http.StatusConflict || !strings.Contains(string(raw), "its provider cannot change") {
 		t.Fatalf("provider change = %d %s", code, raw)
 	}
@@ -627,7 +627,7 @@ func TestAIAccountDeleteRefusedWhenManifestUnreadable(t *testing.T) {
 	}
 	h.elevate("pass1")
 	code, raw := h.doRaw("DELETE", "/api/v1/ai-accounts/"+acct.ID, nil)
-	if code != http.StatusInternalServerError || !strings.Contains(string(raw), "the LLM provider settings of Broken App could not be found") {
+	if code != http.StatusInternalServerError || !strings.Contains(string(raw), "the AI service settings of Broken App could not be found") {
 		t.Fatalf("delete = %d %s", code, raw)
 	}
 	if _, err := h.st.GetAIAccount(acct.ID); err != nil {

@@ -1,6 +1,6 @@
 // AI providers for the install setup page and the app's settings screen
 // (docs/specs/INSTALL_SETUP.md # 1 to # 3, # 6, and piece 4). The UI calls
-// them LLM providers; the code keeps `ai`, the role kind.
+// them AI services; the code keeps `ai`, the role kind.
 //
 // This is the one module that turns an app's roles and the provider data into
 // tiles, model pickers and bindings. The provider list comes from the catalog
@@ -24,12 +24,13 @@ import type { AIAccount, AIBinding, AIModel, AIProvider, AppAIBinding, InstallPl
 // of an account made with the Other tile.
 export const COMPATIBLE = "openai_compatible";
 
-// OTHER is the "Other (OpenAI-compatible)" tile. It is the UI's own, not
+// OTHER is the "My own server" tile (an OpenAI-compatible server the user
+// runs or names). It is the UI's own, not
 // catalog data: it has no URL and no models, the user types the server's
 // address, and the key is optional because a server the user runs may not
 // ask for one. Its accounts are saved with provider id `openai_compatible`.
 export const OTHER_ID = "__other";
-export const OTHER: AIProvider = { id: OTHER_ID, name: "Other (OpenAI-compatible)", models: [] };
+export const OTHER: AIProvider = { id: OTHER_ID, name: "My own server", models: [] };
 
 export function isOther(p: AIProvider): boolean {
   return p.id === OTHER_ID;
@@ -206,6 +207,25 @@ export function modelIdProblem(id: string, separator?: string): string {
   return "";
 }
 
+// serverModelsBody is the models an edit of a My own server account sends:
+// the saved models, with each typed type applied. A box shows only the first
+// saved id, so an untouched box keeps the whole saved list, and a changed one
+// replaces it. The brain needs at least one name, so the forms never send
+// every box empty.
+export function serverModelsBody(
+  saved: Record<string, string[] | null> | undefined,
+  typed: Record<string, string>,
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [t, ids] of Object.entries(saved ?? {})) if (ids?.length) out[t] = [...ids];
+  for (const [t, raw] of Object.entries(typed)) {
+    const id = raw.trim();
+    const had = saved?.[t] ?? [];
+    if (id && (had.length === 0 || id !== had[0])) out[t] = [id];
+  }
+  return out;
+}
+
 // modelProblem says why one model setting cannot be saved yet, or "". A
 // listed provider with a default may leave it empty, and the brain then uses
 // the default; the pickers start on it anyway.
@@ -317,8 +337,8 @@ export function unmetGroups(
 export function groupNeed(fields: InstallPlanConfigField[], group: RequiresGroup): string {
   const members = group.one_of ?? [];
   // A group of AI kinds or slots is met by any tile the page shows for them.
-  // The UI says "LLM provider"; the role kind stays `ai`.
-  if (members.every((m) => m === "ai" || /^ai\.[a-z0-9_]+$/.test(m))) return "an LLM provider";
+  // The UI says "AI service"; the role kind stays `ai`.
+  if (members.every((m) => m === "ai" || /^ai\.[a-z0-9_]+$/.test(m))) return "an AI service";
   const titles = groupFields(fields, group).map((f) => f.title);
   if (titles.length === 0) return members.join(", ");
   if (titles.length === 1) return titles[0]!;

@@ -15,9 +15,10 @@ Drop a logo in here and it appears in Settings → Integrations → Email. No co
 | `brevo.*` | Brevo |
 | `resend.*` | Resend |
 | `smtp2go.*` | SMTP2GO |
-| `google_workspace.*` | Google Workspace |
+| `google_workspace.*` | Gmail or Google Workspace |
+| `icloud.*` | iCloud |
 
-`custom` is deliberately absent — "Custom SMTP server" is not a brand, so it draws a generic server glyph instead.
+`custom` is left out on purpose: "Custom server" is not a brand, so it draws a generic server glyph instead.
 
 `.svg`, `.png`, `.jpg`, `.jpeg` and `.webp` all work. Vite picks the file up at build time by globbing this folder (`MailProviderLogo.vue`), so **adding a provider logo is just adding a file**. One file per provider: if both `brevo.svg` and `brevo.png` exist, which one wins is undefined — delete the one you don't want.
 
@@ -42,3 +43,4 @@ Replace any of them with a better file — several are stand-ins:
 - `ses.svg` is the **generic AWS mark**, not an SES-specific one; there is no public SES icon in these sources.
 
 These are the providers' trademarks, used to identify the service the admin is choosing. They are bundled rather than hotlinked because a box may have no internet, and the dashboard must not call out to a CDN when it renders.
+- `icloud.svg` is a plain blue cloud drawn for moose, not Apple's own mark. Replace it with a better file if there is one.

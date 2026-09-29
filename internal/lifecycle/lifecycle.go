@@ -1414,6 +1414,27 @@ func (m *Manager) clearPendingRecreate(inst store.Instance) {
 	}
 }
 
+// WaitDocker blocks until Docker answers the brain, or ctx is done. The brain
+// reaches Docker only through the socket proxy, and after a reboot Docker
+// starts the proxy and the brain together from their restart policy, so the
+// brain can be up a moment before the proxy answers. The startup reconcile runs
+// once, and it is what puts the app routes back after EnsureIngress reset them,
+// so it must not run into that moment (#540). It probes with the docker ps
+// Reconcile uses to list what runs, and returns the last error if ctx ends first.
+func (m *Manager) WaitDocker(ctx context.Context, poll time.Duration) error {
+	for {
+		_, err := m.docker.PSManaged(ctx)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("docker not ready: %w", err)
+		case <-time.After(poll):
+		}
+	}
+}
+
 // Reconcile is the brain-startup pass (APP_LIFECYCLE.md # reconciliation is
 // imperative, with a startup pass). It walks SQLite (desired state), compares
 // against Docker (actual state), and converges:
