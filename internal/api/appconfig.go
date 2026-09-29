@@ -346,11 +346,11 @@ func validateConfigValue(f manifest.ConfigField, value string) error {
 	switch f.Type {
 	case "enum":
 		if !slices.Contains(f.Options, value) {
-			return huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %s must be one of: %s", f.AppEnv, strings.Join(f.Options, ", ")))
+			return configError("config.fields."+f.AppEnv, fmt.Sprintf("config.fields: %s must be one of: %s", f.AppEnv, strings.Join(f.Options, ", ")))
 		}
 	case "bool":
 		if value != "true" && value != "false" {
-			return huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %s must be true or false", f.AppEnv))
+			return configError("config.fields."+f.AppEnv, fmt.Sprintf("config.fields: %s must be true or false", f.AppEnv))
 		}
 	}
 	return nil
@@ -365,7 +365,7 @@ func configFieldsByEnv(man *manifest.Manifest, fields map[string]string) (map[st
 	}
 	for k := range fields {
 		if _, ok := byEnv[k]; !ok {
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %q is not a configurable value for this app", k))
+			return nil, configError("config.fields."+k, fmt.Sprintf("config.fields: %q is not a configurable value for this app", k))
 		}
 	}
 	return byEnv, nil
@@ -384,7 +384,7 @@ func resolveInstallConfig(man *manifest.Manifest, fields map[string]string) ([]s
 		v := fields[f.AppEnv]
 		if v == "" {
 			if f.Required {
-				return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %s is required", f.AppEnv))
+				return nil, configError("config.fields."+f.AppEnv, fmt.Sprintf("config.fields: %s is required", f.AppEnv))
 			}
 			continue
 		}
@@ -394,15 +394,25 @@ func resolveInstallConfig(man *manifest.Manifest, fields map[string]string) ([]s
 		out = append(out, store.InstanceConfig{AppEnv: f.AppEnv, Value: v, Secret: f.Secret})
 	}
 	values := configValues(out)
-	for _, g := range man.EffectiveRequires() {
+	for i, g := range man.EffectiveRequires() {
 		if !man.GroupSatisfied(g, values) {
 			if isKindGroup(g, "ai") {
-				return nil, huma.Error422UnprocessableEntity("config.fields: pick at least one LLM provider")
+				return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: pick at least one LLM provider")
 			}
-			return nil, huma.Error422UnprocessableEntity("config.fields: fill in at least one of: " + groupTitles(man, g))
+			return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: fill in at least one of: "+groupTitles(man, g))
 		}
 	}
 	return out, nil
+}
+
+// configError is a 422 that names the part of the request it blames, in the
+// problem body's errors[0].location: config.fields.<APP_ENV>,
+// config.ai_bindings.<slot>, config.requires[<i>] (an index into the
+// install plan's requires), config.mail_provider_id or config.folders.<name>.
+// The install flow routes the error to the page that owns that part
+// (INSTALL_STEPS.md # 2, Errors); the message is only the text it shows.
+func configError(location, message string) error {
+	return huma.Error422UnprocessableEntity(message, &huma.ErrorDetail{Location: location, Message: message})
 }
 
 // configValues maps app_env to value, the shape the requires check reads.
@@ -453,7 +463,7 @@ func resolvePutConfig(man *manifest.Manifest, current []store.InstanceConfig, fi
 		f := byEnv[appEnv]
 		if v == "" {
 			if f.Required {
-				return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %s is required and cannot be cleared", appEnv))
+				return nil, configError("config.fields."+appEnv, fmt.Sprintf("config.fields: %s is required and cannot be cleared", appEnv))
 			}
 			delete(curVal, appEnv)
 			continue
@@ -468,19 +478,19 @@ func resolvePutConfig(man *manifest.Manifest, current []store.InstanceConfig, fi
 		v, ok := curVal[f.AppEnv]
 		if !ok {
 			if f.Required {
-				return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.fields: %s is required", f.AppEnv))
+				return nil, configError("config.fields."+f.AppEnv, fmt.Sprintf("config.fields: %s is required", f.AppEnv))
 			}
 			continue
 		}
 		out = append(out, store.InstanceConfig{AppEnv: f.AppEnv, Value: v, Secret: f.Secret})
 	}
 	before, after := configValues(current), configValues(out)
-	for _, g := range man.EffectiveRequires() {
+	for i, g := range man.EffectiveRequires() {
 		if man.GroupSatisfied(g, before) && !man.GroupSatisfied(g, after) {
 			if isKindGroup(g, "ai") {
-				return nil, huma.Error422UnprocessableEntity("config.fields: keep at least one LLM provider")
+				return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: keep at least one LLM provider")
 			}
-			return nil, huma.Error422UnprocessableEntity("config.fields: keep at least one of these filled in: " + groupTitles(man, g))
+			return nil, configError(fmt.Sprintf("config.requires[%d]", i), "config.fields: keep at least one of these filled in: "+groupTitles(man, g))
 		}
 	}
 	return out, nil

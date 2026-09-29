@@ -293,10 +293,10 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 	byFolder := make(map[string]FolderElection, len(elections))
 	for _, e := range elections {
 		if !declared[e.Folder] {
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders: %q is not a folder this app requested", e.Folder))
+			return nil, configError("config.folders."+e.Folder, fmt.Sprintf("config.folders: %q is not a folder this app requested", e.Folder))
 		}
 		if _, dup := byFolder[e.Folder]; dup {
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders: duplicate election for %q", e.Folder))
+			return nil, configError("config.folders."+e.Folder, fmt.Sprintf("config.folders: duplicate election for %q", e.Folder))
 		}
 		byFolder[e.Folder] = e
 	}
@@ -308,16 +308,16 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 		if e, ok := byFolder[f.Folder]; ok {
 			if e.Source != "" {
 				if !slices.Contains(options, e.Source) {
-					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders[%s]: source %q is not allowed for a %s install (allowed: %s)", f.Folder, e.Source, scope, strings.Join(options, ", ")))
+					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: source %q is not allowed for a %s install (allowed: %s)", f.Folder, e.Source, scope, strings.Join(options, ", ")))
 				}
 				src = e.Source
 			}
 			if e.Subfolder != "" {
 				if f.Scope != "pick-subfolder" {
-					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders[%s]: a subfolder may only be chosen when the app declares scope: pick-subfolder", f.Folder))
+					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: a subfolder may only be chosen when the app declares scope: pick-subfolder", f.Folder))
 				}
 				if strings.HasPrefix(e.Subfolder, "/") || strings.Contains(e.Subfolder, "..") {
-					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders[%s]: subfolder must be a relative path under the folder", f.Folder))
+					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: subfolder must be a relative path under the folder", f.Folder))
 				}
 				sub = e.Subfolder
 			}
@@ -381,13 +381,14 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 	return &struct{ Body InstallPlanDTO }{Body: plan}, nil
 }
 
-// visibleCopies lists the installed copies of an app that the caller can see,
-// by the same rule as checkDuplicate, so the plan warns about exactly the
-// copies an install would answer 409 for.
+// visibleCopies lists the installed copies of an app that the caller can see
+// (canSee). It is the one rule for both the install plan's warning and the
+// 409 of checkDuplicate, so the plan warns about exactly the copies an install
+// would stop on.
 func (s *Server) visibleCopies(id auth.Identity, manifestID string) ([]InstallPlanExisting, error) {
 	instances, err := s.store.InstancesByManifest(manifestID)
 	if err != nil {
-		return nil, huma.Error500InternalServerError("list installed copies failed", err)
+		return nil, huma.Error500InternalServerError("duplicate check failed", err)
 	}
 	out := []InstallPlanExisting{}
 	for _, i := range instances {

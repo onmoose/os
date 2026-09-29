@@ -520,13 +520,11 @@ const stillNeeded = computed(() => {
   ];
 });
 
-const { submit, confirmDuplicate, dismissDuplicate, submitError, duplicateInfo, pending } = useInstallSubmit(
-  manifestId,
-  () => {
+const { submit, confirmDuplicate, dismissDuplicate, submitError, submitLocation, duplicateInfo, pending } =
+  useInstallSubmit(manifestId, () => {
     clearDrafts(userId.value, manifestId.value);
     seededFor = "";
-  },
-);
+  });
 
 function buildRequest(p: InstallPlan): InstallRequest {
   const elections: FolderElection[] = folders.value.map((f) => {
@@ -567,7 +565,7 @@ function onInstall() {
 const pageError = ref<{ step: string; message: string } | null>(null);
 watch(submitError, (message) => {
   if (!message || !plan.value) return;
-  const owner = stepForError(message, needs.value, configFields.value, !!plan.value.mail);
+  const owner = stepForError(submitLocation.value, needs.value, requires.value, !!plan.value.mail);
   if (!owner || !validSteps.value.has(owner)) return;
   pageError.value = { step: owner, message };
   submitError.value = null;

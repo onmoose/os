@@ -256,32 +256,41 @@ export function clearDrafts(userId: string, manifestId: string) {
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 // stepForError names the page that owns a 422 from POST /api/v1/apps, so the
-// error shows there and not as red text on the last page. The brain's messages
-// start with the part of the request they blame (config.fields,
-// config.ai_bindings, config.folders). "" means the last page keeps it.
-export function stepForError(message: string, needs: Needs, fields: InstallPlanConfigField[], hasMail: boolean): string {
+// error shows there and not as red text on the last page. It reads the
+// location the brain puts on the error (BRAIN_UI_PROTOCOL.md # POST
+// /api/v1/apps): config.fields.<APP_ENV>, config.ai_bindings.<slot>,
+// config.requires[<i>], config.mail_provider_id or config.folders.<name>.
+// The message is never read, only shown. "" means the last page keeps it.
+export function stepForError(
+  location: string | undefined,
+  needs: Needs,
+  requires: RequiresGroup[],
+  hasMail: boolean,
+): string {
+  if (!location) return "";
   const stepOfSlot = (slotId: string) =>
     needs.aiGroups.find((g) => g.slots.some((s) => s.id === slotId))?.step ??
     (needs.optionalSlots.some((s) => s.id === slotId) ? STEP_AI_OPTIONAL : "");
-  const firstAI = needs.aiGroups[0]?.step ?? (needs.optionalSlots.length > 0 ? STEP_AI_OPTIONAL : "");
 
-  if (message.startsWith("config.folders")) return STEP_FOLDERS;
-  if (/mail provider|outgoing email/i.test(message)) return hasMail ? STEP_EMAIL : "";
-  if (message.startsWith("config.ai_bindings") || /LLM provider/.test(message)) {
-    const slot = needs.slots.find((s) => message.includes(s.id));
-    return (slot && stepOfSlot(slot.id)) || firstAI;
+  if (location.startsWith("config.folders.")) return STEP_FOLDERS;
+  if (location === "config.mail_provider_id") return hasMail ? STEP_EMAIL : "";
+  if (location.startsWith("config.ai_bindings.")) {
+    return stepOfSlot(location.slice("config.ai_bindings.".length)) || needs.aiGroups[0]?.step || "";
   }
-  if (message.startsWith("config.fields")) {
-    // The longest name first, so FOO_KEY is not taken for FOO.
-    const byLength = [...fields].sort((a, b) => b.app_env.length - a.app_env.length);
-    const f = byLength.find((x) => new RegExp(`\\b${x.app_env}\\b`).test(message));
-    if (f) {
-      const slot = needs.slots.find((s) => s.fields.some((x) => x.app_env === f.app_env));
-      if (slot) return stepOfSlot(slot.id);
-      if (needs.requiredFields.includes(f)) return STEP_SETTINGS;
-      if (needs.extraFields.includes(f)) return STEP_EXTRA;
-    }
-    if (needs.requiredFields.length > 0) return STEP_SETTINGS;
+  const req = /^config\.requires\[(\d+)\]$/.exec(location);
+  if (req) {
+    const group = requires[Number(req[1])];
+    if (!group) return "";
+    const ai = needs.aiGroups.find((g) => g.group === group);
+    if (ai) return ai.step;
+    return needs.plainGroups.includes(group) ? STEP_SETTINGS : "";
+  }
+  if (location.startsWith("config.fields.")) {
+    const env = location.slice("config.fields.".length);
+    const slot = needs.slots.find((s) => s.fields.some((x) => x.app_env === env));
+    if (slot) return stepOfSlot(slot.id);
+    if (needs.requiredFields.some((f) => f.app_env === env)) return STEP_SETTINGS;
+    if (needs.extraFields.some((f) => f.app_env === env)) return STEP_EXTRA;
   }
   return "";
 }
