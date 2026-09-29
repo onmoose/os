@@ -258,6 +258,11 @@ type UserManager interface {
 	// or ErrNotADirectory for the two cases the brain tells apart.
 	PrepareFolder(user, rel string) error
 	WellKnownIdentity() (appUID, appGID, sharedGID int, err error)
+	// RemapBase returns the first host id of the moose-remap subordinate
+	// range, the base of Docker's daemon-wide userns-remap. ok is false when
+	// the box has no such range. It is an error when /etc/subuid and
+	// /etc/subgid disagree (BRAIN_HOST_PROTOCOL.md # User info endpoints).
+	RemapBase() (base int, ok bool, err error)
 	AllocateAppService(instanceID string) (uid, gid int, err error)
 	ReleaseAppService(uid int) error
 }
@@ -1224,15 +1229,30 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
 			return
 		}
-		writeJSON(w, http.StatusOK, protocol.WellKnownIdentityResponse{
+		base, remapped, err := a.UserMgr.RemapBase()
+		if err != nil {
+			// Answer an error, not a guess: the brain gives bind dirs to owners
+			// it computes from this number.
+			slog.Error("well-known-identity: read the remap range", "err", err)
+			writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
+			return
+		}
+		resp := protocol.WellKnownIdentityResponse{
 			MooseAppUID:    appUID,
 			MooseAppGID:    appGID,
 			MooseSharedGID: sharedGID,
-		})
+		}
+		if remapped {
+			resp.RemapBase = &base
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	// Fake branch: resolve the moose-app service identity to the dev operator's
+	// Fake branch: no remap_base. The dev loop's Docker runs no remap, and
+	// the brain treats an absent field as no remap.
+	//
+	// It also resolves the moose-app service identity to the dev operator's
 	// own uid/gid (not fixed 2000/2001) for the same reason as resolve-home — a
 	// household-scope folder app then runs as an identity the unprivileged dev
 	// brain owns, so Part A's bind-dir chowns are no-op successes (#147). The
