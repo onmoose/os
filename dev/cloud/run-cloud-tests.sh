@@ -42,6 +42,9 @@
 #                       failed-update-then-revert (#382), and the target-driven path:
 #                       host-agent reads an update-target source and applies it with
 #                       no prompt, refusing an unpinned answer (#401)
+#   remap, remap-reboot own overlay + box-id, same test-portal key → one app per
+#                       userns tier installed and checked (#531), then a real reboot
+#                       of the same disk and every check again
 #   ssh                 own overlay + box-id, same test-portal key → the per-account
 #                       SSH opt-in against a REAL sshd (#467): :22 closed at boot,
 #                       the port opening and closing with the toggle, a real login a
@@ -89,6 +92,9 @@ BOX_ID_UPDATE=pine-otter
 # deletes accounts and rewrites the box's sshd config, so it must never run over an
 # overlay another boot depends on.
 BOX_ID_SSH=heron-birch
+# The remap boots (#531) share ONE overlay of their own and one box-id: the
+# second boot is a reboot of the disk the first one installed apps on.
+BOX_ID_REMAP=moss-lynx
 
 # Which boots to run, space-separated (unseeded seeded frozen bios access).
 # Default: all.
@@ -123,9 +129,22 @@ BOX_ID_SSH=heron-birch
 #     REPLACES the box's control-plane images, so its own overlay is not a
 #     convenience — sharing one would leave every later boot on images this scenario
 #     built.
-# All three are in the gate — see ci-cloud-image.yml.
-BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen bios access update ssh}"
+#   - `remap` (#531) proves the user-namespace tiers on the booted image. It is
+#     TWO boots over one fresh overlay of its own: the first installs one app per
+#     tier and checks each, the second is a real reboot of the same disk that
+#     checks them all again. One name runs both, because the second needs what
+#     the first left on the disk.
+# All of these are in the gate: see ci-cloud-image.yml.
+BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen bios access update ssh remap}"
 should_run() { case " $BOOTS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# Refuse a name this script does not know. The workflow lets a person type the
+# list (its `boots` input), and a typo would otherwise run nothing and pass.
+for b in $BOOTS; do
+    case "$b" in
+        unseeded|seeded|frozen|bios|access|update|ssh|remap) ;;
+        *) echo "unknown boot '$b' in MOOSE_CLOUD_BOOTS='$BOOTS' (known: unseeded seeded frozen bios access update ssh remap)" >&2; exit 1 ;;
+    esac
+done
 
 # QEMU writes serial logs as root (this script runs under sudo). Resolve the
 # invoking user so kept diagnostics are caller-readable.
@@ -592,6 +611,59 @@ if should_run ssh; then
         exit 1
     fi
     echo "boot ssh OK — :22 closed at boot, opened by the toggle and closed again; key accepted, password alone refused (box_id=${BOX_ID_SSH})"
+fi
+
+# --- 11. remap boots: the user-namespace tiers (#531). Their OWN fresh overlay +
+# box-id, seeded with a TEST-PORTAL key like the access boot, since installing
+# an app needs an owner session. Two boots over that one overlay: `remap`
+# installs one app per tier and checks each (userns mode, capabilities, the
+# host owner of its data), recreates the caps-tier container and checks its
+# data is kept; `remap-reboot` is a real reboot of the same disk that runs the
+# same checks on what the box brought back. Each boot gets its own owner
+# assertion, because the box spends a jti on first use. Step 5d of
+# cloud-assertions.sh checks the daemon side on both boots, as on every boot.
+if should_run remap; then
+    [ -n "$GO" ] && [ -x "$GO" ] || {
+        echo "remap boots need go to mint the owner assertions; none found (\$GO='${GO:-}')" >&2
+        exit 1
+    }
+    mapfile -t remap_mint < <(mint_owner_assertion "$BOX_ID_REMAP" 2) || true
+    REMAP_KEY="${remap_mint[0]:-}"
+    REMAP_TOKEN="${remap_mint[1]:-}"
+    REMAP_TOKEN2="${remap_mint[2]:-}"
+    [ -n "$REMAP_KEY" ] && [ -n "$REMAP_TOKEN" ] && [ -n "$REMAP_TOKEN2" ] || {
+        echo "remap boots: failed to mint the owner assertions (go run ./dev/cloud/mkassertion)" >&2
+        exit 1
+    }
+
+    # Same explicit-globals reasoning as the access boot: OVERLAY and FIRMWARE
+    # are run_boot's globals and the boots above leave them pointing elsewhere.
+    REMAP_OVERLAY="${RUN_DIR}/overlay-remap.qcow2"
+    qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$REMAP_OVERLAY" >/dev/null
+    OVERLAY="$REMAP_OVERLAY"
+    FIRMWARE=uefi
+
+    # The first boot loads postgres:16 and runs five installs, one of them with
+    # a managed Postgres spin-up, then a recreate and a second round of checks.
+    # Each install polls up to 300s and each check up to 180s in the worst case,
+    # so it gets the update boot's ceiling. The reboot only waits for the apps
+    # to come back.
+    VERDICT_TIMEOUT=1500
+    if ! run_boot "remap" "remap" \
+        -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_REMAP" "$REMAP_KEY")" \
+        -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$REMAP_TOKEN" | base64 -w0)"; then
+        echo "cloud remap proof: ${VERDICT}" >&2
+        exit 1
+    fi
+    echo "boot remap OK: one app per userns tier installed and checked, the caps-tier data kept across a recreate (box_id=${BOX_ID_REMAP})"
+    VERDICT_TIMEOUT=900
+    if ! run_boot "remap-reboot" "remap-reboot" \
+        -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_REMAP" "$REMAP_KEY")" \
+        -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$REMAP_TOKEN2" | base64 -w0)"; then
+        echo "cloud remap reboot proof: ${VERDICT}" >&2
+        exit 1
+    fi
+    echo "boot remap-reboot OK: every tier checked again after a real reboot of the same disk (box_id=${BOX_ID_REMAP})"
 fi
 
 echo "cloud end-to-end: PASS (boots: ${BOOTS})"

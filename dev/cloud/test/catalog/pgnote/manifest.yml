@@ -1,0 +1,38 @@
+# Test-only catalog app for the hosted cloud remap boots (#531). A folderless
+# app on the managed Postgres 16. It uses the postgres:16 image only for its
+# psql client, since the box needs that image for the managed service anyway.
+# At start it writes one row into its own database, once. The remap boots read
+# the row from the managed Postgres after the install and after a reboot, and
+# check that the managed Postgres runs remapped with its data at the remap
+# base plus 999.
+#
+# The image is loaded from the test-only images dir by the remap boot. It is
+# the same image the managed service runs. Offline install trusts the promised
+# digest for an image already on the box (APP_LIFECYCLE.md # image digest
+# pinning).
+id: pgnote
+manifest_version: 1
+name: Pgnote
+version: "16"
+description:
+  short: "Test fixture: writes one row into its managed Postgres database."
+icon_glyph: flask-conical
+compose_file: compose.yml
+main_service: pgnote
+main_port: 8080
+preferred_slugs: [pgnote]
+
+services:
+  database:
+    type: postgres
+    version: "16"
+
+permissions:
+  internet: false
+  lan: false
+
+images:
+  postgres:16:
+    digest: sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+    download_bytes: 157286400
+    disk_bytes: 451000000
