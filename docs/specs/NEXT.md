@@ -212,6 +212,16 @@ The install setup plan is built on the `os` side. Three limits were left out on 
 **Context:** `INSTALL_SETUP.md` decisions table (2026-09-25 and 2026-09-26), `SERVICE_PROVISIONING.md` # AI provider accounts.
 **Why Tier 3:** each is additive to the role vocabulary or the account model, and no catalog app is blocked on it today.
 
+### Install steps: deferred (`INSTALL_STEPS.md`)
+
+Two ideas came up while designing the install steps and were left out on purpose:
+
+- **Checking an AI key before it is saved.** Email accounts can be checked first (`POST /api/v1/mail-providers/verify`), but AI accounts cannot, so a wrong key shows up only as a broken app later. The brain would need a small call to the provider with the key, for example its model list, and a way to show the answer on the key page.
+- **Starting the download before the user presses Install.** Image pulls take minutes. Pulling as soon as the user starts the install would hide most of the wait behind the questions. It costs brain work, and bandwidth and disk for installs the user drops halfway.
+
+**Context:** `INSTALL_STEPS.md` # Decisions.
+**Why Tier 3:** the flow works without either, and both are additive.
+
 ### `moosectl` — on-box CLI
 
 A `moosectl` for admins on the host: rescue operations, scripting hooks, listing apps, tailing logs, triggering updates. Today the host story is "SSH in and... do what?" — there are no commands beyond raw Docker. Either we ship one CLI that wraps the brain↔host-agent surface, or we declare that there is none and SSH is bash + journalctl + docker.
