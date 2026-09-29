@@ -186,6 +186,9 @@ const aiService = ref<Record<string, string>>({});
 // mailService is the email service picked on the email grid, for the add form.
 const mailService = ref("");
 const foldersReset = ref(false);
+// warned is set once the first page has shown the duplicate warning, so the
+// install may be sent with confirm: true.
+const warned = ref(false);
 
 // The email pages' state (see # Email pages below for the pages).
 const mailAccounts = computed(() =>
@@ -243,8 +246,12 @@ function seed(p: InstallPlan) {
   mailService.value = typeof saved?.mailService === "string" ? saved.mailService : "";
 
   if (saved?.flow) {
-    flow.value = saved.flow;
+    // A draft from before a change (the manifest dropped its required
+    // fields, a service left the provider data) may name pages that are gone.
+    // They are dropped, so target() can only send the user to a real page.
+    flow.value = saved.flow.filter(stillThere);
     done.value = saved.done ?? [];
+    warned.value = !!saved.warned;
     reviewed.value = !!saved.reviewed;
     foldersReset.value = !!saved.foldersReset;
   } else {
@@ -262,6 +269,7 @@ function seed(p: InstallPlan) {
     }
     if (needs.value.requiredFields.length > 0) ask.push(STEP_SETTINGS);
     flow.value = ask;
+    warned.value = false;
     done.value = [];
     reviewed.value = false;
     foldersReset.value = false;
@@ -281,6 +289,7 @@ const draft = computed<Draft>(() => ({
   ai: aiChoices.value,
   aiService: aiService.value,
   mailService: mailService.value,
+  warned: warned.value,
   foldersReset: foldersReset.value,
 }));
 watch(
@@ -390,9 +399,19 @@ function to(name: string, s: Scope = scope.value) {
 // first first-time page not yet done or answered, else the first required
 // page left unanswered.
 function target(): string {
-  const next = flow.value.find((n) => !done.value.includes(n) || !answered(n));
+  const valid = (n: string) => validSteps.value.has(n);
+  const next = flow.value.filter(valid).find((n) => !done.value.includes(n) || !answered(n));
   if (next) return next;
-  return requiredSteps.value.find((n) => !answered(n)) ?? "";
+  return requiredSteps.value.filter(valid).find((n) => !answered(n)) ?? "";
+}
+
+// stillThere says whether a first-time page from a saved draft still exists.
+// A key page counts while its need still has a grid: it becomes valid again
+// once the user picks a service there.
+function stillThere(n: string): boolean {
+  if (validSteps.value.has(n)) return true;
+  const ai = needOfStep(aiNeedList.value, n);
+  return !!ai && ai.page === "key" && needTiles(ai.need, providers.value).length > 1;
 }
 
 function redirect() {
@@ -761,9 +780,11 @@ function buildRequest(p: InstallPlan): InstallRequest {
     return e;
   });
   const req: InstallRequest = { manifest_id: p.manifest_id, scope: scope.value, config: { folders: elections } };
-  // The first page showed the copies the plan listed, so the user has seen
-  // the warning. A copy made after the plan loaded still answers 409.
-  if ((p.existing ?? []).length > 0) req.confirm = true;
+  // confirm only when this draft showed the duplicate warning. A user who
+  // skipped the first page (a link straight to a later step) never saw it,
+  // so the brain's 409 asks on the last page instead, as it does for a copy
+  // made after the plan loaded.
+  if ((p.existing ?? []).length > 0 && warned.value) req.confirm = true;
   if (p.mail && mailProviderId.value) req.config!.mail_provider_id = mailProviderId.value;
   // An optional field left blank is omitted, so the app keeps its own default.
   // A bool always carries "true" or "false".
@@ -807,6 +828,19 @@ const duplicateLines = computed(() =>
     return `Someone else on this box has their own copy of ${c.name}.`;
   }),
 );
+// showWarning is where the warning renders: the first page, or the last page
+// when it is the only page.
+const showWarning = computed(
+  () => existing.value.length > 0 && (onFirstPage.value || (isLast.value && flow.value.length === 0)),
+);
+watch(
+  [showWarning, ready],
+  () => {
+    if (showWarning.value && ready.value && seededFor === key.value) warned.value = true;
+  },
+  { immediate: true },
+);
+
 // The copy to offer as "Open it": the household one, else the user's own.
 const openable = computed(() => {
   const i = householdInstance.value ?? ownPersonalInstance.value;
@@ -823,6 +857,9 @@ watch(
     seededFor = key.value;
     seed(plan.value);
     route.query.step ? checkStep() : redirect();
+    // The page may already be the one with the warning, with no route change
+    // to follow (an app whose only page is the last page).
+    if (showWarning.value) warned.value = true;
   },
   { immediate: true },
 );
@@ -881,7 +918,7 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
 
       <!-- Warnings on the first page, before any question. -->
       <div
-        v-if="existing.length > 0 && (onFirstPage || (isLast && flow.length === 0))"
+        v-if="showWarning"
         class="mx-4 space-y-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm sm:mx-0"
         role="status"
       >

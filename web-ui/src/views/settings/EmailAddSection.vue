@@ -22,7 +22,7 @@ import { api, type MailProvider, type MailPreset } from "@/api";
 import Button from "@/components/ui/Button.vue";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
 import {
-  useMailPresets, emptyForm, formFromPreset, hostFor, syncSameAsPassword, syncPersonalUsername,
+  useMailPresets, emptyForm, formFromPreset, hostFor, syncSameAsPassword, syncPersonalUsername, usernameBoxInSettings,
   formValid, portWarning, bodyOf, errorMessage, fieldClass,
   type ProviderForm,
 } from "@/mailProviderForm";
@@ -50,6 +50,17 @@ watch([presetID, presetList], ([id, list]) => {
 });
 
 const form = ref<ProviderForm>(emptyForm());
+
+// For Gmail or Google Workspace the username box starts as the from address
+// and follows it until the user types a different one (an alias sends from
+// another address than the one it signs in with).
+watch(
+  () => form.value.from_address,
+  (now, before) => {
+    if (preset.value?.id !== "google_workspace") return;
+    if (form.value.username === "" || form.value.username === (before ?? "")) form.value.username = now;
+  },
+);
 const advancedOpen = ref(false);
 const createError = ref<string | null>(null);
 
@@ -219,7 +230,7 @@ function fid(name: string): string {
         </div>
 
         <!-- Username: hidden when the provider fixes it or reuses the credential. -->
-        <div v-if="preset.username_mode === 'user' && !preset.personal" class="space-y-1.5">
+        <div v-if="usernameBoxInSettings(preset)" class="space-y-1.5">
           <label class="text-sm font-medium" :for="fid('username')">Username</label>
           <input :id="fid('username')" v-model="form.username" :class="fieldClass" autocomplete="off" />
         </div>

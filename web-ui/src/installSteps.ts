@@ -301,6 +301,9 @@ export type Draft = {
   aiService: Record<string, string>;
   // mailService is the email service picked on the email grid.
   mailService: string;
+  // warned is set once the duplicate warning was shown, so the install is
+  // sent with confirm: true only then.
+  warned: boolean;
   // foldersReset is set when a change of scope put the folders back on their
   // defaults, so the last page can say so once.
   foldersReset: boolean;

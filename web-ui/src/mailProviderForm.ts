@@ -86,9 +86,19 @@ export function syncSameAsPassword(f: ProviderForm, p: MailPreset | undefined) {
 }
 
 // A personal account (Gmail, iCloud) signs in with the full address, which is
-// also the from address, so the form asks for it once and copies it here.
+// usually also the from address. The install flow's short form asks for it
+// once, and this copies it into the username. A username the user typed is
+// kept: Settings shows the box for Gmail, because a Google Workspace user may
+// send from an alias, whose address is not the sign-in one.
 export function syncPersonalUsername(f: ProviderForm, p: MailPreset | undefined) {
-  if (p?.personal) f.username = f.from_address.trim();
+  if (p?.personal && f.username.trim() === "") f.username = f.from_address.trim();
+}
+
+// usernameBoxInSettings says whether the Settings add form asks the username
+// of a personal preset: yes for Gmail or Google Workspace (an alias sends
+// from another address), no for iCloud.
+export function usernameBoxInSettings(p: MailPreset): boolean {
+  return p.username_mode === "user" && (!p.personal || p.id === "google_workspace");
 }
 
 export function formValid(f: ProviderForm): boolean {
