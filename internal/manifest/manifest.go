@@ -88,6 +88,17 @@ type Manifest struct {
 	// combination. Door-2 synthetic manifests never set it.
 	ServiceUser bool `yaml:"service_user,omitempty"`
 
+	// RootSetup declares that the image's entrypoint starts as root and must do
+	// root work before the app runs: chown its data dir, or switch to its own
+	// user. Boolean intent only, never a capability list or a UID. On a box whose
+	// Docker runs the daemon-wide userns-remap the brain maps it to the caps
+	// tier: remapped, with a fixed set of five capabilities and no user: pin
+	// (APP_MANIFEST.md # B, APP_ISOLATION.md # User-namespace tiers). Folderless
+	// only: admission refuses it with folders, gpu, devices or service_user.
+	// Door-2 synthetic manifests never set it. The brain does not act on it yet
+	// (#529); it is modelled and checked so the tier slice has a field to read.
+	RootSetup bool `yaml:"root_setup,omitempty"`
+
 	// Secrets declares per-app random secrets the brain generates once at install
 	// and injects as `MOOSE_SECRET_<NAME>` env vars (APP_MANIFEST.md # secrets,
 	// SERVICE_PROVISIONING.md # Env-var injection). Each name maps in the compose
