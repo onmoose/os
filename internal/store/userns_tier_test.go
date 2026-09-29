@@ -19,7 +19,7 @@ func TestUsernsTierRoundTrips(t *testing.T) {
 	if row, _ := s.Get("a"); row.UsernsTier != UsernsTierHost {
 		t.Fatalf("unset tier = %q, want host", row.UsernsTier)
 	}
-	for i, tier := range []string{UsernsTierDefault, UsernsTierCaps, UsernsTierHost} {
+	for i, tier := range []string{UsernsTierDefault, UsernsTierCaps, UsernsTierImage, UsernsTierHost} {
 		in := sample("t"+tier, "slug-"+tier)
 		in.UsernsTier = tier
 		if err := s.Create(in); err != nil {

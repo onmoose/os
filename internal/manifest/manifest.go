@@ -95,9 +95,19 @@ type Manifest struct {
 	// tier: remapped, with a fixed set of five capabilities and no user: pin
 	// (APP_MANIFEST.md # B, APP_ISOLATION.md # User-namespace tiers). Folderless
 	// only: admission refuses it with folders, gpu, devices or service_user.
-	// Door-2 synthetic manifests never set it. The brain does not act on it yet
-	// (#529); it is modelled and checked so the tier slice has a field to read.
+	// Door-2 synthetic manifests never set it.
 	RootSetup bool `yaml:"root_setup,omitempty"`
+
+	// ImageUser declares that the app must run as the user its image already
+	// sets (the image's USER), because it writes files baked with that owner.
+	// Boolean intent only, never a UID: the brain reads the user from the
+	// pulled image. On a box whose Docker runs the daemon-wide userns-remap the
+	// brain maps it to the image tier: remapped, cap_drop: ALL, no capability
+	// back and no user: pin (APP_MANIFEST.md # B, APP_ISOLATION.md #
+	// User-namespace tiers). Folderless only: admission refuses it with
+	// folders, gpu, devices, service_user or root_setup. Door-2 synthetic
+	// manifests never set it.
+	ImageUser bool `yaml:"image_user,omitempty"`
 
 	// Secrets declares per-app random secrets the brain generates once at install
 	// and injects as `MOOSE_SECRET_<NAME>` env vars (APP_MANIFEST.md # secrets,

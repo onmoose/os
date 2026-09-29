@@ -118,6 +118,60 @@ func TestOverrideUnchangedWithoutRemap(t *testing.T) {
 	}
 }
 
+// updateGoldenRemap rewrites testdata/override-golden-remap, the overrides on
+// a remapped daemon. Those files were written by the code that added the image
+// tier (#537), so they pin the tiers from then on. A diff here changes what
+// every app gets on a remapped box.
+var updateGoldenRemap = flag.Bool("update-golden-remap", false, "rewrite testdata/override-golden-remap")
+
+// remapGoldenShapes is one shape per tier on a remapped daemon.
+func remapGoldenShapes() []goldenShape {
+	imageUser := strings.Replace(whoamiManifest(testDigest), "main_port: 80\n", "main_port: 80\nimage_user: true\n", 1)
+	rootSetup := strings.Replace(whoamiManifest(testDigest), "main_port: 80\n", "main_port: 80\nroot_setup: true\n", 1)
+	return []goldenShape{
+		{"default-folderless", goldenCatalogInstall("whoami", whoamiCompose, whoamiManifest(testDigest), store.ScopeHousehold, goldenAdmin, nil)},
+		{"default-service-user", goldenCatalogInstall("whoami", whoamiCompose, serviceUserManifest(false), store.ScopeHousehold, goldenAdmin, nil)},
+		{"caps-root-setup", goldenCatalogInstall("whoami", whoamiCompose, rootSetup, store.ScopeHousehold, goldenAdmin, nil)},
+		{"image-user", func(t *testing.T, e *testEnv) store.Instance {
+			e.docker.imageUsers = map[string]string{"traefik/whoami@" + testDigest: "1001:1001"}
+			return goldenCatalogInstall("whoami", whoamiCompose, imageUser, store.ScopeHousehold, goldenAdmin, nil)(t, e)
+		}},
+		{"host-folders-household", goldenCatalogInstall("filesapp", foldersCompose, foldersManifest("write", "whole"), store.ScopeHousehold, goldenAdmin,
+			[]FolderMount{{Folder: "documents", Source: sourceShared}})},
+	}
+}
+
+// TestOverrideRemappedTiers installs one shape per tier on a remapped daemon
+// and compares the override with its golden file.
+func TestOverrideRemappedTiers(t *testing.T) {
+	for _, sh := range remapGoldenShapes() {
+		t.Run(sh.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.remapped()
+			recordChowns(e) // the test may run as any user
+			inst := sh.install(t, e)
+			got := normalizeOverride(readInstanceFile(t, e, inst.ID, "compose.override.yml"), e, inst)
+			path := filepath.Join("testdata", "override-golden-remap", sh.name+".yml")
+			if *updateGoldenRemap {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read golden: %v", err)
+			}
+			if got != string(want) {
+				t.Fatalf("override changed on a remapped daemon.\ngot:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
 func normalizeOverride(raw string, e *testEnv, inst store.Instance) string {
 	// The instance id starts with the manifest id, so it goes first. A Door-2
 	// manifest id carries a random suffix, so it is replaced too.

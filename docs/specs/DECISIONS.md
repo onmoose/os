@@ -21,6 +21,21 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-29 — image_user: a folderless app may keep its image's own user, remapped (#537)
+
+**Previously:** the brain pinned `user:` on every app container. On a remapped box the only way to drop that pin was `root_setup: true`, the caps tier, which also gives five capabilities back. Images that only need to run as their own baked user (plunk, formbricks) got further there, but for a reason `root_setup` does not name, and with capabilities they never use (`../progress/brain-userns-tiers.md`). `NEXT.md` kept this as open topic (1) of "After the user-namespace remap".
+
+**Now:** a new manifest intent, `image_user: true`, puts a folderless app in a fourth tier, the **image tier**: remapped, `cap_drop: [ALL]`, no capability back and no `user:` pin, so the image's own `USER` runs. After the pull the brain reads each service's `Config.User`. A number is used as it is. A name, or a number with no group, is looked up in the image's own `/etc/passwd` and `/etc/group`, read from a container that is created and never started. Each bind dir goes to `base+uid`:`base+gid` of the service that binds it. A name the image does not list, an id at or above 65536, or a dir that two services with different users share refuses the install. Without the remap the install is refused, like `root_setup`. Admission refuses `image_user` with `folders`, `gpu: true`, `devices`, `service_user`, `root_setup`, or a `user:` in the compose.
+
+**Why:**
+- **Least privilege.** The maintainer chose a separate intent over reusing `root_setup`. The app gets nothing a default-tier app lacks except its own user. It lets in more apps without adding a capability.
+- **Reading names is safe here.** Whatever the image's files say, the result is only an offset inside the remap range, and an id past the range is refused. So a name can give nothing that a numeric `USER` could not give already, and the image tier exists only on a remapped box. The files are the ones Docker itself reads at start, so the owner the brain gives matches the user the process runs as. No code from the image runs to read them. Refusing names would have left out both apps that asked for this: plunk sets `USER plunk` and formbricks `USER nextjs`.
+- **The trade-off:** an image picks which uid in the range it runs as. After a container escape it can reach the files of remapped containers that run as that uid, such as a `service_user` app. Most remapped containers already share `base`, the default folderless identity, so this is a small widening, after an escape only (`THREAT_MODEL.md` B2).
+
+**Affected docs:** `APP_MANIFEST.md` # B (`image_user`) and # Locked decisions; `APP_ISOLATION.md` # Runtime identity & data ownership, # User-namespace tiers, # What this does not cover, # High-level toggles; `APP_LIFECYCLE.md` # Locked: override file contents and # Locked: install transaction; `THREAT_MODEL.md` B2 and residual 12; `NEXT.md` (topic 1 of "After the user-namespace remap" closes).
+
+---
+
 ## 2026-09-29 — Every install need is a step, and the last step installs
 
 **Previously:** a last page with every answer and a Change link; a user with saved accounts went straight there. Optional email, optional AI and Extra settings were rows on it with Set up, and the scope had its own "For" row (`INSTALL_STEPS.md` # 2).

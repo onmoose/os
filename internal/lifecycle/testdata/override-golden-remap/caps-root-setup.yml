@@ -1,0 +1,29 @@
+networks:
+    moose-app-INSTANCE:
+        external: true
+    moose-ingress:
+        external: true
+services:
+    MANIFEST:
+        cap_add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+            - FOWNER
+        cap_drop:
+            - ALL
+        container_name: moose-INSTANCE-MANIFEST
+        image: traefik/MANIFEST@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c
+        labels:
+            moose.instance_id: INSTANCE
+            moose.managed: "true"
+            moose.manifest_id: MANIFEST
+        networks:
+            moose-app-INSTANCE: null
+            moose-ingress:
+                aliases:
+                    - moose-INSTANCE-MANIFEST
+        restart: unless-stopped
+        security_opt:
+            - no-new-privileges:true

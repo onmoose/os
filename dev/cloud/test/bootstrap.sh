@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v23"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v24"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -154,6 +154,30 @@ docker pull "$BUSYBOX_REF"
 docker tag "$BUSYBOX_REF" busybox:1.37.0
 docker save busybox:1.37.0 -o "$EXTRA/var/lib/moose/control-plane-images/filedrop.tar"
 
+# imageuser images (#537): two synthetic images built here from the same
+# busybox, each with its own USER and a /baked dir owned by that user. One
+# names the user by number (1001), the other by name (app2, uid 1002 in its
+# /etc/passwd). The imageuser fixture declares image_user: true. The access
+# boot checks that a box with no userns remap refuses it; a remapped boot runs
+# it (#531). Built with the classic builder so no buildx or registry is needed:
+# the FROM image is already local. Together they add about 2 MB, since the
+# layers they share with busybox are saved once.
+IMAGEUSER_CTX="${WORK}/imageuser-build"
+rm -rf "$IMAGEUSER_CTX"
+mkdir -p "$IMAGEUSER_CTX"
+cat > "$IMAGEUSER_CTX/Dockerfile" <<'EOF'
+FROM busybox:1.37.0
+ARG IMAGE_USER
+RUN addgroup -g 1001 app1 && adduser -D -H -u 1001 -G app1 app1 \
+ && addgroup -g 1002 app2 && adduser -D -H -u 1002 -G app2 app2 \
+ && mkdir /baked && chown "${IMAGE_USER}:${IMAGE_USER}" /baked && chmod 0755 /baked
+USER ${IMAGE_USER}
+EOF
+DOCKER_BUILDKIT=0 docker build -q --build-arg IMAGE_USER=1001 -t moose-test/imageuser:1 "$IMAGEUSER_CTX"
+DOCKER_BUILDKIT=0 docker build -q --build-arg IMAGE_USER=app2 -t moose-test/imageuser-named:1 "$IMAGEUSER_CTX"
+docker save moose-test/imageuser:1 moose-test/imageuser-named:1 \
+    -o "$EXTRA/var/lib/moose/control-plane-images/imageuser.tar"
+
 # Stage a local catalog snapshot with a whoami app: the lane is air-gapped, so there
 # is no control plane to sync from, and the brain reads this file once at boot to
 # seed its store (internal/catalog/remote.go # loadSnapshotFile, MOOSE_CATALOG_FILE).
@@ -167,6 +191,7 @@ stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
 "$MKCATALOG_BIN" \
     -pkg "${TEST_DIR}/catalog/whoami" \
     -pkg "${TEST_DIR}/catalog/filedrop" \
+    -pkg "${TEST_DIR}/catalog/imageuser" \
     -out "$EXTRA/var/lib/moose/catalog-seed.json"
 
 # Offline-install env, layered over the shared 10-cloud-brain.conf drop-in (20- sorts

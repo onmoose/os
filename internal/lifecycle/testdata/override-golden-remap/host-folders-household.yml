@@ -1,0 +1,29 @@
+networks:
+    moose-app-INSTANCE:
+        external: true
+    moose-ingress:
+        external: true
+services:
+    app:
+        cap_drop:
+            - ALL
+        container_name: moose-INSTANCE-app
+        group_add:
+            - "2001"
+        image: traefik/whoami@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c
+        labels:
+            moose.instance_id: INSTANCE
+            moose.managed: "true"
+            moose.manifest_id: MANIFEST
+        networks:
+            moose-app-INSTANCE: null
+            moose-ingress:
+                aliases:
+                    - moose-INSTANCE-app
+        restart: unless-stopped
+        security_opt:
+            - no-new-privileges:true
+        user: 2000:2000
+        userns_mode: host
+        volumes:
+            - SHAREDROOT/Documents:/moose/documents:rw
