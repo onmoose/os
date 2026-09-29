@@ -77,6 +77,12 @@ type fakeDocker struct {
 	containerHealth    string
 	containerHealthErr error
 
+	// usernsRemap is what UsernsRemap reports: whether the daemon runs with
+	// userns-remap. The zero value is no remap, like the dev loop's Docker.
+	// usernsRemapErr forces the docker info failure.
+	usernsRemap    bool
+	usernsRemapErr error
+
 	calls []call
 }
 
@@ -264,6 +270,11 @@ func (f *fakeDocker) RemoveImage(_ context.Context, ref string) error {
 	return f.removeImageErr
 }
 
+func (f *fakeDocker) UsernsRemap(_ context.Context) (bool, error) {
+	f.record("UsernsRemap")
+	return f.usernsRemap, f.usernsRemapErr
+}
+
 // --- caddy fake ----------------------------------------------------------
 
 type fakeCaddy struct {
@@ -386,6 +397,11 @@ type fakeHost struct {
 	// prepareErr forces PrepareUserFolder to fail (a host-agent refusal, such as
 	// a symlink in the way). Every call is also recorded in calls.
 	prepareErr error
+
+	// remapBase is the remap_base WellKnownIdentity reports (nil: no remap,
+	// like the fake host-agent). wellKnownErr forces that call to fail.
+	remapBase    *int
+	wellKnownErr error
 }
 
 func newFakeHost() *fakeHost { return &fakeHost{published: map[string]bool{}} }
@@ -434,7 +450,10 @@ func (h *fakeHost) WellKnownIdentity(_ context.Context) (protocol.WellKnownIdent
 	h.mu.Lock()
 	h.calls = append(h.calls, call{method: "WellKnownIdentity"})
 	h.mu.Unlock()
-	return protocol.WellKnownIdentityResponse{MooseAppUID: 2000, MooseAppGID: 2000, MooseSharedGID: 2001}, nil
+	if h.wellKnownErr != nil {
+		return protocol.WellKnownIdentityResponse{}, h.wellKnownErr
+	}
+	return protocol.WellKnownIdentityResponse{MooseAppUID: 2000, MooseAppGID: 2000, MooseSharedGID: 2001, RemapBase: h.remapBase}, nil
 }
 
 func (h *fakeHost) SystemStatus(_ context.Context) (protocol.SystemStatus, error) {

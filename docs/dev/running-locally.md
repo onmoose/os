@@ -75,6 +75,7 @@ behavior is required.
 - **Node 20+** (`web-ui/.nvmrc` pins 20).
 - **Go 1.23+.** If `go` isn't on your `PATH`, the `Makefile` falls back to
   `~/.local/go/bin/go`.
+- **A Docker daemon with no `userns-remap`.** The fake host-agent never reports a remap range, so if your Docker runs with `userns-remap`, the brain sees the two disagree and refuses every app install (`APP_ISOLATION.md` # User-namespace tiers). Check with `docker info --format '{{json .SecurityOptions}}'`: it must not list `name=userns`.
 - **Host port `:80` free.** The dev Caddy binds `:80` (matching production) so
   `<slug>.local` URLs work portless. If something else holds `:80` (another
   web server, a system service), stop it first or `make caddy` will fail to bind.
