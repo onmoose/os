@@ -832,7 +832,7 @@ watch(
           </div>
           <p class="text-sm text-muted-foreground">
             <span class="font-medium text-foreground">{{ plan.name }}</span>
-            <template v-if="stepNumber > 0"> · Step {{ stepNumber }} of {{ steps.length }}</template>
+            <template v-if="stepNumber > 0 && steps.length > 1"> · Step {{ stepNumber }} of {{ steps.length }}</template>
           </p>
         </div>
         <InstallInfoBox
