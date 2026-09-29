@@ -88,7 +88,24 @@ type RunSpec struct {
 	// proxyRunSpec for the sandbox the proxy gets and why the brain has none.
 	CapDrop     []string
 	SecurityOpt []string
+	// UsernsMode is passed as --userns. The proxy and the brain both set it to
+	// hostUserns. Empty leaves Docker's default.
+	UsernsMode string
+	// Tmpfs lists container paths that get a fresh tmpfs (--tmpfs). See
+	// proxyRunSpec for why the proxy needs one on /run.
+	Tmpfs []string
 }
+
+// hostUserns is the --userns value for the socket proxy and the brain. It keeps
+// them in the host user namespace when the Docker daemon runs with a
+// daemon-wide userns-remap. Both must act as real host root: the proxy holds
+// the raw Docker socket, which a remapped root could not use, and the brain
+// gives app data to real host ids and writes the host's /var/lib/moose as real
+// root. host-agent always passes it, without asking Docker whether the remap is
+// on: on a daemon without the remap the flag changes nothing, so it cannot
+// drift from daemon.json (CONTROL_PLANE.md # Locked: control-plane container
+// hardening, APP_ISOLATION.md # User-namespace tiers).
+const hostUserns = "host"
 
 // Mount is a host→container bind mount.
 type Mount struct {
@@ -426,6 +443,16 @@ func proxyRunSpec(cfg Config) RunSpec {
 		Env:         proxyAllowlist(),
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges:true"},
+		UsernsMode:  hostUserns,
+		// On a remapped daemon Docker keeps a host-userns container's image
+		// files owned by the remapped root, so the image's /run belongs to that
+		// id, not to real root. With every capability dropped, real root has no
+		// DAC_OVERRIDE there, so haproxy cannot create /run/haproxy.pid and
+		// exits. A fresh tmpfs is owned by real root, so the pid file works and
+		// no capability is given back. /tmp is 1777, so the entrypoint's
+		// generated config needs nothing. On a daemon without the remap the
+		// tmpfs is harmless: haproxy writes only its pid file there.
+		Tmpfs: []string{"/run"},
 	}
 }
 
@@ -571,5 +598,10 @@ func runSpec(cfg Config) RunSpec {
 		Network: cfg.Network,
 		Mounts:  mounts,
 		Env:     env,
+		// The brain keeps Docker's default capabilities (#442), so the remapped
+		// owner of its own image files does not stop it, and it needs no tmpfs.
+		// The control-plane update builds the brain from this same spec
+		// (RunSpecFor), so a brain an update recreates keeps the host namespace.
+		UsernsMode: hostUserns,
 	}
 }
