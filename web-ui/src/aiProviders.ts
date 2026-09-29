@@ -210,7 +210,8 @@ export function modelIdProblem(id: string, separator?: string): string {
 // serverModelsBody is the models an edit of a My own server account sends:
 // the saved models, with each typed type applied. A box shows only the first
 // saved id, so an untouched box keeps the whole saved list, and a changed one
-// replaces it. The brain needs a chat name, so the forms never send it empty.
+// replaces it. The brain needs at least one name, so the forms never send
+// every box empty.
 export function serverModelsBody(
   saved: Record<string, string[] | null> | undefined,
   typed: Record<string, string>,

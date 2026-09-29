@@ -352,15 +352,15 @@ func TestAIAccountAcceptedShapes(t *testing.T) {
 // With no provider data (the catalog has not loaded), a listed provider cannot
 // be checked and is refused with its own message. An OpenAI-compatible server
 // still works, and an existing account can still be renamed.
-// TestAIAccountServerNeedsModel: an OpenAI-compatible account needs a chat
-// model name, on create and after an edit. An account stored without one (from
+// TestAIAccountServerNeedsModel: an OpenAI-compatible account needs at least
+// one model name, of any type, on create and after an edit. An account stored without one (from
 // before the rule) cannot be saved until it gets one.
 func TestAIAccountServerNeedsModel(t *testing.T) {
 	h := newHarness(t)
 	alice := h.setupAdmin("alice", "pass1")
 
 	code, raw := h.doRaw("POST", "/api/v1/ai-accounts", map[string]any{"provider_id": "openai_compatible", "label": "Home", "base_url": "http://192.168.1.20:11434/v1"})
-	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), `"location":"body.models.chat"`) {
+	if code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), `"location":"body.models"`) {
 		t.Fatalf("create without a model = %d %s", code, raw)
 	}
 
@@ -369,7 +369,7 @@ func TestAIAccountServerNeedsModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	rename := map[string]any{"provider_id": "openai_compatible", "label": "Renamed", "base_url": "http://10.0.0.2/v1"}
-	if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_old", rename); code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), `"location":"body.models.chat"`) {
+	if code, raw := h.doRaw("PUT", "/api/v1/ai-accounts/ai_old", rename); code != http.StatusUnprocessableEntity || !strings.Contains(string(raw), `"location":"body.models"`) {
 		t.Fatalf("rename without a model = %d %s", code, raw)
 	}
 	rename["models"] = map[string][]string{"chat": {"llama3"}}
@@ -378,6 +378,11 @@ func TestAIAccountServerNeedsModel(t *testing.T) {
 	}
 	if got, _ := h.st.GetAIAccount("ai_old"); len(got.Models["chat"]) != 1 || got.Models["chat"][0] != "llama3" {
 		t.Fatalf("stored models = %v", got.Models)
+	}
+	// Any model type counts: a server that serves only embeddings is fine.
+	emb := map[string]any{"provider_id": "openai_compatible", "label": "Embed", "base_url": "http://10.0.0.3/v1", "models": map[string][]string{"embedding": {"nomic-embed-text"}}}
+	if code, raw := h.doRaw("POST", "/api/v1/ai-accounts", emb); code != http.StatusOK {
+		t.Fatalf("embeddings-only server = %d %s", code, raw)
 	}
 	// Left out on a later edit, the stored name stays and the edit passes.
 	delete(rename, "models")
