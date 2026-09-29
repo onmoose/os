@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -52,11 +53,14 @@ type fakeDocker struct {
 	// test says is gone.
 	pullErrAll error
 
-	composeUp     func(ctx context.Context, dir, project string) (string, error)
-	inspect       func(id, mainService string) (running bool, health string, err error)
-	psManaged     map[string]bool    // returned by PSManaged
-	restartCounts map[string]int     // returned by RestartCounts
-	managed       []ManagedContainer // returned by ManagedContainers
+	composeUp func(ctx context.Context, dir, project string) (string, error)
+	inspect   func(id, mainService string) (running bool, health string, err error)
+	psManaged map[string]bool // returned by PSManaged
+	// psManagedFails makes the next N PSManaged calls fail, the way Docker
+	// through a proxy that is not up yet does after a reboot (#540).
+	psManagedFails int
+	restartCounts  map[string]int     // returned by RestartCounts
+	managed        []ManagedContainer // returned by ManagedContainers
 
 	composeUpErr      error // simple "always fail compose up"
 	composeDownErr    error
@@ -246,6 +250,15 @@ func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 
 func (f *fakeDocker) PSManaged(_ context.Context) (map[string]bool, error) {
 	f.record("PSManaged")
+	f.mu.Lock()
+	failing := f.psManagedFails > 0
+	if failing {
+		f.psManagedFails--
+	}
+	f.mu.Unlock()
+	if failing {
+		return nil, errors.New("exit status 1: Cannot connect to the Docker daemon at tcp://docker-proxy:2375")
+	}
 	out := make(map[string]bool, len(f.psManaged))
 	for k, v := range f.psManaged {
 		out[k] = v
