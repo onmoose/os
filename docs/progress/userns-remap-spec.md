@@ -66,6 +66,13 @@ A smaller item replaces it with the three things that are still open design: ima
 - **Caddy shares host uid `base`** with most remapped apps, so a container escape from one of them could read Caddy's certificate store. Today the same escape is real root, so this is still better. `THREAT_MODEL.md` names it.
 - **The catalog must not offer a `root_setup` app to a box that cannot run it.** An older brain ignores the field and installs the app in the default tier, where it fails. That is a catalog-side filter, a two-repo change, not specced here.
 
+## Review
+
+- **Sonnet (fresh agent): no Block findings.** Two Notes, both fixed. The `service_user` locked decision in `APP_MANIFEST.md` still said "no-userns-remap model"; it now says "in a host-tier container or on a box without the remap". The host row of the tier table said "from the manifest" and "never a manifest field" in one cell; it now names the grants the brain reads.
+- **Greptile P2, "Caps-tier escape exposure understated".** Confirmed and fixed. An escape that keeps the caps tier's `SETUID` or `DAC_OVERRIDE` can become any uid in the range, or read past file modes on any range-owned file, so it reaches every remapped container's files, not only its own uid's. `THREAT_MODEL.md` B2, residual 12 and the `DECISIONS.md` entry now say so.
+- **Greptile P2, "Catalog references removed item".** Confirmed and fixed. The poznote, formbricks and plunk statuses now name the old item as closed and point at #523.
+- **Greptile P2, "Update preservation left undefined".** Confirmed, extended in `BUILD.md`. No update path replaces `daemon.json` today, so nothing breaks yet. The image-based update (#486) must keep the file per box, and #523 must not turn the remap on in both images before that is settled. The mechanism itself belongs to #486, not here.
+
 ## What's next
 
 1. #523: build it in small PRs that are inert without the remap, with the image `daemon.json` change last, in both images.

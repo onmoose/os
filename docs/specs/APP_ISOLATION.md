@@ -216,7 +216,7 @@ The brain puts every container it launches in one of three tiers:
 |---|---|---|---|
 | **default** | Every folderless app, `service_user` apps, Door-2 pastes with no folder grant, managed services (Postgres, MariaDB, MySQL, Valkey) and their one-shot provisioning containers, Caddy, `moose-ui` | Remapped. Each keeps the sandbox it has today: an app gets `cap_drop: [ALL]`, `no-new-privileges` and a pinned `user:` (the table above); Caddy and `moose-ui` keep theirs (`CONTROL_PLANE.md` # Locked: control-plane container hardening) | Nobody. It is the daemon default |
 | **caps** | A folderless app whose manifest sets `root_setup: true` (`APP_MANIFEST.md` # B) | Remapped, with `CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE` and `FOWNER` added back, and **no** `user:` pin, so the image's own root entrypoint runs. `no-new-privileges` and Docker's default seccomp profile stay | The brain, from the declared intent |
-| **host** | Apps with a `folders` grant, `gpu: true` or `devices`, plus the socket proxy and the brain | `userns_mode: host`. Today's sandbox applies unchanged | The brain, from the manifest. Never a manifest or compose field |
+| **host** | Apps with a `folders` grant, `gpu: true` or `devices`, plus the socket proxy and the brain | `userns_mode: host`. Today's sandbox applies unchanged | The brain, from the app's `folders`, `gpu` and `devices` grants. The tier itself is never a manifest or compose field |
 
 The rules that hold the tiers together:
 
