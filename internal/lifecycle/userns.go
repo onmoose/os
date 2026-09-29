@@ -65,7 +65,7 @@ func (m *Manager) hostIdentity(ctx context.Context) (protocol.WellKnownIdentityR
 	}
 	if base < 0 || dockerRemap != (base > 0) {
 		slog.Warn("docker and host-agent disagree about the userns remap; refusing installs",
-			"docker_remap", dockerRemap, "remap_base", base)
+			"remap_base", base, "docker_userns", dockerRemap)
 		return wk, 0, ErrRemapMismatch
 	}
 	return wk, base, nil

@@ -935,7 +935,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		"instance_id": id, "name": man.Name, "slug": slug, "url": url,
 	})
 	slog.Info("app installed",
-		"instance_id", id, "name", man.Name, "url", url, "upstream", upstream)
+		"instance_id", id, "name", man.Name, "url", url, "upstream", upstream, "tier", tier)
 	return inst, nil
 }
 
