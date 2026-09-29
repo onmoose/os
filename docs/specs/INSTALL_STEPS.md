@@ -1,6 +1,6 @@
 # Install steps: one question per page
 
-> **Status: designed 2026-09-28, not built.** This is the plan for the next shape of the install flow. It follows `INSTALL_SETUP.md`, which built the setup page, provider accounts and role-mapped settings. Until this plan is built, the as-built flow is the one in `DASHBOARD.md` # Install authorization. When a part of this plan is built, its spec (`DASHBOARD.md`, `APP_MANIFEST.md`, `APP_STORE.md`, `SERVICE_PROVISIONING.md`) becomes the source of truth for it, and this doc gets an "As built" note, the same way `INSTALL_SETUP.md` did.
+> **Status: designed 2026-09-28, being built (steps 1 to 3) from 2026-09-29.** This is the plan for the next shape of the install flow. It follows `INSTALL_SETUP.md`, which built the setup page, provider accounts and role-mapped settings. Until this plan is built, the as-built flow is the one in `DASHBOARD.md` # Install authorization. When a part of this plan is built, its spec (`DASHBOARD.md`, `APP_MANIFEST.md`, `APP_STORE.md`, `SERVICE_PROVISIONING.md`) becomes the source of truth for it, and this doc gets an "As built" note, the same way `INSTALL_SETUP.md` did.
 
 ## Goal
 
@@ -41,6 +41,27 @@ Counted from the `onmoose/store` manifests on 2026-09-28 (112 apps).
 | A saved account is used on its own only for a required or recommended need. An optional need stays "not set up" until the user presses Set up, even when they have a saved account, so no app starts sending email or spending on AI without an explicit act. Set up then opens with the saved account picked. |
 | Gmail and iCloud are the first two email presets. The Google Workspace preset becomes "Gmail or Google Workspace", and iCloud is added. The sending services (SES, SendGrid and the rest) follow under their own heading. |
 | Out of scope for this plan: checking a key against the provider before saving it, and starting the image download before the user presses Install. Both are in `NEXT.md`. |
+
+## Build rules (2026-09-29)
+
+These rules were set when the build started (steps 1 to 3 of # Suggested order). They fill gaps in the design above. They can change on the build branch as we learn, and this doc changes with the code.
+
+1. **From the install plan to pages.** The install plan sends flat `config` fields and `requires` groups. The UI turns them into pages with this rule:
+
+   | What the plan has | Where it goes |
+   |---|---|
+   | A `requires` group with `ai` in it | Required AI pages (key list or service grid, then key form) |
+   | AI role fields with no group (cap, firecrawl) | Optional "AI service · Set up" row on the last page |
+   | `mail` block (always optional in v1) | Optional "Email · Set up" row on the last page |
+   | Required plain fields (no role) | One "<App> needs these to run" page |
+   | Optional plain fields (no role) | One "Extra settings · Set up" row on the last page |
+
+   The order is: required AI, then required plain fields, then the last page. Until `recommends` exists (step 4), a need is either required or optional. The schema allows two shapes that no store app uses: a mixed group (for example `one_of: [ai, SOME_ENV]`) and a required field with a role. The manifest lint (`internal/manifest/lint.go`) rejects both. The box is lenient, so when it meets one anyway, it shows the fields of that group or slot as plain fields on the "needs these to run" page. A group of plain fields only (`one_of: [A, B]`) goes on that page too, and the page's Continue waits until the group is met.
+2. **What counts as already answered.** AI: a saved account that can fill the slot. Email: a saved account, but an optional need stays "not set up" until the user presses Set up (# Decisions). Required plain fields always get a page. A folder always has a default, so it is a row on the last page, never a question.
+3. **The key picked in advance** is the newest usable account for now. "The one another app used most recently" needs a brain change and comes later.
+4. **Duplicate info in the install plan.** The brain adds the copies of the app the caller can already see to the install plan, so the first page warns before any question. When the plan lists a copy, the user has seen the warning, so the install is sent with `confirm: true`. The last page keeps the 409 handling for a copy that appears later (a second tab, a race).
+5. **Session storage.** The draft is kept in the tab's session storage under one key per user, app and scope. It is removed after a successful install or on Cancel. Only non-secret answers are stored: picked account ids, folder choices, and non-secret plain fields. A `secret: true` field and a key that is typed but not saved stay in the page's memory only. The URL carries only the step and the scope, not the answers.
+6. **Default models.** A provider with no default model for a type it offers still gets its tile for now. The stricter rule in # 3 (hide such a tile) waits for the store lint that makes every provider carry a default for every type it offers.
 
 ## Design
 
@@ -187,7 +208,7 @@ recommends:
 2. **AI pages** (B layout, grid, key form).
 3. **Email pages** and the Gmail and iCloud presets. Test a real send from a hosted box for both presets before they ship.
 4. **`recommends`,** then tagging the store.
-5. **A test with 3 to 5 non-technical people** on a clickable prototype, before step 1 is built if possible. Watch in particular whether anyone reads the info box.
+5. **A test with 3 to 5 non-technical people** on the built UI, after steps 1 to 3 are built. There is no separate prototype. Watch in particular whether anyone reads the info box.
 
 ## Open questions
 
