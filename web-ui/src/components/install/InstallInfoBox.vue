@@ -3,11 +3,13 @@
 // app header: it sits right under the app's name on the first page and the
 // last page only. It is quiet on purpose: grey, small text, no controls.
 //
-// It has a title ("What OpenClaw can do") and one line per permission.
-// Write access to a folder stays red, because that is the one line people
-// must notice (APP_ISOLATION.md # User content). The size is its own line
-// under the list, not a permission, and so is the not-enough-space warning.
-// An app with no permissions shows only the size line.
+// The size comes first, as its own line ("Takes about 2.0 GB."), with the
+// not-enough-space warning under it. Then a title ("What OpenClaw can do")
+// and one line per permission. Write access to a folder stays red, because
+// that is the one line people must notice (APP_ISOLATION.md # User content).
+// An app with no permissions says so in one line, with no empty list, so the
+// box is never empty: the size is 0 when the app's images are already on the
+// box, and then the size line is left out.
 import { computed } from "vue";
 import { TriangleAlert } from "lucide-vue-next";
 import type { InstallPlanFootprint, InstallPlanPermissions } from "../../api";
@@ -31,10 +33,12 @@ const tight = computed(() => spaceTight(props.footprint));
 </script>
 
 <template>
-  <div
-    v-if="anyPermission || size > 0 || tight"
-    class="space-y-2 rounded-lg bg-muted px-4 py-3 text-sm text-muted-foreground"
-  >
+  <div class="space-y-2 rounded-lg bg-muted px-4 py-3 text-sm text-muted-foreground">
+    <p v-if="size > 0">Takes about {{ formatSize(size) }}.</p>
+    <p v-if="tight && footprint" class="flex gap-2 text-destructive">
+      <TriangleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      This might not fit. Only about {{ formatSize(footprint.free_bytes) }} is free on your box. You can still install.
+    </p>
     <template v-if="anyPermission">
       <p class="font-medium text-foreground">What {{ appName }} can do</p>
       <ul class="list-disc space-y-0.5 pl-5">
@@ -52,10 +56,6 @@ const tight = computed(() => spaceTight(props.footprint));
         </li>
       </ul>
     </template>
-    <p v-if="size > 0">Takes about {{ formatSize(size) }}.</p>
-    <p v-if="tight && footprint" class="flex gap-2 text-destructive">
-      <TriangleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      This might not fit. Only about {{ formatSize(footprint.free_bytes) }} is free on your box. You can still install.
-    </p>
+    <p v-else>{{ appName }} needs no special permissions.</p>
   </div>
 </template>

@@ -776,6 +776,19 @@ function aiSummary(slots: { id: string }[]): string {
   return parts.join("; ");
 }
 
+// hasRows says whether the last page has any row at all. An app with no
+// needs, no folders and no scope choice (Memos) has none.
+const hasRows = computed(
+  () =>
+    canInstallHousehold.value ||
+    needs.value.aiGroups.length > 0 ||
+    needs.value.requiredFields.length > 0 ||
+    folders.value.length > 0 ||
+    needs.value.optionalSlots.length > 0 ||
+    !!plan.value?.mail ||
+    needs.value.extraFields.length > 0,
+);
+
 const mailLabel = computed(
   () => plan.value?.mail?.providers?.find((m) => m.id === mailProviderId.value)?.label ?? "",
 );
@@ -1140,7 +1153,9 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
 
       <!-- ── Last page ──────────────────────────────────────────────────── -->
       <template v-else>
-        <div class="border-t border-border">
+        <!-- Only when there is a row: an empty list would draw as two
+             lines with nothing between them. -->
+        <div v-if="hasRows" class="border-t border-border">
           <dl class="divide-y divide-border">
             <div v-if="canInstallHousehold" :class="rowClass">
               <dt :class="dtClass">For</dt>
