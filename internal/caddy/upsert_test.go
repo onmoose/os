@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // routeAdmin is a fake Caddy admin API that keeps a real route list, so a test
@@ -25,7 +26,9 @@ import (
 //
 // A call can be made to fail with no HTTP answer (the connection is reset, as
 // in CI run 36490829133) or with a 500 answer, and when it fails the list is
-// left as it was, the way Caddy rolls back a config it could not load.
+// left as it was, the way Caddy rolls back a config it could not load. With
+// failAfterApply the call changes the list first and then resets, which is a
+// write Caddy applied whose answer was lost.
 type routeAdmin struct {
 	mu     sync.Mutex
 	routes []map[string]any
@@ -37,6 +40,10 @@ type routeAdmin struct {
 	// failReset makes a failing call reset the connection instead of
 	// answering 500.
 	failReset bool
+	// failAfterApply makes a failing call apply its change, then reset.
+	failAfterApply bool
+	// delay makes every call wait this long before it answers.
+	delay time.Duration
 }
 
 func newRouteAdmin() *routeAdmin {
@@ -46,50 +53,69 @@ func newRouteAdmin() *routeAdmin {
 func (a *routeAdmin) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		if a.delay > 0 {
+			time.Sleep(a.delay)
+		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.calls = append(a.calls, r.Method+" "+r.URL.Path)
-		if a.fail != nil && a.fail(len(a.calls)) {
-			if a.failReset {
-				conn, _, err := w.(http.Hijacker).Hijack()
-				if err == nil {
-					if tc, ok := conn.(*net.TCPConn); ok {
-						_ = tc.SetLinger(0) // close with RST, not FIN
-					}
-					_ = conn.Close()
-				}
-				return
-			}
+		failing := a.fail != nil && a.fail(len(a.calls))
+		if failing && !a.failAfterApply && !a.failReset {
 			http.Error(w, `{"error":"injected failure"}`, http.StatusInternalServerError)
 			return
 		}
-		var route map[string]any
-		_ = json.Unmarshal(b, &route)
-		switch {
-		case r.Method == "PATCH" && strings.HasPrefix(r.URL.Path, "/id/"):
-			i := a.index(strings.TrimPrefix(r.URL.Path, "/id/"))
-			if i < 0 {
-				http.Error(w, `{"error":"unknown object ID"}`, http.StatusNotFound)
-				return
-			}
-			a.routes[i] = route
-		case r.Method == "PUT" && r.URL.Path == routesPath+"/0":
-			if id, _ := route["@id"].(string); a.index(id) >= 0 {
-				http.Error(w, `{"error":"duplicate ID"}`, http.StatusBadRequest)
-				return
-			}
-			a.routes = append([]map[string]any{route}, a.routes...)
-		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/id/"):
-			i := a.index(strings.TrimPrefix(r.URL.Path, "/id/"))
-			if i < 0 {
-				http.Error(w, `{"error":"unknown object ID"}`, http.StatusNotFound)
-				return
-			}
-			a.routes = append(a.routes[:i], a.routes[i+1:]...)
-		default:
-			http.Error(w, "unexpected call", http.StatusTeapot)
+		status, msg := http.StatusOK, ""
+		if !failing || a.failAfterApply {
+			status, msg = a.apply(r, b)
+		}
+		if failing {
+			resetConn(w)
+			return
+		}
+		if status != http.StatusOK {
+			http.Error(w, msg, status)
 		}
 	})
+}
+
+// resetConn closes the client's connection with a TCP reset and no answer.
+func resetConn(w http.ResponseWriter) {
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		return
+	}
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetLinger(0) // close with RST, not FIN
+	}
+	_ = conn.Close()
+}
+
+// apply makes the change one call asks for and returns Caddy's answer.
+func (a *routeAdmin) apply(r *http.Request, body []byte) (int, string) {
+	var route map[string]any
+	_ = json.Unmarshal(body, &route)
+	switch {
+	case r.Method == "PATCH" && strings.HasPrefix(r.URL.Path, "/id/"):
+		i := a.index(strings.TrimPrefix(r.URL.Path, "/id/"))
+		if i < 0 {
+			return http.StatusNotFound, `{"error":"unknown object ID"}`
+		}
+		a.routes[i] = route
+	case r.Method == "PUT" && r.URL.Path == routesPath+"/0":
+		if id, _ := route["@id"].(string); a.index(id) >= 0 {
+			return http.StatusBadRequest, `{"error":"duplicate ID"}`
+		}
+		a.routes = append([]map[string]any{route}, a.routes...)
+	case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/id/"):
+		i := a.index(strings.TrimPrefix(r.URL.Path, "/id/"))
+		if i < 0 {
+			return http.StatusNotFound, `{"error":"unknown object ID"}`
+		}
+		a.routes = append(a.routes[:i], a.routes[i+1:]...)
+	default:
+		return http.StatusTeapot, "unexpected call"
+	}
+	return http.StatusOK, ""
 }
 
 func (a *routeAdmin) index(id string) int {
@@ -282,5 +308,64 @@ func TestAddRouteInsertsOnceThenReplacesInPlace(t *testing.T) {
 	}
 	if got := admin.serving(testHost); got != "proxy" {
 		t.Errorf("%s serves %q, want the app", testHost, got)
+	}
+}
+
+// A write Caddy applied but whose answer was lost is retried safely: the
+// retry finds the route already there and replaces it again, and no duplicate
+// is added. Covers both the PATCH (a flip) and the PUT (a first write).
+func TestAddRouteRetryAfterAnAppliedWrite(t *testing.T) {
+	t.Run("flip", func(t *testing.T) {
+		c, admin := startSplash(t)
+		base := admin.callCount()
+		admin.failReset, admin.failAfterApply = true, true
+		admin.fail = func(n int) bool { return n == base+1 }
+
+		if err := c.AddRoute(context.Background(), testRoute()); err != nil {
+			t.Fatalf("AddRoute: %v", err)
+		}
+		if got := admin.serving(testHost); got != "proxy" {
+			t.Errorf("%s serves %q, want the app", testHost, got)
+		}
+		if len(admin.routes) != 2 {
+			t.Errorf("routes = %d, want 2 (the app and the catch-all)", len(admin.routes))
+		}
+	})
+	t.Run("first write", func(t *testing.T) {
+		admin := newRouteAdmin()
+		srv := httptest.NewServer(admin.handler())
+		defer srv.Close()
+		c := New(srv.URL)
+		c.retryDelay = 0
+		// Call 1 is the PATCH (404), call 2 the PUT: it lands, then resets.
+		admin.failReset, admin.failAfterApply = true, true
+		admin.fail = func(n int) bool { return n == 2 }
+
+		if err := c.AddRoute(context.Background(), testRoute()); err != nil {
+			t.Fatalf("AddRoute: %v", err)
+		}
+		if len(admin.routes) != 2 || admin.routes[0]["@id"] != routeID("abc") {
+			t.Errorf("routes = %v, want [%s moose-catchall]", len(admin.routes), routeID("abc"))
+		}
+		if got := admin.serving(testHost); got != "proxy" {
+			t.Errorf("%s serves %q, want the app", testHost, got)
+		}
+	})
+}
+
+// A call that timed out is not repeated: each try would cost the full client
+// timeout, and the startup pass writes every route under one deadline.
+func TestAddRouteDoesNotRetryATimeout(t *testing.T) {
+	c, admin := startSplash(t)
+	base := admin.callCount()
+	c.http.Timeout = 20 * time.Millisecond
+	admin.delay = 200 * time.Millisecond
+
+	if err := c.AddRoute(context.Background(), testRoute()); err == nil {
+		t.Fatal("AddRoute: want the timeout as an error")
+	}
+	time.Sleep(250 * time.Millisecond) // let the slow handler record its call
+	if n := admin.callCount() - base; n != 1 {
+		t.Errorf("admin calls = %d, want 1", n)
 	}
 }

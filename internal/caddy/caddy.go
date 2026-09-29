@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -289,7 +291,7 @@ func (c *Client) upsertRoute(ctx context.Context, instanceID, host string, handl
 		"match":  []any{map[string]any{"host": []string{host}}},
 		"handle": handle,
 	}
-	return c.upsertRouteByID(ctx, routeID(instanceID), route)
+	return c.upsertRouteByID(ctx, routeID(instanceID), host, route)
 }
 
 // routesPath is the moose server's route list in Caddy's config.
@@ -319,21 +321,32 @@ const routeWriteAttempts = 3
 // never have reached Caddy (seen once in CI: "connection reset by peer" on the
 // flip from splash to app). Both calls are safe to repeat: a retry PATCHes the
 // route an earlier PUT may already have added. A write Caddy answered with an
-// error is not repeated, since Caddy would refuse it again. The last error is
-// returned to the caller either way.
-func (c *Client) upsertRouteByID(ctx context.Context, id string, route map[string]any) error {
+// error is not repeated, since Caddy would refuse it again. A call that timed
+// out is not repeated either: Caddy is hanging, not resetting, and each try
+// would cost the full client timeout out of the caller's budget (the startup
+// pass writes every app's route under one deadline). The last error is
+// returned to the caller either way. host is only for the log line.
+func (c *Client) upsertRouteByID(ctx context.Context, id, host string, route map[string]any) error {
 	for attempt := 1; ; attempt++ {
 		answered, err := c.replaceOrInsertRoute(ctx, id, route)
-		if err == nil || answered || attempt == routeWriteAttempts {
+		if err == nil || answered || isTimeout(err) || attempt == routeWriteAttempts {
 			return err
 		}
-		slog.Warn("caddy: route write got no answer; retrying", "err", err)
+		slog.Warn("caddy: route write got no answer; retrying", "host", host, "err", err)
 		select {
 		case <-ctx.Done():
 			return err
 		case <-time.After(c.retryDelay):
 		}
 	}
+}
+
+// isTimeout reports whether err is a timeout, from the HTTP client or the
+// caller's context.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		(errors.As(err, &ne) && ne.Timeout())
 }
 
 // replaceOrInsertRoute makes one try at the write described on
@@ -460,7 +473,7 @@ func (c *Client) EnsureDashboard(ctx context.Context, host, brainUpstream, uiUps
 			},
 		}},
 	}
-	if err := c.upsertRouteByID(ctx, dashboardRouteID, route); err != nil {
+	if err := c.upsertRouteByID(ctx, dashboardRouteID, host, route); err != nil {
 		return fmt.Errorf("caddy: install dashboard route: %w", err)
 	}
 	slog.Info("caddy: dashboard route installed", "host", host, "upstream", uiUpstream)

@@ -1387,6 +1387,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 
 	seen := map[string]bool{}
 	var avahiTotal, avahiOK, avahiFail int
+	var splashes []store.Instance // stopped and failed, written after the loop
 	for _, inst := range desired {
 		seen[inst.ID] = true
 		switch inst.State {
@@ -1478,10 +1479,17 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 						"instance_id", inst.ID, "err", err, "output", out)
 				}
 			}
-			m.reassertSplash(ctx, inst)
+			splashes = append(splashes, inst)
 		case "failed":
-			m.reassertSplash(ctx, inst)
+			splashes = append(splashes, inst)
 		}
+	}
+	// Splashes go last (#520). The whole pass runs under one startup deadline,
+	// and a slow Caddy makes each route write cost time. A running app's route
+	// and its compose up matter more than a stopped app's splash, so they must
+	// not wait behind them.
+	for _, inst := range splashes {
+		m.reassertSplash(ctx, inst)
 	}
 	if avahiTotal > 0 {
 		slog.Info("avahi replay", "total", avahiTotal, "ok", avahiOK, "failed", avahiFail)

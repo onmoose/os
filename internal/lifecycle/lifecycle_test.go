@@ -675,6 +675,45 @@ func TestReconcileReassertsSplashForStoppedAndFailed(t *testing.T) {
 	}
 }
 
+// Splashes are written after every running app's route, even for an older
+// stopped app (#520). The pass runs under one startup deadline, so a slow
+// Caddy must not spend it on splashes first.
+func TestReconcileWritesSplashesAfterRunningRoutes(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+	// A second app id, so the two instances get different ids.
+	e.writeCatalogApp(t, "whoami2", whoamiCompose, strings.Replace(whoamiManifest(""), "id: whoami", "id: whoami2", 1))
+	e.docker.digests[testImage] = testDigest
+	owner := Owner{UserID: "u_admin", Username: "admin"}
+	older, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), owner, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install 1: %v", err)
+	}
+	newer, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami2"), owner, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install 2: %v", err)
+	}
+	if err := e.store.SetState(older.ID, "stopped"); err != nil {
+		t.Fatal(err)
+	}
+	e.docker.psManaged = map[string]bool{newer.ID: true}
+	e.caddy.calls = nil
+
+	if err := e.m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var order []string
+	for _, c := range e.caddy.calls {
+		if c.method == "AddRoute" || c.method == "AddSplashRoute" {
+			order = append(order, fmt.Sprintf("%s:%v", c.method, c.args[0]))
+		}
+	}
+	want := []string{"AddRoute:" + newer.ID, "AddSplashRoute:" + older.ID}
+	if strings.Join(order, " ") != strings.Join(want, " ") {
+		t.Errorf("route writes = %v, want %v", order, want)
+	}
+}
+
 func TestReconcileTearsDownOrphanContainers(t *testing.T) {
 	e := newTestEnv(t)
 	// No SQLite row; Docker reports a managed container for unknown instance.
