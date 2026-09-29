@@ -94,9 +94,10 @@ type DockerDriver interface {
 	// ImageUserFiles returns a local image's /etc/passwd and /etc/group, nil
 	// for one that is missing or is not a regular file. It creates a container
 	// from the image without starting it, copies /etc out of it and removes
-	// it, so no code from the image runs. The container carries the
-	// moose.instance_id label, so an install rollback removes it if the
-	// brain stops half way.
+	// it, so no code from the image runs. The container is removed on every
+	// path, the error ones too. It carries the moose.image_user_probe and
+	// moose.instance_id labels, so one left by a brain that stopped half way
+	// can be found and removed.
 	ImageUserFiles(ctx context.Context, instanceID, ref string) (passwd, group []byte, err error)
 }
 
