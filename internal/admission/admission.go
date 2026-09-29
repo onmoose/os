@@ -62,10 +62,41 @@ func Check(ctx context.Context, composeBytes []byte) error {
 // CheckManifest applies the manifest-side admission rules — declarations that
 // are illegal regardless of the compose content. Door-symmetric like Check:
 // lifecycle's shared install transaction runs it for both doors (a Door-2
-// synthetic manifest never sets service_user, so it passes trivially).
+// synthetic manifest never sets service_user or root_setup, so it passes
+// trivially). `moose manifest check` runs it too, so catalog CI refuses the
+// same manifests at publish time.
 func CheckManifest(man *manifest.Manifest) error {
+	// root_setup first: when a manifest also breaks the service_user rule,
+	// removing service_user alone would not fix it, so name root_setup.
+	if man.RootSetup {
+		if err := checkRootSetup(man); err != nil {
+			return err
+		}
+	}
 	if man.ServiceUser && len(man.Permissions.Folders) > 0 {
 		return reject("manifest sets service_user: true together with a folders grant — a folder app already runs as a managed non-root identity (APP_MANIFEST.md # B); remove service_user")
+	}
+	return nil
+}
+
+// checkRootSetup refuses root_setup: true together with a grant that puts the
+// app in the host user namespace (folders, gpu, devices), or with service_user
+// (APP_MANIFEST.md # B). root_setup gives capabilities back, and those are
+// safe only inside a remapped namespace: in the host namespace they would be
+// real root's powers (APP_ISOLATION.md # User-namespace tiers). service_user
+// pins a non-root user, and root_setup removes the pin, so the two cannot
+// both hold.
+func checkRootSetup(man *manifest.Manifest) error {
+	const why = "root_setup is for folderless apps only: it gives capabilities back, which is safe only in a remapped user namespace, and this grant runs the app in the host one (APP_MANIFEST.md # B). Remove root_setup, or package the image to start without root"
+	switch {
+	case len(man.Permissions.Folders) > 0:
+		return reject("manifest sets root_setup: true together with a folders grant. %s", why)
+	case man.Permissions.GPU:
+		return reject("manifest sets root_setup: true together with gpu: true. %s", why)
+	case len(man.Permissions.Devices) > 0:
+		return reject("manifest sets root_setup: true together with devices. %s", why)
+	case man.ServiceUser:
+		return reject("manifest sets root_setup: true together with service_user: true. service_user pins a non-root user and root_setup removes that pin (APP_MANIFEST.md # B). Keep one of them")
 	}
 	return nil
 }
