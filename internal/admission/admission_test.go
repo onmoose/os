@@ -332,6 +332,9 @@ func TestCheckManifestRootSetup(t *testing.T) {
 		{name: "with gpu", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{GPU: true}}, wantName: "gpu: true"},
 		{name: "with devices", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{Devices: []string{"/dev/ttyUSB0"}}}, wantName: "devices"},
 		{name: "with service_user", man: manifest.Manifest{RootSetup: true, ServiceUser: true}, wantName: "service_user"},
+		// Breaks both rules: the refusal names root_setup, since removing
+		// service_user alone would not fix it.
+		{name: "with service_user and folders", man: manifest.Manifest{RootSetup: true, ServiceUser: true, Permissions: manifest.Permissions{Folders: folders}}, wantName: "folders"},
 		// Without root_setup the same grants are fine.
 		{name: "gpu alone", man: manifest.Manifest{Permissions: manifest.Permissions{GPU: true}}},
 		{name: "devices alone", man: manifest.Manifest{Permissions: manifest.Permissions{Devices: []string{"/dev/ttyUSB0"}}}},

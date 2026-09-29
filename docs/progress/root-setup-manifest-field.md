@@ -30,6 +30,11 @@ This is slice 3 of #523, after [remap-base-well-known.md](remap-base-well-known.
 - **Between this slice and #529, a `root_setup` app installs in the default tier** and fails at start the way it does today. That is the same result an older brain gives, which the spec already accepts. The catalog must not publish a `root_setup` app before #529 lands.
 - **`moose manifest check` now also enforces the existing `service_user` rule.** That is a small widening beyond `root_setup`. It is the same function the brain runs at install, so it can only refuse manifests that would fail on a box anyway.
 
+## Review
+
+- **Fresh Sonnet agent:** no findings at any severity.
+- **Greptile P2, "Overlapping conflicts need two checks":** confirmed and fixed. A manifest with `root_setup`, `service_user` and `folders` got the `service_user` message, which does not mention `root_setup`, so removing `service_user` alone left it refused. `CheckManifest` now runs the `root_setup` check first, and a test covers the case.
+
 ## What's next
 
 1. #529: the brain tiers. It reads `remap_base`, checks `docker info`, maps `root_setup` to the caps tier, and refuses a `root_setup` install without the remap.

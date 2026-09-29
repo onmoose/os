@@ -66,11 +66,15 @@ func Check(ctx context.Context, composeBytes []byte) error {
 // trivially). `moose manifest check` runs it too, so catalog CI refuses the
 // same manifests at publish time.
 func CheckManifest(man *manifest.Manifest) error {
+	// root_setup first: when a manifest also breaks the service_user rule,
+	// removing service_user alone would not fix it, so name root_setup.
+	if man.RootSetup {
+		if err := checkRootSetup(man); err != nil {
+			return err
+		}
+	}
 	if man.ServiceUser && len(man.Permissions.Folders) > 0 {
 		return reject("manifest sets service_user: true together with a folders grant — a folder app already runs as a managed non-root identity (APP_MANIFEST.md # B); remove service_user")
-	}
-	if man.RootSetup {
-		return checkRootSetup(man)
 	}
 	return nil
 }
