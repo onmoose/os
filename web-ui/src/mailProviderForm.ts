@@ -1,8 +1,9 @@
 // Shared shape and helpers for the outgoing-email provider form
-// (SERVICE_PROVISIONING.md # BYO outgoing mail). Three places consume it: the
-// add flow at /settings/email/add/:preset, the inline edit form on the account
-// list, and the add form of the install flow (MailAddForm.vue). They must agree field for
-// field: the same preset rules decide what is shown and what is sent on all.
+// (SERVICE_PROVISIONING.md # BYO outgoing mail). Two forms consume it: the
+// add form (components/install/MailAddForm.vue), used by the install flow and
+// by Settings → Integrations → Email, and the inline edit form on the Settings
+// account list. They must agree field for field: the same preset rules
+// decide what is shown and what is sent on all.
 import type { Ref } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { api, ApiError, type MailPreset } from "@/api";

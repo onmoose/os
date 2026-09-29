@@ -85,9 +85,9 @@ web-ui/
     │       ├── ActivitySection.vue       # audit-log browser (all users)
     │       ├── UsersSection.vue          # admin-only user management
     │       ├── InstalledAppDetailSection.vue # one app: controls, email, secrets, settings + AI service pickers, logs
-    │       ├── LLMProvidersSection.vue   # /settings/ai, Integrations → AI services: the user's own AI accounts
+    │       ├── LLMProvidersSection.vue   # /settings/ai, Integrations → AI services: the user's own AI accounts (add: ServiceGrid + AIKeyForm)
     │       ├── EmailSection.vue          # Integrations → Email: the user's own SMTP account list
-    │       ├── EmailAddSection.vue       # /email/add + /email/add/:preset (/settings/mail/* redirect here)
+    │       ├── EmailAddSection.vue       # /email/add + /email/add/:preset (MailServiceGrid + MailAddForm; /settings/mail/* redirect here)
     │       └── AboutSection.vue          # product identity
     │
     └── components/         # reusable chrome + dialogs

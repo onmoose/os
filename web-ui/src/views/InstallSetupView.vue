@@ -474,13 +474,14 @@ const appName = computed(() => plan.value?.name ?? "");
 const isLast = computed(() => step.value === "");
 const firstPage = computed(() => flow.value[0] ?? "");
 const onFirstPage = computed(() => step.value === firstPage.value);
-// The step counter counts the App page, the first-time pages, and the last
-// page. A page opened with Change from the last page has no number.
-const stepTotal = computed(() => flow.value.length + 2);
+// The step counter counts the first-time pages and the last page; the App
+// page is not a step. A page opened with Change from the last page has no
+// number.
+const stepTotal = computed(() => flow.value.length + 1);
 const stepNumber = computed(() => {
   if (isLast.value) return stepTotal.value;
   const i = flow.value.indexOf(step.value);
-  return i < 0 || reviewed.value ? 0 : i + 2;
+  return i < 0 || reviewed.value ? 0 : i + 1;
 });
 
 const pageTitle = computed(() => {
@@ -929,8 +930,10 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
     </div>
 
     <template v-else-if="plan">
-      <!-- Header: the app, then the page's question. -->
-      <header class="space-y-4 px-4 sm:px-0">
+      <!-- Header: the app, with its info box right under the name on the
+           first and last pages. The page's question comes after it, as
+           the heading of the choice below it. -->
+      <header class="space-y-3 px-4 sm:px-0">
         <div class="flex items-center gap-3">
           <div
             class="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-card text-muted-foreground"
@@ -949,9 +952,9 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
             <template v-if="stepNumber > 0"> · Step {{ stepNumber }} of {{ stepTotal }}</template>
           </p>
         </div>
-        <Heading ref="heading" :level="2" tabindex="-1" class="outline-none">{{ pageTitle }}</Heading>
         <InstallInfoBox
           v-if="isLast || onFirstPage"
+          :app-name="plan.name"
           :permissions="plan.permissions"
           :footprint="plan.footprint"
         />
@@ -973,6 +976,16 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
         </Button>
       </div>
 
+      <Heading
+        id="install-question"
+        ref="heading"
+        :level="2"
+        tabindex="-1"
+        class="px-4 pt-2 outline-none sm:px-0"
+      >
+        {{ pageTitle }}
+      </Heading>
+
       <p
         v-if="pageError && pageError.step === step"
         class="mx-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive sm:mx-0"
@@ -983,7 +996,7 @@ const changeClass = "shrink-0 font-medium text-accent hover:underline";
 
       <!-- ── Question pages ─────────────────────────────────────────────── -->
       <template v-if="!isLast">
-        <div class="px-4 sm:px-0">
+        <div class="-mt-3 px-4 sm:px-0" role="group" aria-labelledby="install-question">
           <template v-if="aiPage">
             <AccountList
               v-if="aiMode(aiPage.need, aiPage.page) === 'list'"

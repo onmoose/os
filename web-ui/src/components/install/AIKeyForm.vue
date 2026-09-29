@@ -5,9 +5,11 @@
 // A key typed here stays in this component's memory until then: it never
 // reaches the URL or session storage.
 //
-// For a listed service: numbered steps from the provider data (`key_url`
-// and `help`) with an "Open <service>" button, a line on cost, one password
-// box with the soft prefix warning, and an optional name. For My own server:
+// For a listed service: the password box first, with the soft prefix
+// warning, then the numbered steps from the provider data (`key_url` and
+// `help`, with an "Open <service>" button) folded under "Where do I find my
+// API key?", a line on cost, and the optional name, always shown as a quiet
+// underlined box. For My own server:
 // the address, an optional key, and a model name box for each model setting
 // the app's slot has, since such a server has no model list.
 import { computed, ref, watch } from "vue";
@@ -18,22 +20,26 @@ import { accountProviderId, isOther, keyLooksWrong, modelIdProblem, type AISlot 
 import { defaultKeyLabel } from "../../installSteps";
 import Button from "../ui/Button.vue";
 
+// The same form adds an account in Settings → Integrations → AI services.
+// There it has no app: no slot (so no model box), no app name and no
+// household line.
 const props = defineProps<{
   service: AIProvider;
-  aiSlot: AISlot;
-  appName: string;
-  household: boolean;
+  aiSlot?: AISlot;
+  appName?: string;
+  household?: boolean;
   // labels are the names of the user's accounts, so the default name is free.
   labels: string[];
   // only: this is the one service the app works with, so there was no grid.
-  only: boolean;
+  only?: boolean;
 }>();
+
+const slotModels = computed(() => props.aiSlot?.models ?? []);
 
 const qc = useQueryClient();
 
 const key = ref("");
 const address = ref("");
-const naming = ref(false);
 const name = ref("");
 const models = ref<Record<string, string>>({});
 const error = ref("");
@@ -44,7 +50,6 @@ watch(
   () => {
     key.value = "";
     address.value = "";
-    naming.value = false;
     name.value = "";
     models.value = {};
     error.value = "";
@@ -67,7 +72,7 @@ function modelProblemOf(k: string, separator: string, multiple: boolean): string
 const valid = computed(() => {
   if (other.value) {
     if (!/^https?:\/\/\S+$/.test(address.value.trim())) return false;
-    return props.aiSlot.models.every(
+    return slotModels.value.every(
       (m) => (models.value[m.key] ?? "").trim() !== "" && !modelProblemOf(m.key, m.separator, m.multiple),
     );
   }
@@ -101,7 +106,7 @@ async function save(): Promise<{ account: AIAccount; models?: Record<string, str
     key.value = "";
     if (!other.value) return { account: created };
     const typed: Record<string, string[]> = {};
-    for (const m of props.aiSlot.models) typed[m.key] = [(models.value[m.key] ?? "").trim()];
+    for (const m of slotModels.value) typed[m.key] = [(models.value[m.key] ?? "").trim()];
     return { account: created, models: typed };
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : "The key could not be saved. Try again.";
@@ -119,7 +124,7 @@ const inputClass =
 
 <template>
   <div class="space-y-6">
-    <p v-if="only" class="text-sm text-foreground">{{ appName }} works with {{ service.name }}.</p>
+    <p v-if="only && appName" class="text-sm text-foreground">{{ appName }} works with {{ service.name }}.</p>
 
     <!-- My own server -->
     <template v-if="other">
@@ -145,9 +150,9 @@ const inputClass =
         <input id="ai-key-secret" v-model="key" type="password" autocomplete="new-password" :class="inputClass" />
         <p class="mt-2 text-sm text-muted-foreground">Only needed if your server asks for one.</p>
       </div>
-      <div v-for="m in aiSlot.models" :key="m.key">
+      <div v-for="m in slotModels" :key="m.key">
         <label :for="`ai-key-model-${m.key}`" class="block text-sm/6 font-medium text-foreground">
-          {{ aiSlot.models.length > 1 ? m.field.title : "Model name" }}
+          {{ slotModels.length > 1 ? m.field.title : "Model name" }}
         </label>
         <input
           :id="`ai-key-model-${m.key}`"
@@ -162,50 +167,57 @@ const inputClass =
       </div>
     </template>
 
-    <!-- A listed service -->
+    <!-- A listed service: the key box first, the steps folded under it. -->
     <template v-else>
-      <ol class="list-decimal space-y-3 pl-5 text-sm text-foreground marker:text-muted-foreground">
-        <li>
-          <span>Open {{ service.name }} and sign in, or make an account.</span>
-          <div v-if="keyLink" class="mt-2">
-            <Button size="sm" variant="secondary" as="a" :href="keyLink" target="_blank" rel="noopener noreferrer">
-              Open {{ service.name }} <ExternalLink class="size-3.5" aria-hidden="true" />
-            </Button>
-          </div>
-        </li>
-        <li v-if="service.help">{{ service.help }}</li>
-        <li>Copy the key, and paste it below.</li>
-      </ol>
-      <p class="text-sm text-muted-foreground">
-        {{ service.name }} charges for use, so it may ask for a card on file.
-      </p>
       <div>
-        <label for="ai-key-secret" class="block text-sm/6 font-medium text-foreground">Your {{ service.name }} key</label>
-        <input id="ai-key-secret" v-model="key" type="password" autocomplete="new-password" :class="inputClass" />
+        <label for="ai-key-secret" class="block text-sm/6 font-medium text-foreground">{{ service.name }} key</label>
+        <input
+          id="ai-key-secret"
+          v-model="key"
+          type="password"
+          autocomplete="new-password"
+          :class="[inputClass, 'py-2.5 text-base']"
+        />
         <p v-if="keyWarning" class="mt-2 text-sm text-warning">
           Keys from {{ service.name }} usually start with {{ service.key_prefix }}. Check that you copied the whole key.
         </p>
       </div>
+      <details class="group rounded-md border border-border px-4 py-3">
+        <summary class="cursor-pointer text-sm font-medium text-foreground">Where do I find my API key?</summary>
+        <ol class="mt-3 list-decimal space-y-3 pl-5 text-sm text-foreground marker:text-muted-foreground">
+          <li>
+            <span>Open {{ service.name }} and sign in, or make an account.</span>
+            <div v-if="keyLink" class="mt-2">
+              <Button size="sm" variant="secondary" as="a" :href="keyLink" target="_blank" rel="noopener noreferrer">
+                Open {{ service.name }} <ExternalLink class="size-3.5" aria-hidden="true" />
+              </Button>
+            </div>
+          </li>
+          <li v-if="service.help">{{ service.help }}</li>
+          <li>Copy the key, and paste it above.</li>
+        </ol>
+      </details>
+      <p class="text-sm text-muted-foreground">{{ service.name }} charges for use, so it may ask for a card on file.</p>
     </template>
 
+    <!-- The name: always there, a quiet underlined box. Empty means the
+         default name. -->
     <div>
-      <button
-        v-if="!naming"
-        type="button"
-        class="cursor-pointer text-sm font-medium text-accent hover:underline"
-        @click="naming = true"
-      >
-        {{ other ? "Name this server (optional)" : "Name this key (optional)" }}
-      </button>
-      <template v-else>
-        <label for="ai-key-name" class="block text-sm/6 font-medium text-foreground">Name</label>
-        <input id="ai-key-name" v-model="name" :placeholder="defaultName" autocomplete="off" :class="inputClass" />
-      </template>
+      <input
+        id="ai-key-name"
+        v-model="name"
+        :placeholder="other ? 'Name this server (optional)' : 'Name this key (optional)'"
+        :aria-label="other ? 'Name this server (optional)' : 'Name this key (optional)'"
+        aria-describedby="ai-key-name-hint"
+        autocomplete="off"
+        class="block w-full border-0 border-b border-border bg-transparent px-0 py-1.5 text-base text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none sm:text-sm/6"
+      />
+      <p id="ai-key-name-hint" class="mt-1 text-xs text-muted-foreground">Saved as "{{ defaultName }}" if empty.</p>
     </div>
 
     <div class="space-y-1 text-sm text-muted-foreground">
       <p>Saved on your box. Your other apps can use it too.</p>
-      <p v-if="household">Your key pays for everyone at home who uses {{ appName }}.</p>
+      <p v-if="household && appName">Your key pays for everyone at home who uses {{ appName }}.</p>
     </div>
 
     <p v-if="error" class="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">{{ error }}</p>

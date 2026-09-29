@@ -17,7 +17,7 @@
 // instead, because the apps' slots may not fit the other provider.
 import { computed, ref } from "vue";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
-import { ArrowLeft, ExternalLink, Plus } from "lucide-vue-next";
+import { ArrowLeft, Plus } from "lucide-vue-next";
 import {
   api,
   appNames,
@@ -29,11 +29,12 @@ import {
   type AIProvider,
 } from "@/api";
 import { withElevation } from "@/elevate";
-import { COMPATIBLE, OTHER, accountProviderId, findProvider, isOther, keyLooksWrong, withOther } from "@/aiProviders";
+import { COMPATIBLE, OTHER, findProvider, isOther, withOther } from "@/aiProviders";
 import { errorMessage, fieldClass } from "@/mailProviderForm";
 import Button from "@/components/ui/Button.vue";
 import AIProviderLogo from "@/components/AIProviderLogo.vue";
-import OptionCards from "@/components/install/OptionCards.vue";
+import AIKeyForm from "@/components/install/AIKeyForm.vue";
+import ServiceGrid from "@/components/install/ServiceGrid.vue";
 
 const qc = useQueryClient();
 
@@ -98,67 +99,41 @@ async function followJob(jobId: string, count: number, say: (msg: string) => voi
   }
 }
 
-// ── Add ─────────────────────────────────────────────────────────────────────
-// Two steps on one screen: pick the provider, then fill in the account.
+// ── Add ──────────────────────────────────────────────────────────────────
+// The same two views as the install flow (INSTALL_STEPS.md # 3): the service
+// grid, then the key form. The form is the install flow's AIKeyForm, so
+// the key box, the folded steps and the default name match. Saving goes back
+// to the account list.
 const adding = ref(false);
-const addProvider = ref<AIProvider | null>(null);
-const addLabel = ref("");
-const addKey = ref("");
-const addUrl = ref("");
-const addError = ref("");
+const addService = ref(""); // the tile picked on the grid
+const addProvider = ref<AIProvider | null>(null); // set once Continue opens the form
+const keyForm = ref<InstanceType<typeof AIKeyForm> | null>(null);
 
-const tiles = computed(() => withOther(providers.value).map((p) => ({ id: p.id, label: p.name })));
+// Every service, in the provider data's order, with My own server last.
+const services = computed(() => withOther(providers.value));
 
 function startAdd() {
   adding.value = true;
+  addService.value = "";
   addProvider.value = null;
   editFor.value = null;
   confirmDeleteFor.value = null;
 }
 
-function pickAddProvider(id: string) {
-  const p = findProvider(providers.value, id);
-  if (!p) return;
-  addProvider.value = p;
-  // The provider's name is a fine first name for a first account of it.
-  const has = accounts.value.some((a) => a.provider_id === accountProviderId(p));
-  addLabel.value = !isOther(p) && !has ? p.name : "";
-  addKey.value = "";
-  addUrl.value = "";
-  addError.value = "";
+function openForm() {
+  addProvider.value = findProvider(providers.value, addService.value) ?? null;
 }
 
 function cancelAdd() {
   adding.value = false;
   addProvider.value = null;
-  addError.value = "";
 }
 
-// The brain checks every rule again; this only keeps Add off until the form
-// can pass. Other needs an address and no key; a listed provider a key.
-const addValid = computed(() => {
-  const p = addProvider.value;
-  if (!p || addLabel.value.trim() === "") return false;
-  if (isOther(p)) return /^https?:\/\/\S+$/.test(addUrl.value.trim());
-  return addKey.value.trim() !== "";
-});
-
-const create = useMutation({
-  mutationFn: (body: AIAccountBody) => api.post<AIAccount>("/ai-accounts", body),
-  onSuccess: () => {
-    qc.invalidateQueries({ queryKey: ["ai-accounts"] });
-    cancelAdd();
-  },
-  onError: (e) => (addError.value = errorMessage(e)),
-});
-
-function submitAdd() {
-  const p = addProvider.value;
-  if (!p || !addValid.value) return;
-  const body: AIAccountBody = { provider_id: accountProviderId(p), label: addLabel.value.trim() };
-  if (addKey.value.trim()) body.api_key = addKey.value.trim();
-  if (addUrl.value.trim()) body.base_url = addUrl.value.trim();
-  create.mutate(body);
+async function submitAdd() {
+  const saved = await keyForm.value?.save();
+  if (!saved) return;
+  pageNotice.value = `Added ${saved.account.label}.`;
+  cancelAdd();
 }
 
 // ── Edit ────────────────────────────────────────────────────────────────────
@@ -228,11 +203,6 @@ const remove = useMutation({
   onError: (e, a) => setRow(rowError, a.id, errorMessage(e)),
 });
 
-// The key link is catalog data, so only a plain web address becomes a link.
-function isWebLink(u: string | undefined): boolean {
-  return !!u && /^https?:\/\//i.test(u);
-}
-
 function fid(name: string, id = ""): string {
   return `llm-${name}${id ? `-${id}` : ""}`;
 }
@@ -251,20 +221,21 @@ function fid(name: string, id = ""): string {
 
     <p v-if="pageNotice" class="text-sm text-muted-foreground">{{ pageNotice }}</p>
 
-    <!-- Add: pick the provider, then fill in the account. -->
-    <section v-if="adding" class="space-y-4 rounded-2xl border border-border bg-card p-5 sm:p-6">
+    <!-- Add: the service grid, then the key form, as in the install flow. -->
+    <section v-if="adding" class="space-y-5 rounded-2xl border border-border bg-card p-5 sm:p-6">
       <template v-if="!addProvider">
-        <h3 class="text-sm font-semibold text-foreground">Which provider?</h3>
+        <h3 id="add-ai-service" class="text-sm font-semibold text-foreground">Which AI service?</h3>
         <p v-if="providersQuery.isPending.value" class="text-sm text-muted-foreground">Loading…</p>
-        <OptionCards v-else label="AI service" :options="tiles" :selected="[]" @pick="pickAddProvider">
-          <template #icon="{ option }">
-            <AIProviderLogo :provider="findProvider(providers, option.id)" />
-          </template>
-        </OptionCards>
-        <p v-if="providersQuery.isError.value" class="text-sm text-muted-foreground">
-          The list of providers did not load, so only a server of your own can be added now.
-        </p>
-        <Button variant="ghost" @click="cancelAdd">Cancel</Button>
+        <template v-else>
+          <ServiceGrid v-model="addService" :services="services" label="AI service" />
+          <p v-if="providersQuery.isError.value" class="text-sm text-muted-foreground">
+            The list of AI services did not load, so only a server of your own can be added now.
+          </p>
+        </template>
+        <div class="flex gap-2">
+          <Button :disabled="!addService" @click="openForm">Continue</Button>
+          <Button variant="ghost" @click="cancelAdd">Cancel</Button>
+        </div>
       </template>
 
       <template v-else>
@@ -273,67 +244,21 @@ function fid(name: string, id = ""): string {
           class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
           @click="addProvider = null"
         >
-          <ArrowLeft class="size-4" /> Choose a different provider
+          <ArrowLeft class="size-4" /> Choose a different AI service
         </button>
         <div class="flex items-center gap-2.5">
           <AIProviderLogo :provider="addProvider" />
-          <h3 class="text-sm font-semibold text-foreground">{{ addProvider.name }}</h3>
+          <h3 class="text-sm font-semibold text-foreground">
+            {{ isOther(addProvider) ? "Your own server" : `Your ${addProvider.name} key` }}
+          </h3>
         </div>
-        <p class="text-sm text-muted-foreground">
-          <template v-if="isOther(addProvider)">Add a server that speaks the OpenAI API.</template>
-          <template v-else>The key is saved on this box and never shown again.</template>
-        </p>
-
-        <div class="space-y-1.5">
-          <label class="text-sm font-medium" :for="fid('add-label')">Account name</label>
-          <input :id="fid('add-label')" v-model="addLabel" :class="fieldClass" autocomplete="off" />
-          <p class="text-xs text-muted-foreground">What you'll see when an app asks which account to use.</p>
-        </div>
-
-        <div v-if="isOther(addProvider)" class="space-y-1.5">
-          <label class="text-sm font-medium" :for="fid('add-url')">Server address</label>
-          <input
-            :id="fid('add-url')"
-            v-model="addUrl"
-            type="url"
-            placeholder="https://example.com/v1"
-            :class="fieldClass"
-            autocomplete="off"
-          />
-          <p class="text-xs text-muted-foreground">It usually ends in /v1.</p>
-        </div>
-
-        <div class="space-y-1.5">
-          <label class="text-sm font-medium" :for="fid('add-key')">
-            API key<span v-if="isOther(addProvider)" class="font-normal text-muted-foreground"> (optional)</span>
-          </label>
-          <input :id="fid('add-key')" v-model="addKey" type="password" :class="fieldClass" autocomplete="new-password" />
-          <p v-if="keyLooksWrong(addProvider, addKey)" class="text-xs text-warning">
-            Keys from {{ addProvider.name }} usually start with {{ addProvider.key_prefix }}. Check that you copied the
-            whole key.
-          </p>
-          <p class="text-xs text-muted-foreground">
-            <template v-if="isOther(addProvider)">Only needed if your server asks for one.</template>
-            <template v-else>
-              <template v-if="addProvider.help">{{ addProvider.help }} </template>
-              <a
-                v-if="isWebLink(addProvider.key_url)"
-                :href="addProvider.key_url"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="inline-flex items-center gap-1 underline hover:text-foreground"
-              >Get a key from {{ addProvider.name }} <ExternalLink class="size-3.5" aria-hidden="true" /></a>
-            </template>
-          </p>
-        </div>
-
+        <AIKeyForm ref="keyForm" :service="addProvider" :labels="accounts.map((a) => a.label)" />
         <div class="flex gap-2">
-          <Button :disabled="create.isPending.value || !addValid" @click="submitAdd">
-            {{ create.isPending.value ? "Adding…" : "Add account" }}
+          <Button :disabled="!keyForm?.valid || keyForm?.pending" @click="submitAdd">
+            {{ keyForm?.pending ? "Adding…" : "Add account" }}
           </Button>
           <Button variant="ghost" @click="cancelAdd">Cancel</Button>
         </div>
-        <p v-if="addError" class="text-xs text-destructive">{{ addError }}</p>
       </template>
     </section>
 

@@ -7,10 +7,12 @@
 // only.
 //
 // It asks only what the preset needs. Gmail and iCloud: the address and the
-// app password, with numbered steps for making one. SES and Mailgun: also
+// app password, with the numbered steps for making one folded under "Where
+// do I find my app password?". SES and Mailgun: also
 // the region, and the username. A preset with a fixed username (SendGrid,
 // Resend) or a shared one (Postmark) does not ask for it. The server
-// settings show only for Custom server. The field rules are shared with
+// settings show only for Custom server. The optional name is always shown
+// as a quiet underlined box. The field rules are shared with
 // Settings through mailProviderForm.ts.
 import { computed, ref, watch } from "vue";
 import { useMutation, useQueryClient } from "@tanstack/vue-query";
@@ -24,6 +26,7 @@ import {
   portWarning,
   syncPersonalUsername,
   syncSameAsPassword,
+  usernameBoxInSettings,
   type ProviderForm,
 } from "../../mailProviderForm";
 import { defaultKeyLabel } from "../../installSteps";
@@ -33,7 +36,15 @@ const props = defineProps<{
   preset: MailPreset;
   // labels are the names of the user's email accounts, so the default is free.
   labels: string[];
-  manifestId: string;
+  // manifestId is the app being installed, whose install plan lists the
+  // user's accounts. Empty in Settings.
+  manifestId?: string;
+  // settings: the form adds an account in Settings → Integrations → Email.
+  // There it also asks the username for Gmail or Google Workspace (prefilled
+  // from the address, for an alias), and shows a preset's server settings
+  // behind a closed "Server settings" section, so an unusual server can be
+  // typed in.
+  settings?: boolean;
 }>();
 
 const qc = useQueryClient();
@@ -43,7 +54,6 @@ function blankForm(): ProviderForm {
   return { ...formFromPreset(props.preset), label: "" };
 }
 const form = ref<ProviderForm>(blankForm());
-const naming = ref(false);
 const testOnAdd = ref(true);
 const checking = ref(false);
 const error = ref("");
@@ -52,7 +62,6 @@ watch(
   () => props.preset.id,
   () => {
     form.value = blankForm();
-    naming.value = false;
     error.value = "";
   },
 );
@@ -62,7 +71,19 @@ const personal = computed(() => !!props.preset.personal);
 const defaultName = computed(() =>
   defaultKeyLabel(custom.value ? "My email" : props.preset.account_name || props.preset.label, props.labels),
 );
-const askUsername = computed(() => props.preset.username_mode === "user" && !personal.value);
+const askUsername = computed(() =>
+  props.settings ? usernameBoxInSettings(props.preset) : props.preset.username_mode === "user" && !personal.value,
+);
+
+// In Settings the Gmail username box starts as the from address and follows
+// it until the user types a different one.
+watch(
+  () => form.value.from_address,
+  (now, before) => {
+    if (!props.settings || props.preset.id !== "google_workspace") return;
+    if (form.value.username === "" || form.value.username === (before ?? "")) form.value.username = now;
+  },
+);
 const setupLink = computed(() =>
   props.preset.setup_url && /^https?:\/\//i.test(props.preset.setup_url) ? props.preset.setup_url : "",
 );
@@ -77,7 +98,7 @@ const valid = computed(() => {
   const f = form.value;
   if (!f.from_address.includes("@") || f.password.trim() === "") return false;
   if (askUsername.value && f.username.trim() === "") return false;
-  if (custom.value && (f.host.trim() === "" || f.port < 1 || f.port > 65535)) return false;
+  if ((custom.value || props.settings) && (f.host.trim() === "" || f.port < 1 || f.port > 65535)) return false;
   return true;
 });
 
@@ -111,7 +132,7 @@ async function save(): Promise<MailProvider | null> {
     qc.invalidateQueries({ queryKey: ["mail-providers"] });
     // The install plan lists the user's accounts, so the last page can name
     // the new one.
-    await qc.invalidateQueries({ queryKey: ["install-plan", props.manifestId] });
+    if (props.manifestId) await qc.invalidateQueries({ queryKey: ["install-plan", props.manifestId] });
     form.value.password = "";
     return created;
   } catch (e) {
@@ -130,21 +151,7 @@ const inputClass =
 
 <template>
   <div class="space-y-6">
-    <ol
-      v-if="(preset.steps ?? []).length > 0"
-      class="list-decimal space-y-3 pl-5 text-sm text-foreground marker:text-muted-foreground"
-    >
-      <li v-for="(s, i) in preset.steps ?? []" :key="i">
-        {{ s }}
-        <div v-if="i === 1 && setupLink" class="mt-2">
-          <Button size="sm" variant="secondary" as="a" :href="setupLink" target="_blank" rel="noopener noreferrer">
-            Open your {{ preset.id === "icloud" ? "Apple" : "Google" }} account
-            <ExternalLink class="size-3.5" aria-hidden="true" />
-          </Button>
-        </div>
-      </li>
-    </ol>
-    <p v-else class="text-sm text-muted-foreground">
+    <p v-if="(preset.steps ?? []).length === 0" class="text-sm text-muted-foreground">
       {{ preset.help }}
       <a v-if="preset.docs_url" :href="preset.docs_url" target="_blank" rel="noopener noreferrer" class="underline">
         {{ preset.label }} help
@@ -185,9 +192,27 @@ const inputClass =
       <input id="mail-add-password" v-model="form.password" type="password" autocomplete="new-password" :class="inputClass" />
     </div>
 
-    <!-- Server settings: only a custom server has nothing filled in. -->
-    <fieldset v-if="custom" class="space-y-4 rounded-md border border-border px-4 py-3">
-      <legend class="px-1 text-sm font-medium text-muted-foreground">Server settings</legend>
+    <!-- Gmail and iCloud: the app-password steps, folded under the box. -->
+    <details v-if="(preset.steps ?? []).length > 0" class="rounded-md border border-border px-4 py-3">
+      <summary class="cursor-pointer text-sm font-medium text-foreground">Where do I find my app password?</summary>
+      <ol class="mt-3 list-decimal space-y-3 pl-5 text-sm text-foreground marker:text-muted-foreground">
+        <li v-for="(s, i) in preset.steps ?? []" :key="i">
+          {{ s }}
+          <div v-if="i === 1 && setupLink" class="mt-2">
+            <Button size="sm" variant="secondary" as="a" :href="setupLink" target="_blank" rel="noopener noreferrer">
+              Open your {{ preset.id === "icloud" ? "Apple" : "Google" }} account
+              <ExternalLink class="size-3.5" aria-hidden="true" />
+            </Button>
+          </div>
+        </li>
+      </ol>
+    </details>
+
+    <!-- Server settings: open for a custom server, which has nothing filled
+         in. In Settings a preset's settings are here too, closed. -->
+    <details v-if="custom || settings" :open="custom" class="rounded-md border border-border px-4 py-3">
+      <summary class="cursor-pointer text-sm font-medium text-muted-foreground">Server settings</summary>
+      <div class="mt-3 space-y-4">
       <div>
         <label for="mail-add-host" class="block text-sm/6 font-medium text-foreground">SMTP server</label>
         <input id="mail-add-host" v-model="form.host" placeholder="smtp.example.com" autocomplete="off" :class="inputClass" />
@@ -205,27 +230,20 @@ const inputClass =
         </select>
       </div>
       <p v-if="portWarning(form)" class="text-sm text-destructive">{{ portWarning(form) }}</p>
-    </fieldset>
+      </div>
+    </details>
 
     <div>
-      <button
-        v-if="!naming"
-        type="button"
-        class="cursor-pointer text-sm font-medium text-accent hover:underline"
-        @click="naming = true"
-      >
-        Name this account (optional)
-      </button>
-      <template v-else>
-        <label for="mail-add-label" class="block text-sm/6 font-medium text-foreground">Name</label>
-        <input
-          id="mail-add-label"
-          v-model="form.label"
-          :placeholder="defaultName"
-          autocomplete="off"
-          :class="inputClass"
-        />
-      </template>
+      <input
+        id="mail-add-label"
+        v-model="form.label"
+        placeholder="Name this account (optional)"
+        aria-label="Name this account (optional)"
+        aria-describedby="mail-add-label-hint"
+        autocomplete="off"
+        class="block w-full border-0 border-b border-border bg-transparent px-0 py-1.5 text-base text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none sm:text-sm/6"
+      />
+      <p id="mail-add-label-hint" class="mt-1 text-xs text-muted-foreground">Saved as "{{ defaultName }}" if empty.</p>
     </div>
 
     <label class="flex cursor-pointer items-start gap-2.5">
