@@ -973,8 +973,14 @@ access)
     filedrop_user "$FD_ID"; pp_user="$FD_USER"
     pp_uid="${pp_user%%:*}"; pp_gid="${pp_user##*:}"
     pp_home="$(getent passwd "$pp_uid" | cut -d: -f6)"
-    [ -n "$pp_home" ] && [ "$pp_uid" -ge 3000 ] 2>/dev/null \
-        || fail "folders: personal filedrop runs as '$pp_user', want the owner's own account (uid >= 3000 with a home); getent: $(getent passwd "$pp_uid")"
+    # Not a uid range check: the hosted image sets no UID_MIN, so the SSO owner
+    # gets the next free uid (2001 in CI), not one from the 3000+ range. What
+    # matters here is that the app runs as a real login account with a home
+    # under /home, not as root or the shared moose-app identity.
+    case "$pp_uid" in ''|0|2000|*[!0-9]*) pp_home="" ;; esac
+    case "$pp_home" in /home/?*) ;; *) pp_home="" ;; esac
+    [ -n "$pp_home" ] \
+        || fail "folders: personal filedrop runs as '$pp_user', want the owner's own account with a home under /home; getent: $(getent passwd "$pp_uid")"
     pp_file="$pp_home/Documents/filedrop.txt"
     wait_file "$pp_file" \
         || fail "folders: personal filedrop wrote no file at $pp_file on the host: $(ls -la "$pp_home" "$pp_home/Documents" 2>&1 | tr '\n' ' ')"

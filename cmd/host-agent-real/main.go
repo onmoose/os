@@ -246,7 +246,7 @@ func ensureSharedTree() string {
 		slog.Error("moose-shared group has a bad gid; the brain gets no shared tree", "dir", root, "err", err)
 		return ""
 	}
-	if err := brainlaunch.EnsureSharedTree(root, gid); err != nil {
+	if err := brainlaunch.EnsureSharedTree(root, 0, gid); err != nil {
 		slog.Error("could not prepare the shared tree; the brain gets no shared tree", "dir", root, "err", err)
 		return ""
 	}

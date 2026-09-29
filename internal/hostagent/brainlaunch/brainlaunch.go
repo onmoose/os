@@ -436,20 +436,23 @@ func proxyRunSpec(cfg Config) RunSpec {
 const sharedTreeMode = os.ModeSetgid | 0o770
 
 // EnsureSharedTree makes sure the household shared tree exists as a real
-// directory in the moose-shared group (sharedGID) with mode 02770, before the
+// directory owned ownerUID:sharedGID with mode 02770, before the
 // brain is launched with it mounted (#519). It runs on every host-agent start,
 // on both profiles: the hosted image has no /srv/moose at all, and the
 // appliance creates nothing there yet.
 //
 //   - Missing: the parent is created 0755 if needed, then the tree itself.
-//     host-agent runs as root, so the new directory is root-owned.
-//   - Present: its group and mode are set back to the STORAGE.md model. That
-//     is the contract for the tree's root, so a box that drifted is repaired on
-//     the next start. Only the root is touched, never anything inside it, and
-//     the owner is left as it is.
+//   - Present: its owner, group and mode are set back to the STORAGE.md model.
+//     That is the contract for the tree's root, so a box that drifted is
+//     repaired on the next start. The owner matters too: a user who owned the
+//     root could change its mode again. Only the root is touched, never
+//     anything inside it.
+//
+// ownerUID is 0 on a box (host-agent runs as root, and STORAGE.md says
+// root:moose-shared). It is a parameter only so a test can run unprivileged.
 //   - A symlink or a file at that path is an error. Nothing is changed, and the
 //     caller must not mount it.
-func EnsureSharedTree(root string, sharedGID int) error {
+func EnsureSharedTree(root string, ownerUID, sharedGID int) error {
 	fi, err := os.Lstat(root)
 	switch {
 	case err == nil && !fi.IsDir():
@@ -465,10 +468,10 @@ func EnsureSharedTree(root string, sharedGID int) error {
 	case err != nil:
 		return fmt.Errorf("check shared tree %q: %w", root, err)
 	}
-	// Group first, then mode: Mkdir's mode is masked by the umask, and a chown
-	// can clear the setgid bit, so the mode is set last.
-	if err := os.Chown(root, -1, sharedGID); err != nil {
-		return fmt.Errorf("set group of shared tree %q: %w", root, err)
+	// Owner and group first, then mode: Mkdir's mode is masked by the umask,
+	// and a chown can clear the setgid bit, so the mode is set last.
+	if err := os.Chown(root, ownerUID, sharedGID); err != nil {
+		return fmt.Errorf("set owner of shared tree %q: %w", root, err)
 	}
 	if err := os.Chmod(root, sharedTreeMode); err != nil {
 		return fmt.Errorf("set mode of shared tree %q: %w", root, err)

@@ -61,11 +61,35 @@ func statOf(t *testing.T, p string) (os.FileMode, uint32) {
 	return fi.Mode(), fi.Sys().(*syscall.Stat_t).Gid
 }
 
+// The owner is set back too, not only the group: a user who owned the root
+// could change its mode again (review, #522). Changing the owner needs root, so
+// this runs only as root.
+func TestEnsureSharedTree_RepairsOwner(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to chown to another user")
+	}
+	root := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(root, 3001, 3001); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSharedTree(root, 0, 2001); err != nil {
+		t.Fatalf("EnsureSharedTree: %v", err)
+	}
+	fi, _ := os.Lstat(root)
+	st := fi.Sys().(*syscall.Stat_t)
+	if st.Uid != 0 || st.Gid != 2001 {
+		t.Errorf("owner = %d:%d, want 0:2001", st.Uid, st.Gid)
+	}
+}
+
 // The test chgrps to its own group: a change the kernel allows without root.
 func TestEnsureSharedTree_CreatesTreeAndParent(t *testing.T) {
 	gid := os.Getegid()
 	root := filepath.Join(t.TempDir(), "srv", "moose", "shared")
-	if err := EnsureSharedTree(root, gid); err != nil {
+	if err := EnsureSharedTree(root, os.Getuid(), gid); err != nil {
 		t.Fatalf("EnsureSharedTree: %v", err)
 	}
 	mode, g := statOf(t, root)
@@ -88,7 +112,7 @@ func TestEnsureSharedTree_RepairsExistingRootOnly(t *testing.T) {
 	if err := os.Chmod(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureSharedTree(root, gid); err != nil {
+	if err := EnsureSharedTree(root, os.Getuid(), gid); err != nil {
 		t.Fatalf("EnsureSharedTree: %v", err)
 	}
 	if mode, _ := statOf(t, root); mode&os.ModeSetgid == 0 || mode.Perm() != 0o770 {
@@ -98,7 +122,7 @@ func TestEnsureSharedTree_RepairsExistingRootOnly(t *testing.T) {
 		t.Errorf("a folder inside the tree was changed: %v", mode)
 	}
 	// Idempotent.
-	if err := EnsureSharedTree(root, gid); err != nil {
+	if err := EnsureSharedTree(root, os.Getuid(), gid); err != nil {
 		t.Fatalf("second EnsureSharedTree: %v", err)
 	}
 }
@@ -114,7 +138,7 @@ func TestEnsureSharedTree_RefusesSymlinkOrFile(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureSharedTree(link, gid); err == nil {
+	if err := EnsureSharedTree(link, os.Getuid(), gid); err == nil {
 		t.Error("symlink: want an error")
 	}
 	// Nothing was changed through the link.
@@ -125,7 +149,7 @@ func TestEnsureSharedTree_RefusesSymlinkOrFile(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureSharedTree(file, gid); err == nil {
+	if err := EnsureSharedTree(file, os.Getuid(), gid); err == nil {
 		t.Error("file: want an error")
 	}
 }
