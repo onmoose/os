@@ -157,9 +157,10 @@ docker save busybox:1.37.0 -o "$EXTRA/var/lib/moose/control-plane-images/filedro
 # imageuser images (#537): two synthetic images built here from the same
 # busybox, each with its own USER and a /baked dir owned by that user. One
 # names the user by number (1001), the other by name (app2, uid 1002 in its
-# /etc/passwd). The imageuser fixture declares image_user: true. The access
-# boot checks that a box with no userns remap refuses it; a remapped boot runs
-# it (#531). Built with the classic builder so no buildx or registry is needed:
+# /etc/passwd). The imageuser fixture declares image_user: true. The image
+# runs the userns remap (#530), and the access boot checks that the app runs
+# remapped as its images' users. Built with the classic builder so no buildx or
+# registry is needed:
 # the FROM image is already local. Together they add about 2 MB, since the
 # layers they share with busybox are saved once.
 IMAGEUSER_CTX="${WORK}/imageuser-build"

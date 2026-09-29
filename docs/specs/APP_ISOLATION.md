@@ -209,7 +209,7 @@ The default folderless identity is the brain's euid, which is **root** in produc
 
 ### User-namespace tiers
 
-The Docker daemon on a moose box runs with a **daemon-wide `userns-remap`** (`BUILD.md` # User-namespace remap, `DECISIONS.md` 2026-09-29). One subordinate range, owned by the `moose-remap` system account, maps every remapped container: uid 0 inside is host uid `base`, and uid N inside is host uid `base+N`. The shipped images set `base` to 1000000, with 65536 ids, far above every moose band. A remapped container is not real root, even when it runs as root inside. This section is the design that #516 proved. The brain side is built (#529, `internal/lifecycle/userns.go`, and the image tier in #537, `internal/lifecycle/imageuser.go`). No image turns the remap on yet (#530), so on every box today the brain sees no remap and the override is what it was before the tiers.
+The Docker daemon on a moose box runs with a **daemon-wide `userns-remap`** (`BUILD.md` # User-namespace remap, `DECISIONS.md` 2026-09-29). One subordinate range, owned by the `moose-remap` system account, maps every remapped container: uid 0 inside is host uid `base`, and uid N inside is host uid `base+N`. The shipped images set `base` to 1000000, with 65536 ids, far above every moose band. A remapped container is not real root, even when it runs as root inside. This section is the design that #516 proved. The brain side is built (#529, `internal/lifecycle/userns.go`, and the image tier in #537, `internal/lifecycle/imageuser.go`). Both images turn the remap on (#530). On a box built before that, and in the native dev loop, the brain sees no remap and the override is what it was before the tiers.
 
 The brain puts every container it launches in one of four tiers:
 
