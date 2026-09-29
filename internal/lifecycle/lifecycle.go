@@ -95,6 +95,12 @@ type isolation struct {
 	// by the install gate only when the manifest declares gpu: true; the zero
 	// value means "no GPU declared" and writeOverride emits no GPU stanza.
 	gpu protocol.SystemGPU
+	// tier is the instance's user-namespace tier (store.UsernsTier*), and
+	// remapBase the first host id of the daemon's remap range, 0 when the
+	// daemon runs no remap (userns.go). Together they decide the override's
+	// userns_mode and cap_add and the host owner of each bind dir.
+	tier      string
+	remapBase int
 }
 
 // hostSource resolves the host path bound for one mount: the owner's
@@ -151,6 +157,11 @@ type Manager struct {
 	// verifies against it as usual. See resolveImages.
 	offlineInstall bool
 
+	// chown sets the host owner of a bind dir or a managed-service data path.
+	// os.Lchown in production; tests record the calls, since an unprivileged
+	// test cannot give a path to another uid.
+	chown func(path string, uid, gid int) error
+
 	// healthWait is overridable in tests; production uses healthWaitTimeout.
 	healthWait time.Duration
 	// healthPoll is the inter-poll interval; production uses 2s.
@@ -191,6 +202,7 @@ func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd Caddy
 		store: st, catalog: cat, host: host, caddy: cd, docker: docker,
 		admit: admission.Check, bus: bus, stateDir: stateDir,
 		sharedRoot: defaultSharedRoot,
+		chown:      os.Lchown,
 		healthWait: healthWaitTimeout, healthPoll: 2 * time.Second,
 		serviceReadyWait: serviceReadyTimeout,
 		instLocks:        map[string]*sync.Mutex{},
@@ -531,6 +543,20 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		gpu = g
 	}
 
+	// 2c. User-namespace tier (APP_ISOLATION.md # User-namespace tiers). Read
+	// the remap from host-agent and check that Docker agrees, then pick the
+	// tier from the manifest's grants. Refused here, before any state: an
+	// install while the two disagree, and a root_setup app on a daemon with no
+	// remap. The same read gives the well-known identities a folder app needs.
+	wk, remapBase, err := m.hostIdentity(ctx)
+	if err != nil {
+		return store.Instance{}, err
+	}
+	tier, err := pickTier(man, remapBase)
+	if err != nil {
+		return store.Instance{}, err
+	}
+
 	// 3. Allocate slug, write SQLite row (state: installing). Household instances
 	// take the bare slug; personal instances take `<slug>--<user>`
 	// (DASHBOARD.md # instance naming).
@@ -544,7 +570,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		ID: id, ManifestID: man.ID, Name: man.Name, Slug: slug,
 		Version: man.Version, State: "installing",
 		OwnerUserID: owner.UserID, Scope: scope,
-		Exposure: m.defaultExposure(), CreatedAt: time.Now(),
+		Exposure: m.defaultExposure(), UsernsTier: tier, CreatedAt: time.Now(),
 	}
 	if err := m.store.Create(inst); err != nil {
 		return store.Instance{}, fmt.Errorf("write instance row: %w", err)
@@ -621,7 +647,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// writeEnv can re-emit the credentials as MOOSE_SERVICE_<NAME>_*. On a later
 	// rollback the created db/role is dropped (rollback reads grants from store).
 	step("provisioning_services")
-	grants, err := m.provisionServices(ctx, id, man.ID, man.Services)
+	grants, err := m.provisionServices(ctx, id, man.ID, man.Services, remapBase)
 	if err != nil {
 		return rollback(fmt.Errorf("provision services: %w", err))
 	}
@@ -666,12 +692,8 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// manifest declares service_user: true, which swaps in a dedicated
 	// host-allocated identity (APP_ISOLATION.md # Runtime identity & data
 	// ownership).
-	iso := isolation{uid: os.Geteuid(), gid: os.Getegid(), gpu: gpu, sharedBase: m.sharedRoot}
+	iso := isolation{uid: os.Geteuid(), gid: os.Getegid(), gpu: gpu, sharedBase: m.sharedRoot, tier: tier, remapBase: remapBase}
 	if len(man.Permissions.Folders) > 0 {
-		wk, err := m.host.WellKnownIdentity(ctx)
-		if err != nil {
-			return rollback(fmt.Errorf("resolve host identity: %w", err))
-		}
 		iso.sharedGID, iso.mounts = wk.MooseSharedGID, mounts
 		if scope == store.ScopeHousehold {
 			iso.uid, iso.gid = wk.MooseAppUID, wk.MooseAppGID
@@ -722,21 +744,30 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// resolve to the brain's own euid and are unaffected). Absolute use-case
 	// folder binds are excluded by construction — they're user-owned and managed
 	// by the election logic, never re-chowned here.
+	//
+	// On a remapped daemon the owner follows the tier (APP_ISOLATION.md # Data
+	// ownership follows the tier): base+uid for the default tier, where the
+	// container runs as uid inside, and base for the caps tier, the
+	// container's own root. The host tier keeps the real ids.
 	relDirs, err := relativeBindDirs(composeBytes)
 	if err != nil {
 		return rollback(fmt.Errorf("parse compose volumes: %w", err))
+	}
+	ownUID, ownGID, err := iso.bindOwner()
+	if err != nil {
+		return rollback(fmt.Errorf("bind dir owner: %w", err))
 	}
 	for _, rel := range relDirs {
 		dir := filepath.Join(m.instanceDir(id), filepath.FromSlash(rel))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return rollback(fmt.Errorf("create bind dir %q: %w", rel, err))
 		}
-		if err := os.Chown(dir, iso.uid, iso.gid); err != nil {
+		if err := m.chown(dir, ownUID, ownGID); err != nil {
 			if os.Geteuid() == 0 {
 				return rollback(fmt.Errorf("chown bind dir %q: %w", rel, err))
 			}
 			slog.Warn("bind dir chown skipped under unprivileged brain",
-				"instance_id", id, "dir", rel, "uid", iso.uid, "gid", iso.gid, "err", err)
+				"instance_id", id, "dir", rel, "uid", ownUID, "gid", ownGID, "err", err)
 		}
 	}
 
@@ -904,7 +935,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		"instance_id": id, "name": man.Name, "slug": slug, "url": url,
 	})
 	slog.Info("app installed",
-		"instance_id", id, "name", man.Name, "url", url, "upstream", upstream)
+		"instance_id", id, "name", man.Name, "url", url, "upstream", upstream, "tier", tier)
 	return inst, nil
 }
 
@@ -1847,6 +1878,13 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		// value the user set overrides any placeholder in the author's compose.
 		if env := envByService[svc]; len(env) > 0 {
 			entry["environment"] = env
+		}
+		// The user-namespace tier (APP_ISOLATION.md # User-namespace tiers):
+		// userns_mode: host for the host tier, the five capabilities and no
+		// user: for the caps tier, never both. Nothing on a daemon with no
+		// remap, so the override is the same as before the tiers.
+		if err := iso.applyTier(entry); err != nil {
+			return err
 		}
 		services[svc] = entry
 	}

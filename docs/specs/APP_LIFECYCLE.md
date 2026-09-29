@@ -174,7 +174,8 @@ Updates re-resolve (catalog for Door-1, fresh inspect for Door-2). The previous 
 ```
 1.  Parse + validate manifest                 (no state)
 2.  Parse + admit compose                     (no state)
-3.  Allocate slug, write SQLite row           (state: installing)
+2b. Read the remap, pick the userns tier      (no state; APP_ISOLATION.md # User-namespace tiers)
+3.  Allocate slug, write SQLite row           (state: installing; the row carries the tier)
 4.  Create instance dir tree
 5.  Generate override + .env
 6.  Pull images, resolve digests, rewrite override
@@ -187,7 +188,7 @@ Updates re-resolve (catalog for Door-1, fresh inspect for Door-2). The previous 
 ```
 
 Failure handling:
-- **Steps 1–2:** clean fail, no state written.
+- **Steps 1–2b:** clean fail, no state written. Step 2b refuses every install while Docker and host-agent disagree about the remap, and a `root_setup` install on a daemon with no remap.
 - **Steps 3–9:** full rollback — unpublish mDNS, drop Caddy route, `compose down -v`, drop network, remove instance dir, delete SQLite row. Step 9's `compose up -d` runs under a context bounded by the health-wait budget (the same default 120s as step 10), so a pathological app whose completion gate never completes **fails the install cleanly** instead of wedging the brain indefinitely — a containment backstop independent of the terminating-job detection above.
 - **Steps 10–11:** keep the instance dir (so the user can inspect logs). Caddy route stays registered but in "failed" splash mode. State: `failed`. The UI surfaces the failing step and last 50 lines of logs.
 

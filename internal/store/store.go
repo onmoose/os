@@ -50,8 +50,17 @@ type Instance struct {
 	// anonymously. New hosted installs default to ExposureRestricted; the
 	// appliance is always ExposurePublic (it has no public app subdomains, so the
 	// forward-auth wrap never applies there).
-	Exposure  string
-	CreatedAt time.Time
+	Exposure string
+	// UsernsTier is the user-namespace tier the instance was installed in
+	// (APP_ISOLATION.md # User-namespace tiers): UsernsTierDefault,
+	// UsernsTierCaps or UsernsTierHost. It is picked once at install and never
+	// changes, because the host owner of the instance's data follows it. An
+	// instance installed on a daemon with no remap is UsernsTierHost: all of
+	// its containers run in the host user namespace and its data has real
+	// host owners. That is also the value every row from before the column
+	// gets.
+	UsernsTier string
+	CreatedAt  time.Time
 }
 
 const (
@@ -65,6 +74,19 @@ const (
 	// the box forward-auth gate (hosted owner-only). See ENVIRONMENT.md #306.
 	ExposurePublic     = "public"
 	ExposureRestricted = "restricted"
+)
+
+const (
+	// UsernsTierDefault is a remapped container with today's sandbox and a
+	// pinned user:. Its data is owned by remap base + that uid.
+	UsernsTierDefault = "default"
+	// UsernsTierCaps is a remapped container with five capabilities back and
+	// no user: pin (a root_setup app). Its data is owned by the remap base.
+	UsernsTierCaps = "caps"
+	// UsernsTierHost is a container in the host user namespace, so its data
+	// has real host owners: a folder, GPU or device app on a remapped daemon,
+	// and every app on a daemon with no remap.
+	UsernsTierHost = "host"
 )
 
 // User is a moose dashboard account. The brain mirrors a Linux account
@@ -144,6 +166,7 @@ func (s *Store) migrate() error {
 			service_gid INTEGER NOT NULL DEFAULT 0,
 			pending_recreate INTEGER NOT NULL DEFAULT 0,
 			exposure    TEXT NOT NULL DEFAULT 'public' CHECK (exposure IN ('public','restricted')),
+			userns_tier TEXT NOT NULL DEFAULT 'host' CHECK (userns_tier IN ('default','caps','host')),
 			created_at  INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS instance_images (
@@ -424,6 +447,10 @@ func (s *Store) migrate() error {
 		{"instances", "service_gid", "ALTER TABLE instances ADD COLUMN service_gid INTEGER NOT NULL DEFAULT 0"},
 		{"instances", "pending_recreate", "ALTER TABLE instances ADD COLUMN pending_recreate INTEGER NOT NULL DEFAULT 0"},
 		{"instances", "exposure", "ALTER TABLE instances ADD COLUMN exposure TEXT NOT NULL DEFAULT 'public'"},
+		// Every instance from before the tiers was installed with no remap, so
+		// it runs in the host user namespace and its data has real host owners:
+		// the host tier (APP_ISOLATION.md # User-namespace tiers).
+		{"instances", "userns_tier", "ALTER TABLE instances ADD COLUMN userns_tier TEXT NOT NULL DEFAULT 'host'"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
 		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
 		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
@@ -892,10 +919,20 @@ func (s *Store) Create(i Instance) error {
 	if i.Exposure != ExposurePublic && i.Exposure != ExposureRestricted {
 		return fmt.Errorf("invalid instance exposure %q", i.Exposure)
 	}
+	// The same for the tier: unset is the host tier, the value a daemon with no
+	// remap gives every instance.
+	if i.UsernsTier == "" {
+		i.UsernsTier = UsernsTierHost
+	}
+	switch i.UsernsTier {
+	case UsernsTierDefault, UsernsTierCaps, UsernsTierHost:
+	default:
+		return fmt.Errorf("invalid instance userns tier %q", i.UsernsTier)
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO instances (id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, exposure, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		i.ID, i.ManifestID, i.Name, i.Slug, i.Version, i.State, i.MDNSName, i.OwnerUserID, i.Scope, i.ServiceUID, i.ServiceGID, i.Exposure, i.CreatedAt.Unix())
+		`INSERT INTO instances (id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, exposure, userns_tier, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		i.ID, i.ManifestID, i.Name, i.Slug, i.Version, i.State, i.MDNSName, i.OwnerUserID, i.Scope, i.ServiceUID, i.ServiceGID, i.Exposure, i.UsernsTier, i.CreatedAt.Unix())
 	return err
 }
 
@@ -973,7 +1010,7 @@ func (s *Store) Delete(id string) error {
 	return err
 }
 
-const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, created_at`
+const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, created_at`
 
 func (s *Store) Get(id string) (Instance, error) {
 	return scan(s.db.QueryRow(
@@ -1627,7 +1664,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scan(row scanner) (Instance, error) {
 	var i Instance
 	var created, pendingRecreate int64
-	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &created)
+	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, ErrNotFound
 	}
