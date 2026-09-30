@@ -1,0 +1,28 @@
+# Test-only catalog app for the hosted cloud remap boots (#531). A folderless
+# app with no identity intent, so on a remapped box it runs in the default
+# tier: remapped, as root inside (the brain's own uid), with today's sandbox.
+# At start it writes its id into its bind dir, and the remap boots check that
+# the dir and the file on the host are owned by the remap base.
+#
+# Same busybox image and digest as filedrop, already in the offline bundle.
+id: remapdrop
+manifest_version: 1
+name: Remapdrop
+version: "1.37"
+description:
+  short: "Test fixture: a folderless app that writes its id into its data dir."
+icon_glyph: flask-conical
+compose_file: compose.yml
+main_service: remapdrop
+main_port: 8080
+preferred_slugs: [remapdrop]
+
+permissions:
+  internet: false
+  lan: false
+
+images:
+  busybox:1.37.0:
+    digest: sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    download_bytes: 2211514
+    disk_bytes: 4421262

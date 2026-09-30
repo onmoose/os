@@ -1,0 +1,16 @@
+# Author's compose, held verbatim by moose. A test fixture, not a catalog app.
+# Waits for the managed Postgres, writes its row once, then idles. It serves
+# nothing on main_port: the remap boots read the row from Postgres itself.
+# $$ is a literal $ for the shell, so compose leaves $DSN alone.
+services:
+  pgnote:
+    image: postgres:16
+    environment:
+      DSN: ${MOOSE_SERVICE_DATABASE_DSN}
+    command:
+      - sh
+      - -c
+      - |
+        until psql "$$DSN" -qtAc "create table if not exists moose_notes (v text); insert into moose_notes select 'moose-531-note' where not exists (select 1 from moose_notes)"; do sleep 2; done
+        trap 'exit 0' TERM
+        while true; do sleep 1; done

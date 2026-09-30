@@ -1,0 +1,9 @@
+# Author's compose, held verbatim by moose. A test fixture, not a catalog app.
+# At start the app writes its id into its bind dir, then serves that dir over
+# HTTP so the container stays up. If the write fails the container exits.
+services:
+  remapdrop:
+    image: busybox:1.37.0
+    command: ["sh", "-c", "id > /data/id.txt && exec httpd -f -p 8080 -h /data"]
+    volumes:
+      - ./data:/data

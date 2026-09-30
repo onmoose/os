@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v24"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v25"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -193,6 +193,10 @@ stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
     -pkg "${TEST_DIR}/catalog/whoami" \
     -pkg "${TEST_DIR}/catalog/filedrop" \
     -pkg "${TEST_DIR}/catalog/imageuser" \
+    -pkg "${TEST_DIR}/catalog/remapdrop" \
+    -pkg "${TEST_DIR}/catalog/svcdrop" \
+    -pkg "${TEST_DIR}/catalog/rootsetup" \
+    -pkg "${TEST_DIR}/catalog/pgnote" \
     -out "$EXTRA/var/lib/moose/catalog-seed.json"
 
 # Offline-install env, layered over the shared 10-cloud-brain.conf drop-in (20- sorts
@@ -240,6 +244,19 @@ REGISTRY_REF="registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace5288
 docker pull "$REGISTRY_REF"
 docker tag "$REGISTRY_REF" registry:2
 docker save registry:2 -o "$EXTRA/var/lib/moose/test-images/registry.tar"
+
+# --- 3d. postgres:16 for the remap boots (#531), TEST-LANE ONLY. The remap boot
+# installs pgnote, a synthetic app on the managed Postgres 16, and the managed
+# service runs this image. pgnote uses the same image for its psql client. It is
+# about 150 MB, so it goes to the test-only dir like the registry: only the remap
+# boot loads it, and the other boots never pay for it. The remapdrop, svcdrop
+# and rootsetup fixtures use the busybox image the first-boot loader already
+# loads. Pinned by digest because `postgres:16` is a moving tag.
+echo "baking postgres:16 for the userns-remap boots (#531)..."
+POSTGRES_REF="postgres@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54"
+docker pull "$POSTGRES_REF"
+docker tag "$POSTGRES_REF" postgres:16
+docker save postgres:16 -o "$EXTRA/var/lib/moose/test-images/postgres-16.tar"
 
 # --- 4. Docker apt repo for the build's package manager (trixie pocket — the
 # cloud image is Release=trixie). Build-host network only; the VM never apt-installs.
