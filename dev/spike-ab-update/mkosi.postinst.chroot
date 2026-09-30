@@ -11,6 +11,8 @@ systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
 # spike-init runs systemd-repart itself, before systemd. Don't run it twice.
 systemctl mask systemd-repart.service
 systemctl mask systemd-firstboot.service
+# The guest has no NIC. Without this, Docker waits 120s for "network online".
+systemctl mask systemd-networkd-wait-online.service
 # Debian ships sysupdate's timers even without the binary, and mkosi's presets
 # turn them on. The proof runner is the only thing that may start an update.
 systemctl mask systemd-sysupdate.timer systemd-sysupdate-reboot.timer systemd-sysupdate.service systemd-sysupdate-reboot.service

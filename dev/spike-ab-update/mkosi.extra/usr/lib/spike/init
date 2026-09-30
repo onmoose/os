@@ -24,6 +24,8 @@
 # A real build would do this in the initrd. A PID 1 wrapper is the cheapest way
 # to prove the layout on both engines at once.
 set -u
+# PID 1 starts with no PATH, so systemd-repart could not find mkfs.ext4.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 log() { echo "spike-init: $*" > /dev/kmsg 2>/dev/null || echo "spike-init: $*"; }
 

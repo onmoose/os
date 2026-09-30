@@ -56,7 +56,7 @@ fi
 echo "=== run-proofs.sh: engine=$ENGINE firmware=$FW accel=$ACCEL"
 t0=$(date +%s)
 rc=0
-timeout 2400 qemu-system-x86_64 "${args[@]}" || rc=$?
+timeout 1500 qemu-system-x86_64 "${args[@]}" || rc=$?
 t1=$(date +%s)
 echo "=== qemu exited rc=$rc after $((t1 - t0))s"
 
