@@ -1278,6 +1278,51 @@ func TestWellKnownIdentity_RemapBase(t *testing.T) {
 	}
 }
 
+// The fake branch reports the range DevRemapBase gives (cmd/host-agent wires
+// usermgr.ReadRemapBase): present when a dev machine has a hand-made
+// moose-remap range, absent when it has none, and an error for a bad line, as
+// the real agent answers (#548). The operator identity stays as it was.
+func TestWellKnownIdentity_FakeBranch_DevRemapBase(t *testing.T) {
+	base := 1000000
+	for _, tc := range []struct {
+		name      string
+		read      func() (int, bool, error)
+		wantCode  int
+		wantInRaw bool
+	}{
+		{name: "hand-made range", read: func() (int, bool, error) { return base, true, nil }, wantCode: http.StatusOK, wantInRaw: true},
+		{name: "no range, a normal dev machine", read: func() (int, bool, error) { return 0, false, nil }, wantCode: http.StatusOK},
+		{name: "bad line", read: func() (int, bool, error) {
+			return 0, false, errors.New("usermgr: moose-remap has a subordinate range in only one of the subuid and subgid files")
+		}, wantCode: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, mux := newTestAgent(&stubVerifier{})
+			a.DevRemapBase = tc.read
+			w := get(t, mux, "/v1/identity/well-known")
+			if w.Code != tc.wantCode {
+				t.Fatalf("want %d, got %d: %s", tc.wantCode, w.Code, w.Body.String())
+			}
+			if tc.wantCode != http.StatusOK {
+				if bytes.Contains(w.Body.Bytes(), []byte("subuid")) || bytes.Contains(w.Body.Bytes(), []byte("remap_base")) {
+					t.Errorf("error body leaked detail or a base: %s", w.Body.String())
+				}
+				return
+			}
+			if got := bytes.Contains(w.Body.Bytes(), []byte(`"remap_base"`)); got != tc.wantInRaw {
+				t.Errorf("remap_base key present = %v, want %v: %s", got, tc.wantInRaw, w.Body.String())
+			}
+			resp := decodeBody[protocol.WellKnownIdentityResponse](t, w)
+			if tc.wantInRaw && (resp.RemapBase == nil || *resp.RemapBase != base) {
+				t.Errorf("remap_base = %v, want %d", resp.RemapBase, base)
+			}
+			if resp.MooseAppUID != os.Getuid() || resp.MooseSharedGID != os.Getgid() {
+				t.Errorf("operator identity changed: %+v", resp)
+			}
+		})
+	}
+}
+
 // --- app-service identity tests ---
 
 func allocate(t *testing.T, mux *http.ServeMux, instanceID string) *httptest.ResponseRecorder {

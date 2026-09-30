@@ -75,7 +75,7 @@ behavior is required.
 - **Node 20+** (`web-ui/.nvmrc` pins 20).
 - **Go 1.23+.** If `go` isn't on your `PATH`, the `Makefile` falls back to
   `~/.local/go/bin/go`.
-- **A Docker daemon with no `userns-remap`.** The fake host-agent never reports a remap range, so if your Docker runs with `userns-remap`, the brain sees the two disagree and refuses every app install (`APP_ISOLATION.md` # User-namespace tiers). Check with `docker info --format '{{json .SecurityOptions}}'`: it must not list `name=userns`.
+- **A Docker daemon with no `userns-remap`, or one set up the way the images do it.** The fake host-agent reads the `moose-remap` lines of `/etc/subuid` and `/etc/subgid` with the real host-agent's code. On a normal dev machine there are none, it reports no remap range, and Docker must agree: `docker info --format '{{json .SecurityOptions}}'` must not list `name=userns`. If Docker runs a remap but the two files have no `moose-remap` line (or the other way round), the brain sees the two disagree and refuses every app install (`APP_ISOLATION.md` # User-namespace tiers). To boot `root_setup` and `image_user` apps in the dev loop, see # Booting apps that need the remap below.
 - **Host port `:80` free.** The dev Caddy binds `:80` (matching production) so
   `<slug>.local` URLs work portless. If something else holds `:80` (another
   web server, a system service), stop it first or `make caddy` will fail to bind.
@@ -126,6 +126,17 @@ sudo sysctl --system
 ```
 
 If you would rather keep the restriction on, the scoped alternative is an AppArmor profile that grants `userns,` to mkosi's interpreter — more setup, but it doesn't open unprivileged userns host-wide. The `dev/cloud/bootstrap.sh` preflight hard-fails with this pointer when the probe trips; `dev/test-qemu/bootstrap.sh` prints it as a warning above mkosi's own output. CI's cloud-image lane (`.github/workflows/ci-cloud-image.yml`) sets the knob automatically — its runner is ephemeral, so relaxing it host-wide is harmless there.
+
+### Booting apps that need the remap
+
+A `root_setup` or `image_user` app runs only on a Docker daemon with the userns-remap (`APP_ISOLATION.md` # User-namespace tiers). On a normal dev machine the brain refuses it, which is the true state of that machine. To boot one with the dev brain, set up the remap on the machine by hand, the way both images do (`BUILD.md` # User-namespace remap): a `moose-remap` system account, the line `moose-remap:1000000:65536` in both `/etc/subuid` and `/etc/subgid`, and `"userns-remap": "moose-remap"` in `/etc/docker/daemon.json`, then restart Docker. The fake host-agent then reports `remap_base` 1000000 from those lines (#548), Docker agrees, and the brain picks the tiers as on a real box.
+
+Two things to know first:
+
+- **It is the whole daemon.** Every container on that Docker is remapped, your other projects too, and images and volumes made before the switch are not visible under the remap. Use a machine or VM you keep for this.
+- **The dev brain runs as you, not as root.** On a remapped daemon each bind dir, and each managed service's data dir, must go to an id in the range (`base` plus the container's uid). The unprivileged dev brain cannot give them away, so it logs that it skipped the chown and goes on, and the app then cannot write its data. Only an app with no bind dir and no managed service is not affected. `make dev` and `make dev-app` start the brain as you, and there is no supported way to start the dev brain as root, so **any other `root_setup` or `image_user` app cannot be fully tested in the dev loop**. Boot it on a box built from the images after #530, where the brain runs as root. A failure of such an app in the dev loop is a dev-loop artifact, not a verdict on the app.
+
+A bad `moose-remap` line (in only one file, the two differ, fewer than 65536 ids, or malformed) makes the fake answer an error, as the real host-agent does, and the brain refuses every install until it is fixed.
 
 ## Start the stack
 

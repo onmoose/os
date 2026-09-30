@@ -45,11 +45,20 @@ type subIDRange struct{ start, count int }
 //     an error rather than a guess, because the brain gives bind dirs to owners
 //     computed from this number.
 func (m *LinuxUserManager) RemapBase() (base int, ok bool, err error) {
-	uids, uidOK, err := readSubIDRange(pathOr(m.SubUIDPath, defaultSubUIDPath), remapAccount)
+	return ReadRemapBase(m.SubUIDPath, m.SubGIDPath)
+}
+
+// ReadRemapBase is RemapBase for any pair of subordinate id files; an empty
+// path means the default /etc/subuid or /etc/subgid. The fake host-agent
+// (cmd/host-agent) calls it too, so a dev machine where someone set up the
+// remap by hand reports the same range the real agent would, with the same
+// rules (#548).
+func ReadRemapBase(subUIDPath, subGIDPath string) (base int, ok bool, err error) {
+	uids, uidOK, err := readSubIDRange(pathOr(subUIDPath, defaultSubUIDPath), remapAccount)
 	if err != nil {
 		return 0, false, err
 	}
-	gids, gidOK, err := readSubIDRange(pathOr(m.SubGIDPath, defaultSubGIDPath), remapAccount)
+	gids, gidOK, err := readSubIDRange(pathOr(subGIDPath, defaultSubGIDPath), remapAccount)
 	if err != nil {
 		return 0, false, err
 	}

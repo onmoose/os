@@ -100,6 +100,27 @@ func TestRemapBaseUnreadableFile(t *testing.T) {
 	}
 }
 
+// ReadRemapBase is the function the fake host-agent calls (#548). It is the
+// same code as the method, so the cases above hold for it; this checks that it
+// reads the paths it is given.
+func TestReadRemapBase(t *testing.T) {
+	dir := t.TempDir()
+	subuid, subgid := filepath.Join(dir, "subuid"), filepath.Join(dir, "subgid")
+	if _, ok, err := ReadRemapBase(subuid, subgid); ok || err != nil {
+		t.Fatalf("no files: ok %v err %v, want no remap", ok, err)
+	}
+	writeIfSet(t, subuid, strPtr("alice:100000:65536\nmoose-remap:1000000:65536\n"))
+	writeIfSet(t, subgid, strPtr("moose-remap:1000000:65536\n"))
+	base, ok, err := ReadRemapBase(subuid, subgid)
+	if err != nil || !ok || base != 1000000 {
+		t.Fatalf("got base %d ok %v err %v, want 1000000 true nil", base, ok, err)
+	}
+	writeIfSet(t, subgid, strPtr(""))
+	if _, _, err := ReadRemapBase(subuid, subgid); err == nil {
+		t.Fatal("a range in only one file: want an error")
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func writeIfSet(t *testing.T, path string, content *string) {
