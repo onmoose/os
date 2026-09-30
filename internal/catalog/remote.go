@@ -362,6 +362,7 @@ func entryOfApp(a *wireApp) Entry {
 		Categories:       a.Categories,
 		IconGlyph:        a.IconGlyph,
 		Footprint:        a.Footprint,
+		needsRemap:       a.RootSetup || a.ImageUser,
 	}
 	if a.IconURL != "" {
 		e.IconURL = iconURL(a.ID)

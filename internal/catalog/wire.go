@@ -181,6 +181,16 @@ type wireApp struct {
 	Featured bool `json:"featured,omitempty"`
 	Rank     *int `json:"rank,omitempty"`
 
+	// RootSetup / ImageUser copy the manifest's two fields of the same name
+	// (APP_MANIFEST.md # B). Each one needs the daemon-wide userns-remap, so a
+	// box with no remap leaves such an app out of its store lists
+	// (Catalog.WithoutRemapApps, APP_STORE.md # Apps this box cannot run). The
+	// box acts on nothing else here: the install still reads the verbatim
+	// manifest. A catalog that does not send them reads as false, so the app
+	// shows, and the install plan still says it cannot be installed.
+	RootSetup bool `json:"root_setup,omitempty"`
+	ImageUser bool `json:"image_user,omitempty"`
+
 	// Manifest / Compose are the DEV AND TEST SEED SEAM ONLY, and the published
 	// catalog never carries them. A staged snapshot file (MOOSE_CATALOG_FILE —
 	// dev/mkcatalog, dev/test-qemu, dev/cloud/test) has no catalog service behind

@@ -23,7 +23,7 @@ import DOMPurify from "dompurify";
 import { ChevronLeft, ChevronRight, Cpu, Folder, Globe, HardDrive, Info, Network, X } from "lucide-vue-next";
 import { api, type CatalogDetail, type CatalogHome, type InstallPlan } from "../api";
 import { useAppInstances, useInstallSubmit } from "../useInstall";
-import { defaultFieldValues, installWarnings, needsNoPages, permissionLines, type PermissionLine } from "../installSteps";
+import { defaultFieldValues, installWarnings, needsNoPages, permissionLines, unavailableText, type PermissionLine } from "../installSteps";
 import { formatSize, safeExternalUrl } from "../utils";
 import AppGlyph from "../components/AppGlyph.vue";
 import SplitButton from "../components/SplitButton.vue";
@@ -70,6 +70,11 @@ const planQuery = useQuery({
   refetchOnWindowFocus: false,
 });
 const plan = computed(() => planQuery.data.value ?? null);
+
+// Set when this box cannot install the app at all, as one plain sentence. The
+// page then shows the sentence in place of the Install button. The store lists
+// already leave such an app out, so this is the direct-link case.
+const unavailable = computed(() => unavailableText(plan.value));
 
 // The Permissions group in the right column, in the install flow's words.
 const permissions = computed(() => (plan.value ? permissionLines(plan.value.permissions) : []));
@@ -348,7 +353,7 @@ watch(shots, (list) => {
                while their own copy is still installing, or alongside "Open shared
                app" so the caller can still install their own copy. -->
           <HealthGated
-            v-if="!ownPersonalInstance || ownPersonalInstance.state === 'installing'"
+            v-if="!unavailable && (!ownPersonalInstance || ownPersonalInstance.state === 'installing')"
             blocks="apps"
           >
             <SplitButton
@@ -361,6 +366,9 @@ watch(shots, (list) => {
           </HealthGated>
         </div>
       </header>
+
+      <!-- This box cannot install the app: say why, in place of Install. -->
+      <p v-if="unavailable" class="text-sm text-muted-foreground">{{ unavailable }}</p>
 
       <!-- Screenshots gallery. Each shot is a button that opens the full-screen
            viewer below; the border stays because it is what gives a white

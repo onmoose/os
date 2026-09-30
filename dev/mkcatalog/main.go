@@ -168,6 +168,8 @@ func loadApp(pkgDir string) catalog.SnapshotApp {
 		License:          man.License,
 		ChangelogURL:     man.ChangelogURL,
 		Footprint:        man.Footprint(),
+		RootSetup:        man.RootSetup,
+		ImageUser:        man.ImageUser,
 		Manifest:         string(manBytes),
 		Compose:          string(composeBytes),
 	}

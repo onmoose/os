@@ -21,6 +21,16 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-30 — The box hides apps it cannot run, on top of the server-side environment filter (#544)
+
+**Previously:** the environment filter is the catalog service's (`?env=`), and the box "runs no second visibility pass" (`APP_STORE.md`, #434). Every app the box received was shown.
+
+**Now:** the box leaves out of its store lists an app that needs a feature this box lacks. Today that is an app with `root_setup` or `image_user` on a box with no userns-remap. The detail page of such an app still loads, and says in one plain sentence that it cannot be installed there. Only a known "no remap" hides anything; an unknown state shows every app.
+
+**Why:** the remap is a fact about one box, not about a surface. Two hosted boxes on the same `?env=` can differ: one built before #530 has no remap, one built after has it. The catalog service cannot tell them apart, so the filter has to run on the box. Sending the remap state to the service as a second query parameter was the other option. It would keep one filter, but a direct link would then 404 with no reason. The box-side view keeps the detail page, and is only a projection: the install check stays the gate.
+
+**Affected docs:** `APP_STORE.md` # Apps this box cannot run and # Locked decisions, `APP_ISOLATION.md` # User-namespace tiers, `BRAIN_UI_PROTOCOL.md` # install-plan, `docs/architecture.md`.
+
 ## 2026-09-29 — image_user: a folderless app may keep its image's own user, remapped (#537)
 
 **Previously:** the brain pinned `user:` on every app container. On a remapped box the only way to drop that pin was `root_setup: true`, the caps tier, which also gives five capabilities back. Images that only need to run as their own baked user (plunk, formbricks) got further there, but for a reason `root_setup` does not name, and with capabilities they never use (`../progress/brain-userns-tiers.md`). `NEXT.md` kept this as open topic (1) of "After the user-namespace remap".
