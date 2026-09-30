@@ -1,0 +1,2 @@
+# SPIKE (#485). The ESP, where both engines keep their boot state.
+PARTLABEL=esp /efi vfat umask=0077,nofail 0 2

@@ -1,0 +1,17 @@
+# SPIKE (#485), not for merge. See /usr/lib/spike/health.sh.
+[Unit]
+Description=spike: health gate (marks the slot good, or reboots)
+After=docker.service
+Wants=docker.service
+Before=boot-complete.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/spike/health.sh
+FailureAction=reboot
+TimeoutStartSec=180
+
+[Install]
+RequiredBy=boot-complete.target
+WantedBy=multi-user.target

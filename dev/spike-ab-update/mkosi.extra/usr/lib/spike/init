@@ -1,0 +1,83 @@
+#!/bin/bash
+# SPIKE (#485), not for merge. Runs as PID 1 (init= on the kernel command
+# line), before systemd, on every boot and in every slot.
+#
+# A slot holds a whole root. Everything a box writes that must outlive a slot
+# swap lives on the data partition instead. This script puts it there before
+# systemd reads anything, so it works the same under RAUC and sysupdate, and
+# under either initrd (initramfs-tools or mkosi's systemd initrd):
+#
+#   1. systemd-repart makes slot B and the data partition on first boot, and
+#      grows the data partition on later boots if the disk grew.
+#   2. The data partition is mounted at /data.
+#   3. /etc becomes an overlay: the slot's /etc below, /data/etc/upper above.
+#      Every change the box makes (users, passwords, SSH host keys,
+#      machine-id) lands in the upper layer and survives the swap. A file the
+#      box never touched still comes from the new slot, so image defaults
+#      keep updating.
+#   4. On the first boot only, a short list of files is copied up on purpose
+#      ("pinned"). A pinned file never follows the image again. This is the
+#      userns-remap rule from #486: daemon.json, subuid and subgid are fixed
+#      for the life of the box.
+#   5. /home, /var/lib/docker and /var/lib/moose are bind mounts from /data.
+#
+# A real build would do this in the initrd. A PID 1 wrapper is the cheapest way
+# to prove the layout on both engines at once.
+set -u
+
+log() { echo "spike-init: $*" > /dev/kmsg 2>/dev/null || echo "spike-init: $*"; }
+
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+mountpoint -q /run || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+mount -o remount,rw / || log "remount rw of / failed"
+
+PINNED="docker/daemon.json subuid subgid"
+
+log "cmdline: $(cat /proc/cmdline)"
+
+if ! out=$(systemd-repart --dry-run=no --no-pager 2>&1); then
+    log "systemd-repart failed: $out"
+fi
+while IFS= read -r line; do log "repart: $line"; done <<< "$out"
+
+data=""
+for _ in $(seq 1 100); do
+    data=$(blkid -o device -t PARTLABEL=moose-data 2>/dev/null | head -n1)
+    [ -n "$data" ] && [ -b "$data" ] && break
+    sleep 0.1
+done
+
+if [ -z "$data" ]; then
+    log "no data partition, booting without the persistent layout"
+    exec /lib/systemd/systemd "$@"
+fi
+
+mkdir -p /data
+mount -t ext4 "$data" /data || log "mount $data /data failed"
+log "data partition $data mounted on /data"
+
+mkdir -p /data/etc/upper /data/etc/work
+if mount -t overlay overlay -o lowerdir=/etc,upperdir=/data/etc/upper,workdir=/data/etc/work /etc; then
+    log "/etc is an overlay (upper on /data)"
+else
+    log "overlay on /etc failed"
+fi
+
+if [ ! -e /data/etc/.pinned ]; then
+    for f in $PINNED; do
+        if [ -e "/etc/$f" ]; then
+            cp -p "/etc/$f" "/etc/$f.spike-pin" && mv -f "/etc/$f.spike-pin" "/etc/$f"
+            log "pinned /etc/$f"
+        fi
+    done
+    touch /data/etc/.pinned
+fi
+
+for d in home var/lib/docker var/lib/moose; do
+    mkdir -p "/data/$d" "/$d"
+    mount --bind "/data/$d" "/$d" && log "/$d bound from /data/$d"
+done
+
+exec /lib/systemd/systemd "$@"

@@ -1,0 +1,75 @@
+# SPIKE (#485), not for merge. Builds both A/B engines and runs the four proofs
+# in QEMU. Lives only on the test/485-ab-update-spike branch. It publishes
+# nothing and pushes nothing.
+name: Spike / A/B update engine
+
+on:
+  push:
+    branches: [test/485-ab-update-spike]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    name: ${{ matrix.engine }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: rauc
+            firmwares: uefi bios
+          # UEFI only: systemd-boot does not exist under legacy BIOS, so
+          # sysupdate has no automatic rollback there. Recorded, not faked.
+          - engine: sysupdate
+            firmwares: uefi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - name: Relax AppArmor unprivileged-userns restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install mkosi, image tooling and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            uidmap mmdebstrap debian-archive-keyring \
+            dosfstools mtools squashfs-tools e2fsprogs systemd-container zstd \
+            qemu-system-x86 qemu-utils ovmf
+          git clone --depth=1 --branch v26 https://github.com/systemd/mkosi.git /tmp/mkosi-src
+          sudo ln -sf /tmp/mkosi-src/bin/mkosi /usr/local/bin/mkosi
+          sudo chmod 666 /dev/kvm || true
+          mkosi --version
+          ls -l /dev/kvm || echo "no kvm"
+
+      - name: Build v1, v2, v3 and the update artifacts
+        run: |
+          sudo -E env PATH="$PATH" dev/spike-ab-update/build.sh ${{ matrix.engine }}
+          sudo chown -R "$(id -u):$(id -g)" .dev/spike-ab
+
+      - name: Run the proofs
+        run: |
+          fail=0
+          for fw in ${{ matrix.firmwares }}; do
+            dev/spike-ab-update/run-proofs.sh ${{ matrix.engine }} "$fw" || fail=1
+          done
+          cat .dev/spike-ab/${{ matrix.engine }}/sizes.txt >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
+
+      - name: Keep the serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-${{ matrix.engine }}
+          path: |
+            .dev/spike-ab/${{ matrix.engine }}/run-*/serial.log
+            .dev/spike-ab/${{ matrix.engine }}/sizes.txt
+          if-no-files-found: ignore

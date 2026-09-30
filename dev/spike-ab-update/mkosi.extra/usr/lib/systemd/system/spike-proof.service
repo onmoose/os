@@ -1,0 +1,16 @@
+# SPIKE (#485), not for merge. Drives the proofs, one stage per boot.
+# See /usr/lib/spike/proof.sh.
+[Unit]
+Description=spike: A/B update proof runner
+After=multi-user.target spike-health.service systemd-bless-boot.service docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/spike/proof.sh
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

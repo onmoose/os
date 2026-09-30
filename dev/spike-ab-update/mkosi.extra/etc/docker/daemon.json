@@ -1,0 +1,4 @@
+{
+  "log-driver": "journald",
+  "userns-remap": "moose-remap"
+}

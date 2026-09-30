@@ -1,0 +1,4 @@
+# Written by build.sh. The RAUC test CA is never committed.
+mkosi.profiles/rauc/mkosi.extra/etc/rauc/keyring.pem
+mkosi.profiles/sysupdate/mkosi.extra/usr/lib/systemd/systemd-sysupdate
+mkosi.profiles/sysupdate/mkosi.repart/20-root.conf

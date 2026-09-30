@@ -1,0 +1,8 @@
+#!/bin/bash
+# SPIKE (#485), not for merge. sysupdate profile post-install step.
+set -euo pipefail
+chmod 0755 /usr/lib/systemd/systemd-sysupdate
+/usr/lib/systemd/systemd-sysupdate --version
+# sysupdate forks systemd-import to write partitions and files. Debian ships
+# it in systemd-container, which is the one part of this we do not build.
+test -x /usr/lib/systemd/systemd-import

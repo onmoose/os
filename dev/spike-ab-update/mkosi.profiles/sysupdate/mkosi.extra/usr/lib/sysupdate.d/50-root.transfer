@@ -1,0 +1,18 @@
+# SPIKE (#485), not for merge. The root slot. The source is the air-gapped
+# control disk, bind-mounted at /run/spike-src by proof.sh. A real box would
+# use Type=url-file against a signed SHA256SUMS.
+[Transfer]
+ProtectVersion=%A
+Verify=no
+
+[Source]
+Type=regular-file
+Path=/run/spike-src
+MatchPattern=moose-spike_@v.root-x86-64.raw.zst
+
+[Target]
+Type=partition
+Path=auto
+MatchPattern=moose-spike_@v
+MatchPartitionType=root
+InstancesMax=2

@@ -1,0 +1,14 @@
+# SPIKE (#485), not for merge. Per-box SSH host keys, made at first boot, the
+# same way the hosted image does it (moose-sshd-keygen.service, #470). With
+# /etc as an overlay, the keys land in the upper layer on /data.
+[Unit]
+Description=spike: generate sshd host keys if they are missing
+Before=spike-proof.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target

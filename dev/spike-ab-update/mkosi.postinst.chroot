@@ -1,0 +1,52 @@
+#!/bin/bash
+# SPIKE (#485), not for merge. Shared post-install step for both engines.
+# The engine profiles add their own step after this one.
+#
+# SPIKE_VERSION and SPIKE_BROKEN come from build.sh (mkosi --environment).
+set -euo pipefail
+
+systemctl enable docker.service containerd.service \
+    spike-health.service spike-proof.service spike-sshkeys.service
+systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
+# spike-init runs systemd-repart itself, before systemd. Don't run it twice.
+systemctl mask systemd-repart.service
+systemctl mask systemd-firstboot.service
+
+# The userns-remap setup the hosted image uses (BUILD.md # User-namespace remap).
+getent passwd moose-remap >/dev/null || useradd -r -U -M -d /nonexistent -s /usr/sbin/nologin moose-remap
+for f in /etc/subuid /etc/subgid; do
+    touch "$f"
+    grep -q '^moose-remap:' "$f" || echo 'moose-remap:1000000:65536' >> "$f"
+done
+
+# Per-box secrets are made at first boot, never baked (#470).
+rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
+: > /etc/machine-id
+
+mkdir -p /data /efi
+
+# A tiny container image for the Docker proof. The guest is air-gapped, so it
+# is imported from busybox at first boot instead of pulled.
+mkdir -p /usr/lib/spike/tinyroot/bin
+cp /bin/busybox /usr/lib/spike/tinyroot/bin/busybox
+for a in sh cat; do ln -sf busybox "/usr/lib/spike/tinyroot/bin/$a"; done
+
+# Versions 2 and 3 change the image on purpose, to test the per-box state rules:
+#  - daemon.json turns the remap OFF. A box built with it on must keep it on,
+#    because the file is pinned at first boot (spike-init).
+#  - a new system user arrives two ways: a sysusers.d file, and a plain useradd
+#    at build time. Only the first can reach a box whose /etc/passwd is already
+#    in the overlay's upper layer. proof.sh reports both.
+if [ "${SPIKE_VERSION:-1}" -ge 2 ]; then
+    printf '{\n  "log-driver": "journald"\n}\n' > /etc/docker/daemon.json
+    mkdir -p /usr/lib/sysusers.d
+    echo 'u spikev2 - "spike v2 system user" /nonexistent /usr/sbin/nologin' > /usr/lib/sysusers.d/spike-v2.conf
+    useradd -r -M -d /nonexistent -s /usr/sbin/nologin spikev2old
+fi
+cp /etc/docker/daemon.json /usr/lib/spike/daemon.json.image
+
+if [ "${SPIKE_BROKEN:-0}" = 1 ]; then
+    touch /usr/lib/spike/broken
+fi
+
+chmod 0755 /usr/lib/spike/init /usr/lib/spike/health.sh /usr/lib/spike/proof.sh

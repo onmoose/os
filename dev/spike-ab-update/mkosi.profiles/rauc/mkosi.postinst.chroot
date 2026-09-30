@@ -1,0 +1,29 @@
+#!/bin/bash
+# SPIKE (#485), not for merge. RAUC profile post-install step.
+set -euo pipefail
+
+# GRUB modules on the ESP, so grub.cfg can `insmod ext2` and `insmod regexp`.
+# mkosi's core images embed only a short list of modules.
+mkdir -p /efi/grub
+for p in i386-pc x86_64-efi; do
+    rm -rf "/efi/grub/$p"
+    cp -r "/usr/lib/grub/$p" "/efi/grub/$p"
+done
+
+# The first grubenv: slot A holds v1 and is good, slot B is empty.
+grub-editenv /efi/grub/grubenv create
+grub-editenv /efi/grub/grubenv set ORDER="A B" A_OK=1 A_TRY=0 B_OK=0 B_TRY=0
+
+# The kernel and a Debian initramfs inside the slot, where grub.cfg reads them.
+kver=$(ls /usr/lib/modules | sort -V | tail -n1)
+mkdir -p /usr/lib/spike/boot
+if [ -e "/usr/lib/modules/$kver/vmlinuz" ]; then
+    cp "/usr/lib/modules/$kver/vmlinuz" /usr/lib/spike/boot/vmlinuz
+else
+    cp "/boot/vmlinuz-$kver" /usr/lib/spike/boot/vmlinuz
+fi
+mkinitramfs -o /usr/lib/spike/boot/initrd.img "$kver"
+ls -l /usr/lib/spike/boot/
+
+# The booted slot must never come up without the RAUC keyring.
+test -s /etc/rauc/keyring.pem

@@ -1,0 +1,22 @@
+# SPIKE (#485), not for merge. The UKI that boots that slot. TriesLeft=1 gives
+# a new version one attempt, like RAUC's GRUB backend.
+[Transfer]
+ProtectVersion=%A
+Verify=no
+
+[Source]
+Type=regular-file
+Path=/run/spike-src
+MatchPattern=moose-spike_@v.efi
+
+[Target]
+Type=regular-file
+Path=/EFI/Linux
+PathRelativeTo=boot
+MatchPattern=moose-spike_@v+@l-@d.efi \
+             moose-spike_@v+@l.efi \
+             moose-spike_@v.efi
+Mode=0444
+TriesLeft=1
+TriesDone=0
+InstancesMax=2
