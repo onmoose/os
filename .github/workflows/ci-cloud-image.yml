@@ -117,6 +117,8 @@ on:
       # ones dev/cloud/run-cloud-tests.sh knows, and it refuses any other, so a
       # typo fails the run instead of running nothing. Only a manual run has
       # this input: a tag push and the release call always run the full list.
+      # A run with its own list must also set publish=false, or it fails at
+      # once (see the assert step below).
       boots:
         description: "Boots to run, space separated (empty = the full gate list)"
         type: string
@@ -215,6 +217,23 @@ jobs:
             exit 1
           fi
           echo "SHOULD_PUBLISH=${SHOULD_PUBLISH} — nothing will be published"
+
+      # A run that picks its own boots must not publish (#531). Publishing
+      # rests on the full gate list below, and a run that booted only `remap`
+      # has not proved the seed schema, BIOS, access modes, the updater or SSH.
+      # `publish` defaults to true, so `-f boots=remap` alone would publish.
+      # The value is read from an env var, never from the shell text.
+      - name: Assert a run with its own boot list publishes nothing
+        if: ${{ inputs.boots != '' && inputs.boots != null }}
+        env:
+          BOOTS_INPUT: ${{ inputs.boots }}
+        run: |
+          set -euo pipefail
+          if [ "${SHOULD_PUBLISH}" = "true" ]; then
+            echo "::error::boots='${BOOTS_INPUT}' runs only some boots, so this run must not publish. Add -f publish=false."
+            exit 1
+          fi
+          echo "boots='${BOOTS_INPUT}', SHOULD_PUBLISH=${SHOULD_PUBLISH}: nothing will be published"
 
       # Fail FAST on a mistagged release, before the ~10min build below runs.
       # VERSION (repo root) is the single source of truth for the monorepo's

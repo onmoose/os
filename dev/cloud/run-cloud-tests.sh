@@ -139,12 +139,16 @@ BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen bios access update ssh remap}
 should_run() { case " $BOOTS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # Refuse a name this script does not know. The workflow lets a person type the
 # list (its `boots` input), and a typo would otherwise run nothing and pass.
+# A list of only spaces splits into no names at all, and would run nothing.
+boot_count=0
 for b in $BOOTS; do
+    boot_count=$((boot_count + 1))
     case "$b" in
         unseeded|seeded|frozen|bios|access|update|ssh|remap) ;;
         *) echo "unknown boot '$b' in MOOSE_CLOUD_BOOTS='$BOOTS' (known: unseeded seeded frozen bios access update ssh remap)" >&2; exit 1 ;;
     esac
 done
+[ "$boot_count" -gt 0 ] || { echo "MOOSE_CLOUD_BOOTS='$BOOTS' names no boot" >&2; exit 1; }
 
 # QEMU writes serial logs as root (this script runs under sudo). Resolve the
 # invoking user so kept diagnostics are caller-readable.

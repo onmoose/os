@@ -40,7 +40,7 @@ The folder app is the existing `filedrop`. The access boot keeps the `imageuser`
 
 ### Running only some boots
 
-`ci-cloud-image.yml` gains a `boots` input on `workflow_dispatch`: a space-separated list of boot names, empty for the full gate list. It reaches the script as the `MOOSE_CLOUD_BOOTS` env var, not as shell text. `run-cloud-tests.sh` now refuses a boot name it does not know, so a typo fails the run instead of running nothing and passing. The full gate list, for a dispatch, a tag push and the release call, is now `unseeded seeded bios access update ssh remap`. A pull request run still boots only `update`.
+`ci-cloud-image.yml` gains a `boots` input on `workflow_dispatch`: a space-separated list of boot names, empty for the full gate list. It reaches the script as the `MOOSE_CLOUD_BOOTS` env var, not as shell text. `run-cloud-tests.sh` now refuses a boot name it does not know, so a typo fails the run instead of running nothing and passing. A list of only spaces is refused too. A run with its own list must set `publish=false`: a new step fails the run at once otherwise, before the build, since publishing rests on the full gate list. The full gate list, for a dispatch, a tag push and the release call, is now `unseeded seeded bios access update ssh remap`. A pull request run still boots only `update`.
 
 When a boot fails, `dump_serial` now also prints the whole diag block (without the `iptables-save` lines), because the 40-line tail cut the brain log out of it on the first red run below. A failed `remap_get` also prints the Caddy route ids.
 

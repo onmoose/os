@@ -2103,6 +2103,8 @@ remap|remap-reboot)
             [ "$(docker inspect "$pg" --format '{{.State.Health.Status}}' 2>/dev/null)" = healthy ] && break
             sleep 1
         done
+        [ "$(docker inspect "$pg" --format '{{.State.Health.Status}}' 2>/dev/null)" = healthy ] \
+            || fail "remap: $pg never became healthy: $(docker ps -a --filter "name=$pg" --format '{{.Status}}') log: $(docker logs --tail 5 "$pg" 2>&1 | tr '\n' ' ')"
         pg_um="$(docker inspect "$pg" --format '{{.HostConfig.UsernsMode}}' 2>/dev/null)"
         [ -z "$pg_um" ] || fail "remap: $pg UsernsMode is '$pg_um', want the daemon default (remapped)"
         pg_puid="$(host_uid_of "$pg")"
