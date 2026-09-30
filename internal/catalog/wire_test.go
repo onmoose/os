@@ -51,6 +51,12 @@ func TestParseFixtureSnapshot(t *testing.T) {
 	if a.Manifest != "" || a.Compose != "" {
 		t.Errorf("app %q inlines an install payload; the published browse record must not", a.ID)
 	}
+	// The publisher sends both remap intents on the record that carries every
+	// optional field, so the store view can hide such an app on a box with no
+	// remap (#544). A real manifest never sets both; the fixture only pins the shape.
+	if !a.RootSetup || !a.ImageUser {
+		t.Errorf("app %q: root_setup=%v image_user=%v, want both carried", a.ID, a.RootSetup, a.ImageUser)
+	}
 }
 
 // TestVerifyRejectsSchemaVersion covers the one refusal left on the browse
