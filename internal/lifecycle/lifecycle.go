@@ -199,6 +199,10 @@ type Manager struct {
 	// to contend with and skips the lock.
 	locksMu   sync.Mutex
 	instLocks map[string]*sync.Mutex
+
+	// remap caches what RemapState last read, so the store lists do not call
+	// host-agent and docker info on every request (remapstate.go).
+	remap remapCache
 }
 
 func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd CaddyDriver, docker DockerDriver, bus *events.Bus, stateDir string) *Manager {

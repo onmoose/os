@@ -1579,6 +1579,8 @@ export interface components {
             requires?: components["schemas"]["RequiresGroupDTO"][] | null;
             scope_default: string;
             scope_options: string[] | null;
+            /** @enum {string} */
+            unavailable?: "needs-remap";
             version: string;
         };
         InstallPlanExisting: {

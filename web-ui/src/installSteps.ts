@@ -181,6 +181,20 @@ export function installWarnings(plan: InstallPlan): boolean {
   return (plan.existing ?? []).length > 0 || spaceTight(plan.footprint);
 }
 
+// unavailableText is the sentence for a plan this box cannot install at all,
+// or "" when it can. The brain sends a reason code; the words live here. They
+// name no mechanism, only what the user can act on (APP_STORE.md # Apps this
+// box cannot run).
+export function unavailableText(plan: InstallPlan | null): string {
+  if (!plan?.unavailable) return "";
+  switch (plan.unavailable) {
+    case "needs-remap":
+      return "This app can't be installed on this box, because it needs a safety feature that only boxes set up with a newer version of moose have.";
+    default:
+      return "This app can't be installed on this box.";
+  }
+}
+
 // filledBy is every field the bound slots will really get a value for, by the
 // brain's rule (filledEnvs).
 export function filledBy(slots: AISlot[], choices: Record<string, AIChoice>, accounts: AIAccount[]): Set<string> {

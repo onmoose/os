@@ -1231,6 +1231,10 @@ components:
           type:
             - array
             - "null"
+        unavailable:
+          enum:
+            - needs-remap
+          type: string
         version:
           type: string
       required:

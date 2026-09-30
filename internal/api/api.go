@@ -451,6 +451,19 @@ func (s *Server) withPublicPaths(dto *InstanceDTO) {
 	}
 }
 
+// storeCatalog is the catalog the store lists read. On a box that runs no
+// userns-remap it leaves out the apps that need one (root_setup, image_user),
+// since this box cannot install them (APP_STORE.md # Apps this box cannot run).
+// When the remap state is unknown it hides nothing: the install path refuses
+// on its own then. The by-id routes (detail, install plan, assets) keep
+// reading s.catalog, so a direct link still loads.
+func (s *Server) storeCatalog(ctx context.Context) *catalog.Catalog {
+	if s.life != nil && s.life.RemapState(ctx) == lifecycle.RemapOff {
+		return s.catalog.WithoutRemapApps()
+	}
+	return s.catalog
+}
+
 // --- handlers ------------------------------------------------------------
 
 func (s *Server) listCatalog(ctx context.Context, _ *struct{}) (*struct {
@@ -458,7 +471,7 @@ func (s *Server) listCatalog(ctx context.Context, _ *struct{}) (*struct {
 		Apps []catalog.Entry `json:"apps"`
 	}
 }, error) {
-	apps, err := s.catalog.List()
+	apps, err := s.storeCatalog(ctx).List()
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
 	}
@@ -488,7 +501,7 @@ func (s *Server) getCatalogApp(ctx context.Context, in *struct {
 // box's surface plus the curated featured row, so the browser never pulls the whole
 // catalog to render the entry point.
 func (s *Server) catalogHome(ctx context.Context, _ *struct{}) (*struct{ Body catalog.Home }, error) {
-	h, err := s.catalog.Home()
+	h, err := s.storeCatalog(ctx).Home()
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
 	}
@@ -501,7 +514,7 @@ func (s *Server) catalogHome(ctx context.Context, _ *struct{}) (*struct{ Body ca
 func (s *Server) catalogCategory(ctx context.Context, in *struct {
 	Name string `query:"name"`
 }) (*struct{ Body catalog.CategoryPage }, error) {
-	c, err := s.catalog.Category(in.Name)
+	c, err := s.storeCatalog(ctx).Category(in.Name)
 	if errors.Is(err, catalog.ErrNotFound) {
 		return nil, huma.Error404NotFound("no such category")
 	}
@@ -521,7 +534,7 @@ func (s *Server) catalogSearch(ctx context.Context, in *struct {
 		Apps []catalog.Entry `json:"apps"`
 	}
 }, error) {
-	apps, err := s.catalog.Search(in.Q)
+	apps, err := s.storeCatalog(ctx).Search(in.Q)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
 	}

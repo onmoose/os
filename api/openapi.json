@@ -1751,6 +1751,12 @@
               "null"
             ]
           },
+          "unavailable": {
+            "enum": [
+              "needs-remap"
+            ],
+            "type": "string"
+          },
           "version": {
             "type": "string"
           }

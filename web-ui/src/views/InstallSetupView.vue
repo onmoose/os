@@ -87,6 +87,7 @@ import {
   stepForError,
   stepList,
   tileOf,
+  unavailableText,
   usableAccounts,
   withNeedChoice,
   type AINeed,
@@ -952,6 +953,12 @@ watch(
         <Button variant="ghost" size="sm" @click="cancel">Cancel</Button>
         <Button variant="secondary" size="sm" @click="planQuery.refetch()">Try again</Button>
       </div>
+    </div>
+    <!-- This box cannot install the app (a direct link to the install pages):
+         say why, and ask nothing. -->
+    <div v-else-if="unavailableText(plan)" class="space-y-2">
+      <p class="text-sm text-muted-foreground">{{ unavailableText(plan) }}</p>
+      <Button variant="ghost" size="sm" @click="cancel">Back</Button>
     </div>
 
     <template v-else-if="plan">

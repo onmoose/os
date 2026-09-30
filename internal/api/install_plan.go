@@ -50,7 +50,19 @@ type InstallPlanDTO struct {
 	// setup flow warns on its first page, before any question
 	// (INSTALL_STEPS.md # Build rules). Empty when there are none.
 	Existing []InstallPlanExisting `json:"existing"`
+	// Unavailable is set when this box cannot install the app at all. It is a
+	// reason code, not copy: the UI owns the sentence, like every other
+	// wording on this plan. The detail page shows that sentence in place of a
+	// working Install button. Today the one code is unavailableNeedsRemap.
+	// Advisory like the rest of the plan: POST /api/v1/apps refuses such an
+	// install on its own.
+	Unavailable string `json:"unavailable,omitempty" enum:"needs-remap"`
 }
+
+// unavailableNeedsRemap: the app needs the userns-remap (root_setup or
+// image_user) and this box runs none (APP_STORE.md # Apps this box cannot
+// run).
+const unavailableNeedsRemap = "needs-remap"
 
 // InstallPlanExisting is one copy of the app that is already installed.
 // Mine is true when the caller owns it; an admin also sees other users'
@@ -378,6 +390,13 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 		return nil, err
 	}
 	plan.Existing = existing
+	// The same rule as the store lists (storeCatalog), read from the manifest
+	// itself so it holds even when the browse record does not say it. Only a
+	// known "no remap" sets it; an unknown state leaves Install to the
+	// install path, which refuses on its own.
+	if (man.RootSetup || man.ImageUser) && s.life.RemapState(ctx) == lifecycle.RemapOff {
+		plan.Unavailable = unavailableNeedsRemap
+	}
 	return &struct{ Body InstallPlanDTO }{Body: plan}, nil
 }
 
