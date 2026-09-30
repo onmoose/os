@@ -29,7 +29,7 @@
 
 # Bumped whenever the capabilities list changes, so a consumer can tell how current
 # the manifest it validated against was (the published catalog stamps this number).
-version: 1
+version: 2
 
 capabilities:
   - id: secret-injection
@@ -71,8 +71,8 @@ capabilities:
       moose-allocated non-root runtime identity (#116), and every declared relative
       bind dir is created + chowned to it before compose up (#147, generalized
       beyond the single ./data dir). Unblocks images that adopt the runtime user:.
-      (Does NOT cover images that hardcode an internal UID — that is the separate,
-      unshipped userns-remap.)
+      (Does NOT cover images that hardcode an internal UID. That is the separate
+      userns-remap capability below.)
 
   - id: smtp-relay
     since: "0.x"
@@ -89,3 +89,15 @@ capabilities:
       Per-app operator-supplied configuration. A manifest `config:` block renders a
       form at install and a Settings editor on the app page, injecting each answer
       under its own env-var name into the target service's compose override.
+
+  - id: userns-remap
+    since: "0.x"
+    ref: "#523; DECISIONS.md 2026-09-29; APP_ISOLATION.md # User-namespace tiers"
+    summary: >
+      Daemon-wide Docker userns-remap with the brain's tiers, for folderless apps
+      whose image hardcodes its own internal UID. `root_setup: true` (caps tier)
+      is for a root entrypoint that chowns or drops privileges; `image_user: true`
+      (image tier) is for an image that must run as its own baked USER. Folder
+      apps are not covered: they stay in the host user namespace. It applies only
+      to boxes built with the remap on (built after #530). An existing box never
+      gets it turned on, and there the brain refuses both fields.
