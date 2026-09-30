@@ -15,7 +15,7 @@ This follows [userns-remap-capability.md](userns-remap-capability.md) (#545), wh
   - A normal dev machine (no `moose-remap` line): no `remap_base`, exactly as before. With #544 the store keeps marking `root_setup` and `image_user` apps as not installable in `make dev`.
   - A machine with the remap set up by hand: `remap_base` from the lines, Docker agrees, and the brain picks the tiers as on a real box.
   - A bad line: an error, like the real agent, so the brain refuses every install until it is fixed.
-- **Docs.** `running-locally.md` has a new # Booting apps that need the remap: the four setup steps the images do, and two warnings (it remaps the whole daemon; the unprivileged dev brain cannot give bind dirs to the range). The prerequisite bullet no longer says the fake never reports a range. The authoring guide's "Which tier" and step 10(c) point there. `BRAIN_HOST_PROTOCOL.md` and `docs/architecture.md` say what the fake sends now.
+- **Docs.** `running-locally.md` has a new # Booting apps that need the remap: the setup the images do, and two warnings (it remaps the whole daemon; the dev brain runs as the user, cannot give bind dirs or managed-service data to the range, so only an app with neither boots fully there). The prerequisite bullet no longer says the fake never reports a range. The authoring guide's "Which tier" and step 10(c) point there. `BRAIN_HOST_PROTOCOL.md` and `docs/architecture.md` say what the fake sends now.
 
 ## How it maps to the specs
 
@@ -31,8 +31,14 @@ This follows [userns-remap-capability.md](userns-remap-capability.md) (#545), wh
 ## Known gaps & deviations
 
 - **Not run on a remapped dev machine.** I did not turn the remap on on this machine: it would remap every container on its Docker. The positive case is covered by the unit tests with real files, and the reading code is the one the real agent uses on the booted images.
-- **An app with a bind dir needs the brain as root there.** On a remapped daemon each bind dir must go to an id in the range, and the unprivileged dev brain skips that chown (it logs `bind dir chown skipped under unprivileged brain`). The same goes for a managed service's data dir. Such an app then cannot write its data. `running-locally.md` says so. Only an app with no bind dir and no managed service is not affected. Making the dev brain do this without root is a bigger change (it is the same fidelity gap as `catalog-import-gaps.md` # dev-box-nonroot-folderless-identity).
+- **An app with a bind dir needs the brain as root there.** On a remapped daemon each bind dir must go to an id in the range, and the unprivileged dev brain skips that chown (it logs `bind dir chown skipped under unprivileged brain`). The same goes for a managed service's data dir. Such an app then cannot write its data. `running-locally.md` says so, and that such an app must be booted on a box built from the images. Only an app with no bind dir and no managed service is not affected. Making the dev brain do this without root is a bigger change (it is the same fidelity gap as `catalog-import-gaps.md` # dev-box-nonroot-folderless-identity).
 - **The fake's operator identity is unchanged.** `moose_app_uid` is still the operator's uid, as before, which is only used by folder apps; they are in the host tier anyway.
+
+## Review
+
+- **Fresh Sonnet agent:** see below.
+- **Greptile P1, "Unreadable files block dev installs":** dismissed. An unreadable `/etc/subuid` or `/etc/subgid` makes the fake answer 500, so the dev brain refuses every install. That is what the real agent does, on purpose: it answers an error, not a guess, because the brain gives bind dirs to owners computed from this number. The issue asked the fake to behave like the real agent. The files are world-readable on a normal Linux install, and on a machine without them (macOS) a missing file counts as no line, so the normal case is unchanged.
+- **Greptile P2, "Root-brain steps are missing":** confirmed and fixed in the docs. `running-locally.md` told the reader to run the brain as root for an app with a bind dir, but `make dev` and `make dev-app` start it as the user, and there is no supported way to do otherwise. It now says plainly that such an app cannot be fully tested in the dev loop and must be booted on a box built from the images; only an app with no bind dir and no managed service boots fully there. The authoring guide says the same.
 
 ## What's next
 
