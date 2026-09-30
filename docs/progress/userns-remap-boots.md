@@ -52,7 +52,42 @@ This is a real bug outside this issue, so it has its own issue and PR: #540, fix
 
 ## CI runs
 
-RUNS_PLACEHOLDER
+| Run | Boots | Result |
+|---|---|---|
+| https://github.com/onmoose/os/actions/runs/36642566707 | `remap` | first boot passed, `remap-reboot` failed: every app 404 after the reboot (#540) |
+| https://github.com/onmoose/os/actions/runs/36644428131 | `remap` | pass, on a throwaway branch with the #540 fix merged in |
+| https://github.com/onmoose/os/actions/runs/36647641394 | all eight (`unseeded seeded bios access update ssh remap`) | pass, on this branch with `dev` (and #541) merged in |
+| FINAL_RUN | all eight | FINAL_RESULT |
+
+Quotes from the serial log of 36647641394. The first boot:
+
+```
+cloud-assertions: remap: the SSO owner 'owner' (host uid 2001) has no /etc/subuid or /etc/subgid range; each file holds only moose-remap:1000000:65536
+cloud-assertions: remap [remap]: default tier, folderless: remapdrop UsernsMode='' user=0:0 cap_add=null host uid 1000000; data dir 1000000:1000000, id.txt 1000000:1000000; through Caddy: uid=0(root) gid=0(root) groups=0(root)
+cloud-assertions: remap [remap]: default tier, service_user: svcdrop UsernsMode='' user=2100:2100 cap_add=null host uid 1002100; data dir 1002100:1002100, id.txt 1002100:1002100; through Caddy: uid=2100 gid=2100 groups=2100
+cloud-assertions: remap [remap]: caps tier, root_setup: rootsetup UsernsMode='' user='' cap_add=["CAP_CHOWN","CAP_DAC_OVERRIDE","CAP_FOWNER","CAP_SETGID","CAP_SETUID"] cap_drop=["ALL"] security_opt=["no-new-privileges:true"] host uid 1000033; data dir 1000000:1000000, data/db 1000033:1000033; token through Caddy: cf7ffbde-5a94-4999-896a-4b083ffe90ec
+cloud-assertions: remap [remap]: managed Postgres, default tier: moose-svc-postgres-16 UsernsMode='' host uid 1000999, data dir 1000999:1000000; pgnote UsernsMode='' user=0:0 host uid 1000000; its row in database pgnote_af6b: moose-531-note
+cloud-assertions: remap [remap]: host tier, folder app: filedrop UsernsMode=host user=2000:2000 cap_add=null host uid 2000; /srv/moose/shared/Documents/filedrop.txt 2000:2001
+cloud-assertions: remap: the caps-tier app kept its data across a container recreate (ef0367bb186a -> 03708c120f79), token cf7ffbde-5a94-4999-896a-4b083ffe90ec
+```
+
+The reboot printed the same five tier lines under `remap [remap-reboot]`, the same subordinate-range line, and:
+
+```
+cloud-assertions: remap-reboot: every tier checked again after a real reboot of the same disk; the caps-tier app kept its data (token cf7ffbde-5a94-4999-896a-4b083ffe90ec)
+```
+
+Every boot, the two remap boots included, printed step 5d's "userns-remap on (moose-remap:1000000:65536, SUB_UID_COUNT 0); proxy + brain in the host userns (host uid 0), caddy + moose-ui remapped (host uid 1000000)".
+
+**Time.** In 36647641394 the two remap boots took 86 seconds (00:07:17 to 00:08:43), and the boot step 9m23s. The last six-boot run before this change (36636692363) had a boot step of 8m00s. So the new boots add about a minute and a half, plus a few seconds of build to bake the `postgres:16` tar.
+
+## Review
+
+- **Fresh Sonnet agent:** two Block findings, both also raised by Greptile as P1, both confirmed and fixed.
+  1. A manual run with `-f boots=remap` and the default `publish=true` would have published an image proven by only two boots. A new step, "Assert a run with its own boot list publishes nothing", fails such a run before the build. The docs that show `-f boots=remap` now also show `-f publish=false`.
+  2. A `boots` value of only spaces split into no names, so the name check never ran, no boot ran, and the script printed PASS. The script now counts the names and refuses a list with none.
+  - Two Notes. (3) The CI runs section was still a placeholder (also Greptile P2): filled in above. (4) The managed Postgres health wait fell through with no message when it timed out: it now fails with the container status and its log.
+- **Greptile:** the same three findings as above (two P1, one P2), handled as above.
 
 ## How it maps to the specs
 

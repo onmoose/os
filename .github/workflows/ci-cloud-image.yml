@@ -374,7 +374,7 @@ jobs:
       #     owner), then a real reboot and every check again. The caps-tier app
       #     must keep its data across a recreate and the reboot. An image whose
       #     brain puts an app in the wrong tier, or gives the capabilities with the
-      #     host userns, must never be published. It adds about two minutes.
+      #     host userns, must never be published. The two boots add about a minute and a half.
       #
       # The frozen-identity boot stays out: it is orthogonal (it checks a re-delivered
       # seed is ignored on a later boot) and has shown a flaky false "re-ingested"
