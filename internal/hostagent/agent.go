@@ -380,6 +380,14 @@ type Agent struct {
 	// so /etc/passwd + /etc/shadow + /etc/group become the source of truth.
 	UserMgr UserManager
 
+	// DevRemapBase, when non-nil, gives the fake branch of GET
+	// /v1/identity/well-known its remap_base (UserMgr nil). cmd/host-agent
+	// wires usermgr.ReadRemapBase, so a dev machine with a hand-made
+	// moose-remap range reports it, and one with none leaves the field out,
+	// as before (#548). Nil in tests means no remap. The real agent reads the
+	// range through UserMgr.RemapBase instead.
+	DevRemapBase func() (base int, ok bool, err error)
+
 	// SSH, when non-nil, backs POST /v1/ssh/set-access and GET /v1/ssh/state
 	// (real sshd drop-in + systemctl). Wired by cmd/host-agent-real in both build
 	// profiles — SSH is per-account on the appliance and on hosted alike, only
@@ -1249,8 +1257,13 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fake branch: no remap_base. The dev loop's Docker runs no remap, and
-	// the brain treats an absent field as no remap.
+	// Fake branch. remap_base comes from DevRemapBase: on a dev machine with
+	// no moose-remap lines in /etc/subuid and /etc/subgid it is left out, and
+	// the brain reads that as no remap, like the dev loop's Docker. On one
+	// where someone set up the remap by hand it is the range those lines give,
+	// read by the real agent's own code, so Docker and this answer agree and
+	// the dev brain can install root_setup and image_user apps (#548). A bad
+	// line answers an error, as the real agent does.
 	//
 	// It also resolves the moose-app service identity to the dev operator's
 	// own uid/gid (not fixed 2000/2001) for the same reason as resolve-home — a
@@ -1264,11 +1277,23 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, protocol.WellKnownIdentityResponse{
+	resp := protocol.WellKnownIdentityResponse{
 		MooseAppUID:    uid,
 		MooseAppGID:    gid,
 		MooseSharedGID: gid,
-	})
+	}
+	if a.DevRemapBase != nil {
+		base, remapped, err := a.DevRemapBase()
+		if err != nil {
+			slog.Error("well-known-identity (fake): read the remap range", "err", err)
+			writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
+			return
+		}
+		if remapped {
+			resp.RemapBase = &base
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // allocateAppService reserves a UID/GID pair from the app-service band
