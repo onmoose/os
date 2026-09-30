@@ -36,7 +36,7 @@ This follows [userns-remap-capability.md](userns-remap-capability.md) (#545), wh
 
 ## Review
 
-- **Fresh Sonnet agent:** see below.
+- **Fresh Sonnet agent:** no Block findings. It checked both Greptile findings on its own and agreed with the two calls below. One style Note (long sentences in the new `running-locally.md` section), left as is to match the rest of that doc.
 - **Greptile P1, "Unreadable files block dev installs":** dismissed. An unreadable `/etc/subuid` or `/etc/subgid` makes the fake answer 500, so the dev brain refuses every install. That is what the real agent does, on purpose: it answers an error, not a guess, because the brain gives bind dirs to owners computed from this number. The issue asked the fake to behave like the real agent. The files are world-readable on a normal Linux install, and on a machine without them (macOS) a missing file counts as no line, so the normal case is unchanged.
 - **Greptile P2, "Root-brain steps are missing":** confirmed and fixed in the docs. `running-locally.md` told the reader to run the brain as root for an app with a bind dir, but `make dev` and `make dev-app` start it as the user, and there is no supported way to do otherwise. It now says plainly that such an app cannot be fully tested in the dev loop and must be booted on a box built from the images; only an app with no bind dir and no managed service boots fully there. The authoring guide says the same.
 
