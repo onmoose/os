@@ -34,8 +34,15 @@ This follows [userns-remap-close.md](userns-remap-close.md), which closed the re
 
 ## Known gaps & deviations
 
-- **The remote curation box doc is on the store side.** The guide points at it by name only. If it does not yet say how to boot a remapped app, that is a store-side change.
-- **The dev loop still cannot boot these apps.** A later change could let the fake host-agent report a remap range the developer set up by hand.
+- **The remote curation box cannot boot these apps as it is.** It runs the native dev brain with the fake host-agent, which reports no remap range, so the brain refuses them there too. The guide says so and names the two ways out: a box built from the images after #530, or the fake host-agent reading a range set up by hand (#548). Whether the store's remote curation box doc covers either is a store-side question.
+- **The dev loop still cannot boot these apps.** #548 is the change that lets the fake host-agent report a remap range the developer set up by hand.
+
+## Review
+
+- **Fresh Sonnet agent:** no Block findings. Three Notes, the same three Greptile raised, all fixed below.
+- **Greptile P1, "Remote boot test is refused":** confirmed and fixed. The guide sent authors to the store's remote curation box, which runs the dev brain with the fake host-agent and so refuses these apps. The "Which tier" text now says that plainly, and names where they can boot: a box built from the images after #530, or a machine with a hand-made range once #548 lands.
+- **Greptile P1, "Supported apps get rejected":** confirmed and fixed. Step 3 told the author to stop on any needed `cap_add`, next to the new bullet that says to use `root_setup`. The `cap_add` bullet now says that, in a folderless app, a `cap_add` of only the five capabilities `root_setup` gives is adapted by dropping it and setting `root_setup`.
+- **Greptile P2, "Remapped boots skip health checks":** confirmed and fixed. Step 10(c) now asks for the same two checks (the health probe passes, the first-run flow completes) on the remapped box, and so does the "Which tier" section.
 
 ## What's next
 
