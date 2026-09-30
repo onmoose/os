@@ -126,7 +126,9 @@ done
     done
     echo "update artifacts a box downloads per update:"
     (cd "$OUT/ctl" && find . -type f -printf '  %p %s bytes\n' | sort)
-    [ -f "$TOP/sysupdate-bin/build-time.txt" ] && [ "$ENGINE" = sysupdate ] && cat "$TOP/sysupdate-bin/build-time.txt"
+    if [ "$ENGINE" = sysupdate ] && [ -f "$TOP/sysupdate-bin/build-time.txt" ]; then
+        cat "$TOP/sysupdate-bin/build-time.txt"
+    fi
 } | tee "$OUT/sizes.txt"
 
 # The control disk. mkfs.ext4 -d needs no root and no loop device.
