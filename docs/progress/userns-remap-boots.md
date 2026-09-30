@@ -57,7 +57,7 @@ This is a real bug outside this issue, so it has its own issue and PR: #540, fix
 | https://github.com/onmoose/os/actions/runs/36642566707 | `remap` | first boot passed, `remap-reboot` failed: every app 404 after the reboot (#540) |
 | https://github.com/onmoose/os/actions/runs/36644428131 | `remap` | pass, on a throwaway branch with the #540 fix merged in |
 | https://github.com/onmoose/os/actions/runs/36647641394 | all eight (`unseeded seeded bios access update ssh remap`) | pass, on this branch with `dev` (and #541) merged in |
-| FINAL_RUN | all eight | FINAL_RESULT |
+| https://github.com/onmoose/os/actions/runs/36648928304 | all eight | pass, on commit 8a86efa, the code this PR merges (only this table changed after it) |
 
 Quotes from the serial log of 36647641394. The first boot:
 
