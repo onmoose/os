@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -108,5 +109,87 @@ func TestRemapStateIgnoresCallerCancel(t *testing.T) {
 	cancel()
 	if got := e.m.RemapState(ctx); got != RemapOff {
 		t.Fatalf("RemapState with a cancelled caller = %v, want off", got)
+	}
+}
+
+// slowDocker holds UsernsRemap until release is closed, and says when a read
+// has started.
+type slowDocker struct {
+	*fakeDocker
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (d slowDocker) UsernsRemap(ctx context.Context) (bool, error) {
+	d.entered <- struct{}{}
+	<-d.release
+	return d.fakeDocker.UsernsRemap(ctx)
+}
+
+func newSlowDocker(f *fakeDocker) slowDocker {
+	return slowDocker{fakeDocker: f, entered: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+// A slow refresh does not hold up the store: while it is in flight, other
+// callers get the last answer at once.
+func TestRemapStateServesLastAnswerDuringRefresh(t *testing.T) {
+	e := newTestEnv(t)
+	var mu sync.Mutex
+	now := time.Unix(1_000_000, 0)
+	e.m.remap.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	ctx := context.Background()
+	if got := e.m.RemapState(ctx); got != RemapOff {
+		t.Fatalf("first read = %v, want off", got)
+	}
+
+	d := newSlowDocker(e.docker)
+	e.m.docker = d
+	mu.Lock()
+	now = now.Add(remapKnownTTL + time.Second)
+	mu.Unlock()
+	done := make(chan RemapState)
+	go func() { done <- e.m.RemapState(ctx) }()
+	<-d.entered // the refresh is now held inside docker info
+
+	got := make(chan RemapState)
+	go func() { got <- e.m.RemapState(ctx) }()
+	select {
+	case s := <-got:
+		if s != RemapOff {
+			t.Errorf("during the refresh = %v, want the last answer, off", s)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a caller waited behind the refresh")
+	}
+	close(d.release)
+	if s := <-done; s != RemapOff {
+		t.Errorf("refresh = %v, want off", s)
+	}
+}
+
+// Before the first answer a caller waits for it, and one that goes away stops
+// waiting with unknown, which hides nothing.
+func TestRemapStateFirstReadWait(t *testing.T) {
+	e := newTestEnv(t)
+	d := newSlowDocker(e.docker)
+	e.m.docker = d
+	done := make(chan RemapState)
+	go func() { done <- e.m.RemapState(context.Background()) }()
+	<-d.entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if s := e.m.RemapState(ctx); s != RemapUnknown {
+		t.Errorf("a caller that went away = %v, want unknown", s)
+	}
+
+	waiting := make(chan RemapState)
+	go func() { waiting <- e.m.RemapState(context.Background()) }()
+	close(d.release)
+	if s := <-done; s != RemapOff {
+		t.Errorf("first read = %v, want off", s)
+	}
+	if s := <-waiting; s != RemapOff {
+		t.Errorf("a caller that waited = %v, want off", s)
 	}
 }

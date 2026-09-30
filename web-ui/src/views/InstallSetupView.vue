@@ -958,7 +958,7 @@ watch(
          say why, and ask nothing. -->
     <div v-else-if="unavailableText(plan)" class="space-y-2">
       <p class="text-sm text-muted-foreground">{{ unavailableText(plan) }}</p>
-      <Button variant="ghost" size="sm" @click="cancel">Back</Button>
+      <Button variant="ghost" size="sm" @click="goBack">Back</Button>
     </div>
 
     <template v-else-if="plan">

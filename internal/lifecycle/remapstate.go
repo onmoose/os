@@ -39,32 +39,66 @@ const (
 type remapCache struct {
 	mu    sync.Mutex
 	state RemapState
+	// read is true once one read has finished, so state holds a real answer.
+	read  bool
 	until time.Time
+	// reading is closed when the read in flight ends; nil when none is.
+	reading chan struct{}
 	// now is time.Now in production; tests move it.
 	now func() time.Time
 }
 
+func (c *remapCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
 // RemapState returns the cached remap state, and reads it again when the
-// cache has run out. Concurrent callers wait for one read rather than each
-// making their own.
+// cache has run out. The lock is never held during the read. While a read
+// is in flight, other callers get the last answer at once. Only before the
+// first answer do they wait for it, and a caller that goes away stops
+// waiting (it gets RemapUnknown, which hides nothing).
 func (m *Manager) RemapState(ctx context.Context) RemapState {
 	c := &m.remap
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := time.Now
-	if c.now != nil {
-		now = c.now
+	if c.read && c.clock().Before(c.until) {
+		s := c.state
+		c.mu.Unlock()
+		return s
 	}
-	if !c.until.IsZero() && now().Before(c.until) {
-		return c.state
+	if ch := c.reading; ch != nil {
+		if c.read {
+			s := c.state
+			c.mu.Unlock()
+			return s
+		}
+		c.mu.Unlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return RemapUnknown
+		}
+		c.mu.Lock()
+		s := c.state
+		c.mu.Unlock()
+		return s
 	}
-	c.state = m.readRemapState(ctx)
+	ch := make(chan struct{})
+	c.reading = ch
+	c.mu.Unlock()
+
+	s := m.readRemapState(ctx)
 	ttl := remapKnownTTL
-	if c.state == RemapUnknown {
+	if s == RemapUnknown {
 		ttl = remapUnknownTTL
 	}
-	c.until = now().Add(ttl)
-	return c.state
+	c.mu.Lock()
+	c.state, c.read, c.until, c.reading = s, true, c.clock().Add(ttl), nil
+	c.mu.Unlock()
+	close(ch)
+	return s
 }
 
 // readRemapState makes the same check as the install path (hostIdentity):
