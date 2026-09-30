@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/onmoose/os/internal/hostagent/netstate"
@@ -157,6 +159,8 @@ type stubUserMgr struct {
 	wellKnownIdentityCalls int
 	allocateCalls          []string
 	releaseCalls           []int
+	prepareCalls           []struct{ user, rel string }
+	prepareErr             error
 	err                    error
 	roleErr                error
 	deleteErr              error
@@ -173,6 +177,19 @@ type stubUserMgr struct {
 	wellKnownIdentityResult *struct {
 		appUID, appGID, sharedGID int
 	}
+	// remapBase, when non-nil, is what RemapBase reports; nil means no range.
+	remapBase    *int
+	remapBaseErr error
+}
+
+func (s *stubUserMgr) RemapBase() (int, bool, error) {
+	if s.remapBaseErr != nil {
+		return 0, false, s.remapBaseErr
+	}
+	if s.remapBase == nil {
+		return 0, false, nil
+	}
+	return *s.remapBase, true, nil
 }
 
 func (s *stubUserMgr) UpsertPassword(user, password string) error {
@@ -204,6 +221,11 @@ func (s *stubUserMgr) ResolveHome(user string) (string, int, int, error) {
 		return s.resolveHomeResult.home, s.resolveHomeResult.uid, s.resolveHomeResult.gid, nil
 	}
 	return "/home/" + user, 3000, 3000, nil
+}
+
+func (s *stubUserMgr) PrepareFolder(user, rel string) error {
+	s.prepareCalls = append(s.prepareCalls, struct{ user, rel string }{user, rel})
+	return s.prepareErr
 }
 
 func (s *stubUserMgr) WellKnownIdentity() (int, int, int, error) {
@@ -443,6 +465,96 @@ func TestDeleteUser_UserMgrError_Returns500(t *testing.T) {
 // synthetic fakeUID + /home/<user>), so the unprivileged dev brain — running as
 // the same operator — owns every bind dir it creates and Part A's chowns are
 // no-op successes (#147).
+// --- prepare-folder tests (#519) ---
+
+func TestValidUserFolderPath(t *testing.T) {
+	for _, ok := range []string{"Documents", "Documents/Notebooks", "Photos/2026/Trip", "Downloads"} {
+		if err := ValidUserFolderPath(ok); err != nil {
+			t.Errorf("%q: want valid, got %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"", "/home/alex/Documents", ".ssh", ".ssh/authorized_keys", "documents",
+		"Documents/../.ssh", "Documents/./x", "Documents//x", "Documents/", "Shared",
+	} {
+		if err := ValidUserFolderPath(bad); err == nil {
+			t.Errorf("%q: want refused", bad)
+		}
+	}
+}
+
+func TestPrepareFolder_DelegatesToUserMgr(t *testing.T) {
+	mgr := &stubUserMgr{}
+	a := New(&stubVerifier{}, NewFakePublisher(".local"))
+	a.UserMgr = mgr
+	mux := http.NewServeMux()
+	a.Mount(mux)
+
+	w := post(t, mux, "/v1/users/cindy/prepare-folder", protocol.PrepareUserFolderRequest{Path: "Documents/Work"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if len(mgr.prepareCalls) != 1 || mgr.prepareCalls[0].user != "cindy" || mgr.prepareCalls[0].rel != "Documents/Work" {
+		t.Errorf("PrepareFolder calls = %+v", mgr.prepareCalls)
+	}
+}
+
+func TestPrepareFolder_ErrorMapping(t *testing.T) {
+	for _, tc := range []struct {
+		err      error
+		status   int
+		wantCode string
+	}{
+		{ErrUnknownUser, http.StatusNotFound, "unknown-user"},
+		{fmt.Errorf("wrapped: %w", ErrNotADirectory), http.StatusConflict, "not-a-directory"},
+		{errors.New("disk on fire"), http.StatusInternalServerError, "prepare-folder-failed"},
+	} {
+		mgr := &stubUserMgr{prepareErr: tc.err}
+		a := New(&stubVerifier{}, NewFakePublisher(".local"))
+		a.UserMgr = mgr
+		mux := http.NewServeMux()
+		a.Mount(mux)
+		w := post(t, mux, "/v1/users/cindy/prepare-folder", protocol.PrepareUserFolderRequest{Path: "Photos"})
+		if w.Code != tc.status {
+			t.Errorf("%v: status = %d, want %d", tc.err, w.Code, tc.status)
+			continue
+		}
+		if e := decodeBody[protocol.Error](t, w); e.Code != tc.wantCode {
+			t.Errorf("%v: code = %q, want %q", tc.err, e.Code, tc.wantCode)
+		}
+	}
+}
+
+// A bad path never reaches the user manager, on either branch.
+func TestPrepareFolder_BadPathRefusedBeforeTheHost(t *testing.T) {
+	mgr := &stubUserMgr{}
+	a := New(&stubVerifier{}, NewFakePublisher(".local"))
+	a.UserMgr = mgr
+	mux := http.NewServeMux()
+	a.Mount(mux)
+	w := post(t, mux, "/v1/users/cindy/prepare-folder", protocol.PrepareUserFolderRequest{Path: ".ssh"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", w.Code)
+	}
+	if len(mgr.prepareCalls) != 0 {
+		t.Errorf("user manager was called for a bad path: %+v", mgr.prepareCalls)
+	}
+}
+
+func TestPrepareFolder_FakeBranch_CreatesUnderOperatorHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, mux := newTestAgent(&stubVerifier{})
+
+	w := post(t, mux, "/v1/users/alice/prepare-folder", protocol.PrepareUserFolderRequest{Path: "Documents/Notebooks"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if fi, err := os.Stat(filepath.Join(home, "Documents", "Notebooks")); err != nil || !fi.IsDir() {
+		t.Errorf("fake did not create the folder under the operator home: %v", err)
+	}
+}
+
 func TestResolveHome_FakeBranch_ReturnsOperatorIdentity(t *testing.T) {
 	_, mux := newTestAgent(&stubVerifier{})
 
@@ -1107,6 +1219,107 @@ func TestWellKnownIdentity_UserMgrError_Returns500(t *testing.T) {
 	}
 	if bytes.Contains(w.Body.Bytes(), []byte("moose-app")) {
 		t.Errorf("response leaked system detail: %s", w.Body.String())
+	}
+}
+
+// The fake host-agent never reports remap_base: the dev loop's Docker runs no
+// remap. The key must be absent on the wire, not null or 0.
+func TestWellKnownIdentity_FakeBranch_OmitsRemapBase(t *testing.T) {
+	_, mux := newTestAgent(&stubVerifier{})
+	w := get(t, mux, "/v1/identity/well-known")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("remap_base")) {
+		t.Errorf("fake response carries remap_base: %s", w.Body.String())
+	}
+}
+
+func TestWellKnownIdentity_RemapBase(t *testing.T) {
+	base := 1000000
+	for _, tc := range []struct {
+		name      string
+		mgr       *stubUserMgr
+		wantCode  int
+		wantBase  *int
+		wantInRaw bool
+	}{
+		{name: "range present", mgr: &stubUserMgr{remapBase: &base}, wantCode: http.StatusOK, wantBase: &base, wantInRaw: true},
+		{name: "no range", mgr: &stubUserMgr{}, wantCode: http.StatusOK},
+		{name: "files disagree", mgr: &stubUserMgr{remapBaseErr: errors.New("usermgr: moose-remap subuid start 1000000 and subgid start 2000000 differ")}, wantCode: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := New(&stubVerifier{}, NewFakePublisher(".local"))
+			a.UserMgr = tc.mgr
+			mux := http.NewServeMux()
+			a.Mount(mux)
+			w := get(t, mux, "/v1/identity/well-known")
+			if w.Code != tc.wantCode {
+				t.Fatalf("want %d, got %d: %s", tc.wantCode, w.Code, w.Body.String())
+			}
+			if tc.wantCode != http.StatusOK {
+				// An error, not a guess, and no host detail in the body.
+				if bytes.Contains(w.Body.Bytes(), []byte("subuid")) || bytes.Contains(w.Body.Bytes(), []byte("remap_base")) {
+					t.Errorf("error body leaked detail or a base: %s", w.Body.String())
+				}
+				return
+			}
+			if got := bytes.Contains(w.Body.Bytes(), []byte(`"remap_base"`)); got != tc.wantInRaw {
+				t.Errorf("remap_base key present = %v, want %v: %s", got, tc.wantInRaw, w.Body.String())
+			}
+			resp := decodeBody[protocol.WellKnownIdentityResponse](t, w)
+			if (resp.RemapBase == nil) != (tc.wantBase == nil) || (resp.RemapBase != nil && *resp.RemapBase != *tc.wantBase) {
+				t.Errorf("remap_base = %v, want %v", resp.RemapBase, tc.wantBase)
+			}
+			if resp.MooseAppUID != 2000 || resp.MooseSharedGID != 2001 {
+				t.Errorf("the other fields changed: %+v", resp)
+			}
+		})
+	}
+}
+
+// The fake branch reports the range DevRemapBase gives (cmd/host-agent wires
+// usermgr.ReadRemapBase): present when a dev machine has a hand-made
+// moose-remap range, absent when it has none, and an error for a bad line, as
+// the real agent answers (#548). The operator identity stays as it was.
+func TestWellKnownIdentity_FakeBranch_DevRemapBase(t *testing.T) {
+	base := 1000000
+	for _, tc := range []struct {
+		name      string
+		read      func() (int, bool, error)
+		wantCode  int
+		wantInRaw bool
+	}{
+		{name: "hand-made range", read: func() (int, bool, error) { return base, true, nil }, wantCode: http.StatusOK, wantInRaw: true},
+		{name: "no range, a normal dev machine", read: func() (int, bool, error) { return 0, false, nil }, wantCode: http.StatusOK},
+		{name: "bad line", read: func() (int, bool, error) {
+			return 0, false, errors.New("usermgr: moose-remap has a subordinate range in only one of the subuid and subgid files")
+		}, wantCode: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, mux := newTestAgent(&stubVerifier{})
+			a.DevRemapBase = tc.read
+			w := get(t, mux, "/v1/identity/well-known")
+			if w.Code != tc.wantCode {
+				t.Fatalf("want %d, got %d: %s", tc.wantCode, w.Code, w.Body.String())
+			}
+			if tc.wantCode != http.StatusOK {
+				if bytes.Contains(w.Body.Bytes(), []byte("subuid")) || bytes.Contains(w.Body.Bytes(), []byte("remap_base")) {
+					t.Errorf("error body leaked detail or a base: %s", w.Body.String())
+				}
+				return
+			}
+			if got := bytes.Contains(w.Body.Bytes(), []byte(`"remap_base"`)); got != tc.wantInRaw {
+				t.Errorf("remap_base key present = %v, want %v: %s", got, tc.wantInRaw, w.Body.String())
+			}
+			resp := decodeBody[protocol.WellKnownIdentityResponse](t, w)
+			if tc.wantInRaw && (resp.RemapBase == nil || *resp.RemapBase != base) {
+				t.Errorf("remap_base = %v, want %d", resp.RemapBase, base)
+			}
+			if resp.MooseAppUID != os.Getuid() || resp.MooseSharedGID != os.Getgid() {
+				t.Errorf("operator identity changed: %+v", resp)
+			}
+		})
 	}
 }
 

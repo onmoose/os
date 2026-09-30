@@ -112,6 +112,17 @@ on:
         description: "Attach the built image to the tagged GitHub Release as an asset"
         type: boolean
         default: true
+      # Run only some boots, for a quick proof of one scenario (#531), for
+      # example `remap`. Empty runs the full gate list below. The names are the
+      # ones dev/cloud/run-cloud-tests.sh knows, and it refuses any other, so a
+      # typo fails the run instead of running nothing. Only a manual run has
+      # this input: a tag push and the release call always run the full list.
+      # A run with its own list must also set publish=false, or it fails at
+      # once (see the assert step below).
+      boots:
+        description: "Boots to run, space separated (empty = the full gate list)"
+        type: string
+        default: ""
   workflow_call:
     inputs:
       publish:
@@ -171,8 +182,8 @@ jobs:
     # mkosi-sandbox EPERM (#189), so the fix has to be proven here, not on a
     # floating ubuntu-latest.
     runs-on: ubuntu-24.04
-    # Two mkosi builds (production image + QEMU test image), the QEMU boots (six
-    # on a push/dispatch, just `update` on a PR — see MOOSE_CLOUD_BOOTS below), and
+    # Two mkosi builds (production image + QEMU test image), the QEMU boots (eight
+    # on a push/dispatch, just `update` on a PR; see MOOSE_CLOUD_BOOTS below), and
     # the compress-and-attach publish run ~10 min in practice; the 120 cap is a
     # generous ceiling so a one-off slow runner is never killed mid-build.
     timeout-minutes: 120
@@ -206,6 +217,23 @@ jobs:
             exit 1
           fi
           echo "SHOULD_PUBLISH=${SHOULD_PUBLISH} — nothing will be published"
+
+      # A run that picks its own boots must not publish (#531). Publishing
+      # rests on the full gate list below, and a run that booted only `remap`
+      # has not proved the seed schema, BIOS, access modes, the updater or SSH.
+      # `publish` defaults to true, so `-f boots=remap` alone would publish.
+      # The value is read from an env var, never from the shell text.
+      - name: Assert a run with its own boot list publishes nothing
+        if: ${{ inputs.boots != '' && inputs.boots != null }}
+        env:
+          BOOTS_INPUT: ${{ inputs.boots }}
+        run: |
+          set -euo pipefail
+          if [ "${SHOULD_PUBLISH}" = "true" ]; then
+            echo "::error::boots='${BOOTS_INPUT}' runs only some boots, so this run must not publish. Add -f publish=false."
+            exit 1
+          fi
+          echo "boots='${BOOTS_INPUT}', SHOULD_PUBLISH=${SHOULD_PUBLISH}: nothing will be published"
 
       # Fail FAST on a mistagged release, before the ~10min build below runs.
       # VERSION (repo root) is the single source of truth for the monorepo's
@@ -306,8 +334,8 @@ jobs:
       #    brain that rejects the live seed fails here -> nothing is published. The
       #    test image reuses the control-plane bundle built in step 1, so it
       #    exercises the same brain that ships.
-      # Scope to unseeded + seeded + bios + access + update + ssh — each guarding a
-      # regression that must never reach publish:
+      # Scope to unseeded + seeded + bios + access + update + ssh + remap, each
+      # guarding a regression that must never reach publish:
       #   - unseeded + seeded: the regression this gate was built for — the built
       #     image's brain accepting the current seed schema.
       #   - bios (#277): re-boots the same image under legacy BIOS (SeaBIOS). A box
@@ -338,6 +366,16 @@ jobs:
       #     cannot stop it again can never close it. It also proves the mandatory
       #     factor on a real sshd: a key gets in, a password alone does not.
       #
+      #   - remap (#531): the ONLY proof of the user-namespace tiers on a booted
+      #     box. Two boots over one disk: one app per tier (a folderless app and a
+      #     service_user app remapped with their data at base+uid, a root_setup app
+      #     remapped with the five capabilities and no user:, the managed Postgres
+      #     remapped at base+999, a folder app in the host userns as the real
+      #     owner), then a real reboot and every check again. The caps-tier app
+      #     must keep its data across a recreate and the reboot. An image whose
+      #     brain puts an app in the wrong tier, or gives the capabilities with the
+      #     host userns, must never be published. The two boots add about a minute and a half.
+      #
       # The frozen-identity boot stays out: it is orthogonal (it checks a re-delivered
       # seed is ignored on a later boot) and has shown a flaky false "re-ingested"
       # verdict whose root cause is still open, so it is left to the full local run
@@ -349,16 +387,19 @@ jobs:
       # that a PR cannot ship. One boot keeps the PR cost close to the build cost
       # (the build dominates), while still failing a PR that breaks the updater.
       # A PR that wants the whole list can still get it: `gh workflow run
-      # "CI / Cloud image" --ref <branch> -f publish=false`.
+      # "CI / Cloud image" --ref <branch> -f publish=false`. A manual run can
+      # also pick its own list with the `boots` input, for example
+      # `-f boots=remap`. It reaches the script through an env var, never the
+      # shell text, so the input cannot inject a command.
       #
       # GO: the access and update boots mint their test-portal owner assertion on the HOST
       # (dev/cloud/mkassertion — the private key never enters the VM). The lane runs
       # under `sudo -E`, and sudo's secure_path resets PATH, so `go` on the runner's
       # PATH is invisible to the script; pass it explicitly (run-cloud-tests.sh
       # honours ${GO:-}, and -E preserves it).
-      - name: Boot test (${{ github.event_name == 'pull_request' && 'control-plane update only' || 'seed schema + BIOS/UEFI + access modes + control-plane update + SSH' }})
+      - name: Boot test (${{ github.event_name == 'pull_request' && 'control-plane update only' || inputs.boots || 'seed schema + BIOS/UEFI + access modes + control-plane update + SSH + userns tiers' }})
         env:
-          MOOSE_CLOUD_BOOTS: ${{ github.event_name == 'pull_request' && 'update' || 'unseeded seeded bios access update ssh' }}
+          MOOSE_CLOUD_BOOTS: ${{ github.event_name == 'pull_request' && 'update' || inputs.boots || 'unseeded seeded bios access update ssh remap' }}
           GO: ${{ steps.go.outputs.go-bin }}
         run: make test-cloud-qemu
 

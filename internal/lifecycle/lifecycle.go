@@ -54,7 +54,7 @@ const (
 // Held as a Manager field (overridable in tests) so a shared source's bind path
 // and its on-disk preparation resolve under a temp root in hermetic tests rather
 // than the real /srv.
-const defaultSharedRoot = "/srv/moose/shared"
+const defaultSharedRoot = protocol.SharedRoot
 
 // folderDir maps a taxonomy folder name to its capitalized on-disk directory
 // (STORAGE.md # user content). Personal source binds <home>/<dir>, shared binds
@@ -95,6 +95,16 @@ type isolation struct {
 	// by the install gate only when the manifest declares gpu: true; the zero
 	// value means "no GPU declared" and writeOverride emits no GPU stanza.
 	gpu protocol.SystemGPU
+	// tier is the instance's user-namespace tier (store.UsernsTier*), and
+	// remapBase the first host id of the daemon's remap range, 0 when the
+	// daemon runs no remap (userns.go). Together they decide the override's
+	// userns_mode and cap_add and the host owner of each bind dir.
+	tier      string
+	remapBase int
+	// imageIDs is each service's image user as in-container ids, read from
+	// the pulled images for the image tier only (imageuser.go). The owner of
+	// a service's bind dirs follows it.
+	imageIDs map[string]imageIDs
 }
 
 // hostSource resolves the host path bound for one mount: the owner's
@@ -151,6 +161,11 @@ type Manager struct {
 	// verifies against it as usual. See resolveImages.
 	offlineInstall bool
 
+	// chown sets the host owner of a bind dir or a managed-service data path.
+	// os.Lchown in production; tests record the calls, since an unprivileged
+	// test cannot give a path to another uid.
+	chown func(path string, uid, gid int) error
+
 	// healthWait is overridable in tests; production uses healthWaitTimeout.
 	healthWait time.Duration
 	// healthPoll is the inter-poll interval; production uses 2s.
@@ -184,6 +199,10 @@ type Manager struct {
 	// to contend with and skips the lock.
 	locksMu   sync.Mutex
 	instLocks map[string]*sync.Mutex
+
+	// remap caches what RemapState last read, so the store lists do not call
+	// host-agent and docker info on every request (remapstate.go).
+	remap remapCache
 }
 
 func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd CaddyDriver, docker DockerDriver, bus *events.Bus, stateDir string) *Manager {
@@ -191,6 +210,7 @@ func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd Caddy
 		store: st, catalog: cat, host: host, caddy: cd, docker: docker,
 		admit: admission.Check, bus: bus, stateDir: stateDir,
 		sharedRoot: defaultSharedRoot,
+		chown:      os.Lchown,
 		healthWait: healthWaitTimeout, healthPoll: 2 * time.Second,
 		serviceReadyWait: serviceReadyTimeout,
 		instLocks:        map[string]*sync.Mutex{},
@@ -501,6 +521,9 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	if err := admission.CheckManifest(man); err != nil {
 		return store.Instance{}, err
 	}
+	if err := admission.CheckManifestCompose(man, composeBytes); err != nil {
+		return store.Instance{}, err
+	}
 
 	// 2b. GPU capacity gate (APP_ISOLATION.md # GPU). One Pattern A probe
 	// answers both install-time questions: presence — refused right here,
@@ -531,6 +554,21 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		gpu = g
 	}
 
+	// 2c. User-namespace tier (APP_ISOLATION.md # User-namespace tiers). Read
+	// the remap from host-agent and check that Docker agrees, then pick the
+	// tier from the manifest's grants. Refused here, before any state: an
+	// install while the two disagree, and a root_setup or image_user app on a
+	// daemon with no remap. The same read gives the well-known identities a
+	// folder app needs.
+	wk, remapBase, err := m.hostIdentity(ctx)
+	if err != nil {
+		return store.Instance{}, err
+	}
+	tier, err := pickTier(man, remapBase)
+	if err != nil {
+		return store.Instance{}, err
+	}
+
 	// 3. Allocate slug, write SQLite row (state: installing). Household instances
 	// take the bare slug; personal instances take `<slug>--<user>`
 	// (DASHBOARD.md # instance naming).
@@ -544,7 +582,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		ID: id, ManifestID: man.ID, Name: man.Name, Slug: slug,
 		Version: man.Version, State: "installing",
 		OwnerUserID: owner.UserID, Scope: scope,
-		Exposure: m.defaultExposure(), CreatedAt: time.Now(),
+		Exposure: m.defaultExposure(), UsernsTier: tier, CreatedAt: time.Now(),
 	}
 	if err := m.store.Create(inst); err != nil {
 		return store.Instance{}, fmt.Errorf("write instance row: %w", err)
@@ -621,7 +659,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// writeEnv can re-emit the credentials as MOOSE_SERVICE_<NAME>_*. On a later
 	// rollback the created db/role is dropped (rollback reads grants from store).
 	step("provisioning_services")
-	grants, err := m.provisionServices(ctx, id, man.ID, man.Services)
+	grants, err := m.provisionServices(ctx, id, man.ID, man.Services, remapBase)
 	if err != nil {
 		return rollback(fmt.Errorf("provision services: %w", err))
 	}
@@ -666,12 +704,8 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// manifest declares service_user: true, which swaps in a dedicated
 	// host-allocated identity (APP_ISOLATION.md # Runtime identity & data
 	// ownership).
-	iso := isolation{uid: os.Geteuid(), gid: os.Getegid(), gpu: gpu, sharedBase: m.sharedRoot}
+	iso := isolation{uid: os.Geteuid(), gid: os.Getegid(), gpu: gpu, sharedBase: m.sharedRoot, tier: tier, remapBase: remapBase}
 	if len(man.Permissions.Folders) > 0 {
-		wk, err := m.host.WellKnownIdentity(ctx)
-		if err != nil {
-			return rollback(fmt.Errorf("resolve host identity: %w", err))
-		}
 		iso.sharedGID, iso.mounts = wk.MooseSharedGID, mounts
 		if scope == store.ScopeHousehold {
 			iso.uid, iso.gid = wk.MooseAppUID, wk.MooseAppGID
@@ -706,6 +740,17 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		}
 		inst.ServiceUID, inst.ServiceGID = alloc.UID, alloc.GID
 		iso.uid, iso.gid = alloc.UID, alloc.GID
+	} else if tier == store.UsernsTierImage {
+		// Folderless app that runs as its image's own user (image_user: true):
+		// read each service's user from the image pulled in step 5, so its
+		// bind dirs get the right owner below. The override pins no user:.
+		// A user the brain cannot resolve refuses the install here, and the
+		// rollback removes the row and what step 5 did.
+		ids, err := m.resolveImageUsers(ctx, id, pins)
+		if err != nil {
+			return rollback(err)
+		}
+		iso.imageIDs = ids
 	}
 
 	// Create + align ownership of every *private* bind dir the app declares so
@@ -722,52 +767,67 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// resolve to the brain's own euid and are unaffected). Absolute use-case
 	// folder binds are excluded by construction — they're user-owned and managed
 	// by the election logic, never re-chowned here.
-	relDirs, err := relativeBindDirs(composeBytes)
+	//
+	// On a remapped daemon the owner follows the tier (APP_ISOLATION.md # Data
+	// ownership follows the tier): base+uid for the default tier, where the
+	// container runs as uid inside, and base for the caps tier, the
+	// container's own root. In the image tier each service's dirs go to base
+	// plus its image user's ids. The host tier keeps the real ids.
+	dirsBySvc, err := bindDirsByService(composeBytes)
 	if err != nil {
 		return rollback(fmt.Errorf("parse compose volumes: %w", err))
 	}
+	owners, err := iso.bindDirOwners(dirsBySvc)
+	if err != nil {
+		return rollback(fmt.Errorf("bind dir owner: %w", err))
+	}
+	relDirs := make([]string, 0, len(owners))
+	for rel := range owners {
+		relDirs = append(relDirs, rel)
+	}
+	sort.Strings(relDirs)
 	for _, rel := range relDirs {
+		ownUID, ownGID := owners[rel].uid, owners[rel].gid
 		dir := filepath.Join(m.instanceDir(id), filepath.FromSlash(rel))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return rollback(fmt.Errorf("create bind dir %q: %w", rel, err))
 		}
-		if err := os.Chown(dir, iso.uid, iso.gid); err != nil {
+		if err := m.chown(dir, ownUID, ownGID); err != nil {
 			if os.Geteuid() == 0 {
 				return rollback(fmt.Errorf("chown bind dir %q: %w", rel, err))
 			}
 			slog.Warn("bind dir chown skipped under unprivileged brain",
-				"instance_id", id, "dir", rel, "uid", iso.uid, "gid", iso.gid, "err", err)
+				"instance_id", id, "dir", rel, "uid", ownUID, "gid", ownGID, "err", err)
 		}
 	}
 
 	// Prepare each elected PERSONAL folder source so the app can write user
 	// content into it. A docker-created bind source is root:root (the same
-	// daemon behavior as the private bind dirs above), so a pick-subfolder
-	// election whose subdir doesn't exist yet — e.g. ~/Documents/Notebooks for
-	// Jupyter — lands root-owned and the cap_drop:ALL container, running as the
-	// owner UID, can't write it. The runtime identity for a personal source IS
-	// the owner, so MkdirAll + chown to iso.uid/gid is safe: a pre-existing
-	// ~/Documents is already owner-owned (chown is a no-op) and only the new
-	// leaf is created. SHARED sources (/srv/moose/shared/…) are deliberately
-	// skipped here — that tree is group-owned via moose-shared and must NOT be
-	// chowned to a runtime UID; preparing shared subfolders is its own concern
-	// (#156). Same privilege posture as the bind-dir loop above:
-	// hard-fail under the root production brain, warn-and-skip under the
-	// unprivileged dev brain (where iso.uid is the operator that owns its home).
+	// daemon behavior as the private bind dirs above), so a folder that does not
+	// exist yet, such as ~/Documents on a new account or the pick-subfolder
+	// ~/Documents/Notebooks for Jupyter, would land root-owned, and the
+	// cap_drop:ALL container, running as the owner UID, could not write it.
+	//
+	// host-agent does this, not the brain (#519). The brain runs in a container
+	// that does not mount /home, so a MkdirAll + chown here made the folder in
+	// the container's own filesystem and never on the host. Mounting /home into
+	// the brain would give the LAN-facing brain every user's private files; a
+	// narrow named op keeps home access in host-agent, where
+	// BRAIN_HOST_PROTOCOL.md already puts it. host-agent creates each missing
+	// level owned by the owner, sets the owner of the last level, and never
+	// follows a symlink. Under the fake host-agent (make dev) it creates the
+	// folder in the operator's own home. SHARED sources are prepared below, by
+	// a different rule.
 	for _, mt := range iso.mounts {
 		if mt.Source != sourcePersonal {
 			continue
 		}
-		src := iso.hostSource(mt)
-		if err := os.MkdirAll(src, 0o755); err != nil {
-			return rollback(fmt.Errorf("create folder source %q: %w", src, err))
+		rel := folderDir[mt.Folder]
+		if mt.Subfolder != "" {
+			rel += "/" + filepath.ToSlash(filepath.Clean(mt.Subfolder))
 		}
-		if err := os.Chown(src, iso.uid, iso.gid); err != nil {
-			if os.Geteuid() == 0 {
-				return rollback(fmt.Errorf("chown folder source %q: %w", src, err))
-			}
-			slog.Warn("folder source chown skipped under unprivileged brain",
-				"instance_id", id, "src", src, "uid", iso.uid, "gid", iso.gid, "err", err)
+		if err := m.host.PrepareUserFolder(ctx, owner.Username, rel); err != nil {
+			return rollback(fmt.Errorf("prepare folder source %q: %w", iso.hostSource(mt), err))
 		}
 	}
 
@@ -905,7 +965,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		"instance_id": id, "name": man.Name, "slug": slug, "url": url,
 	})
 	slog.Info("app installed",
-		"instance_id", id, "name", man.Name, "url", url, "upstream", upstream)
+		"instance_id", id, "name", man.Name, "url", url, "upstream", upstream, "tier", tier)
 	return inst, nil
 }
 
@@ -1358,6 +1418,27 @@ func (m *Manager) clearPendingRecreate(inst store.Instance) {
 	}
 }
 
+// WaitDocker blocks until Docker answers the brain, or ctx is done. The brain
+// reaches Docker only through the socket proxy, and after a reboot Docker
+// starts the proxy and the brain together from their restart policy, so the
+// brain can be up a moment before the proxy answers. The startup reconcile runs
+// once, and it is what puts the app routes back after EnsureIngress reset them,
+// so it must not run into that moment (#540). It probes with the docker ps
+// Reconcile uses to list what runs, and returns the last error if ctx ends first.
+func (m *Manager) WaitDocker(ctx context.Context, poll time.Duration) error {
+	for {
+		_, err := m.docker.PSManaged(ctx)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("docker not ready: %w", err)
+		case <-time.After(poll):
+		}
+	}
+}
+
 // Reconcile is the brain-startup pass (APP_LIFECYCLE.md # reconciliation is
 // imperative, with a startup pass). It walks SQLite (desired state), compares
 // against Docker (actual state), and converges:
@@ -1388,6 +1469,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 
 	seen := map[string]bool{}
 	var avahiTotal, avahiOK, avahiFail int
+	var splashes []store.Instance // stopped and failed, written after the loop
 	for _, inst := range desired {
 		seen[inst.ID] = true
 		switch inst.State {
@@ -1479,7 +1561,23 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 						"instance_id", inst.ID, "err", err, "output", out)
 				}
 			}
+			splashes = append(splashes, inst)
+		case "failed":
+			splashes = append(splashes, inst)
 		}
+	}
+	// Splashes go last (#520). The whole pass runs under one startup deadline,
+	// and a slow Caddy makes each route write cost time. A running app's route
+	// and its compose up matter more than a stopped app's splash, so they must
+	// not wait behind them. They get their own short budget, cut loose from the
+	// caller's deadline: if the work above used it up, the splashes still get
+	// a try instead of failing at once on an expired context.
+	if len(splashes) > 0 {
+		splashCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), splashBudget)
+		for _, inst := range splashes {
+			m.reassertSplash(splashCtx, inst)
+		}
+		cancel()
 	}
 	if avahiTotal > 0 {
 		slog.Info("avahi replay", "total", avahiTotal, "ok", avahiOK, "failed", avahiFail)
@@ -1512,6 +1610,30 @@ func (m *Manager) reassertRouting(ctx context.Context, inst store.Instance) bool
 			"instance_id", inst.ID, "host", host, "upstream", upstream, "err", err)
 	}
 	return avahiOK
+}
+
+// splashBudget bounds the time the startup pass spends writing splash routes
+// for stopped and failed apps, apart from the caller's deadline (#520). A
+// healthy Caddy answers each write in milliseconds.
+const splashBudget = 10 * time.Second
+
+// reassertSplash re-registers the splash route of a stopped or failed
+// instance, the way reassertRouting does for a running one (#520). The brain
+// clears Caddy's route list on startup (EnsureIngress), so without this a
+// stopped or failed app answered with the catch-all 404 after every restart,
+// and a splash write that failed earlier stayed wrong until the user acted.
+// Like Stop, it does not re-announce the mDNS name: it uses the stored host.
+// Best-effort: a failure is logged and does not block startup.
+func (m *Manager) reassertSplash(ctx context.Context, inst store.Instance) {
+	host := m.routeHost(inst)
+	appName := inst.Name
+	if man, err := m.loadInstanceManifest(inst.ID); err == nil {
+		appName = man.Name
+	}
+	if err := m.caddy.AddSplashRoute(ctx, inst.ID, host, appName, inst.State); err != nil {
+		slog.Warn("reconcile: caddy splash route",
+			"instance_id", inst.ID, "host", host, "err", err)
+	}
 }
 
 func (m *Manager) teardownOrphan(ctx context.Context, id string) {
@@ -1808,6 +1930,13 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		if env := envByService[svc]; len(env) > 0 {
 			entry["environment"] = env
 		}
+		// The user-namespace tier (APP_ISOLATION.md # User-namespace tiers):
+		// userns_mode: host for the host tier, the five capabilities and no
+		// user: for the caps tier, never both. Nothing on a daemon with no
+		// remap, so the override is the same as before the tiers.
+		if err := iso.applyTier(entry); err != nil {
+			return err
+		}
 		services[svc] = entry
 	}
 	networks := map[string]any{
@@ -2032,13 +2161,36 @@ func bindSource(n yaml.Node) (string, error) {
 // and named volumes are excluded by construction — only "./"-prefixed sources
 // qualify, and any that would escape the instance dir are dropped.
 func relativeBindDirs(composeBytes []byte) ([]string, error) {
-	svcs, err := parseComposeServices(composeBytes)
+	bySvc, err := bindDirsByService(composeBytes)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
 	var dirs []string
-	for _, svc := range svcs {
+	for _, svcDirs := range bySvc {
+		for _, rel := range svcDirs {
+			if !seen[rel] {
+				seen[rel] = true
+				dirs = append(dirs, rel)
+			}
+		}
+	}
+	sort.Strings(dirs)
+	return dirs, nil
+}
+
+// bindDirsByService is relativeBindDirs per service: each service's own
+// relative bind dirs, cleaned, sorted and without duplicates. A service with
+// none is left out. The image tier needs it, since each service's dirs go to
+// that service's image user.
+func bindDirsByService(composeBytes []byte) (map[string][]string, error) {
+	svcs, err := parseComposeServices(composeBytes)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for name, svc := range svcs {
+		seen := map[string]bool{}
 		for _, src := range svc.BindSources {
 			if !strings.HasPrefix(src, "./") {
 				continue
@@ -2049,12 +2201,12 @@ func relativeBindDirs(composeBytes []byte) ([]string, error) {
 			}
 			if !seen[rel] {
 				seen[rel] = true
-				dirs = append(dirs, rel)
+				out[name] = append(out[name], rel)
 			}
 		}
+		sort.Strings(out[name])
 	}
-	sort.Strings(dirs)
-	return dirs, nil
+	return out, nil
 }
 
 // sharedDirMode is the household shared tree's directory mode, 02770 — setgid
@@ -2081,7 +2233,7 @@ func prepareSharedSource(root, src string, sharedGID int) error {
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("shared source %q is not under shared root %q", src, root)
 	}
-	if fi, err := os.Stat(root); err != nil {
+	if fi, err := os.Lstat(root); err != nil {
 		return fmt.Errorf("shared root %q: %w", root, err)
 	} else if !fi.IsDir() {
 		return fmt.Errorf("shared root %q is not a directory", root)
@@ -2089,7 +2241,15 @@ func prepareSharedSource(root, src string, sharedGID int) error {
 	cur := root
 	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
 		cur = filepath.Join(cur, part)
-		if _, err := os.Stat(cur); err == nil {
+		// Lstat, not Stat: every household member can write the shared tree, so
+		// any of them can put a symlink in it. Docker follows a symlink in a bind
+		// source on the host, so Documents -> /var/lib/moose would hand the
+		// brain's own state to a household app. Refuse it here, before compose
+		// up, along with a file where a folder should be (#519).
+		if fi, err := os.Lstat(cur); err == nil {
+			if !fi.IsDir() {
+				return fmt.Errorf("shared source level %q is not a real directory (a file or a symlink is in the way)", cur)
+			}
 			continue // pre-existing — never re-own a shared parent
 		} else if !os.IsNotExist(err) {
 			return err

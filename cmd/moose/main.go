@@ -9,6 +9,10 @@
 //     the store's ai_providers.yml.
 //   - `check` runs `lint` AND the compose admission policy (admission.Check,
 //     APP_LIFECYCLE.md) in one pass — the "would this actually install?" gate.
+//     It also runs the manifest-side rules the brain applies at install
+//     (admission.CheckManifest: service_user, root_setup and image_user against
+//     the grants they cannot sit with; admission.CheckManifestCompose: no
+//     user: in the compose of an image_user app).
 //     A single green `check` proves both the schema and the structural compose
 //     rules, so authors never hand-eyeball the admission rules.
 //   - `resolve` fills the manifest's `images` block with registry-resolved

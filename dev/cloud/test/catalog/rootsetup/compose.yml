@@ -1,0 +1,18 @@
+# Author's compose, held verbatim by moose. A test fixture, not a catalog app.
+# Runs as root at start (the manifest sets root_setup: true, so the brain
+# leaves user: unset), fixes the owner of its data, then drops to www-data.
+# The token is written once and kept on every later start.
+services:
+  rootsetup:
+    image: busybox:1.37.0
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        mkdir -p /data/db
+        chown 33:33 /data/db
+        chmod 0700 /data/db
+        exec setuidgid www-data sh -c '[ -s /data/db/token ] || cat /proc/sys/kernel/random/uuid > /data/db/token; id > /data/db/id.txt; exec httpd -f -p 8080 -h /data/db'
+    volumes:
+      - ./data:/data

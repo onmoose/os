@@ -342,6 +342,12 @@ type Entry struct {
 	// figure (estimated_size) is the manifest's measured baseline at install, not
 	// a usage projection (APP_MANIFEST.md # Storage, DECISIONS.md 2026-06-09).
 	Footprint manifest.Footprint `json:"footprint"`
+
+	// needsRemap is true when the app sets root_setup or image_user, so it can
+	// only run on a Docker daemon with the userns-remap. It is not on the API:
+	// its one use is WithoutRemapApps, which leaves such an app out of the
+	// store lists on a box with no remap.
+	needsRemap bool
 }
 
 // Detail is the full store detail-page view of one app (APP_STORE.md # Catalog

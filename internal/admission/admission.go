@@ -62,10 +62,99 @@ func Check(ctx context.Context, composeBytes []byte) error {
 // CheckManifest applies the manifest-side admission rules — declarations that
 // are illegal regardless of the compose content. Door-symmetric like Check:
 // lifecycle's shared install transaction runs it for both doors (a Door-2
-// synthetic manifest never sets service_user, so it passes trivially).
+// synthetic manifest never sets service_user, root_setup or image_user, so it
+// passes trivially). `moose manifest check` runs it too, so catalog CI refuses
+// the same manifests at publish time.
 func CheckManifest(man *manifest.Manifest) error {
+	// root_setup and image_user first: when a manifest also breaks the
+	// service_user rule, removing service_user alone would not fix it, so name
+	// the field that would.
+	if man.RootSetup {
+		if err := checkRootSetup(man); err != nil {
+			return err
+		}
+	}
+	if man.ImageUser {
+		if err := checkImageUser(man); err != nil {
+			return err
+		}
+	}
 	if man.ServiceUser && len(man.Permissions.Folders) > 0 {
 		return reject("manifest sets service_user: true together with a folders grant — a folder app already runs as a managed non-root identity (APP_MANIFEST.md # B); remove service_user")
+	}
+	return nil
+}
+
+// checkRootSetup refuses root_setup: true together with a grant that puts the
+// app in the host user namespace (folders, gpu, devices), or with service_user
+// (APP_MANIFEST.md # B). root_setup gives capabilities back, and those are
+// safe only inside a remapped namespace: in the host namespace they would be
+// real root's powers (APP_ISOLATION.md # User-namespace tiers). service_user
+// pins a non-root user, and root_setup removes the pin, so the two cannot
+// both hold.
+func checkRootSetup(man *manifest.Manifest) error {
+	const why = "root_setup is for folderless apps only: it gives capabilities back, which is safe only in a remapped user namespace, and this grant runs the app in the host one (APP_MANIFEST.md # B). Remove root_setup, or package the image to start without root"
+	switch {
+	case len(man.Permissions.Folders) > 0:
+		return reject("manifest sets root_setup: true together with a folders grant. %s", why)
+	case man.Permissions.GPU:
+		return reject("manifest sets root_setup: true together with gpu: true. %s", why)
+	case len(man.Permissions.Devices) > 0:
+		return reject("manifest sets root_setup: true together with devices. %s", why)
+	case man.ServiceUser:
+		return reject("manifest sets root_setup: true together with service_user: true. service_user pins a non-root user and root_setup removes that pin (APP_MANIFEST.md # B). Keep one of them")
+	}
+	return nil
+}
+
+// checkImageUser refuses image_user: true together with a grant that puts the
+// app in the host user namespace (folders, gpu, devices), or with service_user
+// or root_setup (APP_MANIFEST.md # B). image_user keeps the uid the image
+// names, which is safe only inside a remapped user namespace: in the host one
+// it is a real host uid and could be a real host account's. service_user and
+// root_setup each pick the runtime user their own way, so only one of the
+// three can hold.
+func checkImageUser(man *manifest.Manifest) error {
+	const why = "image_user is for folderless apps only: it keeps the user id the image names, which is safe only in a remapped user namespace, and this grant runs the app in the host one (APP_MANIFEST.md # B). Remove image_user, or package the image to run as the user moose gives it"
+	switch {
+	case len(man.Permissions.Folders) > 0:
+		return reject("manifest sets image_user: true together with a folders grant. %s", why)
+	case man.Permissions.GPU:
+		return reject("manifest sets image_user: true together with gpu: true. %s", why)
+	case len(man.Permissions.Devices) > 0:
+		return reject("manifest sets image_user: true together with devices. %s", why)
+	case man.ServiceUser:
+		return reject("manifest sets image_user: true together with service_user: true. service_user pins a user moose picks, and image_user keeps the image's own (APP_MANIFEST.md # B). Keep one of them")
+	case man.RootSetup:
+		return reject("manifest sets image_user: true together with root_setup: true. root_setup gives capabilities back for root work at start, and image_user gives none (APP_MANIFEST.md # B). Keep one of them")
+	}
+	return nil
+}
+
+// CheckManifestCompose applies the admission rules that need the manifest and
+// the compose together. Today that is one: the compose of an image_user app
+// must not set user: on any service. That would replace the image's own user,
+// and the brain gives the bind dirs to the image's user (APP_MANIFEST.md # B).
+// CheckStructure already refuses a numeric user: for every app; this also
+// catches a name. Door-symmetric, and `moose manifest check` runs it too, like
+// CheckManifest.
+func CheckManifestCompose(man *manifest.Manifest, composeBytes []byte) error {
+	if !man.ImageUser {
+		return nil
+	}
+	var doc composeDoc
+	if err := yaml.Unmarshal(composeBytes, &doc); err != nil {
+		return reject("compose is not valid YAML: %v", err)
+	}
+	names := make([]string, 0, len(doc.Services))
+	for n := range doc.Services {
+		names = append(names, n)
+	}
+	sortStrings(names)
+	for _, name := range names {
+		if doc.Services[name].User != nil {
+			return reject("manifest sets image_user: true and service %q sets user: in the compose, so the image's own user would not apply. Remove user: from the compose (APP_MANIFEST.md # B)", name)
+		}
 	}
 	return nil
 }

@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v22"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v25"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -144,6 +144,41 @@ docker pull "$WHOAMI_REF"
 docker tag "$WHOAMI_REF" traefik/whoami:v1.10.3
 docker save traefik/whoami:v1.10.3 -o "$EXTRA/var/lib/moose/control-plane-images/whoami.tar"
 
+# filedrop image (#519): busybox, pinned by the same index digest its manifest
+# promises and re-tagged to the tag its compose names. The access boot installs
+# filedrop twice, household and personal, to prove both folder sources on a
+# booted box. It is small (about 2 MB), so it rides the first-boot loader like
+# whoami instead of a test-only dir.
+BUSYBOX_REF="busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
+docker pull "$BUSYBOX_REF"
+docker tag "$BUSYBOX_REF" busybox:1.37.0
+docker save busybox:1.37.0 -o "$EXTRA/var/lib/moose/control-plane-images/filedrop.tar"
+
+# imageuser images (#537): two synthetic images built here from the same
+# busybox, each with its own USER and a /baked dir owned by that user. One
+# names the user by number (1001), the other by name (app2, uid 1002 in its
+# /etc/passwd). The imageuser fixture declares image_user: true. The image
+# runs the userns remap (#530), and the access boot checks that the app runs
+# remapped as its images' users. Built with the classic builder so no buildx or
+# registry is needed:
+# the FROM image is already local. Together they add about 2 MB, since the
+# layers they share with busybox are saved once.
+IMAGEUSER_CTX="${WORK}/imageuser-build"
+rm -rf "$IMAGEUSER_CTX"
+mkdir -p "$IMAGEUSER_CTX"
+cat > "$IMAGEUSER_CTX/Dockerfile" <<'EOF'
+FROM busybox:1.37.0
+ARG IMAGE_USER
+RUN addgroup -g 1001 app1 && adduser -D -H -u 1001 -G app1 app1 \
+ && addgroup -g 1002 app2 && adduser -D -H -u 1002 -G app2 app2 \
+ && mkdir /baked && chown "${IMAGE_USER}:${IMAGE_USER}" /baked && chmod 0755 /baked
+USER ${IMAGE_USER}
+EOF
+DOCKER_BUILDKIT=0 docker build -q --build-arg IMAGE_USER=1001 -t moose-test/imageuser:1 "$IMAGEUSER_CTX"
+DOCKER_BUILDKIT=0 docker build -q --build-arg IMAGE_USER=app2 -t moose-test/imageuser-named:1 "$IMAGEUSER_CTX"
+docker save moose-test/imageuser:1 moose-test/imageuser-named:1 \
+    -o "$EXTRA/var/lib/moose/control-plane-images/imageuser.tar"
+
 # Stage a local catalog snapshot with a whoami app: the lane is air-gapped, so there
 # is no control plane to sync from, and the brain reads this file once at boot to
 # seed its store (internal/catalog/remote.go # loadSnapshotFile, MOOSE_CATALOG_FILE).
@@ -156,6 +191,12 @@ MKCATALOG_BIN="${WORK}/mkcatalog"
 stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
 "$MKCATALOG_BIN" \
     -pkg "${TEST_DIR}/catalog/whoami" \
+    -pkg "${TEST_DIR}/catalog/filedrop" \
+    -pkg "${TEST_DIR}/catalog/imageuser" \
+    -pkg "${TEST_DIR}/catalog/remapdrop" \
+    -pkg "${TEST_DIR}/catalog/svcdrop" \
+    -pkg "${TEST_DIR}/catalog/rootsetup" \
+    -pkg "${TEST_DIR}/catalog/pgnote" \
     -out "$EXTRA/var/lib/moose/catalog-seed.json"
 
 # Offline-install env, layered over the shared 10-cloud-brain.conf drop-in (20- sorts
@@ -203,6 +244,19 @@ REGISTRY_REF="registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace5288
 docker pull "$REGISTRY_REF"
 docker tag "$REGISTRY_REF" registry:2
 docker save registry:2 -o "$EXTRA/var/lib/moose/test-images/registry.tar"
+
+# --- 3d. postgres:16 for the remap boots (#531), TEST-LANE ONLY. The remap boot
+# installs pgnote, a synthetic app on the managed Postgres 16, and the managed
+# service runs this image. pgnote uses the same image for its psql client. It is
+# about 150 MB, so it goes to the test-only dir like the registry: only the remap
+# boot loads it, and the other boots never pay for it. The remapdrop, svcdrop
+# and rootsetup fixtures use the busybox image the first-boot loader already
+# loads. Pinned by digest because `postgres:16` is a moving tag.
+echo "baking postgres:16 for the userns-remap boots (#531)..."
+POSTGRES_REF="postgres@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54"
+docker pull "$POSTGRES_REF"
+docker tag "$POSTGRES_REF" postgres:16
+docker save postgres:16 -o "$EXTRA/var/lib/moose/test-images/postgres-16.tar"
 
 # --- 4. Docker apt repo for the build's package manager (trixie pocket — the
 # cloud image is Release=trixie). Build-host network only; the VM never apt-installs.

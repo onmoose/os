@@ -32,6 +32,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -220,7 +221,36 @@ func brainLaunchConfig(sockPath string) brainlaunch.Config {
 		CatalogFile:       env("MOOSE_CATALOG_FILE", ""),
 		OfflineInstall:    envBool("MOOSE_OFFLINE_INSTALL"),
 		ProfileMarkerPath: profileMarker,
+		// The household shared tree, made to exist with its group and mode
+		// first, then mounted into the brain (#519). Empty when that fails, so
+		// the brain is never handed a bind Docker would create root:root.
+		SharedRoot: ensureSharedTree(),
 	}
+}
+
+// ensureSharedTree makes sure the household shared tree exists as
+// root:moose-shared 02770 (STORAGE.md # Permissions) and returns its path for
+// the brain's mount, or "" when it cannot. It runs before the brain is
+// launched, on both profiles. A failure is logged and not fatal, like the rest
+// of the brain bootstrap: the box still boots, and only household folder apps
+// fail to install until the next host-agent start fixes it.
+func ensureSharedTree() string {
+	root := protocol.SharedRoot
+	g, err := user.LookupGroup("moose-shared")
+	if err != nil {
+		slog.Error("no moose-shared group; the brain gets no shared tree and household folder apps cannot install", "dir", root, "err", err)
+		return ""
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		slog.Error("moose-shared group has a bad gid; the brain gets no shared tree", "dir", root, "err", err)
+		return ""
+	}
+	if err := brainlaunch.EnsureSharedTree(root, 0, gid); err != nil {
+		slog.Error("could not prepare the shared tree; the brain gets no shared tree", "dir", root, "err", err)
+		return ""
+	}
+	return root
 }
 
 func env(key, def string) string {

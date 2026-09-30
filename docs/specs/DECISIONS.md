@@ -21,6 +21,103 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-30 — The box hides apps it cannot run, on top of the server-side environment filter (#544)
+
+**Previously:** the environment filter is the catalog service's (`?env=`), and the box "runs no second visibility pass" (`APP_STORE.md`, #434). Every app the box received was shown.
+
+**Now:** the box leaves out of its store lists an app that needs a feature this box lacks. Today that is an app with `root_setup` or `image_user` on a box with no userns-remap. The detail page of such an app still loads, and says in one plain sentence that it cannot be installed there. Only a known "no remap" hides anything; an unknown state shows every app.
+
+**Why:** the remap is a fact about one box, not about a surface. Two hosted boxes on the same `?env=` can differ: one built before #530 has no remap, one built after has it. The catalog service cannot tell them apart, so the filter has to run on the box. Sending the remap state to the service as a second query parameter was the other option. It would keep one filter, but a direct link would then 404 with no reason. The box-side view keeps the detail page, and is only a projection: the install check stays the gate.
+
+**Affected docs:** `APP_STORE.md` # Apps this box cannot run and # Locked decisions, `APP_ISOLATION.md` # User-namespace tiers, `BRAIN_UI_PROTOCOL.md` # install-plan, `docs/architecture.md`.
+
+## 2026-09-29 — image_user: a folderless app may keep its image's own user, remapped (#537)
+
+**Previously:** the brain pinned `user:` on every app container. On a remapped box the only way to drop that pin was `root_setup: true`, the caps tier, which also gives five capabilities back. Images that only need to run as their own baked user (plunk, formbricks) got further there, but for a reason `root_setup` does not name, and with capabilities they never use (`../progress/brain-userns-tiers.md`). `NEXT.md` kept this as open topic (1) of "After the user-namespace remap".
+
+**Now:** a new manifest intent, `image_user: true`, puts a folderless app in a fourth tier, the **image tier**: remapped, `cap_drop: [ALL]`, no capability back and no `user:` pin, so the image's own `USER` runs. After the pull the brain reads each service's `Config.User`. A number is used as it is. A name, or a number with no group, is looked up in the image's own `/etc/passwd` and `/etc/group`, read from a container that is created and never started. Each bind dir goes to `base+uid`:`base+gid` of the service that binds it. A name the image does not list, an id at or above 65536, or a dir that two services with different users share refuses the install. Without the remap the install is refused, like `root_setup`. Admission refuses `image_user` with `folders`, `gpu: true`, `devices`, `service_user`, `root_setup`, or a `user:` in the compose.
+
+**Why:**
+- **Least privilege.** The maintainer chose a separate intent over reusing `root_setup`. The app gets nothing a default-tier app lacks except its own user. It lets in more apps without adding a capability.
+- **Reading names is safe here.** Whatever the image's files say, the result is only an offset inside the remap range, and an id past the range is refused. So a name can give nothing that a numeric `USER` could not give already, and the image tier exists only on a remapped box. The files are the ones Docker itself reads at start, so the owner the brain gives matches the user the process runs as. No code from the image runs to read them. Refusing names would have left out both apps that asked for this: plunk sets `USER plunk` and formbricks `USER nextjs`.
+- **The trade-off:** an image picks which uid in the range it runs as. After a container escape it can reach the files of remapped containers that run as that uid, such as a `service_user` app. Most remapped containers already share `base`, the default folderless identity, so this is a small widening, after an escape only (`THREAT_MODEL.md` B2).
+
+**Affected docs:** `APP_MANIFEST.md` # B (`image_user`) and # Locked decisions; `APP_ISOLATION.md` # Runtime identity & data ownership, # User-namespace tiers, # What this does not cover, # High-level toggles; `APP_LIFECYCLE.md` # Locked: override file contents and # Locked: install transaction; `THREAT_MODEL.md` B2 and residual 12; `NEXT.md` (topic 1 of "After the user-namespace remap" closes).
+
+---
+
+## 2026-09-29 — Every install need is a step, and the last step installs
+
+**Previously:** a last page with every answer and a Change link; a user with saved accounts went straight there. Optional email, optional AI and Extra settings were rows on it with Set up, and the scope had its own "For" row (`INSTALL_STEPS.md` # 2).
+**Now:** every need is a step with the saved accounts listed and one picked; the last step installs. The order is AI needs, email, required settings, folders. Optional AI and email steps have a "Don't use" choice, and with no saved account they are a small offer, "Not now" (picked) or "Set up …". The folder step is the consent screen for folder access and shows for every app that uses a folder, with what the app can do in each folder. Optional plain settings have no step and keep their defaults, and the scope comes only from the App page's button. An app with no steps installs from the App page, as before.
+**Why:** the user wants to see and confirm the account in one place, and a summary page added a click without adding information.
+**Affected docs:** `INSTALL_STEPS.md` (Decisions, Build rules 1, 2, 8 and 9, # 1, # 2), `DASHBOARD.md` # Install authorization.
+
+---
+
+## 2026-09-29 — An app that asks nothing installs from the App page
+
+**Previously:** an app with no questions still showed the last page of the install flow ("Ready to install Memos") before the install started (`INSTALL_STEPS.md` # 1).
+**Now:** an app that needs no input from the user (no settings, no email, no AI, no folders) shows no install pages. Install on the App page starts the install and goes to the progress page. The App page lists what the app can do in a Permissions group in its right column, so the user still sees it before the install starts. When there is something to warn about (a copy the user can already see, or not enough space), a page with only the warning opens, and any error from the install opens the install pages with it shown.
+**Why:** in the user test, the last page for such an app had nothing on it but the Install button, a page that asks nothing. Skipping it removes a click that tells the user nothing new.
+**Affected docs:** `INSTALL_STEPS.md` (Decisions, # 1, Build rules), `DASHBOARD.md` # Install authorization.
+
+---
+
+## 2026-09-29 — Docker runs with a daemon-wide userns-remap, and the brain picks a tier per container (#516)
+
+**Previously:** moose ran no user-namespace remap. `APP_ISOLATION.md` # Not in v1 said it "breaks too many images". Every app container ran in the host user namespace, so a folderless app on the default identity was real host root with no capabilities. No app could get a capability back (2026-05-13), and images that must `chown` or drop privileges as root at start (poznote, mealie), or that hardcode their own internal UID, stayed curation-rejects (2026-06-10). The June spike recommended sysbox-runc, because it would give each container its own range.
+
+**Now:** the image turns on Docker's daemon-wide `userns-remap`, on a dedicated `moose-remap` range (host ids 1000000 to 1065535) in `/etc/subuid` and `/etc/subgid`, with `SUB_UID_COUNT 0` and `SUB_GID_COUNT 0` in `login.defs` so no login user gets a range. The brain picks one of three tiers for every container: **default** (remapped, today's sandbox), **caps** (remapped, with `CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE` and `FOWNER` back and no `user:` pin, for a folderless app that declares `root_setup: true`), and **host** (`userns_mode: host`, today's sandbox, for apps with `folders`, `gpu` or `devices`, and for the socket proxy and the brain). The brain picks the host tier, never a manifest. Capabilities never come with the host namespace. This flips part of 2026-05-13: an author's compose still cannot `cap_add`, but the brain now adds a fixed set, inside a remapped namespace only, for one declared intent.
+
+**Why:**
+- **It works on this catalog.** Step 0 ran 58 listed apps through a root brain in three daemon modes. No app failed only under the remap, and poznote and mealie passed only under it, with the caps tier (`../progress/userns-remap-pretest.md`). On the booted production image the control plane, the managed services, `service_user` apps and a household folder app all passed, and so did the six usual boots, update and revert included (`../progress/userns-remap-ci-proofs.md`).
+- **Not sysbox CE.** Sysbox CE also uses one mapping for every container: separate ranges per container were an Enterprise feature. So it gives the same shared-range isolation as Docker's own remap, and it adds two more root daemons (`sysbox-mgr`, `sysbox-fs`) that trap syscalls. Docker's remap uses only kernel and `dockerd` code.
+- **The accepted trade-off: one shared range.** Every remapped container maps into the same range. A kernel or runtime escape from one remapped app can reach the files of the other remapped apps that run as the same uid, and an escape from a caps-tier app, which can switch to any uid in the range, can reach every remapped container's files. It cannot reach real host root. Today the same escape from a folderless app is real host root, so this is strictly better, and a per-container range is not on offer from the runtime we ship. The maintainer accepted it (`THREAT_MODEL.md` B2).
+- **The limit: folderless apps only.** One daemon-wide range cannot map a container to one real user, and a folder app must act as the real user on user content. So folder apps stay in the host tier on today's sandbox, and a folder app whose image needs root at start (calibre-web with s6-overlay) must be packaged to start without it. Per-container ID maps stay in `APP_ISOLATION.md` # Not in v1.
+- **With the remap on, Docker turns its containerd image store off** and uses the classic `overlay2` store. The control-plane image load, the app pulls, and the control-plane update and revert all passed on it.
+- **New boxes only.** Turning the remap on moves Docker to a new data root and changes who owns every app's data, so an existing box is not migrated. The few existing boxes are re-provisioned.
+
+**Affected docs:** `APP_ISOLATION.md` # User-namespace tiers, # The folder-app limit, # What this does not cover, # Capabilities & privilege, # Not in v1; `APP_MANIFEST.md` # B (`root_setup`) and # Locked decisions; `APP_LIFECYCLE.md` # Locked: override file contents; `CONTROL_PLANE.md` # Locked: control-plane container hardening; `BRAIN_HOST_PROTOCOL.md` # User info endpoints (`remap_base`); `THREAT_MODEL.md` B2 and the residual list; `BUILD.md` # User-namespace remap; `ENVIRONMENT.md` # How the profile is realized; `NEXT.md` (the user-namespace remap item closes).
+
+---
+
+## 2026-09-29 — The brain mounts the shared tree, and host-agent prepares home folders
+
+**Previously:** the brain prepared every folder source itself before an app install: it created and chowned `/home/<user>/<Folder>` for a personal source and created `/srv/moose/shared/<Folder>` for a shared one (#147, #156). `BRAIN_HOST_PROTOCOL.md` said the containerized brain "cannot touch `/home` or `/srv/moose`". Both were true at once, and nobody noticed, because the only lanes that installed a folder app ran a native brain. On a real box a household folder install failed, and a personal folder was made inside the brain's own container.
+
+**Now:** host-agent makes sure `/srv/moose/shared` exists as `root:moose-shared` `02770` on every start and mounts it into the brain at the same path, so the brain keeps preparing shared sources. Personal sources move to a new narrow host-agent op, `POST /v1/users/{username}/prepare-folder`, and the brain never mounts `/home`.
+
+**Why:** the two trees are not alike. The shared tree is household space that every member can already reach, and the brain already owned its preparation. A home is one user's `0750` space. A compromised brain is host compromise anyway (`THREAT_MODEL.md` B8), so the split is not a breach control. It keeps a bug or a bad path in the large, LAN-facing brain away from every home, and it keeps home access a narrow named host-agent op, which `CONTROL_PLANE.md` # Locked: host-agent hardening directives already asks for. The home op also has to be careful in a way the shared prep did not: the user owns the home, so it walks it without following a symlink.
+
+**Affected docs:** `CONTROL_PLANE.md` # Locked: host-agent launches the brain container, `BRAIN_HOST_PROTOCOL.md` # User info endpoints and # Files endpoints, `APP_ISOLATION.md` # Volumes, `STORAGE.md` # Permissions, `THREAT_MODEL.md` B2.
+
+---
+
+## 2026-09-28 — Install asks one question per page, and repeat installs skip to the last page
+
+**Previously:** the install setup page showed every section at once, as rows: permissions, folders, email, AI providers, settings, size (`INSTALL_SETUP.md` # 6). The AI row asked for a provider, an account and the models, with its own Save inside the page. The provider tiles showed five featured providers and the rest behind More, in the catalog's order. Optional email was a row on every install of a mail-capable app.
+
+**Now:** one question per page, each with one Continue button, and a last page that shows every answer with a Change link (`INSTALL_STEPS.md`). A user whose every need has a saved answer goes straight to the last page. Models are not asked during the install: the provider's default is used, and the model changes later on the app's settings screen. The service grid shows every service the app can use in popularity order, with no search, no More and no Recommended badge. Needs have three levels (required, recommended, optional), and optional email and AI stay inside the install. Permissions and size are a quiet box on the first and last page only.
+
+**Why:** a non-technical user could not tell which parts of the page needed an answer, and the Save inside the AI row was a trap: a key added but not saved linked nothing, and Install stayed disabled. One question per page fixes that for a first install. For a repeat install it is a click tax that teaches users to press Continue without reading, so the last page shows the saved answers in plain view instead. Models were dropped from the install because a non-technical user cannot choose on model names, and the default is a safe start. The order is popularity, and nothing is recommended, so that moose never tips the scale toward a provider, including one moose may run itself later. We rejected taking optional email out of the install: some apps are badly degraded without it, and sending the user to Settings afterwards is a poor experience.
+
+**Affected docs:** `INSTALL_STEPS.md` (new), `DASHBOARD.md` # Install authorization, `APP_STORE.md` # AI provider data, `INSTALL_SETUP.md`, `NEXT.md` # Install steps: deferred.
+
+---
+
+## 2026-09-28 — Gmail and iCloud become the first email presets
+
+**Previously:** the email presets were sending services (SES, SendGrid, Mailgun, Postmark, Brevo, Resend, SMTP2GO), plus Google Workspace and Custom. iCloud was excluded as "465-only in practice, which hosted blocks" (`SERVICE_PROVISIONING.md` # BYO outgoing mail).
+
+**Now:** "Gmail or Google Workspace" (the Workspace preset renamed, same server) and iCloud are planned as the first two presets, with the sending services after them under their own heading (`INSTALL_STEPS.md` # 4). Both use port 587 with STARTTLS and an app password.
+
+**Why:** a household has a Gmail or iCloud address, not a SendGrid account, so the old list had nothing a non-technical user already owns. Gmail still allows SMTP with an app password: what ended in 2025 was sign-in with the normal password, and the 2026 Gmailify and POP change is about Gmail fetching mail, not other apps sending through it. Apple's own settings page gives iCloud's SMTP on port 587, so the old exclusion was wrong. The known risks: Google may remove app passwords one day, a Workspace admin can turn them off, and both are for low volume (Gmail allows about 500 emails a day).
+
+**Affected docs:** `INSTALL_STEPS.md` # 4, `SERVICE_PROVISIONING.md` # BYO outgoing mail.
+
+---
+
 ## 2026-09-26 — Editing or deleting an email or AI account reaches the apps that use it
 
 **Previously:** editing or deleting an outgoing email account did not touch the apps bound to it. They kept the old values in their `.env` until their next rebind or reinstall. This lag was accepted on purpose, "rather than a fleet-restart side effect hidden inside a settings save" (2026-06-12), and `NEXT.md` held re-stamp-on-edit as a deferral whose answer would be visible restarts.

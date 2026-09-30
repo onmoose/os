@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/onmoose/os/internal/store"
 )
 
 // writeManifestFixture writes manifest.yml + a minimal compose.yml into
@@ -339,5 +341,60 @@ func TestInstallPlan_MemberFolderSourcesStillPresent(t *testing.T) {
 	}
 	if hh.Options[0] != "shared" || hh.Default != "shared" {
 		t.Errorf("member household source: want {[shared] shared}, got %+v", hh)
+	}
+}
+
+// TestInstallPlan_Existing: the plan lists the copies the caller can see, by
+// the same rule as the 409 duplicate check, so the first page warns about
+// exactly the copies an install would stop on.
+func TestInstallPlan_Existing(t *testing.T) {
+	h := newHarness(t)
+	writeManifestFixture(t, h.catalogDir, "whoami", minimalManifestYML)
+	admin := h.setupAdmin("alice", "pass1")
+	h.addMember("u_bob", "bob", "bobpass")
+	h.addMember("u_cara", "cara", "carapass")
+	h.seedInstance("h1", "whoami", "whoami", admin.ID, store.ScopeHousehold)
+	h.seedInstance("p1", "whoami", "whoami--cara", "u_cara", store.ScopePersonal)
+	h.seedInstance("o1", "other", "other", admin.ID, store.ScopeHousehold)
+
+	get := func() []InstallPlanExisting {
+		t.Helper()
+		resp := h.do("GET", "/api/v1/catalog/whoami/install-plan", nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("want 200, got %d", resp.StatusCode)
+		}
+		return decodeJSON[InstallPlanDTO](t, resp).Existing
+	}
+
+	// The admin sees every copy, and owns only the household one.
+	got := get()
+	if len(got) != 2 || got[0].InstanceID != "h1" || !got[0].Mine || got[0].Scope != store.ScopeHousehold ||
+		got[1].InstanceID != "p1" || got[1].Mine || got[1].Scope != store.ScopePersonal {
+		t.Fatalf("admin existing = %+v", got)
+	}
+
+	// A member sees the household copy, not another member's personal one.
+	h.loginAs("bob", "bobpass")
+	if got := get(); len(got) != 1 || got[0].InstanceID != "h1" || got[0].Mine {
+		t.Fatalf("bob existing = %+v", got)
+	}
+
+	// The owner of a personal copy sees it as theirs.
+	h.loginAs("cara", "carapass")
+	if got := get(); len(got) != 2 || got[1].InstanceID != "p1" || !got[1].Mine {
+		t.Fatalf("cara existing = %+v", got)
+	}
+}
+
+// TestInstallPlan_NoExisting: with no copy the list is empty, not null, so
+// the UI reads it without a guard.
+func TestInstallPlan_NoExisting(t *testing.T) {
+	h := newHarness(t)
+	writeManifestFixture(t, h.catalogDir, "whoami", minimalManifestYML)
+	h.setupAdmin("alice", "pass1")
+	resp := h.do("GET", "/api/v1/catalog/whoami/install-plan", nil)
+	raw := decodeJSON[map[string]any](t, resp)
+	if list, ok := raw["existing"].([]any); !ok || len(list) != 0 {
+		t.Fatalf("existing = %#v; want []", raw["existing"])
 	}
 }

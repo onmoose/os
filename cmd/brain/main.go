@@ -50,6 +50,15 @@ import (
 // degraded-startup stall when Caddy never came up (see the call site).
 const caddyReadyTimeout = 10 * time.Second
 
+// dockerReadyTimeout bounds the wait for Docker, through the socket proxy,
+// before the startup Docker work (#540). After a reboot the proxy answers a few
+// seconds after the brain starts; on a first boot or an update it is already up
+// and the wait returns at once. On its own it stays well under the 60s
+// host-agent gives a recreated brain to answer /healthz. The other startup
+// budgets below come after it, so a box where several things are stuck at once
+// can still miss that window, as it could before.
+const dockerReadyTimeout = 15 * time.Second
+
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -155,6 +164,16 @@ func main() {
 	// destroy the container it is recreating. See EnsureControlPlane's doc
 	// comment for the failure and UPDATES.md # 3 step 3c for the ordering that
 	// depends on this staying startup-only.
+	// Wait for Docker first. Everything below that talks to Docker runs once,
+	// and the startup reconcile is the only thing that puts the app routes back
+	// (#540): run into a proxy that is not up yet and every app answers 404
+	// until someone stops and starts it.
+	dockCtx, dockCancel := context.WithTimeout(context.Background(), dockerReadyTimeout)
+	if err := life.WaitDocker(dockCtx, 500*time.Millisecond); err != nil {
+		slog.Warn("docker not reachable; startup reconcile may be incomplete", "err", err)
+	}
+	dockCancel()
+
 	if cfg.controlPlaneDir != "" {
 		cpCtx, cpCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if err := life.EnsureControlPlane(cpCtx, cfg.controlPlaneDir); err != nil {

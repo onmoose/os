@@ -1,0 +1,29 @@
+# Test-only catalog app for the hosted cloud remap boots (#531). A folderless
+# app with service_user: true, so the brain gives it its own identity from the
+# app-service band (2100 and up) and runs it in the default tier. On a
+# remapped box its bind dir and its process belong to the remap base plus
+# that uid. At start it writes its id into its bind dir.
+#
+# Same busybox image and digest as filedrop, already in the offline bundle.
+id: svcdrop
+manifest_version: 1
+name: Svcdrop
+version: "1.37"
+description:
+  short: "Test fixture: a service_user app that writes its id into its data dir."
+icon_glyph: flask-conical
+compose_file: compose.yml
+main_service: svcdrop
+main_port: 8080
+preferred_slugs: [svcdrop]
+service_user: true
+
+permissions:
+  internet: false
+  lan: false
+
+images:
+  busybox:1.37.0:
+    digest: sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    download_bytes: 2211514
+    disk_bytes: 4421262

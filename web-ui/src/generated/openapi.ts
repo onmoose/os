@@ -1049,6 +1049,9 @@ export interface components {
             api_key?: string;
             base_url?: string;
             label: string;
+            models?: {
+                [key: string]: string[] | null;
+            };
             provider_id: string;
         };
         AIAccountDTO: {
@@ -1064,6 +1067,9 @@ export interface components {
             id: string;
             key_set: boolean;
             label: string;
+            models: {
+                [key: string]: string[] | null;
+            };
             provider_id: string;
             /** Format: int64 */
             updated_at: number;
@@ -1083,6 +1089,9 @@ export interface components {
             job_id?: string;
             key_set: boolean;
             label: string;
+            models: {
+                [key: string]: string[] | null;
+            };
             provider_id: string;
             /** Format: int64 */
             updated_at: number;
@@ -1561,6 +1570,7 @@ export interface components {
              */
             readonly $schema?: string;
             config?: components["schemas"]["InstallPlanConfigField"][] | null;
+            existing: components["schemas"]["InstallPlanExisting"][] | null;
             footprint: components["schemas"]["InstallPlanFootprint"];
             mail?: components["schemas"]["InstallPlanMail"];
             manifest_id: string;
@@ -1569,7 +1579,15 @@ export interface components {
             requires?: components["schemas"]["RequiresGroupDTO"][] | null;
             scope_default: string;
             scope_options: string[] | null;
+            /** @enum {string} */
+            unavailable?: "needs-remap";
             version: string;
+        };
+        InstallPlanExisting: {
+            instance_id: string;
+            mine: boolean;
+            name: string;
+            scope: string;
         };
         InstallPlanFolder: {
             folder: string;
@@ -1787,6 +1805,7 @@ export interface components {
             user: components["schemas"]["UserDTO"];
         };
         MailPresetDTO: {
+            account_name: string;
             credential_label: string;
             docs_url: string;
             /** @enum {string} */
@@ -1795,9 +1814,12 @@ export interface components {
             host: string;
             id: string;
             label: string;
+            personal: boolean;
             /** Format: int64 */
             port: number;
             region?: components["schemas"]["MailPresetRegionDTO"];
+            setup_url: string;
+            steps: string[] | null;
             username_fixed: string;
             /** @enum {string} */
             username_mode: "user" | "fixed" | "same_as_password";
@@ -1854,6 +1876,8 @@ export interface components {
             username: string;
         };
         MailProviderOption: {
+            /** Format: int64 */
+            created_at: number;
             id: string;
             label: string;
             provider_type: string;

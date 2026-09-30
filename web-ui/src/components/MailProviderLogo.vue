@@ -48,7 +48,8 @@ const letters: Record<string, string> = {
   brevo: "B",
   resend: "R",
   smtp2go: "S2",
-  google_workspace: "W",
+  google_workspace: "G",
+  icloud: "iC",
 };
 
 const src = computed(() => byID[props.id]);

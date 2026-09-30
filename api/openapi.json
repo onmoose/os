@@ -22,6 +22,18 @@
           "label": {
             "type": "string"
           },
+          "models": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "type": "object"
+          },
           "provider_id": {
             "type": "string"
           }
@@ -60,6 +72,18 @@
           "label": {
             "type": "string"
           },
+          "models": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "type": "object"
+          },
           "provider_id": {
             "type": "string"
           },
@@ -83,6 +107,7 @@
           "label",
           "base_url",
           "key_set",
+          "models",
           "created_at",
           "updated_at",
           "used_by"
@@ -120,6 +145,18 @@
           "label": {
             "type": "string"
           },
+          "models": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "type": "object"
+          },
           "provider_id": {
             "type": "string"
           },
@@ -143,6 +180,7 @@
           "label",
           "base_url",
           "key_set",
+          "models",
           "created_at",
           "updated_at",
           "used_by"
@@ -1668,6 +1706,15 @@
               "null"
             ]
           },
+          "existing": {
+            "items": {
+              "$ref": "#/components/schemas/InstallPlanExisting"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "footprint": {
             "$ref": "#/components/schemas/InstallPlanFootprint"
           },
@@ -1704,6 +1751,12 @@
               "null"
             ]
           },
+          "unavailable": {
+            "enum": [
+              "needs-remap"
+            ],
+            "type": "string"
+          },
           "version": {
             "type": "string"
           }
@@ -1715,7 +1768,32 @@
           "scope_options",
           "scope_default",
           "footprint",
-          "permissions"
+          "permissions",
+          "existing"
+        ],
+        "type": "object"
+      },
+      "InstallPlanExisting": {
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "type": "string"
+          },
+          "mine": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance_id",
+          "name",
+          "scope",
+          "mine"
         ],
         "type": "object"
       },
@@ -2404,6 +2482,9 @@
       "MailPresetDTO": {
         "additionalProperties": false,
         "properties": {
+          "account_name": {
+            "type": "string"
+          },
           "credential_label": {
             "type": "string"
           },
@@ -2430,12 +2511,27 @@
           "label": {
             "type": "string"
           },
+          "personal": {
+            "type": "boolean"
+          },
           "port": {
             "format": "int64",
             "type": "integer"
           },
           "region": {
             "$ref": "#/components/schemas/MailPresetRegionDTO"
+          },
+          "setup_url": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "username_fixed": {
             "type": "string"
@@ -2463,7 +2559,11 @@
           "username_prefill",
           "credential_label",
           "help",
-          "docs_url"
+          "docs_url",
+          "personal",
+          "account_name",
+          "steps",
+          "setup_url"
         ],
         "type": "object"
       },
@@ -2642,6 +2742,10 @@
       "MailProviderOption": {
         "additionalProperties": false,
         "properties": {
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
           "id": {
             "type": "string"
           },
@@ -2655,7 +2759,8 @@
         "required": [
           "id",
           "label",
-          "provider_type"
+          "provider_type",
+          "created_at"
         ],
         "type": "object"
       },

@@ -48,6 +48,7 @@ import (
 	"github.com/onmoose/os/internal/hostagent/avahipublisher"
 	"github.com/onmoose/os/internal/hostagent/healthsource"
 	"github.com/onmoose/os/internal/hostagent/netstate"
+	"github.com/onmoose/os/internal/hostagent/usermgr"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/version"
 )
@@ -120,6 +121,12 @@ func main() {
 	// canned free/total (≈412 GiB free of a 1 TiB drive) — enough for the
 	// install plan's free_bytes to render a plausible figure natively.
 	a.Disk = hostagent.NewFakeDiskReporter(412<<30, 1<<40)
+	// The remap range, read from /etc/subuid and /etc/subgid by the real
+	// agent's code. A normal dev machine has no moose-remap lines, so the
+	// well-known answer carries no remap_base, as before. One where someone
+	// set up the remap by hand reports it, so the dev brain can boot
+	// root_setup and image_user apps there (#548, running-locally.md).
+	a.DevRemapBase = func() (int, bool, error) { return usermgr.ReadRemapBase("", "") }
 	// No real drives either, so the Storage bars report two canned volumes
 	// (System ≈18 GiB free of 64 GiB, Data ≈412 GiB free of 1 TiB) — the panel
 	// shows both bars in dev without a second physical drive. Data matches the

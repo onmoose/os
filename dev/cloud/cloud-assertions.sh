@@ -39,6 +39,13 @@
 #                      source rather than an admin (#401) — including a refusal of an
 #                      answer that is not pinned to a digest. The only scenario that
 #                      changes the box's images.
+#     remap            the user-namespace tiers (#531): one app per tier (default
+#                      folderless, default service_user, caps root_setup, default
+#                      on the managed Postgres, host folder app), each checked for
+#                      its userns mode, capabilities and host data owner, and the
+#                      caps-tier app's data kept across a container recreate
+#     remap-reboot     the same disk booted again: every check of `remap` again
+#                      on what the box brought back, and the caps-tier data kept
 #
 # On PASS the script powers the box off cleanly (the serial-only analogue of the
 # medium lane's SSH `systemctl poweroff`) so the brain's SQLite box-id write flushes
@@ -48,7 +55,8 @@
 # scenarios only read or probe. The access, ssh and update scenarios do change the
 # box — each on its own throwaway overlay — because the thing under test is a
 # mutation: an owner session plus an app install (access), accounts and the sshd
-# config (ssh), and the box's own control-plane images (update).
+# config (ssh), and the box's own control-plane images (update). The remap boots
+# share one overlay of their own: the first installs the apps the second checks.
 set -uo pipefail
 
 SENTINEL=/dev/console
@@ -301,6 +309,45 @@ for c in moose-caddy moose-ui; do
 done
 echo "cloud-assertions: control-plane containers sandboxed — cap_drop ALL, no-new-privileges, read-only root on caddy + moose-ui (#431)"
 
+# --- 5d. the daemon runs with the userns-remap (#530, BUILD.md # User-namespace
+# remap), and the control plane splits across it. The image sets the remap, so
+# every boot runs on it and every boot checks it. docker info must list
+# name=userns and the classic overlay2 store (the remap turns the containerd
+# store off). The socket proxy and the brain opt out with --userns=host
+# (brainlaunch), so they run as real host root. Caddy and moose-ui keep the daemon
+# default, the remap, so their root is host uid 1000000.
+remap_base=1000000
+# The host uid a container's init process runs as (the lean image has no procps).
+host_uid_of() { awk '/^Uid:/{print $2}' "/proc/$(docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null)/status" 2>/dev/null; }
+sec_opts="$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null || true)"
+store_driver="$(docker info --format '{{.Driver}}' 2>/dev/null || true)"
+docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+echo "cloud-assertions: docker info: security options: $sec_opts"
+echo "cloud-assertions: docker info: storage driver: $store_driver, root dir: $docker_root"
+grep -q 'name=userns' <<<"$sec_opts" || fail "userns-remap is not on: docker info security options are $sec_opts, want name=userns (#530)"
+[ "$store_driver" = overlay2 ] || fail "docker storage driver is '$store_driver', want overlay2 (the store the remap uses, #530)"
+[ "$docker_root" = "/var/lib/docker/${remap_base}.${remap_base}" ] \
+    || fail "docker root dir is '$docker_root', want /var/lib/docker/${remap_base}.${remap_base} (the remapped root, #530)"
+for f in /etc/subuid /etc/subgid; do
+    grep -qx "moose-remap:${remap_base}:65536" "$f" || fail "$f has no moose-remap:${remap_base}:65536 line: $(cat "$f" 2>&1 | tr '\n' ' ')"
+done
+for k in SUB_UID_COUNT SUB_GID_COUNT; do
+    grep -qE "^${k}[[:space:]]+0$" /etc/login.defs || fail "/etc/login.defs does not set $k 0: $(grep -E "$k" /etc/login.defs | tr '\n' ' ')"
+done
+for c in moose-docker-proxy moose-brain; do
+    um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}' 2>/dev/null || true)"
+    [ "$um" = host ] || fail "$c UsernsMode is '${um:-<empty>}', want host (#526)"
+    puid="$(host_uid_of "$c")"
+    [ "$puid" = 0 ] || fail "$c runs as host uid '${puid:-<none>}', want 0 (host userns, #526)"
+done
+for c in moose-caddy moose-ui; do
+    um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}' 2>/dev/null || true)"
+    [ -z "$um" ] || fail "$c UsernsMode is '$um', want the daemon default (remapped)"
+    puid="$(host_uid_of "$c")"
+    [ "$puid" = "$remap_base" ] || fail "$c runs as host uid '${puid:-<none>}', want $remap_base (remapped root)"
+done
+echo "cloud-assertions: userns-remap on (moose-remap:${remap_base}:65536, SUB_UID_COUNT 0); proxy + brain in the host userns (host uid 0), caddy + moose-ui remapped (host uid ${remap_base})"
+
 # --- 6. proxy boundary: the brain reaches Docker only through the socket-proxy,
 # never the raw socket (CONTROL_PLANE.md # Docker socket exposure).
 brain_sock="$(docker inspect moose-brain --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null | grep -c 'docker.sock' || true)"
@@ -469,6 +516,7 @@ frozen:*) DASH_HOST="${MODE#frozen:}.onmoose.io" ;;
 access)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 update)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 ssh)      DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+remap|remap-reboot) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 esac
 echo "cloud-assertions: probing control plane at Host=$DASH_HOST (mode=$MODE)"
 
@@ -885,6 +933,152 @@ access)
         || fail "access: public app upstream did not receive its own cookie (probe=leakcheck) — the strip is removing more than moose_forward_auth: $(grep -i '^Cookie:' <<<"$pl_resp" | tr -d '\r')"
     echo "cloud-assertions: public app also strips only moose_forward_auth (no forward-auth cookie leaks to a public upstream, app's own cookie intact)"
 
+    # 4c. FOLDER APPS ON BOTH SOURCES (#519). A folder app is the path the other
+    #     steps never touch: before compose up the folder source must exist on
+    #     the HOST, owned so the app's identity can write it. The brain runs in a
+    #     container, so this only works if the shared tree is mounted into it
+    #     (household) and host-agent prepares the home folder (personal). Until
+    #     #519 a household install failed with "stat /srv/moose/shared: no such
+    #     file or directory", and a personal folder was made inside the brain's
+    #     own container. filedrop writes one file into its Documents folder at
+    #     start, as the identity moose runs it as. The proof is that file, on the
+    #     host, with the expected owner.
+    brain_mounts="$(docker inspect moose-brain --format '{{range .Mounts}}{{.Source}}->{{.Destination}} {{end}}' 2>/dev/null)"
+    grep -q '/srv/moose/shared->/srv/moose/shared' <<<"$brain_mounts" \
+        || fail "folders: the brain does not mount the shared tree at the same path: $brain_mounts"
+    grep -qE '(^| )/home->' <<<"$brain_mounts" \
+        && fail "folders: the brain mounts /home; personal folders are host-agent's job and the brain must not hold every home: $brain_mounts"
+    sr_stat="$(stat -c '%u:%g %a' /srv/moose/shared 2>/dev/null)"
+    [ "$sr_stat" = "0:2001 2770" ] \
+        || fail "folders: /srv/moose/shared is '$sr_stat', want '0:2001 2770' (root:moose-shared, setgid) before any app installs"
+    echo "cloud-assertions: shared tree ready before the first install (root:moose-shared 2770) and mounted into the brain; /home is not"
+
+    # filedrop_install BODY LABEL sets FD_ID to the new instance id, or fails. It
+    # polls the install job so a red run names the brain's own error, not just a
+    # timeout. These helpers set globals instead of printing: a fail inside $(...)
+    # would only leave the subshell, and the scenario would carry on.
+    filedrop_install() {
+        local resp job st jr
+        resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" "$1" 2>/dev/null)"
+        grep -qE ' 20[02]' <<<"$(status_of "$resp")" \
+            || fail "folders: install filedrop ($2) did not start: status='$(status_of "$resp")' body=$(tail -1 <<<"$resp" | cut -c1-400)"
+        job="$(json_str_of "$resp" job_id)"
+        [ -n "$job" ] || fail "folders: install filedrop ($2) returned no job id: $(tail -1 <<<"$resp" | cut -c1-400)"
+        st=""; jr=""
+        for _i in $(seq 1 240); do
+            jr="$(full_get "/api/v1/jobs/${job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+            st="$(json_str_of "$jr" status)"
+            case "$st" in completed|failed|cancelled) break ;; esac
+            sleep 1
+        done
+        [ "$st" = "completed" ] \
+            || fail "folders: install filedrop ($2) ended '$st': $(grep -o '"error":{[^}]*}' <<<"$jr" | cut -c1-600)"
+        FD_ID="$(json_str_of "$jr" instance_id)"
+        [ -n "$FD_ID" ] || fail "folders: install filedrop ($2) completed with no instance id: $(tail -1 <<<"$jr" | cut -c1-400)"
+    }
+
+    # filedrop_user INSTANCE_ID sets FD_USER to the running container's "uid:gid".
+    filedrop_user() {
+        local c=""
+        for _i in $(seq 1 60); do
+            c="$(docker ps --filter "label=moose.instance_id=$1" --format '{{.Names}}' | head -1)"
+            [ -n "$c" ] && break
+            sleep 1
+        done
+        [ -n "$c" ] || fail "folders: no running container for filedrop instance $1: $(docker ps -a --format '{{.Names}} {{.Status}}' | grep -i filedrop | tr '\n' ' ')"
+        FD_USER="$(docker inspect "$c" --format '{{.Config.User}}')"
+    }
+
+    # wait_file PATH returns 0 once PATH exists (the app writes it at start).
+    wait_file() {
+        for _i in $(seq 1 30); do [ -f "$1" ] && return 0; sleep 1; done
+        return 1
+    }
+
+    # Household: the admin default. Runs as moose-app (2000) with the moose-shared
+    # group (2001) added, and binds /srv/moose/shared/Documents, which the brain
+    # creates root:moose-shared 2770 through its mount.
+    filedrop_install '{"manifest_id":"filedrop","scope":"household"}' household
+    filedrop_user "$FD_ID"; hh_user="$FD_USER"
+    [ "$hh_user" = "2000:2000" ] || fail "folders: household filedrop runs as '$hh_user', want moose-app 2000:2000"
+    hh_file=/srv/moose/shared/Documents/filedrop.txt
+    wait_file "$hh_file" \
+        || fail "folders: household filedrop wrote no file at $hh_file on the host: $(ls -la /srv/moose/shared /srv/moose/shared/Documents 2>&1 | tr '\n' ' ')"
+    hh_dir_stat="$(stat -c '%u:%g %a' /srv/moose/shared/Documents)"
+    [ "$hh_dir_stat" = "0:2001 2770" ] \
+        || fail "folders: /srv/moose/shared/Documents is '$hh_dir_stat', want '0:2001 2770' (made by the brain, root:moose-shared, setgid)"
+    hh_file_owner="$(stat -c '%u:%g' "$hh_file")"
+    [ "$hh_file_owner" = "2000:2001" ] \
+        || fail "folders: $hh_file is owned '$hh_file_owner', want 2000:2001 (moose-app, group moose-shared by the setgid folder)"
+    grep -q 'uid=2000' "$hh_file" || fail "folders: $hh_file does not say the app ran as 2000: $(cat "$hh_file")"
+    echo "cloud-assertions: household folder app wrote $hh_file on the host as $hh_file_owner (Documents $hh_dir_stat)"
+
+    # Personal: the owner's own copy (confirm, because the household copy above
+    # triggers the duplicate warning). Runs as the owner, and binds ~/Documents,
+    # which host-agent creates owned by the owner. The SSO owner is a new
+    # account, so ~/Documents does not exist until this install asks for it.
+    filedrop_install '{"manifest_id":"filedrop","scope":"personal","confirm":true}' personal
+    filedrop_user "$FD_ID"; pp_user="$FD_USER"
+    pp_uid="${pp_user%%:*}"; pp_gid="${pp_user##*:}"
+    pp_home="$(getent passwd "$pp_uid" | cut -d: -f6)"
+    # Not a uid range check: the hosted image sets no UID_MIN, so the SSO owner
+    # gets the next free uid (2001 in CI), not one from the 3000+ range. What
+    # matters here is that the app runs as a real login account with a home
+    # under /home, not as root or the shared moose-app identity.
+    case "$pp_uid" in ''|0|2000|*[!0-9]*) pp_home="" ;; esac
+    case "$pp_home" in /home/?*) ;; *) pp_home="" ;; esac
+    [ -n "$pp_home" ] \
+        || fail "folders: personal filedrop runs as '$pp_user', want the owner's own account with a home under /home; getent: $(getent passwd "$pp_uid")"
+    pp_file="$pp_home/Documents/filedrop.txt"
+    wait_file "$pp_file" \
+        || fail "folders: personal filedrop wrote no file at $pp_file on the host: $(ls -la "$pp_home" "$pp_home/Documents" 2>&1 | tr '\n' ' ')"
+    pp_dir_owner="$(stat -c '%u:%g' "$pp_home/Documents")"
+    [ "$pp_dir_owner" = "$pp_user" ] \
+        || fail "folders: $pp_home/Documents is owned '$pp_dir_owner', want the owner $pp_user (made by host-agent, not root:root by Docker)"
+    pp_file_owner="$(stat -c '%u:%g' "$pp_file")"
+    [ "$pp_file_owner" = "$pp_uid:$pp_gid" ] \
+        || fail "folders: $pp_file is owned '$pp_file_owner', want the owner $pp_uid:$pp_gid"
+    echo "cloud-assertions: personal folder app wrote $pp_file on the host as $pp_file_owner (Documents owned by the owner)"
+
+    # 4d. AN image_user APP RUNS AS ITS IMAGE'S OWN USER, REMAPPED (#537, #530).
+    #     The image turns the userns remap on, so the brain puts this app in the
+    #     image tier: no user: pin, no capability back, and the daemon's remap.
+    #     Each service writes its id into its bind dir at start, as the user its
+    #     image sets (1001 by number, app2 = 1002 by name). The proof is that
+    #     file on the host, owned by base plus that uid. Until #530 this step
+    #     checked the refusal on a box with no remap; that refusal is covered by
+    #     the brain's tests (internal/lifecycle/userns_test.go) and no lane box
+    #     runs without the remap any more.
+    iu_resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"imageuser","scope":"household"}' 2>/dev/null)"
+    iu_job="$(json_str_of "$iu_resp" job_id)"
+    [ -n "$iu_job" ] || fail "image_user: install imageuser returned no job id: status='$(status_of "$iu_resp")' $(tail -1 <<<"$iu_resp" | cut -c1-400)"
+    iu_st=""; iu_jr=""
+    for _i in $(seq 1 240); do
+        iu_jr="$(full_get "/api/v1/jobs/${iu_job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+        iu_st="$(json_str_of "$iu_jr" status)"
+        case "$iu_st" in completed|failed|cancelled) break ;; esac
+        sleep 1
+    done
+    [ "$iu_st" = completed ] \
+        || fail "image_user: install imageuser on the remapped box ended '$iu_st', want completed: $(grep -o '"error":{[^}]*}' <<<"$iu_jr" | cut -c1-600)"
+    iu_id="$(json_str_of "$iu_jr" instance_id)"
+    [ -n "$iu_id" ] || fail "image_user: install imageuser completed with no instance id: $(tail -1 <<<"$iu_jr" | cut -c1-400)"
+    for svc_dir_uid in imageuser:data:1001 named:work:1002; do
+        svc="${svc_dir_uid%%:*}"; rest="${svc_dir_uid#*:}"; dir="${rest%%:*}"; want_uid="$((remap_base + ${rest#*:}))"
+        c="$(docker ps --filter "label=moose.instance_id=$iu_id" --filter "label=com.docker.compose.service=$svc" --format '{{.Names}}' | head -1)"
+        [ -n "$c" ] || fail "image_user: no running container for service $svc: $(docker ps -a --filter "label=moose.instance_id=$iu_id" --format '{{.Names}} {{.Status}}' | tr '\n' ' ')"
+        c_um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}')"
+        c_user="$(docker inspect "$c" --format '{{.Config.User}}')"
+        c_capadd="$(docker inspect "$c" --format '{{json .HostConfig.CapAdd}}')"
+        [ -z "$c_um" ] || fail "image_user: $svc UsernsMode is '$c_um', want the daemon default (remapped)"
+        case "$c_capadd" in null|'[]') ;; *) fail "image_user: $svc cap_add is $c_capadd, want none (image tier)" ;; esac
+        id_file="/var/lib/moose/state/instances/$iu_id/$dir/id.txt"
+        wait_file "$id_file" || fail "image_user: $svc wrote no $id_file on the host: $(ls -lan "/var/lib/moose/state/instances/$iu_id" 2>&1 | tr '\n' ' ')"
+        id_owner="$(stat -c '%u' "$id_file")"
+        [ "$id_owner" = "$want_uid" ] || fail "image_user: $id_file is owned by host uid $id_owner, want $want_uid (base + the image's user)"
+        echo "cloud-assertions: image_user $svc runs remapped as its image's user (Config.User='$c_user', cap_add=$c_capadd) and wrote $dir/id.txt as host uid $id_owner: $(cat "$id_file")"
+    done
+
     # 5. THE HOSTED CONFIRM STEP (os#469). Destructive admin writes sit behind a
     #    re-auth gate, and until now a hosted owner could not pass it: the portal
     #    signs them in and the box gives their PAM account a random password nobody
@@ -954,7 +1148,7 @@ access)
         || fail "access: the off-box-return landing minted no session; sign-in must still succeed"
     echo "cloud-assertions: an off-box return path is refused and the owner lands on the box's own front page"
 
-    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes)"
+    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes), and folder apps write to the host on both sources"
     ;;
 ssh)
     # SSH end-to-end on a booted hosted box (#467). #464 built the whole path from
@@ -1715,6 +1909,279 @@ EOF
     grep -qE ' (401|403)' <<<"$anon_read" \
         || fail "update-target: the read answered an unauthenticated caller (status='$anon_read')"
     echo "cloud-assertions: update-target — READ OK (the brain reports the pinned pair the in-guest source served, from=seed, window from the answer, admin-only)"
+    ;;
+remap|remap-reboot)
+    # The user-namespace tiers on the booted image (#531, APP_ISOLATION.md #
+    # User-namespace tiers). Step 5d above has already checked the daemon side
+    # on this boot: name=userns and overlay2, the proxy and the brain in the
+    # host userns, Caddy and moose-ui remapped. This scenario checks the apps.
+    #
+    # `remap` signs the owner in and installs one app per tier: remapdrop
+    # (folderless, default tier, root inside), svcdrop (service_user, default
+    # tier), rootsetup (root_setup, caps tier), pgnote (default tier, on the
+    # managed Postgres) and filedrop household (a folder app, host tier). It
+    # checks each one, recreates the caps-tier container and checks that its
+    # data is kept. `remap-reboot` boots the same disk again and runs the same
+    # checks on what came back. The ids the second boot needs are left in
+    # REMAP_STATE on the overlay. Each boot signs in with its own single-use
+    # owner assertion, so no session crosses the reboot.
+    REMAP_STATE=/var/lib/moose-remap-test/state
+    [ -f "$SEED" ] || fail "remap: $MODE mode but $SEED absent (seed materializer did not run?)"
+    box_id="$(json_str "$SEED" box_id)"
+    [ -n "$box_id" ] || fail "remap: could not read box_id from $SEED"
+    apex="${box_id}.onmoose.io"
+
+    sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token" 2>/dev/null || true)"
+    [ -n "$sso_token" ] || fail "remap: moose.sso_token credential missing (harness did not mint/deliver the owner assertion)"
+    sso_resp="$(full_get "/_moose/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
+    grep -q ' 303' <<<"$(status_of "$sso_resp")" \
+        || fail "remap: SSO landing did not 303: status='$(status_of "$sso_resp")'"
+    session_cookie="$(cookie_val "$sso_resp" moose_session)"
+    fa_cookie="$(cookie_val "$sso_resp" moose_forward_auth)"
+    [ -n "$session_cookie" ] && [ -n "$fa_cookie" ] || fail "remap: the SSO landing minted no session or forward-auth cookie"
+
+    # A new SSO owner gets no subordinate id range. The image sets
+    # SUB_UID_COUNT 0 and SUB_GID_COUNT 0 before any user exists, so useradd
+    # gives the owner none, and no account can use newuidmap to reach the
+    # remap range (BUILD.md # User-namespace remap). Checked on both boots: the
+    # owner is created on the first.
+    owner="$(json_str_of "$(full_get /api/v1/me "$apex" "$session_cookie" 2>/dev/null || true)" username)"
+    [ -n "$owner" ] || fail "remap: /api/v1/me named no username for the SSO owner"
+    owner_uid="$(id -u "$owner" 2>/dev/null)" || fail "remap: the SSO owner '$owner' has no host account"
+    for f in /etc/subuid /etc/subgid; do
+        grep -q "^${owner}:" "$f" && fail "remap: the SSO owner '$owner' has a subordinate id range in $f: $(grep "^${owner}:" "$f")"
+        f_lines="$(grep -cv '^[[:space:]]*$' "$f")"
+        [ "$f_lines" = 1 ] || fail "remap: $f has $f_lines entries, want only moose-remap:${remap_base}:65536: $(tr '\n' ' ' < "$f")"
+    done
+    echo "cloud-assertions: remap: the SSO owner '$owner' (host uid $owner_uid) has no /etc/subuid or /etc/subgid range; each file holds only moose-remap:${remap_base}:65536"
+
+    # remap_install MANIFEST SCOPE sets R_ID and R_SLUG, or fails with the
+    # brain's own error. These helpers set globals instead of printing: a fail
+    # inside $(...) would only leave the subshell.
+    remap_install() {
+        local resp job st="" jr=""
+        resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" "{\"manifest_id\":\"$1\",\"scope\":\"$2\"}" 2>/dev/null)"
+        job="$(json_str_of "$resp" job_id)"
+        [ -n "$job" ] || fail "remap: install $1 did not start: status='$(status_of "$resp")' body=$(tail -1 <<<"$resp" | cut -c1-400)"
+        for _i in $(seq 1 300); do
+            jr="$(full_get "/api/v1/jobs/${job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+            st="$(json_str_of "$jr" status)"
+            case "$st" in completed|failed|cancelled|stalled) break ;; esac
+            sleep 1
+        done
+        [ "$st" = completed ] || fail "remap: install $1 ended '$st': $(grep -o '"error":{[^}]*}' <<<"$jr" | cut -c1-600)"
+        R_ID="$(json_str_of "$jr" instance_id)"
+        R_SLUG="$(json_str_of "$jr" slug)"
+        [ -n "$R_ID" ] && [ -n "$R_SLUG" ] || fail "remap: install $1 completed with no instance id or slug: $(tail -1 <<<"$jr" | cut -c1-400)"
+    }
+    # remap_ctr INSTANCE_ID SERVICE sets R_CTR to that service's running
+    # container, waiting for it (an app comes back a while after a reboot).
+    remap_ctr() {
+        R_CTR=""
+        for _i in $(seq 1 180); do
+            R_CTR="$(docker ps --filter "label=moose.instance_id=$1" --filter "label=com.docker.compose.service=$2" --filter status=running --format '{{.Names}}' | head -1)"
+            [ -n "$R_CTR" ] && return 0
+            sleep 1
+        done
+        fail "remap: no running container for $2 (instance $1): $(docker ps -a --filter "label=moose.instance_id=$1" --format '{{.Names}} {{.Status}}' | tr '\n' ' ')"
+    }
+    # remap_get SLUG PATH sets R_BODY to the body of a 200 from the app,
+    # through Caddy with the owner's forward-auth cookie.
+    remap_get() {
+        local r=""
+        for _i in $(seq 1 180); do
+            r="$(full_get "$2" "$1.$apex" "$fa_cookie" 2>/dev/null || true)"
+            if grep -q ' 200' <<<"$(status_of "$r")"; then
+                R_BODY="$(sed '1,/^\r*$/d' <<<"$r" | tr -d '\r')"
+                return 0
+            fi
+            sleep 1
+        done
+        fail "remap: GET $2 on $1.$apex through Caddy never answered 200: status='$(status_of "$r")'; caddy route ids: $(docker exec moose-caddy wget -qO- http://localhost:2019/config/apps/http/servers/moose/routes 2>&1 | grep -o '"@id":"[^"]*"' | tr '\n' ' ')"
+    }
+    remap_wait_file() { for _i in $(seq 1 60); do [ -s "$1" ] && return 0; sleep 1; done; return 1; }
+    remap_owner() { stat -c '%u:%g' "$1" 2>/dev/null || echo "<missing $1>"; }
+    remap_nocaps() { case "$1" in null|'[]') return 0 ;; *) return 1 ;; esac; }
+    remap_inst() { echo "/var/lib/moose/state/instances/$1"; }
+
+    # remap_checks runs every per-tier check. Both boots run it: after the
+    # install, and after the reboot on what the box brought back.
+    remap_checks() {
+        local c um user capadd puid dir owner f_owner want
+
+        # 1. Folderless, default tier: remapped, root inside, so the process
+        #    and its data are host uid base.
+        remap_ctr "$RD_ID" remapdrop; c="$R_CTR"
+        um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}')"
+        user="$(docker inspect "$c" --format '{{.Config.User}}')"
+        capadd="$(docker inspect "$c" --format '{{json .HostConfig.CapAdd}}')"
+        [ -z "$um" ] || fail "remap: remapdrop UsernsMode is '$um', want the daemon default (remapped)"
+        [ "$user" = "0:0" ] || fail "remap: remapdrop runs as '$user', want 0:0 (the brain's own uid)"
+        remap_nocaps "$capadd" || fail "remap: remapdrop cap_add is $capadd, want none (default tier)"
+        puid="$(host_uid_of "$c")"
+        [ "$puid" = "$remap_base" ] || fail "remap: remapdrop runs as host uid '$puid', want $remap_base"
+        dir="$(remap_inst "$RD_ID")/data"
+        owner="$(remap_owner "$dir")"
+        [ "$owner" = "$remap_base:$remap_base" ] || fail "remap: remapdrop data dir is owned $owner, want $remap_base:$remap_base"
+        remap_wait_file "$dir/id.txt" || fail "remap: remapdrop wrote no $dir/id.txt"
+        f_owner="$(remap_owner "$dir/id.txt")"
+        [ "$f_owner" = "$remap_base:$remap_base" ] || fail "remap: remapdrop id.txt is owned $f_owner, want $remap_base:$remap_base"
+        remap_get "$RD_SLUG" /id.txt
+        grep -q 'uid=0(root)' <<<"$R_BODY" || fail "remap: remapdrop /id.txt through Caddy says '$R_BODY', want uid=0(root)"
+        echo "cloud-assertions: remap [$MODE]: default tier, folderless: remapdrop UsernsMode='' user=$user cap_add=$capadd host uid $puid; data dir $owner, id.txt $f_owner; through Caddy: $R_BODY"
+
+        # 2. service_user, default tier: its own identity from the app-service
+        #    band, shifted by base on the host.
+        remap_ctr "$SD_ID" svcdrop; c="$R_CTR"
+        um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}')"
+        user="$(docker inspect "$c" --format '{{.Config.User}}')"
+        capadd="$(docker inspect "$c" --format '{{json .HostConfig.CapAdd}}')"
+        local su_uid="${user%%:*}" su_gid="${user#*:}"
+        [ -z "$um" ] || fail "remap: svcdrop UsernsMode is '$um', want the daemon default (remapped)"
+        case "$su_uid:$su_gid" in *[!0-9:]*|:*|*:) fail "remap: svcdrop user is '$user', want a numeric uid:gid" ;; esac
+        [ "$su_uid" -ge 2100 ] && [ "$su_uid" -lt 3000 ] || fail "remap: svcdrop runs as uid $su_uid, want one from the app-service band (2100 to 2999)"
+        remap_nocaps "$capadd" || fail "remap: svcdrop cap_add is $capadd, want none (default tier)"
+        puid="$(host_uid_of "$c")"
+        [ "$puid" = "$((remap_base + su_uid))" ] || fail "remap: svcdrop runs as host uid '$puid', want $((remap_base + su_uid))"
+        dir="$(remap_inst "$SD_ID")/data"
+        want="$((remap_base + su_uid)):$((remap_base + su_gid))"
+        owner="$(remap_owner "$dir")"
+        [ "$owner" = "$want" ] || fail "remap: svcdrop data dir is owned $owner, want $want (base + its uid:gid)"
+        remap_wait_file "$dir/id.txt" || fail "remap: svcdrop wrote no $dir/id.txt"
+        f_owner="$(remap_owner "$dir/id.txt")"
+        [ "$f_owner" = "$want" ] || fail "remap: svcdrop id.txt is owned $f_owner, want $want"
+        remap_get "$SD_SLUG" /id.txt
+        grep -q "uid=${su_uid}" <<<"$R_BODY" || fail "remap: svcdrop /id.txt through Caddy says '$R_BODY', want uid=$su_uid"
+        echo "cloud-assertions: remap [$MODE]: default tier, service_user: svcdrop UsernsMode='' user=$user cap_add=$capadd host uid $puid; data dir $owner, id.txt $f_owner; through Caddy: $R_BODY"
+
+        # 3. root_setup, caps tier: remapped, no user: pin, the five
+        #    capabilities back and nothing more. Its start chowns its data to
+        #    www-data (33) as root, then drops, so the running process is host
+        #    uid base+33 and its data lands there.
+        remap_ctr "$RS_ID" rootsetup; c="$R_CTR"
+        um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}')"
+        user="$(docker inspect "$c" --format '{{.Config.User}}')"
+        capadd="$(docker inspect "$c" --format '{{json .HostConfig.CapAdd}}')"
+        local caps capdrop secopt
+        caps="$(tr -d '[]" ' <<<"$capadd" | tr ',' '\n' | sed 's/^CAP_//' | sort | tr '\n' ' ')"
+        capdrop="$(docker inspect "$c" --format '{{json .HostConfig.CapDrop}}')"
+        secopt="$(docker inspect "$c" --format '{{json .HostConfig.SecurityOpt}}')"
+        [ -z "$um" ] || fail "remap: rootsetup UsernsMode is '$um', want the daemon default (remapped); the caps tier must never be in the host userns"
+        [ -z "$user" ] || fail "remap: rootsetup runs with user '$user', want no user: pin (caps tier)"
+        [ "$caps" = "CHOWN DAC_OVERRIDE FOWNER SETGID SETUID " ] || fail "remap: rootsetup cap_add is $capadd, want exactly CHOWN SETUID SETGID DAC_OVERRIDE FOWNER"
+        grep -q '"ALL"' <<<"$capdrop" || fail "remap: rootsetup cap_drop is $capdrop, want ALL"
+        grep -q 'no-new-privileges' <<<"$secopt" || fail "remap: rootsetup security_opt is $secopt, want no-new-privileges"
+        puid="$(host_uid_of "$c")"
+        [ "$puid" = "$((remap_base + 33))" ] || fail "remap: rootsetup runs as host uid '$puid', want $((remap_base + 33)) (www-data, after the root start)"
+        dir="$(remap_inst "$RS_ID")/data"
+        owner="$(remap_owner "$dir")"
+        [ "$owner" = "$remap_base:$remap_base" ] || fail "remap: rootsetup data dir is owned $owner, want $remap_base:$remap_base (the container's root, caps tier)"
+        want="$((remap_base + 33)):$((remap_base + 33))"
+        f_owner="$(remap_owner "$dir/db")"
+        [ "$f_owner" = "$want" ] || fail "remap: rootsetup data/db is owned $f_owner, want $want (chowned by its root start)"
+        remap_wait_file "$dir/db/token" || fail "remap: rootsetup wrote no $dir/db/token"
+        [ "$(remap_owner "$dir/db/token")" = "$want" ] || fail "remap: rootsetup token is owned $(remap_owner "$dir/db/token"), want $want"
+        remap_get "$RS_SLUG" /token
+        RS_TOKEN_NOW="$R_BODY"
+        [ -n "$RS_TOKEN_NOW" ] && [ "$RS_TOKEN_NOW" = "$(cat "$dir/db/token")" ] \
+            || fail "remap: rootsetup /token through Caddy says '$RS_TOKEN_NOW', the file says '$(cat "$dir/db/token")'"
+        echo "cloud-assertions: remap [$MODE]: caps tier, root_setup: rootsetup UsernsMode='' user='$user' cap_add=$capadd cap_drop=$capdrop security_opt=$secopt host uid $puid; data dir $owner, data/db $f_owner; token through Caddy: $RS_TOKEN_NOW"
+
+        # 4. Managed Postgres, default tier: the service runs remapped and its
+        #    entrypoint gives PGDATA to postgres (999), so host uid base+999.
+        #    pgnote, a folderless app on it, runs remapped as root inside and
+        #    its row is in its own database.
+        remap_ctr "$PG_ID" pgnote; c="$R_CTR"
+        um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}')"
+        user="$(docker inspect "$c" --format '{{.Config.User}}')"
+        [ -z "$um" ] || fail "remap: pgnote UsernsMode is '$um', want the daemon default (remapped)"
+        [ "$user" = "0:0" ] || fail "remap: pgnote runs as '$user', want 0:0"
+        puid="$(host_uid_of "$c")"
+        [ "$puid" = "$remap_base" ] || fail "remap: pgnote runs as host uid '$puid', want $remap_base"
+        local pg=moose-svc-postgres-16 pg_um pg_puid pg_owner pg_db pg_row=""
+        for _i in $(seq 1 120); do
+            [ "$(docker inspect "$pg" --format '{{.State.Health.Status}}' 2>/dev/null)" = healthy ] && break
+            sleep 1
+        done
+        [ "$(docker inspect "$pg" --format '{{.State.Health.Status}}' 2>/dev/null)" = healthy ] \
+            || fail "remap: $pg never became healthy: $(docker ps -a --filter "name=$pg" --format '{{.Status}}') log: $(docker logs --tail 5 "$pg" 2>&1 | tr '\n' ' ')"
+        pg_um="$(docker inspect "$pg" --format '{{.HostConfig.UsernsMode}}' 2>/dev/null)"
+        [ -z "$pg_um" ] || fail "remap: $pg UsernsMode is '$pg_um', want the daemon default (remapped)"
+        pg_puid="$(host_uid_of "$pg")"
+        [ "$pg_puid" = "$((remap_base + 999))" ] || fail "remap: $pg runs as host uid '$pg_puid', want $((remap_base + 999))"
+        pg_owner="$(remap_owner /var/lib/moose/state/services/postgres-16/data)"
+        [ "${pg_owner%%:*}" = "$((remap_base + 999))" ] || fail "remap: postgres-16 data dir is owned $pg_owner, want uid $((remap_base + 999))"
+        pg_db="$(sed -n 's/^MOOSE_SERVICE_DATABASE_NAME=//p' "$(remap_inst "$PG_ID")/.env")"
+        [ -n "$pg_db" ] || fail "remap: pgnote .env names no MOOSE_SERVICE_DATABASE_NAME"
+        for _i in $(seq 1 120); do
+            pg_row="$(docker exec "$pg" psql -U postgres -d "$pg_db" -tAc 'select v from moose_notes' 2>&1)"
+            [ "$pg_row" = moose-531-note ] && break
+            sleep 1
+        done
+        [ "$pg_row" = moose-531-note ] || fail "remap: pgnote's row is not in database $pg_db: '$pg_row'; pgnote log: $(docker logs --tail 5 "$c" 2>&1 | tr '\n' ' ')"
+        echo "cloud-assertions: remap [$MODE]: managed Postgres, default tier: $pg UsernsMode='' host uid $pg_puid, data dir $pg_owner; pgnote UsernsMode='' user=$user host uid $puid; its row in database $pg_db: $pg_row"
+
+        # 5. A folder app, host tier: it acts as the real moose-app identity on
+        #    the shared tree, so no remap and no capability.
+        remap_ctr "$FD_ID" filedrop; c="$R_CTR"
+        um="$(docker inspect "$c" --format '{{.HostConfig.UsernsMode}}')"
+        user="$(docker inspect "$c" --format '{{.Config.User}}')"
+        capadd="$(docker inspect "$c" --format '{{json .HostConfig.CapAdd}}')"
+        [ "$um" = host ] || fail "remap: filedrop (household) UsernsMode is '${um:-<empty>}', want host (folder app)"
+        [ "$user" = "2000:2000" ] || fail "remap: filedrop (household) runs as '$user', want moose-app 2000:2000"
+        remap_nocaps "$capadd" || fail "remap: filedrop cap_add is $capadd, want none (host tier)"
+        puid="$(host_uid_of "$c")"
+        [ "$puid" = 2000 ] || fail "remap: filedrop runs as host uid '$puid', want the real 2000"
+        remap_wait_file /srv/moose/shared/Documents/filedrop.txt || fail "remap: filedrop wrote no /srv/moose/shared/Documents/filedrop.txt"
+        f_owner="$(remap_owner /srv/moose/shared/Documents/filedrop.txt)"
+        [ "$f_owner" = "2000:2001" ] || fail "remap: /srv/moose/shared/Documents/filedrop.txt is owned $f_owner, want the real 2000:2001"
+        echo "cloud-assertions: remap [$MODE]: host tier, folder app: filedrop UsernsMode=host user=$user cap_add=$capadd host uid $puid; /srv/moose/shared/Documents/filedrop.txt $f_owner"
+    }
+
+    if [ "$MODE" = remap ]; then
+        # The managed service and pgnote run postgres:16. It is test-only and
+        # outside the first-boot loader's dir, so only this boot loads it.
+        docker load -i /var/lib/moose/test-images/postgres-16.tar >/dev/null 2>&1 \
+            || fail "remap: docker load postgres-16.tar failed: $(docker load -i /var/lib/moose/test-images/postgres-16.tar 2>&1 | tail -2)"
+
+        remap_install remapdrop personal; RD_ID="$R_ID"; RD_SLUG="$R_SLUG"
+        remap_install svcdrop personal; SD_ID="$R_ID"; SD_SLUG="$R_SLUG"
+        remap_install rootsetup personal; RS_ID="$R_ID"; RS_SLUG="$R_SLUG"
+        remap_install pgnote personal; PG_ID="$R_ID"
+        remap_install filedrop household; FD_ID="$R_ID"
+        echo "cloud-assertions: remap: installed remapdrop, svcdrop, rootsetup, pgnote and filedrop (household)"
+
+        remap_checks
+        # A restart loop would mean the root start failed at least once.
+        rs_restarts="$(docker inspect "$(docker ps --filter "label=moose.instance_id=$RS_ID" --format '{{.Names}}' | head -1)" --format '{{.RestartCount}}')"
+        [ "$rs_restarts" = 0 ] || fail "remap: rootsetup restarted $rs_restarts times; its root start should work the first time in the caps tier"
+        rs_token="$RS_TOKEN_NOW"
+
+        # The caps-tier app keeps its data across a recreate. Recreate it the
+        # way the brain runs compose, so the container is new and its start
+        # runs as root again on the data it left.
+        remap_ctr "$RS_ID" rootsetup; old_cid="$(docker inspect "$R_CTR" --format '{{.Id}}')"
+        rc_out="$(cd "$(remap_inst "$RS_ID")" && docker compose -f compose.yml -f compose.override.yml --env-file .env -p "moose-$RS_ID" up -d --force-recreate 2>&1)" \
+            || fail "remap: recreating rootsetup failed: $(tail -3 <<<"$rc_out" | tr '\n' ' ')"
+        remap_ctr "$RS_ID" rootsetup; new_cid="$(docker inspect "$R_CTR" --format '{{.Id}}')"
+        [ -n "$new_cid" ] && [ "$new_cid" != "$old_cid" ] || fail "remap: rootsetup was not recreated (${old_cid:0:12} -> ${new_cid:0:12})"
+        remap_checks
+        [ "$RS_TOKEN_NOW" = "$rs_token" ] || fail "remap: rootsetup lost its data on a recreate: token '$rs_token' became '$RS_TOKEN_NOW'"
+        echo "cloud-assertions: remap: the caps-tier app kept its data across a container recreate (${old_cid:0:12} -> ${new_cid:0:12}), token $rs_token"
+
+        mkdir -p "$(dirname "$REMAP_STATE")" && chmod 700 "$(dirname "$REMAP_STATE")"
+        printf 'RD_ID=%q\nRD_SLUG=%q\nSD_ID=%q\nSD_SLUG=%q\nRS_ID=%q\nRS_SLUG=%q\nPG_ID=%q\nFD_ID=%q\nrs_token=%q\n' \
+            "$RD_ID" "$RD_SLUG" "$SD_ID" "$SD_SLUG" "$RS_ID" "$RS_SLUG" "$PG_ID" "$FD_ID" "$rs_token" > "$REMAP_STATE"
+        sync
+        echo "cloud-assertions: remap: every tier checked on the first boot; ids left for the reboot"
+    else
+        [ -f "$REMAP_STATE" ] || fail "remap-reboot: no $REMAP_STATE from the first boot (did the remap boot run on this disk?)"
+        # shellcheck disable=SC1090
+        . "$REMAP_STATE"
+        remap_checks
+        [ "$RS_TOKEN_NOW" = "$rs_token" ] || fail "remap-reboot: rootsetup lost its data on a reboot: token '$rs_token' became '$RS_TOKEN_NOW'"
+        echo "cloud-assertions: remap-reboot: every tier checked again after a real reboot of the same disk; the caps-tier app kept its data (token $rs_token)"
+    fi
     ;;
 *)
     fail "unknown assert mode '$MODE'"

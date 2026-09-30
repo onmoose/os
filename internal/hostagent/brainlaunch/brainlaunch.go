@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -87,7 +88,24 @@ type RunSpec struct {
 	// proxyRunSpec for the sandbox the proxy gets and why the brain has none.
 	CapDrop     []string
 	SecurityOpt []string
+	// UsernsMode is passed as --userns. The proxy and the brain both set it to
+	// hostUserns. Empty leaves Docker's default.
+	UsernsMode string
+	// Tmpfs lists container paths that get a fresh tmpfs (--tmpfs). See
+	// proxyRunSpec for why the proxy needs one on /run.
+	Tmpfs []string
 }
+
+// hostUserns is the --userns value for the socket proxy and the brain. It keeps
+// them in the host user namespace when the Docker daemon runs with a
+// daemon-wide userns-remap. Both must act as real host root: the proxy holds
+// the raw Docker socket, which a remapped root could not use, and the brain
+// gives app data to real host ids and writes the host's /var/lib/moose as real
+// root. host-agent always passes it, without asking Docker whether the remap is
+// on: on a daemon without the remap the flag changes nothing, so it cannot
+// drift from daemon.json (CONTROL_PLANE.md # Locked: control-plane container
+// hardening, APP_ISOLATION.md # User-namespace tiers).
+const hostUserns = "host"
 
 // Mount is a host→container bind mount.
 type Mount struct {
@@ -181,6 +199,20 @@ type Config struct {
 	// Empty (an unmarked appliance box, `make dev`) skips the mount; the brain
 	// then resolves appliance, which is correct for an unmarked box.
 	ProfileMarkerPath string
+	// SharedRoot is the household shared tree (protocol.SharedRoot,
+	// /srv/moose/shared), mounted read-write into the brain at the same path
+	// (#519). Before a household folder app installs, the brain creates the
+	// elected <Folder>[/<subfolder>] under it, owned root:moose-shared with mode
+	// 02770 (lifecycle prepareSharedSource, STORAGE.md # Permissions), and then
+	// binds that same host path into the app. Without the mount the brain sees
+	// no shared tree and every household folder install fails.
+	//
+	// host-agent sets it only after EnsureSharedTree has made the tree exist
+	// with the right group and mode. A bind of a missing source would make
+	// Docker create it root:root 0755, which is the wrong owner for the tree
+	// and would then be kept. Empty skips the mount: `make dev`, or a box
+	// where the tree could not be prepared.
+	SharedRoot string
 }
 
 // Launch runs the first-boot brain bootstrap. It is idempotent: a brain
@@ -411,7 +443,67 @@ func proxyRunSpec(cfg Config) RunSpec {
 		Env:         proxyAllowlist(),
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges:true"},
+		UsernsMode:  hostUserns,
+		// On a remapped daemon Docker keeps a host-userns container's image
+		// files owned by the remapped root, so the image's /run belongs to that
+		// id, not to real root. With every capability dropped, real root has no
+		// DAC_OVERRIDE there, so haproxy cannot create /run/haproxy.pid and
+		// exits. A fresh tmpfs is owned by real root, so the pid file works and
+		// no capability is given back. /tmp is 1777, so the entrypoint's
+		// generated config needs nothing. On a daemon without the remap the
+		// tmpfs is harmless: haproxy writes only its pid file there.
+		Tmpfs: []string{"/run"},
 	}
+}
+
+// sharedTreeMode is the household shared tree's mode, 02770: setgid, so a new
+// child keeps the moose-shared group, plus group rwx and no access for others
+// (STORAGE.md # Permissions). The brain uses the same mode for the folders it
+// creates below it (lifecycle sharedDirMode).
+const sharedTreeMode = os.ModeSetgid | 0o770
+
+// EnsureSharedTree makes sure the household shared tree exists as a real
+// directory owned ownerUID:sharedGID with mode 02770, before the
+// brain is launched with it mounted (#519). It runs on every host-agent start,
+// on both profiles: the hosted image has no /srv/moose at all, and the
+// appliance creates nothing there yet.
+//
+//   - Missing: the parent is created 0755 if needed, then the tree itself.
+//   - Present: its owner, group and mode are set back to the STORAGE.md model.
+//     That is the contract for the tree's root, so a box that drifted is
+//     repaired on the next start. The owner matters too: a user who owned the
+//     root could change its mode again. Only the root is touched, never
+//     anything inside it.
+//   - A symlink or a file at that path is an error. Nothing is changed, and the
+//     caller must not mount it.
+//
+// ownerUID is 0 on a box (host-agent runs as root, and STORAGE.md says
+// root:moose-shared). It is a parameter only so a test can run unprivileged.
+func EnsureSharedTree(root string, ownerUID, sharedGID int) error {
+	fi, err := os.Lstat(root)
+	switch {
+	case err == nil && !fi.IsDir():
+		return fmt.Errorf("shared tree %q is not a real directory (a file or a symlink is in the way)", root)
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
+			return fmt.Errorf("create parent of shared tree %q: %w", root, err)
+		}
+		if err := os.Mkdir(root, sharedTreeMode); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("create shared tree %q: %w", root, err)
+		}
+		slog.Info("shared tree created", "dir", root)
+	case err != nil:
+		return fmt.Errorf("check shared tree %q: %w", root, err)
+	}
+	// Owner and group first, then mode: Mkdir's mode is masked by the umask,
+	// and a chown can clear the setgid bit, so the mode is set last.
+	if err := os.Chown(root, ownerUID, sharedGID); err != nil {
+		return fmt.Errorf("set owner of shared tree %q: %w", root, err)
+	}
+	if err := os.Chmod(root, sharedTreeMode); err != nil {
+		return fmt.Errorf("set mode of shared tree %q: %w", root, err)
+	}
+	return nil
 }
 
 // RunSpecFor exposes the brain's `docker run` invocation for cfg.
@@ -453,6 +545,15 @@ func runSpec(cfg Config) RunSpec {
 	// appliance, the no-op default.
 	if cfg.ProfileMarkerPath != "" {
 		mounts = append(mounts, Mount{Source: cfg.ProfileMarkerPath, Target: cfg.ProfileMarkerPath, ReadOnly: true})
+	}
+	// The household shared tree, read-write at the same path, so the brain can
+	// prepare a shared folder source before an app binds it (see
+	// Config.SharedRoot). Only the shared tree: /home is deliberately not
+	// mounted. Personal folder sources are prepared by host-agent
+	// (POST /v1/users/{username}/prepare-folder), so the brain never holds
+	// every user's private files.
+	if cfg.SharedRoot != "" {
+		mounts = append(mounts, Mount{Source: cfg.SharedRoot, Target: cfg.SharedRoot})
 	}
 	env := []EnvVar{
 		{Key: "MOOSE_STATE_DIR", Value: cfg.StateDir},
@@ -497,5 +598,10 @@ func runSpec(cfg Config) RunSpec {
 		Network: cfg.Network,
 		Mounts:  mounts,
 		Env:     env,
+		// The brain keeps Docker's default capabilities (#442), so the remapped
+		// owner of its own image files does not stop it, and it needs no tmpfs.
+		// The control-plane update builds the brain from this same spec
+		// (RunSpecFor), so a brain an update recreates keeps the host namespace.
+		UsernsMode: hostUserns,
 	}
 }

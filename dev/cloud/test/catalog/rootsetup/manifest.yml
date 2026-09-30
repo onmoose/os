@@ -1,0 +1,36 @@
+# Test-only catalog app for the hosted cloud remap boots (#531). A folderless
+# app with root_setup: true, so on a remapped box it runs in the caps tier:
+# remapped, no user: pin, and CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER
+# added back. Its start does what a real root entrypoint does (poznote is the
+# known case): as root it makes its data dir and gives it to www-data (33),
+# then drops to www-data to write and serve. Without the capabilities the
+# chown fails and the container exits, so a running container shows that the
+# tier gave them.
+#
+# It keeps one value across starts: a token made on the first start only. The
+# remap boots read it through Caddy after the install, after a container
+# recreate and after a reboot, and it must not change.
+#
+# Same busybox image and digest as filedrop, already in the offline bundle.
+id: rootsetup
+manifest_version: 1
+name: Rootsetup
+version: "1.37"
+description:
+  short: "Test fixture: a root_setup app that fixes its data owner as root, then drops."
+icon_glyph: flask-conical
+compose_file: compose.yml
+main_service: rootsetup
+main_port: 8080
+preferred_slugs: [rootsetup]
+root_setup: true
+
+permissions:
+  internet: false
+  lan: false
+
+images:
+  busybox:1.37.0:
+    digest: sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    download_bytes: 2211514
+    disk_bytes: 4421262

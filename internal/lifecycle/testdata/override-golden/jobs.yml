@@ -1,0 +1,50 @@
+networks:
+    moose-app-INSTANCE:
+        external: true
+    moose-ingress:
+        external: true
+services:
+    migrate:
+        cap_drop:
+            - ALL
+        image: traefik/whoami@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c
+        labels:
+            moose.instance_id: INSTANCE
+            moose.managed: "true"
+            moose.manifest_id: MANIFEST
+        networks:
+            moose-app-INSTANCE: null
+        security_opt:
+            - no-new-privileges:true
+        user: EUID:EGID
+    seed:
+        cap_drop:
+            - ALL
+        image: traefik/whoami@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c
+        labels:
+            moose.instance_id: INSTANCE
+            moose.managed: "true"
+            moose.manifest_id: MANIFEST
+        networks:
+            moose-app-INSTANCE: null
+        security_opt:
+            - no-new-privileges:true
+        user: EUID:EGID
+    web:
+        cap_drop:
+            - ALL
+        container_name: moose-INSTANCE-web
+        image: traefik/whoami@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c
+        labels:
+            moose.instance_id: INSTANCE
+            moose.managed: "true"
+            moose.manifest_id: MANIFEST
+        networks:
+            moose-app-INSTANCE: null
+            moose-ingress:
+                aliases:
+                    - moose-INSTANCE-web
+        restart: unless-stopped
+        security_opt:
+            - no-new-privileges:true
+        user: EUID:EGID

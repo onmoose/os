@@ -61,7 +61,10 @@ On brain startup, a reconciliation pass walks SQLite, lists containers with `moo
 - `state=running` but no containers: `docker compose up -d`.
 - `state=running` with containers up but the instance is flagged *pending-recreate* (a config/mail edit committed the override/.env, then its `compose up` failed): `docker compose up -d` to apply the committed env, then clear the flag (#268). The brain sets the flag at the failed edit (brain-commits-first), so a container left running on stale env converges on the next startup pass instead of waiting for the user to retry.
 - `state=stopped` but containers running: `docker compose stop`.
+- Every instance gets its Caddy route written again, because the brain clears Caddy's route list on startup. A `running` instance gets its real upstream (and its mDNS name re-published). A `stopped` or `failed` instance gets its splash, keyed on the stored host, with no mDNS re-publish, as in Stop. The splashes are written after every running instance's work, so a slow Caddy cannot spend the startup deadline on them first. They have their own short budget, so they still get a try if that work used the deadline up. This is also what repairs a route that a failed admin call left stale (#520).
 - Orphan containers (labeled but no SQLite row, e.g. crash mid-install): tear them down.
+
+The pass runs once, so it first waits for Docker to answer, for up to 15 seconds. The brain reaches Docker only through the socket proxy, and after a reboot Docker starts the proxy and the brain together, so the brain can be up a few seconds before the proxy answers. Without the wait the pass failed at its first `docker ps`, and every app answered 404 until someone stopped and started it (#540).
 
 **Why imperative:** single-node appliance, one user clicking at a time. A reconciler is overkill. The startup pass plus per-step rollback covers every realistic failure mode.
 
@@ -113,7 +116,9 @@ The brain-generated `compose.override.yml` applies isolation and appliance behav
 
 - Networks: attach to `moose-app-<instance-id>` (per-app bridge). `main_service` additionally attaches to `moose-ingress` so Caddy can reach it.
 - `container_name: moose-<instance-id>-<main-service>` pinned on `main_service` **only**. Without the pin compose names the running container with a replica suffix (`…-1`), and Docker's journald driver tags log lines with that suffixed name — breaking the per-app Logs tail's exact `CONTAINER_NAME` match (`LOGGING.md` # Per-app logs) while the network alias kept Caddy working. The pin makes the running container's name the same `moose-<id>-<service>` stem the brain already computes for the Caddy upstream and ingress alias. An explicit `container_name` makes the service unscalable; the main service is single-replica by design, and sidecars stay unpinned so the constraint never lands on an author's scalable workers. Same pattern as the managed services' fixed exec handle.
-- `cap_drop: [ALL]`. No `cap_add` for Tier-3 apps, ever.
+- `cap_drop: [ALL]`. No `cap_add` from an author, ever. The one `cap_add` the override carries is the brain's own fixed set for a `root_setup` app, on a remapped daemon only (`CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`), and such a service also gets no `user:` pin (`APP_ISOLATION.md` # User-namespace tiers).
+- `user:` pinned on every service, with two exceptions, both on a remapped daemon only: a `root_setup` app (above) and an `image_user` app. An `image_user` service gets no `user:` pin and no `cap_add`, so the image's own `USER` applies, remapped (`APP_ISOLATION.md` # User-namespace tiers).
+- `userns_mode: host` on every service of an app in the host tier (a `folders` grant, `gpu: true` or `devices`), on a remapped daemon. Never together with `cap_add`, and never without a `user:` pin. An author's own `userns_mode: host` is still an admission rejection (below).
 - `security_opt: [no-new-privileges:true]`.
 - `restart: unless-stopped` (forced — this is a home appliance, apps must survive reboots), **except for author-declared terminating jobs**, whose `restart:` is preserved verbatim. A "terminating job" is detected from the union of two signals: (a) the author set `restart: "no"` or `restart: "on-failure"` on the service, or (b) the service is the target of another service's `depends_on: {condition: service_completed_successfully}` — which catches the common case where the author omitted `restart:` entirely (Compose's default is `no`) and signal (a) alone would miss. Forcing `unless-stopped` on a one-shot init/migrate/seed job is catastrophic: the job exits 0, Docker restarts it, it never reaches the "completed" terminal state, and a completion-gate `depends_on` blocks `docker compose up -d` forever (`DECISIONS.md` 2026-06-05). **`main_service` is always forced long-running** regardless of these signals — a paranoid or buggy author can't accidentally exempt the actual app. Every service not detected as a job still gets forced `unless-stopped`.
 - `devices:` mirroring `permissions.devices` from the manifest. Empty if not declared.
@@ -172,7 +177,8 @@ Updates re-resolve (catalog for Door-1, fresh inspect for Door-2). The previous 
 ```
 1.  Parse + validate manifest                 (no state)
 2.  Parse + admit compose                     (no state)
-3.  Allocate slug, write SQLite row           (state: installing)
+2b. Read the remap, pick the userns tier      (no state; APP_ISOLATION.md # User-namespace tiers)
+3.  Allocate slug, write SQLite row           (state: installing; the row carries the tier)
 4.  Create instance dir tree
 5.  Generate override + .env
 6.  Pull images, resolve digests, rewrite override
@@ -185,7 +191,8 @@ Updates re-resolve (catalog for Door-1, fresh inspect for Door-2). The previous 
 ```
 
 Failure handling:
-- **Steps 1–2:** clean fail, no state written.
+- **Steps 1–2b:** clean fail, no state written. Step 2b refuses every install while Docker and host-agent disagree about the remap, and a `root_setup` or `image_user` install on a daemon with no remap.
+- **An `image_user` app's image user** is read after the pull (step 6), because it comes from the image: each service's `Config.User`, a name looked up in the image's own `/etc/passwd` and `/etc/group` (`APP_ISOLATION.md` # User-namespace tiers). A user the brain cannot resolve, an id outside the remap range, or one bind dir that two services with different users share is refused there, with a plain message, and rolled back like any failure in steps 3 to 9.
 - **Steps 3–9:** full rollback — unpublish mDNS, drop Caddy route, `compose down -v`, drop network, remove instance dir, delete SQLite row. Step 9's `compose up -d` runs under a context bounded by the health-wait budget (the same default 120s as step 10), so a pathological app whose completion gate never completes **fails the install cleanly** instead of wedging the brain indefinitely — a containment backstop independent of the terminating-job detection above.
 - **Steps 10–11:** keep the instance dir (so the user can inspect logs). Caddy route stays registered but in "failed" splash mode. State: `failed`. The UI surfaces the failing step and last 50 lines of logs.
 
@@ -260,7 +267,7 @@ The same splash machinery serves three user-visible states with consistent vocab
 - **Stopped** — for manually stopped apps.
 - **Failed** — install or update failure, with a "view logs" link.
 
-Mechanically: the brain owns two route variants in Caddy's config per instance and swaps between them on state transitions. mDNS publish happens at the same moment as the splash registration — both make the hostname reachable.
+Mechanically: the brain owns two route variants in Caddy's config per instance and swaps between them on state transitions. A swap is one admin call that replaces the route in place by its `@id` (`PATCH /id/moose-app-<id>`), so it lands whole or changes nothing: if the call fails, the old variant keeps serving and the caller gets the error (#520). A call that got no answer at all (a reset or refused connection) is tried again a few times. A timed-out call is not. Only when no route has the `@id` yet is the route inserted, at index 0. The brain never removes the old route before it writes the new one, because a failed write would then leave the app with no route and every request would fall through to the catch-all. mDNS publish happens at the same moment as the splash registration — both make the hostname reachable.
 
 If the box is enrolled with onmoose.io, the brain registers **two hostnames** per app (a `.local` HTTP route and a `<slug>.<box-id>.onmoose.io` HTTPS route). Both go through the same splash → real-upstream flip. Dashboard tile-clicks default to the `.local` URL; apps with `requires_https: true` in the manifest open the `.onmoose.io` URL instead. See `MOOSE_NETWORK.md` for why `.local` is the canonical user-facing URL.
 

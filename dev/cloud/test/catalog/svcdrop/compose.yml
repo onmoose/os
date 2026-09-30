@@ -1,0 +1,8 @@
+# Author's compose, held verbatim by moose. A test fixture, not a catalog app.
+# The same start as remapdrop. The brain pins user: to the allocated identity.
+services:
+  svcdrop:
+    image: busybox:1.37.0
+    command: ["sh", "-c", "id > /data/id.txt && exec httpd -f -p 8080 -h /data"]
+    volumes:
+      - ./data:/data

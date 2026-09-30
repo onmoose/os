@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -26,12 +28,16 @@ const catchAllBody = `<!doctype html><html><head><meta charset="utf-8"><title>40
 type Client struct {
 	admin string
 	http  *http.Client
+	// retryDelay is the wait between tries of a route write that got no
+	// answer (upsertRouteByID). Tests shorten it.
+	retryDelay time.Duration
 }
 
 func New(adminAddr string) *Client {
 	return &Client{
-		admin: adminAddr,
-		http:  &http.Client{Timeout: 5 * time.Second},
+		admin:      adminAddr,
+		http:       &http.Client{Timeout: 5 * time.Second},
+		retryDelay: 500 * time.Millisecond,
 	}
 }
 
@@ -277,21 +283,96 @@ func (c *Client) AddSplashRoute(ctx context.Context, instanceID, host, appName, 
 	})
 }
 
-// upsertRoute replaces any existing route for the instance (remove-then-add),
-// so callers can flip a route's handler without duplicate-@id errors.
+// upsertRoute writes the instance's route, replacing the one already there
+// (#520). See upsertRouteByID for why a failed write keeps the old route.
 func (c *Client) upsertRoute(ctx context.Context, instanceID, host string, handle []any) error {
-	_ = c.RemoveRoute(ctx, instanceID)
 	route := map[string]any{
 		"@id":    routeID(instanceID),
 		"match":  []any{map[string]any{"host": []string{host}}},
 		"handle": handle,
 	}
-	// Caddy admin API insert semantics: PUT to /routes/<N> inserts at that
-	// index, pushing existing items down. POST to /routes/<N> appends
-	// regardless of the trailing index (verified 2026-05-24). Using PUT/0
-	// keeps the catch-all (which initially sits at index 0, then index 1+
-	// after the first install) last in evaluation order.
-	return c.put(ctx, "/config/apps/http/servers/moose/routes/0", route)
+	return c.upsertRouteByID(ctx, routeID(instanceID), host, route)
+}
+
+// routesPath is the moose server's route list in Caddy's config.
+const routesPath = "/config/apps/http/servers/moose/routes"
+
+// routeWriteAttempts is how many times upsertRouteByID tries a write that got
+// no answer from Caddy (a reset or refused connection) before it gives up.
+const routeWriteAttempts = 3
+
+// upsertRouteByID writes route under @id, in one admin call where it can
+// (#520). It used to delete the old route and then insert the new one, so a
+// failed insert left the host with no route and every request fell through to
+// the catch-all 404.
+//
+// Now it replaces the route in place: PATCH /id/<id>. Caddy loads a PATCH as
+// one new config, so the call either lands whole or changes nothing, and the
+// old route keeps serving when it fails. The route also keeps its place in the
+// list, so it stays ahead of the catch-all. Only when Caddy answers 404
+// ("unknown object ID": no route with this @id yet) is the route inserted,
+// with PUT at index 0 so it sorts before the catch-all.
+//
+// Adding the new route first and removing the old one after does not work:
+// Caddy refuses a config that holds the same @id twice, so the add would need
+// a second id and the swap would take two calls again.
+//
+// A write that got no answer is tried again, a few times, because it may
+// never have reached Caddy (seen once in CI: "connection reset by peer" on the
+// flip from splash to app). Both calls are safe to repeat: a retry PATCHes the
+// route an earlier PUT may already have added. A write Caddy answered with an
+// error is not repeated, since Caddy would refuse it again. A call that timed
+// out is not repeated either: Caddy is hanging, not resetting, and each try
+// would cost the full client timeout out of the caller's budget (the startup
+// pass writes every app's route under one deadline). The last error is
+// returned to the caller either way. host is only for the log line.
+func (c *Client) upsertRouteByID(ctx context.Context, id, host string, route map[string]any) error {
+	for attempt := 1; ; attempt++ {
+		answered, err := c.replaceOrInsertRoute(ctx, id, route)
+		if err == nil || answered || isTimeout(err) || attempt == routeWriteAttempts {
+			return err
+		}
+		slog.Warn("caddy: route write got no answer; retrying", "host", host, "err", err)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(c.retryDelay):
+		}
+	}
+}
+
+// isTimeout reports whether err is a timeout, from the HTTP client or the
+// caller's context.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		(errors.As(err, &ne) && ne.Timeout())
+}
+
+// replaceOrInsertRoute makes one try at the write described on
+// upsertRouteByID. answered is false when a call got no HTTP answer at all.
+func (c *Client) replaceOrInsertRoute(ctx context.Context, id string, route map[string]any) (answered bool, err error) {
+	status, msg, err := c.do(ctx, "PATCH", "/id/"+id, route)
+	if err != nil {
+		return false, err
+	}
+	if status == http.StatusNotFound {
+		// Caddy's API inserts on PUT /routes/<N>, pushing the rest down, and
+		// appends on POST whatever the index (verified 2026-05-24). PUT at 0
+		// keeps the catch-all last in evaluation order.
+		status, msg, err = c.do(ctx, "PUT", routesPath+"/0", route)
+		if err != nil {
+			return false, err
+		}
+		if status >= 300 {
+			return true, adminError("PUT", routesPath+"/0", status, msg)
+		}
+		return true, nil
+	}
+	if status >= 300 {
+		return true, adminError("PATCH", "/id/"+id, status, msg)
+	}
+	return true, nil
 }
 
 func splashHTML(appName, state string) string {
@@ -349,7 +430,7 @@ func catchAllRoute() map[string]any {
 }
 
 // dashboardRouteID is the stable @id of the dashboard route, so EnsureDashboard
-// is idempotent (remove-then-add) the same way per-app routes are.
+// replaces it in place the same way per-app routes are (#520).
 const dashboardRouteID = "moose-dashboard"
 
 // EnsureDashboard installs the dashboard host route (WEB_UI.md # deploy model):
@@ -365,7 +446,6 @@ const dashboardRouteID = "moose-dashboard"
 // write, no response buffering) — buffering those would stall the dashboard's
 // live updates. It is harmless for the plain JSON requests on the same leg.
 func (c *Client) EnsureDashboard(ctx context.Context, host, brainUpstream, uiUpstream string) error {
-	_ = c.RemoveRouteByID(ctx, dashboardRouteID)
 	route := map[string]any{
 		"@id":   dashboardRouteID,
 		"match": []any{map[string]any{"host": []string{host}}},
@@ -393,7 +473,7 @@ func (c *Client) EnsureDashboard(ctx context.Context, host, brainUpstream, uiUps
 			},
 		}},
 	}
-	if err := c.put(ctx, "/config/apps/http/servers/moose/routes/0", route); err != nil {
+	if err := c.upsertRouteByID(ctx, dashboardRouteID, host, route); err != nil {
 		return fmt.Errorf("caddy: install dashboard route: %w", err)
 	}
 	slog.Info("caddy: dashboard route installed", "host", host, "upstream", uiUpstream)
@@ -671,24 +751,40 @@ func (c *Client) get(ctx context.Context, path string) (int, error) {
 }
 
 func (c *Client) send(ctx context.Context, method, path string, body any) error {
+	status, msg, err := c.do(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	if status >= 300 {
+		return adminError(method, path, status, msg)
+	}
+	return nil
+}
+
+// do sends one JSON request to the admin API and returns Caddy's status code
+// and response body. err is set only when there was no HTTP answer at all.
+func (c *Client) do(ctx context.Context, method, path string, body any) (int, string, error) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(body); err != nil {
-		return err
+		return 0, "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.admin+path, &buf)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("caddy admin unreachable: %w", err)
+		return 0, "", fmt.Errorf("caddy admin unreachable: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		b := new(bytes.Buffer)
-		_, _ = b.ReadFrom(resp.Body)
-		return fmt.Errorf("caddy admin %s %s: %s: %s", method, path, resp.Status, b.String())
+	b := new(bytes.Buffer)
+	if _, err := b.ReadFrom(resp.Body); err != nil {
+		return 0, "", fmt.Errorf("caddy admin unreachable: %w", err)
 	}
-	return nil
+	return resp.StatusCode, b.String(), nil
+}
+
+func adminError(method, path string, status int, msg string) error {
+	return fmt.Errorf("caddy admin %s %s: %d %s: %s", method, path, status, http.StatusText(status), msg)
 }

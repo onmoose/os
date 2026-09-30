@@ -550,6 +550,58 @@ func TestReconcileBringsRunningInstanceBackUp(t *testing.T) {
 	}
 }
 
+// After a reboot the brain can start before the Docker proxy answers (#540).
+// Reconcile on its own gives up at the first failed docker ps and adds no
+// route. WaitDocker first rides out the failures, so the routes come back.
+func TestWaitDockerThenReconcileReaddsRoutesAfterReboot(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+	e.docker.digests[testImage] = testDigest
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// The app's containers came back from their restart policy, but Caddy lost
+	// its routes, and the proxy fails the first docker calls.
+	e.docker.psManaged = map[string]bool{inst.ID: true}
+
+	// Without the wait: the one reconcile fails and no route is added.
+	e.docker.psManagedFails = 1
+	e.caddy.calls = nil
+	if err := e.m.Reconcile(context.Background()); err == nil {
+		t.Fatal("reconcile with Docker not answering: want an error")
+	}
+	if e.caddy.called("AddRoute") {
+		t.Fatalf("reconcile added a route without Docker: %v", e.caddy.calls)
+	}
+
+	// With the wait: three failures, then Docker answers and the route is back.
+	e.docker.psManagedFails = 3
+	e.caddy.calls = nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := e.m.WaitDocker(ctx, time.Millisecond); err != nil {
+		t.Fatalf("wait docker: %v", err)
+	}
+	if err := e.m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile after the wait: %v", err)
+	}
+	if !e.caddy.called("AddRoute") {
+		t.Fatalf("AddRoute not called after the wait: %v", e.caddy.calls)
+	}
+}
+
+func TestWaitDockerGivesUpWhenCtxEnds(t *testing.T) {
+	e := newTestEnv(t)
+	e.docker.psManagedFails = 1 << 30
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := e.m.WaitDocker(ctx, time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "docker not ready") || !strings.Contains(err.Error(), "docker-proxy") {
+		t.Fatalf("want a 'docker not ready' error with the last Docker error, got %v", err)
+	}
+}
+
 func TestReconcileDriftedInstanceNetworkCreateBeforeComposeUp(t *testing.T) {
 	// Regression: the override declares the per-app network as external, so
 	// compose up fails if the network no longer exists. The reconciler must
@@ -615,6 +667,128 @@ func TestReconcileStopsStoppedButRunningInstance(t *testing.T) {
 	}
 	if !methodsContainArg(e.docker.Calls(), "ComposeStop", "moose-"+inst.ID) {
 		t.Fatalf("ComposeStop not called: %v", e.docker.methods())
+	}
+}
+
+// The startup pass repairs an app route a failed write left wrong (#520). A
+// running app whose flip from splash to app failed still has its "starting"
+// splash; with its containers up, the pass puts the real upstream back.
+func TestReconcileRepairsRouteOfRunningInstance(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+	e.docker.digests[testImage] = testDigest
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// The flip failed: Caddy still holds the splash.
+	e.caddy.routes[inst.ID] = "splash:starting"
+	e.docker.psManaged = map[string]bool{inst.ID: true}
+
+	if err := e.m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := e.caddy.route(inst.ID); !strings.HasPrefix(got, "upstream:") {
+		t.Errorf("route after reconcile = %q, want the app upstream", got)
+	}
+}
+
+// Stopped and failed apps get their splash back from the startup pass (#520).
+// The brain clears Caddy's routes on startup, so before this they answered
+// with the catch-all 404 after a restart.
+func TestReconcileReassertsSplashForStoppedAndFailed(t *testing.T) {
+	for _, state := range []string{"stopped", "failed"} {
+		t.Run(state, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+			e.docker.digests[testImage] = testDigest
+			inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
+			if err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			if err := e.store.SetState(inst.ID, state); err != nil {
+				t.Fatal(err)
+			}
+			// Caddy lost the route (the startup reset, or a failed write).
+			delete(e.caddy.routes, inst.ID)
+			e.docker.psManaged = map[string]bool{}
+			e.caddy.calls = nil
+
+			if err := e.m.Reconcile(context.Background()); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if got, want := e.caddy.route(inst.ID), "splash:"+state; got != want {
+				t.Errorf("route after reconcile = %q, want %q", got, want)
+			}
+			if !methodsContainArg(e.caddy.calls, "AddSplashRoute", inst.Slug+".local") {
+				t.Errorf("splash not keyed on the app host: %v", e.caddy.calls)
+			}
+		})
+	}
+}
+
+// Splashes are written after every running app's route, even for an older
+// stopped app (#520). The pass runs under one startup deadline, so a slow
+// Caddy must not spend it on splashes first.
+func TestReconcileWritesSplashesAfterRunningRoutes(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+	// A second app id, so the two instances get different ids.
+	e.writeCatalogApp(t, "whoami2", whoamiCompose, strings.Replace(whoamiManifest(""), "id: whoami", "id: whoami2", 1))
+	e.docker.digests[testImage] = testDigest
+	owner := Owner{UserID: "u_admin", Username: "admin"}
+	older, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), owner, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install 1: %v", err)
+	}
+	newer, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami2"), owner, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install 2: %v", err)
+	}
+	if err := e.store.SetState(older.ID, "stopped"); err != nil {
+		t.Fatal(err)
+	}
+	e.docker.psManaged = map[string]bool{newer.ID: true}
+	e.caddy.calls = nil
+
+	if err := e.m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var order []string
+	for _, c := range e.caddy.calls {
+		if c.method == "AddRoute" || c.method == "AddSplashRoute" {
+			order = append(order, fmt.Sprintf("%s:%v", c.method, c.args[0]))
+		}
+	}
+	want := []string{"AddRoute:" + newer.ID, "AddSplashRoute:" + older.ID}
+	if strings.Join(order, " ") != strings.Join(want, " ") {
+		t.Errorf("route writes = %v, want %v", order, want)
+	}
+}
+
+// The splashes get their own budget, so they are still written when the work
+// before them used up the caller's startup deadline (#520).
+func TestReconcileWritesSplashesAfterTheDeadline(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiManifest(""))
+	e.docker.digests[testImage] = testDigest
+	inst, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "whoami"), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := e.store.SetState(inst.ID, "stopped"); err != nil {
+		t.Fatal(err)
+	}
+	delete(e.caddy.routes, inst.ID)
+	e.docker.psManaged = map[string]bool{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the deadline is already gone
+	if err := e.m.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := e.caddy.route(inst.ID); got != "splash:stopped" {
+		t.Errorf("route after reconcile = %q, want splash:stopped", got)
 	}
 }
 

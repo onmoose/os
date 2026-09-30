@@ -1,8 +1,9 @@
 // Shared shape and helpers for the outgoing-email provider form
-// (SERVICE_PROVISIONING.md # BYO outgoing mail). Three places consume it: the
-// add flow at /settings/email/add/:preset, the inline edit form on the account
-// list, and the inline add on the install setup page. They must agree field for
-// field: the same preset rules decide what is shown and what is sent on all.
+// (SERVICE_PROVISIONING.md # BYO outgoing mail). Two forms consume it: the
+// add form (components/install/MailAddForm.vue), used by the install flow and
+// by Settings → Integrations → Email, and the inline edit form on the Settings
+// account list. They must agree field for field: the same preset rules
+// decide what is shown and what is sent on all.
 import type { Ref } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { api, ApiError, type MailPreset } from "@/api";
@@ -63,7 +64,7 @@ export function hostFor(p: MailPreset, region: string): string {
 export function formFromPreset(p: MailPreset): ProviderForm {
   const f = emptyForm();
   f.provider_type = p.id;
-  f.label = p.id === "custom" ? "" : p.label;
+  f.label = p.id === "custom" ? "" : p.account_name || p.label;
   f.port = p.port;
   f.encryption = p.encryption as ProviderForm["encryption"];
   f.region = p.region?.default ?? "";
@@ -83,6 +84,22 @@ export function formFromPreset(p: MailPreset): ProviderForm {
 // UI to say why.
 export function syncSameAsPassword(f: ProviderForm, p: MailPreset | undefined) {
   if (p?.username_mode === "same_as_password" && f.password !== "") f.username = f.password;
+}
+
+// A personal account (Gmail, iCloud) signs in with the full address, which is
+// usually also the from address. The install flow's short form asks for it
+// once, and this copies it into the username. A username the user typed is
+// kept: Settings shows the box for Gmail, because a Google Workspace user may
+// send from an alias, whose address is not the sign-in one.
+export function syncPersonalUsername(f: ProviderForm, p: MailPreset | undefined) {
+  if (p?.personal && f.username.trim() === "") f.username = f.from_address.trim();
+}
+
+// usernameBoxInSettings says whether the Settings add form asks the username
+// of a personal preset: yes for Gmail or Google Workspace (an alias sends
+// from another address), no for iCloud.
+export function usernameBoxInSettings(p: MailPreset): boolean {
+  return p.username_mode === "user" && (!p.personal || p.id === "google_workspace");
 }
 
 export function formValid(f: ProviderForm): boolean {

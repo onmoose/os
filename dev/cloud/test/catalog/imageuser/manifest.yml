@@ -1,0 +1,38 @@
+# Test-only catalog app for the image tier (#537). A folderless app with
+# image_user: true, whose two images each set their own USER and write files
+# baked with that owner. On a box with no userns remap the brain refuses it
+# with a plain message. The image runs the remap (#530), so in the lane it runs
+# remapped, with no capability back and no user: pin, and each bind dir belongs
+# to base plus its image user's ids. The access boot checks that.
+#
+# The images are built on the build host, not pulled, so the digests below are
+# not registry digests. The lane installs air-gapped (MOOSE_OFFLINE_INSTALL),
+# where a promised digest for an image already loaded on the box is trusted as
+# the pin (APP_LIFECYCLE.md # image digest pinning). They only need to be well
+# formed.
+id: imageuser
+manifest_version: 1
+name: Imageuser
+version: "1"
+description:
+  short: "Test fixture: runs as its images' own users."
+icon_glyph: flask-conical
+compose_file: compose.yml
+main_service: imageuser
+main_port: 8080
+preferred_slugs: [imageuser]
+image_user: true
+
+permissions:
+  internet: false
+  lan: false
+
+images:
+  moose-test/imageuser:1:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000537
+    download_bytes: 2211514
+    disk_bytes: 4421262
+  moose-test/imageuser-named:1:
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000005370
+    download_bytes: 2211514
+    disk_bytes: 4421262

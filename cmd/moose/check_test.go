@@ -134,3 +134,47 @@ images:
 		t.Fatalf("want clean, got %v", err)
 	}
 }
+
+// --- check runs the manifest-side admission rules too ----------------------
+// The brain refuses these at install (admission.CheckManifest), so catalog CI
+// must refuse them at publish time, not leave them to fail on a box.
+
+func TestCheck_RejectsManifestRules(t *testing.T) {
+	cases := []struct {
+		name    string
+		extra   string
+		wantMsg string
+	}{
+		{name: "root_setup with folders", extra: "root_setup: true\npermissions:\n  folders:\n    - folder: documents\n      mode: read\n", wantMsg: "root_setup"},
+		{name: "root_setup with gpu", extra: "root_setup: true\npermissions:\n  gpu: true\n", wantMsg: "gpu"},
+		{name: "service_user with folders", extra: "service_user: true\npermissions:\n  folders:\n    - folder: documents\n      mode: read\n", wantMsg: "service_user"},
+		{name: "image_user with devices", extra: "image_user: true\npermissions:\n  devices: [/dev/ttyUSB0]\n", wantMsg: "image_user"},
+		{name: "image_user with root_setup", extra: "image_user: true\nroot_setup: true\n", wantMsg: "image_user"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := check(context.Background(), admission.CheckStructure, writeApp(t, validManifest+tc.extra, validCompose), lintOptions{})
+			if err == nil || !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Fatalf("want a manifest-rule error naming %q, got %v", tc.wantMsg, err)
+			}
+		})
+	}
+}
+
+func TestCheck_ImageUser(t *testing.T) {
+	if _, err := check(context.Background(), admission.CheckStructure, writeApp(t, validManifest+"image_user: true\n", validCompose), lintOptions{}); err != nil {
+		t.Fatalf("want clean, got %v", err)
+	}
+	// A user: in the compose would replace the image's own user.
+	named := validCompose + "    user: nginx\n"
+	_, err := check(context.Background(), admission.CheckStructure, writeApp(t, validManifest+"image_user: true\n", named), lintOptions{})
+	if err == nil || !strings.Contains(err.Error(), "image_user") || !strings.Contains(err.Error(), "user:") {
+		t.Fatalf("want the image_user compose error, got %v", err)
+	}
+}
+
+func TestCheck_AcceptsFolderlessRootSetup(t *testing.T) {
+	if _, err := check(context.Background(), admission.CheckStructure, writeApp(t, validManifest+"root_setup: true\n", validCompose), lintOptions{}); err != nil {
+		t.Fatalf("want clean, got %v", err)
+	}
+}

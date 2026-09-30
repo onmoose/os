@@ -21,7 +21,7 @@ TEST_DIR="${REPO_ROOT}/dev/test-qemu"
 WORK="${REPO_ROOT}/.dev/qemu"
 EXTRA="${TEST_DIR}/mkosi.extra"
 CANARY="${WORK}/.moose-medium-ready"
-CANARY_VERSION="v30"  # bump when mkosi.conf changes require a clean rebuild
+CANARY_VERSION="v31"  # bump when mkosi.conf changes require a clean rebuild
 PASSPHRASE_FILE="${TEST_DIR}/mkosi.passphrase"  # LUKS recovery key (slice 0023); gitignored
 IMAGE_OUT="${WORK}/moose-medium.raw"
 SSH_KEY="${WORK}/ssh-key"
@@ -217,12 +217,15 @@ mkdir -p "$EXTRA/etc/systemd/system" \
 # per-app log tail runs `journalctl CONTAINER_NAME=<container>`
 # (internal/hostagent/journalsource), and CONTAINER_NAME is set only by that
 # driver. Under Docker's json-file default the match returns nothing and the
-# dashboard's Logs tab waits forever, for every app. Kept byte-identical to the
+# dashboard's Logs tab waits forever, for every app. The userns-remap names the
+# moose-remap range that mkosi.postinst.chroot writes (#530, BUILD.md #
+# User-namespace remap). Kept byte-identical to the
 # hosted lane's committed dev/cloud/mkosi.extra/etc/docker/daemon.json — both
 # real profiles run the same host-agent binary against the same expectation.
 cat > "$EXTRA/etc/docker/daemon.json" <<'EOF'
 {
-  "log-driver": "journald"
+  "log-driver": "journald",
+  "userns-remap": "moose-remap"
 }
 EOF
 

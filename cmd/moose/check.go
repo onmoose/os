@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/onmoose/os/internal/admission"
 	"github.com/onmoose/os/internal/manifest"
 )
 
@@ -43,6 +44,12 @@ func check(ctx context.Context, admit composeChecker, manifestPath string, opts 
 	if err != nil {
 		return warnings, err
 	}
+	// The manifest-side admission rules (service_user, root_setup and
+	// image_user against the grants they cannot sit with). The brain runs the same function at
+	// install, so a manifest that passes here is not refused there for these.
+	if err := admission.CheckManifest(man); err != nil {
+		return warnings, err
+	}
 	composePath := filepath.Join(filepath.Dir(manifestPath), man.ComposeFile)
 	composeData, err := os.ReadFile(composePath)
 	if err != nil {
@@ -50,6 +57,11 @@ func check(ctx context.Context, admit composeChecker, manifestPath string, opts 
 	}
 	if err := admit(ctx, composeData); err != nil {
 		return warnings, err // admission.Error messages already name the offending service + field
+	}
+	// The rules that need the manifest and the compose together (image_user
+	// with a user: in the compose). The brain runs the same function at install.
+	if err := admission.CheckManifestCompose(man, composeData); err != nil {
+		return warnings, err
 	}
 	return warnings, checkImagesResolved(man)
 }

@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -52,11 +53,14 @@ type fakeDocker struct {
 	// test says is gone.
 	pullErrAll error
 
-	composeUp     func(ctx context.Context, dir, project string) (string, error)
-	inspect       func(id, mainService string) (running bool, health string, err error)
-	psManaged     map[string]bool    // returned by PSManaged
-	restartCounts map[string]int     // returned by RestartCounts
-	managed       []ManagedContainer // returned by ManagedContainers
+	composeUp func(ctx context.Context, dir, project string) (string, error)
+	inspect   func(id, mainService string) (running bool, health string, err error)
+	psManaged map[string]bool // returned by PSManaged
+	// psManagedFails makes the next N PSManaged calls fail, the way Docker
+	// through a proxy that is not up yet does after a reboot (#540).
+	psManagedFails int
+	restartCounts  map[string]int     // returned by RestartCounts
+	managed        []ManagedContainer // returned by ManagedContainers
 
 	composeUpErr      error // simple "always fail compose up"
 	composeDownErr    error
@@ -76,6 +80,21 @@ type fakeDocker struct {
 	// fails). When both are set the error wins.
 	containerHealth    string
 	containerHealthErr error
+
+	// usernsRemap is what UsernsRemap reports: whether the daemon runs with
+	// userns-remap. The zero value is no remap, like the dev loop's Docker.
+	// usernsRemapErr forces the docker info failure.
+	usernsRemap    bool
+	usernsRemapErr error
+
+	// imageUsers is what ImageUser reports per image ref (Config.User); a
+	// ref not in it has no user. imagePasswd and imageGroup are what
+	// ImageUserFiles returns per ref (nil: the file is missing).
+	// imageFilesErr forces the probe failure.
+	imageUsers    map[string]string
+	imagePasswd   map[string]string
+	imageGroup    map[string]string
+	imageFilesErr error
 
 	calls []call
 }
@@ -231,6 +250,15 @@ func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 
 func (f *fakeDocker) PSManaged(_ context.Context) (map[string]bool, error) {
 	f.record("PSManaged")
+	f.mu.Lock()
+	failing := f.psManagedFails > 0
+	if failing {
+		f.psManagedFails--
+	}
+	f.mu.Unlock()
+	if failing {
+		return nil, errors.New("exit status 1: Cannot connect to the Docker daemon at tcp://docker-proxy:2375")
+	}
 	out := make(map[string]bool, len(f.psManaged))
 	for k, v := range f.psManaged {
 		out[k] = v
@@ -262,6 +290,31 @@ func (f *fakeDocker) RemoveContainersByInstance(_ context.Context, id string) er
 func (f *fakeDocker) RemoveImage(_ context.Context, ref string) error {
 	f.record("RemoveImage", ref)
 	return f.removeImageErr
+}
+
+func (f *fakeDocker) UsernsRemap(_ context.Context) (bool, error) {
+	f.record("UsernsRemap")
+	return f.usernsRemap, f.usernsRemapErr
+}
+
+func (f *fakeDocker) ImageUser(_ context.Context, ref string) (string, error) {
+	f.record("ImageUser", ref)
+	return f.imageUsers[ref], nil
+}
+
+func (f *fakeDocker) ImageUserFiles(_ context.Context, instanceID, ref string) ([]byte, []byte, error) {
+	f.record("ImageUserFiles", instanceID, ref)
+	if f.imageFilesErr != nil {
+		return nil, nil, f.imageFilesErr
+	}
+	var passwd, group []byte
+	if p, ok := f.imagePasswd[ref]; ok {
+		passwd = []byte(p)
+	}
+	if g, ok := f.imageGroup[ref]; ok {
+		group = []byte(g)
+	}
+	return passwd, group, nil
 }
 
 // --- caddy fake ----------------------------------------------------------
@@ -297,8 +350,12 @@ func (c *fakeCaddy) AddRoute(_ context.Context, cfg caddy.RouteConfig) error {
 	return nil
 }
 
-func (c *fakeCaddy) AddSplashRoute(_ context.Context, id, host, name, state string) error {
+func (c *fakeCaddy) AddSplashRoute(ctx context.Context, id, host, name, state string) error {
 	c.record("AddSplashRoute", id, host, name, state)
+	// Like the real client, a write on a dead context never lands.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	c.routes[id] = "splash:" + state
 	c.mu.Unlock()
@@ -378,6 +435,15 @@ type fakeHost struct {
 	// fallback (a published name differing from the primary <slug>.local).
 	publishErr  error
 	publishName string
+
+	// prepareErr forces PrepareUserFolder to fail (a host-agent refusal, such as
+	// a symlink in the way). Every call is also recorded in calls.
+	prepareErr error
+
+	// remapBase is the remap_base WellKnownIdentity reports (nil: no remap,
+	// like the fake host-agent). wellKnownErr forces that call to fail.
+	remapBase    *int
+	wellKnownErr error
 }
 
 func newFakeHost() *fakeHost { return &fakeHost{published: map[string]bool{}} }
@@ -415,11 +481,21 @@ func (h *fakeHost) ResolveHome(_ context.Context, user string) (protocol.Resolve
 	return protocol.ResolveHomeResponse{HomePath: filepath.Join(h.homeRoot, user), UID: 3000, GID: 3000}, nil
 }
 
+func (h *fakeHost) PrepareUserFolder(_ context.Context, user, rel string) error {
+	h.mu.Lock()
+	h.calls = append(h.calls, call{method: "PrepareUserFolder", args: []any{user, rel}})
+	h.mu.Unlock()
+	return h.prepareErr
+}
+
 func (h *fakeHost) WellKnownIdentity(_ context.Context) (protocol.WellKnownIdentityResponse, error) {
 	h.mu.Lock()
 	h.calls = append(h.calls, call{method: "WellKnownIdentity"})
 	h.mu.Unlock()
-	return protocol.WellKnownIdentityResponse{MooseAppUID: 2000, MooseAppGID: 2000, MooseSharedGID: 2001}, nil
+	if h.wellKnownErr != nil {
+		return protocol.WellKnownIdentityResponse{}, h.wellKnownErr
+	}
+	return protocol.WellKnownIdentityResponse{MooseAppUID: 2000, MooseAppGID: 2000, MooseSharedGID: 2001, RemapBase: h.remapBase}, nil
 }
 
 func (h *fakeHost) SystemStatus(_ context.Context) (protocol.SystemStatus, error) {
@@ -503,4 +579,17 @@ func (h *fakeHost) called(method string) bool {
 		}
 	}
 	return false
+}
+
+// callsTo returns every recorded call to one method, in order.
+func (h *fakeHost) callsTo(method string) []call {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []call
+	for _, c := range h.calls {
+		if c.method == method {
+			out = append(out, c)
+		}
+	}
+	return out
 }

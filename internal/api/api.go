@@ -451,6 +451,19 @@ func (s *Server) withPublicPaths(dto *InstanceDTO) {
 	}
 }
 
+// storeCatalog is the catalog the store lists read. On a box that runs no
+// userns-remap it leaves out the apps that need one (root_setup, image_user),
+// since this box cannot install them (APP_STORE.md # Apps this box cannot run).
+// When the remap state is unknown it hides nothing: the install path refuses
+// on its own then. The by-id routes (detail, install plan, assets) keep
+// reading s.catalog, so a direct link still loads.
+func (s *Server) storeCatalog(ctx context.Context) *catalog.Catalog {
+	if s.life != nil && s.life.RemapState(ctx) == lifecycle.RemapOff {
+		return s.catalog.WithoutRemapApps()
+	}
+	return s.catalog
+}
+
 // --- handlers ------------------------------------------------------------
 
 func (s *Server) listCatalog(ctx context.Context, _ *struct{}) (*struct {
@@ -458,7 +471,7 @@ func (s *Server) listCatalog(ctx context.Context, _ *struct{}) (*struct {
 		Apps []catalog.Entry `json:"apps"`
 	}
 }, error) {
-	apps, err := s.catalog.List()
+	apps, err := s.storeCatalog(ctx).List()
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
 	}
@@ -488,7 +501,7 @@ func (s *Server) getCatalogApp(ctx context.Context, in *struct {
 // box's surface plus the curated featured row, so the browser never pulls the whole
 // catalog to render the entry point.
 func (s *Server) catalogHome(ctx context.Context, _ *struct{}) (*struct{ Body catalog.Home }, error) {
-	h, err := s.catalog.Home()
+	h, err := s.storeCatalog(ctx).Home()
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
 	}
@@ -501,7 +514,7 @@ func (s *Server) catalogHome(ctx context.Context, _ *struct{}) (*struct{ Body ca
 func (s *Server) catalogCategory(ctx context.Context, in *struct {
 	Name string `query:"name"`
 }) (*struct{ Body catalog.CategoryPage }, error) {
-	c, err := s.catalog.Category(in.Name)
+	c, err := s.storeCatalog(ctx).Category(in.Name)
 	if errors.Is(err, catalog.ErrNotFound) {
 		return nil, huma.Error404NotFound("no such category")
 	}
@@ -521,7 +534,7 @@ func (s *Server) catalogSearch(ctx context.Context, in *struct {
 		Apps []catalog.Entry `json:"apps"`
 	}
 }, error) {
-	apps, err := s.catalog.Search(in.Q)
+	apps, err := s.storeCatalog(ctx).Search(in.Q)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
 	}
@@ -758,12 +771,12 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 		failMeta := map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}
 		if man.Mail == nil {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
-			return nil, huma.Error422UnprocessableEntity("this app does not support outgoing email")
+			return nil, configError("config.mail_provider_id", "this app does not support outgoing email")
 		}
 		caller, _ := auth.FromContext(ctx) // resolveOwnerScope already required it
 		if _, err := s.ownMailProvider(caller, mailProviderID); errors.Is(err, store.ErrNotFound) {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
-			return nil, huma.Error422UnprocessableEntity("no such mail provider")
+			return nil, configError("config.mail_provider_id", "no such mail provider")
 		} else if err != nil {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, failMeta, false)
 			slog.Error("install: mail provider lookup failed", "manifest_id", manifestID, "err", err)
@@ -853,15 +866,13 @@ func (s *Server) checkDuplicate(ctx context.Context, manifestID string, confirm 
 		return nil
 	}
 	id, _ := auth.FromContext(ctx)
-	existing, err := s.store.InstancesByManifest(manifestID)
+	// The same list the install plan warns with, so the two cannot drift.
+	existing, err := s.visibleCopies(id, manifestID)
 	if err != nil {
-		return huma.Error500InternalServerError("duplicate check failed", err)
+		return err
 	}
 	var summaries []error
 	for _, i := range existing {
-		if !canSee(id, i) {
-			continue
-		}
 		if i.Scope == store.ScopeHousehold {
 			summaries = append(summaries, fmt.Errorf("%s is already installed as a household app", i.Name))
 		} else {

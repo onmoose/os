@@ -1,6 +1,9 @@
 package mailpreset
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The table is data, so the tests guard its invariants rather than restate
 // every constant: a wrong hostname is caught by the live test-send, but a
@@ -112,5 +115,76 @@ func TestListIsACopy(t *testing.T) {
 	l[0].Label = "mutated"
 	if List()[0].Label == "mutated" {
 		t.Error("List returned the backing array")
+	}
+}
+
+// iCloud sends over smtp.mail.me.com on 587 with STARTTLS, and the username
+// is the full iCloud address (INSTALL_STEPS.md # 4).
+func TestICloudPreset(t *testing.T) {
+	p, ok := Get("icloud")
+	if !ok {
+		t.Fatal("icloud preset missing")
+	}
+	if p.Host != "smtp.mail.me.com" || p.Port != 587 || p.Encryption != "starttls" {
+		t.Errorf("icloud = %s:%d %s, want smtp.mail.me.com:587 starttls", p.Host, p.Port, p.Encryption)
+	}
+	if p.UsernameMode != UsernameUser || !p.Personal {
+		t.Errorf("icloud: username_mode %q personal %v, want user and personal", p.UsernameMode, p.Personal)
+	}
+	if p.Label != "iCloud" || p.DefaultAccountName() != "iCloud" {
+		t.Errorf("icloud label %q, account name %q", p.Label, p.DefaultAccountName())
+	}
+}
+
+// The Gmail preset keeps the id google_workspace, because saved accounts and
+// the logo use it, and its label covers personal Gmail too.
+func TestGmailPreset(t *testing.T) {
+	p, ok := Get("google_workspace")
+	if !ok {
+		t.Fatal("google_workspace preset missing")
+	}
+	if p.Label != "Gmail or Google Workspace" || p.DefaultAccountName() != "Gmail" {
+		t.Errorf("label %q, account name %q", p.Label, p.DefaultAccountName())
+	}
+	if p.Host != "smtp.gmail.com" || p.Port != 587 || !p.Personal {
+		t.Errorf("gmail = %s:%d personal %v", p.Host, p.Port, p.Personal)
+	}
+}
+
+// The personal accounts come first, custom last, and a personal preset has
+// the steps and the page for making its app password. Its username is the
+// address the user types, so it cannot be fixed or shared with the password.
+func TestPresetOrderAndPersonal(t *testing.T) {
+	l := List()
+	if l[0].ID != "google_workspace" || l[1].ID != "icloud" || l[len(l)-1].ID != Custom {
+		t.Fatalf("order = %s, %s … %s", l[0].ID, l[1].ID, l[len(l)-1].ID)
+	}
+	seenService := false
+	for _, p := range l {
+		if !p.Personal {
+			seenService = true
+			if len(p.Steps) > 0 {
+				t.Errorf("%s: steps on a sending service", p.ID)
+			}
+			continue
+		}
+		if seenService {
+			t.Errorf("%s: a personal preset after a sending service", p.ID)
+		}
+		if len(p.Steps) == 0 || p.SetupURL == "" || p.UsernameMode != UsernameUser {
+			t.Errorf("%s: a personal preset needs steps, a setup URL and username_mode user", p.ID)
+		}
+		// The steps name the box by its label, never by where it is on the
+		// page, so a change of layout cannot make them wrong.
+		if len(p.Steps) > 0 && !strings.Contains(p.Steps[len(p.Steps)-1], "the "+p.CredentialLabel+" box") {
+			t.Errorf("%s: the last step should name the %q box", p.ID, p.CredentialLabel)
+		}
+		for _, step := range p.Steps {
+			for _, word := range []string{"below", "above"} {
+				if strings.Contains(step, word) {
+					t.Errorf("%s: step %q says %q; name the box instead", p.ID, step, word)
+				}
+			}
+		}
 	}
 }

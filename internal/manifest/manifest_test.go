@@ -100,6 +100,58 @@ main_port: 80
 	}
 }
 
+func TestParseRootSetup(t *testing.T) {
+	base := `
+id: poznote
+manifest_version: 1
+name: Poznote
+version: "1.0"
+compose_file: compose.yml
+main_service: web
+main_port: 80
+`
+	m, err := Parse([]byte(base + "root_setup: true\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !m.RootSetup {
+		t.Error("root_setup: true not parsed")
+	}
+	m, err = Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.RootSetup {
+		t.Error("root_setup must default to false")
+	}
+}
+
+func TestParseImageUser(t *testing.T) {
+	base := `
+id: plunk
+manifest_version: 1
+name: Plunk
+version: "1.0"
+compose_file: compose.yml
+main_service: web
+main_port: 80
+`
+	m, err := Parse([]byte(base + "image_user: true\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !m.ImageUser {
+		t.Error("image_user: true not parsed")
+	}
+	m, err = Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.ImageUser {
+		t.Error("image_user must default to false")
+	}
+}
+
 func TestParseMail(t *testing.T) {
 	src := []byte(`
 id: kimai

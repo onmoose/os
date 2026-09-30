@@ -11,7 +11,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +28,12 @@ import (
 // exist on the host system. The handler maps this to a 404 with code
 // "unknown-user" so the brain can distinguish "user gone" from "host error."
 var ErrUnknownUser = errors.New("unknown user")
+
+// ErrNotADirectory is returned by UserManager.PrepareFolder when a level of the
+// requested path already exists but is not a real directory: a file, or a
+// symlink, which the op never follows. The handler maps it to a 409 with code
+// "not-a-directory", so the brain can tell the person something is in the way.
+var ErrNotADirectory = errors.New("not a directory")
 
 // AgentVersion is the systemStatus handler's self-reported agent_version.
 // Despite living in a file full of fake-agent scaffolding, systemStatus is
@@ -243,7 +252,17 @@ type UserManager interface {
 	SetRole(user, role string) error
 	DeleteUser(user string) error
 	ResolveHome(user string) (home string, uid, gid int, err error)
+	// PrepareFolder makes sure <home>/<rel> exists for a personal folder
+	// source (POST /v1/users/{username}/prepare-folder). The handler has
+	// already checked rel with ValidUserFolderPath. It returns ErrUnknownUser
+	// or ErrNotADirectory for the two cases the brain tells apart.
+	PrepareFolder(user, rel string) error
 	WellKnownIdentity() (appUID, appGID, sharedGID int, err error)
+	// RemapBase returns the first host id of the moose-remap subordinate
+	// range, the base of Docker's daemon-wide userns-remap. ok is false when
+	// the box has no such range. It is an error when /etc/subuid and
+	// /etc/subgid disagree (BRAIN_HOST_PROTOCOL.md # User info endpoints).
+	RemapBase() (base int, ok bool, err error)
 	AllocateAppService(instanceID string) (uid, gid int, err error)
 	ReleaseAppService(uid int) error
 }
@@ -361,6 +380,14 @@ type Agent struct {
 	// so /etc/passwd + /etc/shadow + /etc/group become the source of truth.
 	UserMgr UserManager
 
+	// DevRemapBase, when non-nil, gives the fake branch of GET
+	// /v1/identity/well-known its remap_base (UserMgr nil). cmd/host-agent
+	// wires usermgr.ReadRemapBase, so a dev machine with a hand-made
+	// moose-remap range reports it, and one with none leaves the field out,
+	// as before (#548). Nil in tests means no remap. The real agent reads the
+	// range through UserMgr.RemapBase instead.
+	DevRemapBase func() (base int, ok bool, err error)
+
 	// SSH, when non-nil, backs POST /v1/ssh/set-access and GET /v1/ssh/state
 	// (real sshd drop-in + systemctl). Wired by cmd/host-agent-real in both build
 	// profiles — SSH is per-account on the appliance and on hosted alike, only
@@ -463,6 +490,7 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/jobs/{id}", a.jobStatus)
 	mux.HandleFunc("GET /v1/users/{username}/exists", a.userExists)
 	mux.HandleFunc("GET /v1/users/{username}/home", a.resolveHome)
+	mux.HandleFunc("POST /v1/users/{username}/prepare-folder", a.prepareUserFolder)
 	mux.HandleFunc("GET /v1/identity/well-known", a.wellKnownIdentity)
 	mux.HandleFunc("POST /v1/identity/app-service", a.allocateAppService)
 	mux.HandleFunc("POST /v1/identity/app-service/release", a.releaseAppService)
@@ -1118,6 +1146,82 @@ func (a *Agent) resolveHome(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.ResolveHomeResponse{HomePath: home, UID: uid, GID: gid})
 }
 
+// ValidUserFolderPath checks the path of a prepare-folder request. It must be a
+// clean relative path, with no empty, "." or ".." level, and its first level
+// must be one of protocol.UseCaseFolderDirs. So the op can only ever touch a
+// use-case folder or something below it, never another part of the home.
+func ValidUserFolderPath(rel string) error {
+	if rel == "" || strings.HasPrefix(rel, "/") {
+		return fmt.Errorf("path must be relative to the home")
+	}
+	parts := strings.Split(rel, "/")
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." {
+			return fmt.Errorf("path must not have empty, . or .. levels")
+		}
+	}
+	if !slices.Contains(protocol.UseCaseFolderDirs, parts[0]) {
+		return fmt.Errorf("path must start with a use-case folder")
+	}
+	return nil
+}
+
+// prepareUserFolder makes sure a personal folder source exists under the
+// user's home before the brain binds it into an app (#519). The brain runs in
+// a container with no /home mount, so it cannot do this itself.
+//
+// When UserMgr is wired (cmd/host-agent-real) the real op creates each missing
+// level owned by the user and never follows a symlink. The fake branch creates
+// the path under the dev operator's own home, the same home the fake
+// resolve-home hands out, with no chown: the operator already owns it.
+func (a *Agent) prepareUserFolder(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+	if username == "" {
+		writeErr(w, http.StatusBadRequest, "bad-request", "username is required")
+		return
+	}
+	var req protocol.PrepareUserFolderRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := ValidUserFolderPath(req.Path); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad-path", err.Error())
+		return
+	}
+
+	if a.UserMgr != nil {
+		err := a.UserMgr.PrepareFolder(username, req.Path)
+		switch {
+		case err == nil:
+			slog.Info("prepare-folder", "username", username, "dir", req.Path)
+			writeJSON(w, http.StatusOK, struct{}{})
+		case errors.Is(err, ErrUnknownUser):
+			writeErr(w, http.StatusNotFound, "unknown-user", "user not found")
+		case errors.Is(err, ErrNotADirectory):
+			slog.Warn("prepare-folder: something that is not a folder is in the way", "username", username, "dir", req.Path, "err", err)
+			writeErr(w, http.StatusConflict, "not-a-directory", "a file or link is in the way of the folder")
+		default:
+			slog.Error("prepare-folder: user-manager error", "username", username, "dir", req.Path, "err", err)
+			writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
+		}
+		return
+	}
+
+	home, _, _, err := devIdentity()
+	if err != nil {
+		slog.Error("prepare-folder (fake): resolve operator identity", "err", err)
+		writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
+		return
+	}
+	if err := os.MkdirAll(filepath.Join(home, filepath.FromSlash(req.Path)), 0o755); err != nil {
+		slog.Error("prepare-folder (fake)", "username", username, "dir", req.Path, "err", err)
+		writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
+		return
+	}
+	slog.Info("prepare-folder (fake)", "username", username, "dir", req.Path)
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
 // wellKnownIdentity returns the fixed service-account UIDs/GIDs for the
 // moose-app system user and the moose-shared group.
 //
@@ -1133,15 +1237,35 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
 			return
 		}
-		writeJSON(w, http.StatusOK, protocol.WellKnownIdentityResponse{
+		base, remapped, err := a.UserMgr.RemapBase()
+		if err != nil {
+			// Answer an error, not a guess: the brain gives bind dirs to owners
+			// it computes from this number.
+			slog.Error("well-known-identity: read the remap range", "err", err)
+			writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
+			return
+		}
+		resp := protocol.WellKnownIdentityResponse{
 			MooseAppUID:    appUID,
 			MooseAppGID:    appGID,
 			MooseSharedGID: sharedGID,
-		})
+		}
+		if remapped {
+			resp.RemapBase = &base
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	// Fake branch: resolve the moose-app service identity to the dev operator's
+	// Fake branch. remap_base comes from DevRemapBase: on a dev machine with
+	// no moose-remap lines in /etc/subuid and /etc/subgid it is left out, and
+	// the brain reads that as no remap, like the dev loop's Docker. On one
+	// where someone set up the remap by hand it is the range those lines give,
+	// read by the real agent's own code, so Docker and this answer agree and
+	// the dev brain can install root_setup and image_user apps (#548). A bad
+	// line answers an error, as the real agent does.
+	//
+	// It also resolves the moose-app service identity to the dev operator's
 	// own uid/gid (not fixed 2000/2001) for the same reason as resolve-home — a
 	// household-scope folder app then runs as an identity the unprivileged dev
 	// brain owns, so Part A's bind-dir chowns are no-op successes (#147). The
@@ -1153,11 +1277,23 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, protocol.WellKnownIdentityResponse{
+	resp := protocol.WellKnownIdentityResponse{
 		MooseAppUID:    uid,
 		MooseAppGID:    gid,
 		MooseSharedGID: gid,
-	})
+	}
+	if a.DevRemapBase != nil {
+		base, remapped, err := a.DevRemapBase()
+		if err != nil {
+			slog.Error("well-known-identity (fake): read the remap range", "err", err)
+			writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
+			return
+		}
+		if remapped {
+			resp.RemapBase = &base
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // allocateAppService reserves a UID/GID pair from the app-service band

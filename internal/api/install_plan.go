@@ -45,6 +45,33 @@ type InstallPlanDTO struct {
 	// # 3). POST /api/v1/apps answers 422 while a group has no filled member.
 	// Omitted when the manifest declares none the box can use.
 	Requires []RequiresGroupDTO `json:"requires,omitempty"`
+	// Existing lists the copies of this app the caller can already see: the
+	// same ones that make POST /api/v1/apps answer 409 duplicate-install. The
+	// setup flow warns on its first page, before any question
+	// (INSTALL_STEPS.md # Build rules). Empty when there are none.
+	Existing []InstallPlanExisting `json:"existing"`
+	// Unavailable is set when this box cannot install the app at all. It is a
+	// reason code, not copy: the UI owns the sentence, like every other
+	// wording on this plan. The detail page shows that sentence in place of a
+	// working Install button. Today the one code is unavailableNeedsRemap.
+	// Advisory like the rest of the plan: POST /api/v1/apps refuses such an
+	// install on its own.
+	Unavailable string `json:"unavailable,omitempty" enum:"needs-remap"`
+}
+
+// unavailableNeedsRemap: the app needs the userns-remap (root_setup or
+// image_user) and this box runs none (APP_STORE.md # Apps this box cannot
+// run).
+const unavailableNeedsRemap = "needs-remap"
+
+// InstallPlanExisting is one copy of the app that is already installed.
+// Mine is true when the caller owns it; an admin also sees other users'
+// personal copies.
+type InstallPlanExisting struct {
+	InstanceID string `json:"instance_id"`
+	Name       string `json:"name"`
+	Scope      string `json:"scope"`
+	Mine       bool   `json:"mine"`
 }
 
 // InstallPlanConfigField is one user-supplied config field's form schema
@@ -88,6 +115,9 @@ type MailProviderOption struct {
 	ID           string `json:"id"`
 	Label        string `json:"label"`
 	ProviderType string `json:"provider_type"`
+	// CreatedAt is when the account was added, in Unix seconds. The setup
+	// flow picks the newest account in advance.
+	CreatedAt int64 `json:"created_at"`
 }
 
 // InstallPlanFootprint is the box-specific on-disk estimate the install dialog
@@ -275,10 +305,10 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 	byFolder := make(map[string]FolderElection, len(elections))
 	for _, e := range elections {
 		if !declared[e.Folder] {
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders: %q is not a folder this app requested", e.Folder))
+			return nil, configError("config.folders."+e.Folder, fmt.Sprintf("config.folders: %q is not a folder this app requested", e.Folder))
 		}
 		if _, dup := byFolder[e.Folder]; dup {
-			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders: duplicate election for %q", e.Folder))
+			return nil, configError("config.folders."+e.Folder, fmt.Sprintf("config.folders: duplicate election for %q", e.Folder))
 		}
 		byFolder[e.Folder] = e
 	}
@@ -290,16 +320,16 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 		if e, ok := byFolder[f.Folder]; ok {
 			if e.Source != "" {
 				if !slices.Contains(options, e.Source) {
-					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders[%s]: source %q is not allowed for a %s install (allowed: %s)", f.Folder, e.Source, scope, strings.Join(options, ", ")))
+					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: source %q is not allowed for a %s install (allowed: %s)", f.Folder, e.Source, scope, strings.Join(options, ", ")))
 				}
 				src = e.Source
 			}
 			if e.Subfolder != "" {
 				if f.Scope != "pick-subfolder" {
-					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders[%s]: a subfolder may only be chosen when the app declares scope: pick-subfolder", f.Folder))
+					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: a subfolder may only be chosen when the app declares scope: pick-subfolder", f.Folder))
 				}
 				if strings.HasPrefix(e.Subfolder, "/") || strings.Contains(e.Subfolder, "..") {
-					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("config.folders[%s]: subfolder must be a relative path under the folder", f.Folder))
+					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: subfolder must be a relative path under the folder", f.Folder))
 				}
 				sub = e.Subfolder
 			}
@@ -351,9 +381,45 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 		}
 		mail := &InstallPlanMail{Optional: man.Mail.Optional, Providers: []MailProviderOption{}}
 		for _, p := range providers {
-			mail.Providers = append(mail.Providers, MailProviderOption{ID: p.ID, Label: p.Label, ProviderType: p.ProviderType})
+			mail.Providers = append(mail.Providers, MailProviderOption{ID: p.ID, Label: p.Label, ProviderType: p.ProviderType, CreatedAt: p.CreatedAt.Unix()})
 		}
 		plan.Mail = mail
 	}
+	existing, err := s.visibleCopies(id, man.ID)
+	if err != nil {
+		return nil, err
+	}
+	plan.Existing = existing
+	// The same rule as the store lists (storeCatalog), read from the manifest
+	// itself so it holds even when the browse record does not say it. Only a
+	// known "no remap" sets it; an unknown state leaves Install to the
+	// install path, which refuses on its own.
+	if (man.RootSetup || man.ImageUser) && s.life.RemapState(ctx) == lifecycle.RemapOff {
+		plan.Unavailable = unavailableNeedsRemap
+	}
 	return &struct{ Body InstallPlanDTO }{Body: plan}, nil
+}
+
+// visibleCopies lists the installed copies of an app that the caller can see
+// (canSee). It is the one rule for both the install plan's warning and the
+// 409 of checkDuplicate, so the plan warns about exactly the copies an install
+// would stop on.
+func (s *Server) visibleCopies(id auth.Identity, manifestID string) ([]InstallPlanExisting, error) {
+	instances, err := s.store.InstancesByManifest(manifestID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("duplicate check failed", err)
+	}
+	out := []InstallPlanExisting{}
+	for _, i := range instances {
+		if !canSee(id, i) {
+			continue
+		}
+		out = append(out, InstallPlanExisting{
+			InstanceID: i.ID,
+			Name:       i.Name,
+			Scope:      i.Scope,
+			Mine:       i.OwnerUserID == id.User.ID,
+		})
+	}
+	return out, nil
 }

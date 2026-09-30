@@ -161,6 +161,15 @@ func (c *Client) ResolveHome(ctx context.Context, username string) (protocol.Res
 	return out, nil
 }
 
+// PrepareUserFolder asks host-agent to make sure a personal folder source,
+// <home>/<rel>, exists and is owned by the user before an app binds it (#519).
+// rel starts with a use-case folder, such as "Documents/Notebooks". The brain
+// cannot make the folder itself: its container does not mount /home.
+func (c *Client) PrepareUserFolder(ctx context.Context, username, rel string) error {
+	return c.do(ctx, "POST", "/v1/users/"+url.PathEscape(username)+"/prepare-folder",
+		protocol.PrepareUserFolderRequest{Path: rel}, nil)
+}
+
 // WellKnownIdentity returns the fixed service-account UIDs/GIDs for moose-app
 // and moose-shared from the host. The brain calls this during install to build
 // user: and group_add directives for household-scope app instances.

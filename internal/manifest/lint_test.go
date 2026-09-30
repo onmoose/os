@@ -64,6 +64,8 @@ func TestLint_Errors(t *testing.T) {
 		{"entry with no one_of", "config:\n" + key("A", "ai.x") + "requires:\n  - {}\n", "requires[0]: entry has no one_of list"},
 		{"requires not a list", "config:\n" + key("A", "ai.x") + "requires: ai\n", "requires[0]: requires must be a list of one_of groups"},
 		{"required plain member", "config:\n" + field("A", ", required: true") + field("B", "") + "requires:\n  - one_of: [A, B]\n", "config[A]: required: true conflicts with requires[0]"},
+		{"group mixes a kind and a plain field", "config:\n" + key("A", "ai.x") + field("B", "") + "requires:\n  - one_of: [ai, B]\n", "requires[0]: the group mixes \"ai\" and the plain field \"B\""},
+		{"group mixes a slot and a plain field", "config:\n" + key("A", "ai.x") + field("B", "") + "requires:\n  - one_of: [B, ai.x]\n", "requires[0]: the group mixes \"ai.x\" and the plain field \"B\""},
 		{"role field named by app_env", "config:\n" + key("A", "ai.x") + field("B", "") + "requires:\n  - one_of: [A, B]\n", "requires[0]: \"A\" has a role; name its slot or kind"},
 	}
 	for _, c := range cases {
