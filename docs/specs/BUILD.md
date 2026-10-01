@@ -119,7 +119,7 @@ Both images, hosted and appliance, configure Docker with a **daemon-wide `userns
 
 The box's OS is one image written into one of two slots (`UPDATES.md` # 1, `DECISIONS.md` 2026-10-01). This section is the image's shape: what is on the disk, how it boots, and where per-box state lives. The spike in #485 proved the shape on both firmwares (`../progress/ab-update-engine-spike.md`).
 
-> **Status: designed, not built (#486).** Both images still build a single root today (`dev/cloud/mkosi.repart/`, `dev/test-qemu/mkosi.repart/`). The one part built is the OS package lock for the hosted image (# The OS package lock, #560).
+> **Status: the hosted image is built in this layout (#561), with no update yet.** # As built (#561), for the hosted image below says what it does and lists the state inventory. The bundle is #562, the update itself (install, mark good, revert) is #563, and the appliance image (`dev/test-qemu/`) still builds a single root until #564. The OS package lock for the hosted image is built too (# The OS package lock, #560).
 
 ### Partition layout
 
@@ -127,15 +127,34 @@ The same on both profiles. The image carries the first three; first boot makes t
 
 | # | Partition | Size | Holds |
 |---|---|---|---|
-| 1 | ESP | 512M | GRUB for UEFI, `grub.cfg` and the `grubenv` that holds the slot order |
+| 1 | ESP | 128M | GRUB for UEFI, GRUB's modules for both firmwares, `grub.cfg` and the `grubenv` that holds the slot order. No kernel |
 | 2 | BIOS boot | 1M | GRUB's core image for legacy BIOS (#277) |
-| 3 | slot A | 4G | one whole root, kernel and initramfs included |
-| 4 | slot B | 4G | made empty at first boot; the first update fills it |
+| 3 | slot A | 1G | one whole root as a read-only squashfs (xz), kernel and initramfs included |
+| 4 | slot B | 1G | made empty at first boot; the first update fills it |
 | 5 | state | the rest | per-box state (below); made at first boot and grown on every boot when the disk grew |
 
-On hosted, the state partition takes over the job of `moose-grow-root` (`ENVIRONMENT.md` # Storage (hosted)): the root no longer grows, the state partition does. On the appliance this is the **OS drive's** layout. The data drive(s) and their mergerfs pool are unchanged (`STORAGE.md`).
+On hosted, the state partition took over the job of `moose-grow-root` (`ENVIRONMENT.md` # Storage (hosted), #561): the root no longer grows, the state partition does. On the appliance this is the **OS drive's** layout. The data drive(s) and their mergerfs pool are unchanged (`STORAGE.md`).
 
-**Slot size: 4 GiB, fixed for the life of the box.** The hosted root uses 1.1 GB today, so 4 GiB is about 3.5 times that. Slot B is made right after slot A at first boot, so a slot can never grow later without moving the state partition. Choose generously.
+**Slot size: 1 GiB of read-only squashfs-xz, fixed for the life of the box** (`DECISIONS.md` 2026-10-01). Slot B is made right after slot A at first boot, so a slot can never grow later without moving the state partition. A slot is a squashfs compressed with xz because GRUB 2.12 must read the kernel and initramfs from inside it, and that is the one compressed format GRUB reads: it has no erofs driver and no zstd decoder for squashfs. The box never writes a slot, so read-only costs nothing. **The build fails when the squashfs in slot A fills more than 60% of the slot** (# Disk budget).
+
+### Disk budget
+
+Every byte the OS reserves is taken from every box for life, so the budget is measured on the smallest hosted box: a Hetzner CX23 with a **40 GB** disk (40 x 10^9 bytes). Measured in `CI / Cloud image` run 36932849491: the slot on the image that ships, the ESP and the state partition on a booted box (the same under UEFI and legacy BIOS):
+
+| # | Partition | Size | Share of 40 GB | Measured content | Headroom |
+|---|---|---|---|---|---|
+| 1 | ESP | 128 MiB (134.2 MB) | 0.34% | 18.9 MB used, 14% of the ESP: GRUB's EFI binary, its modules for both firmwares, fonts, `grub.cfg`, `grubenv` | 115.3 MB |
+| 2 | BIOS boot | 1 MiB | 0.003% | GRUB's core image | none needed |
+| 3 | slot A | 1 GiB (1.074 GB) | 2.68% | squashfs 435.3 MB, 40.5% of the slot | 209.0 MB to the 60% budget, 638.5 MB to full |
+| 4 | slot B | 1 GiB (1.074 GB) | 2.68% | empty until the first OS update | the same budget as slot A |
+| | **reserved for the OS** | **2177 MiB (2.283 GB)** | **5.71%** | | |
+| 5 | state | the rest, about 37.7 GB | 94.3% | 1.30 GB used after a first boot of the boot-proof image (below) | the rest of the disk |
+
+- **What is in the slot.** Uncompressed, the root is 1.13 GB: the control-plane image tarballs (383 MB), the kernel and initramfs (46.5 MB), and the rest of the OS (about 658 MB). Compressed it is 435 MB, and 314 MB without the tarballs (run 36909222361, a size probe). The tarballs stay baked in the slot, so a new box needs no registry at first boot (# 5).
+- **The state partition after a first boot** holds 1.30 GB in the boot lane (run 36932849491, a 24G disk), and 1.83 GB after the remap boots installed five apps and a managed Postgres. That is the boot-proof image, which also bakes test-only images, so a shipped box uses somewhat less. It is mostly the control plane: the copied tarballs and the images loaded into Docker.
+- **What the slot's content costs on the state partition.** Two baked trees are copied to the state partition once, at first boot (# As built, copy once): the tarballs under `/var/lib/moose/control-plane-images/` (383 MB, 0.96% of 40 GB) and the systemd state under `/var/lib/systemd`. The tarballs are then also loaded into Docker. So a new box holds the control plane three times: compressed in the slot, as tarballs on the state partition, and as images in Docker.
+- **The budget is checked on every build.** `dev/cloud/slotbudget` reads the squashfs superblock in slot A of the built image and fails `dev/cloud/bootstrap.sh` when it is over 60% of the slot. It writes the table above (the partitions in the image) to the CI job summary. The boot-proof image (`dev/cloud/test/`) also bakes test-only images (postgres:16, a registry) and fills 53.7% of its slot; it is reported, not gated, because it never ships.
+- **The ESP holds no kernel.** mkosi would copy every kernel it finds to the ESP, with its own initrd, and that is why it sizes an ESP at 512 MiB to 1 GiB by default. The image's kernel lives only in the slot, so 128 MiB is plenty.
 
 ### Boot: GRUB on both firmwares
 
@@ -143,7 +162,7 @@ GRUB boots the box under UEFI (`x86_64-efi`) and under legacy BIOS (`i386-pc`), 
 
 - The slot choice is RAUC's GRUB backend: `ORDER`, `<slot>_OK` and `<slot>_TRY` in `grubenv`. GRUB boots the first slot in `ORDER` that is good and not yet tried, and sets its `TRY` before booting it. `rauc status mark-good` clears it. A slot that never gets there is skipped on the next boot. **One attempt per update.**
 - When no slot is left to try, GRUB boots the first good slot rather than stopping at a prompt nobody will see.
-- The kernel and initramfs live **inside** each slot, where GRUB reads them from the slot's ext4. A slot is one self-contained unit: the kernel always matches the root it boots.
+- The kernel and initramfs live **inside** each slot, where GRUB reads them from the slot's squashfs (`squash4` and `xzio`). A slot is one self-contained unit: the kernel always matches the root it boots.
 - A slot that hangs instead of rebooting would never revert, so the image reboots on emergency and rescue, sets `panic=`, and runs a watchdog where the machine has one (`UPDATES.md` # 1).
 - **Appliance, Secure Boot:** shim plus Debian's signed GRUB, which limits the modules and files GRUB may load. That this `grub.cfg` works under it is not proved yet (`NEXT.md` # A/B OS image).
 
@@ -154,7 +173,7 @@ GRUB boots the box under UEFI (`x86_64-efi`) and under legacy BIOS (`i386-pc`), 
 **Everything the box writes that must outlive a slot swap lives on the state partition**, set up early in boot (in the initrd), before systemd reads `/etc`:
 
 - **`/etc` is an overlay.** The slot's `/etc` is the lower layer and `/etc` on the state partition is the upper layer. Users, groups, password hashes, SSH host keys, `machine-id`, the rendered sshd drop-ins and `/etc/moose/secrets/` all land in the upper layer and survive the swap. A file the box never touched still comes from the new slot, so image defaults keep updating.
-- **Bind mounts from the state partition:** `/home`, `/var/lib/docker`, `/var/lib/moose` (brain SQLite, `images.json`, the staged compose, the seed and its materialized state, Caddy's cert store), `/var/log` (so the journal of a slot that failed is still there to read), `/var/lib/systemd` and RAUC's own data directory. The full inventory of what a running box writes is part of the build (#486 step 3); anything it finds goes here or gets a regeneration rule.
+- **Bind mounts from the state partition:** `/var/lib/docker`, `/var/lib/containerd`, `/var/lib/moose` (brain SQLite, `images.json`, the staged compose, the seed and its materialized state), `/srv/moose`, `/home` (from `srv/moose/home` on the state partition, so user files sit under `/srv/moose` as on the appliance), `/var/log` (so the journal of a slot that failed is still there to read), `/var/lib/systemd`, `/var/lib/sudo` and RAUC's own data directory. Caddy's cert store is a Docker volume, so it is under `/var/lib/docker`. **The databases always stay on the local disk**, each on a bind mount of its own (`/var/lib/moose`, `/var/lib/docker`), and are never under `/srv/moose` (`ENVIRONMENT.md` # Storage (hosted)). The full inventory of what a running box writes is in # As built (#561) below; anything else gets a regeneration rule there.
 - **Image-owned:** `/usr` and the rest of the root, including `/var/lib/dpkg`, which must describe the slot it is in.
 
 Three rules follow from the overlay, and every image change must respect them:
@@ -164,6 +183,43 @@ Three rules follow from the overlay, and every image change must respect them:
 3. **System users come from `sysusers.d`, never from `useradd` at build time.** The box's `/etc/passwd` is already in the upper layer, so a user a new image adds with `useradd` is hidden. The spike proved both halves.
 
 **Appliance encryption.** The slots are not encrypted: they hold no per-box secret. Each slot gets dm-verity, set up in the initrd for the booted slot, so a changed byte fails to read. The state partition is LUKS with TPM unseal against PCR 7, as the OS root is today (`STORAGE.md` # Encryption posture). PCR 7 is the Secure Boot policy, not the kernel, so a slot swap does not break the unseal. Hosted keeps its custodian model (`ENVIRONMENT.md` # Storage (hosted)).
+
+### As built (#561), for the hosted image
+
+`dev/cloud/` builds this layout. No box updates its OS yet: nothing installs a bundle (#562, #563) and nothing marks a slot good.
+
+- **Partitions.** The image holds the ESP (128M, label `esp`), the BIOS boot partition (1M) and slot A (1G, label `moose-slot-a`, PARTUUID `20202020-2020-4020-8020-202020202020`, the UUID the single root had before) (`dev/cloud/mkosi.repart/`), about 1.13 GiB in all. Slot A is `Format=squashfs` with `Compression=xz`. The image is built with 512-byte sectors (`SectorSize=512` in `mkosi.conf`) so the 128 MiB ESP can be FAT32: systemd-repart always formats an ESP as FAT32, and with its default 4096-byte filesystem sectors FAT32 needs about 260 MB, so at 128 MiB UEFI firmware saw no filesystem on it. With 512-byte sectors it needs about 36 MB. Hosted VM disks use 512-byte logical sectors; a disk with 4096-byte logical sectors could not read this ESP, which matters for the appliance (#564), not for hosted. The runtime definitions in `/usr/lib/repart.d/` add slot B (1G, empty, label `moose-slot-b`, PARTUUID `21212121-2121-4121-8121-212121212121`) and the state partition (label `moose-state`, ext4, the rest of the disk) at first boot. The stock `systemd-repart.service` is masked, so the initramfs is the one place repart runs. A test in `dev/cloud/slotbudget` checks that the build-time and runtime definitions agree on every size.
+- **Boot.** GRUB for both firmwares (`Bootloader=grub`, `BiosBootloader=grub`), from `/grub/grub.cfg` and `/grub/grubenv` on the ESP. The first grubenv is `ORDER="A B" A_OK=1 A_TRY=0 B_OK=0 B_TRY=0`. Each menu entry loads `squash4` and `xzio` and boots `/usr/lib/moose/boot/vmlinuz` and `initrd.img` from its slot with `ro console=tty0 console=ttyS0 psi=1 panic=10 fsck.mode=skip rauc.slot=<A|B> root=PARTUUID=<slot>`. `fsck.mode=skip` is there because the slot has nothing to check, and state-setup checks the state partition itself. Until #563 marks a slot good, GRUB sets `A_TRY=1` on one boot and its fallback resets it on the next, so the box always boots slot A. **The ESP holds no kernel.** The postinst moves the kernel from `/usr/lib/modules/<kver>/` into `/usr/lib/moose/boot/`, so mkosi (with `Bootable=auto`) finds no kernel to copy to the ESP and adds no menu entries; `grub.cfg` is the whole menu. The ESP holds GRUB's EFI binary, its modules for both firmwares, `grub.cfg` and `grubenv`.
+- **Early setup, in the initramfs.** The slot's initramfs is Debian's initramfs-tools (`linux-image-amd64` already depends on it), built by `mkinitramfs` in `mkosi.postinst.chroot`. `squashfs`, `overlay` and `ext4` are added to its module list. Its `local-bottom` hook (`/etc/initramfs-tools/scripts/local-bottom/moose-state`) runs after the slot is mounted read-only and before systemd: it mounts `/proc`, `/sys`, `/dev` and a `/run` tmpfs into the slot and runs `/usr/lib/moose/state-setup` chrooted into it, so the tools are the slot's own. The script runs `systemd-repart`, checks the state partition with `e2fsck -p`, mounts it at `/state`, grows its ext4 with `systemd-growfs`, mounts the `/etc` overlay (`upperdir=/state/etc/upper`), pins the four files on the first boot (marker `/state/etc/.moose-pinned`), and makes the bind mounts (`/home` from `srv/moose/home`). Any failure panics, and `panic=10` reboots, so a slot never comes up without its state.
+- **Copy once.** One rule for every bind mount: when a state directory does not exist yet, the slot's directory is copied into it first (to a temporary name, then renamed), and then bound. So what the image baked under a bound path reaches a new box: the control-plane image tarballs, `control-plane/compose.yml` and `caddy.json` under `/var/lib/moose`, and the systemd state under `/var/lib/systemd`. The copy costs disk: the tarballs are 383 MB on the state partition (# Disk budget). **After the first boot the state copy is the one in use, and a newer slot's baked copy stays hidden.** That is right for the control plane: stream B owns it after first boot, and it updates through the control-plane update, not the OS. The work that bakes the last released control plane into the image (#566) must keep this rule in mind: a baked control plane only reaches boxes made from that image.
+- **The slot is read-only** (a squashfs, `ro` on the command line, and no root line in `/etc/fstab`). The boot lane fails a boot that ends with a failed unit, or whose journal shows a host write that hit the read-only slot (`cloud-assertions.sh` # ok), so a write the inventory missed is found in CI, not on a box.
+- **Users.** moose's own users and groups (`moose` 3000, `moose-app` 2000, `moose-shared` 2001, `moose-remap`) come from `/usr/lib/sysusers.d/moose.conf` (rule 3). Users the Debian packages make at build time stay in the slot's `/etc/passwd`, the overlay's lower layer.
+- **A slot that hangs must still revert** (`UPDATES.md` # 1). `emergency.service` and `rescue.service` get a drop-in that reboots after 10 s, the initramfs reboots on a failure through `panic=10`, and `RuntimeWatchdogSec=60s` feeds a hardware watchdog where the machine has one (none in the QEMU lane).
+- **RAUC.** `rauc` and `rauc-service` are installed with `/etc/rauc/system.conf`: the two slots by PARTUUID as `type=raw` (RAUC writes a squashfs image to the partition as it is), `bootloader=grub` with the ESP's grubenv, and `data-directory=/var/lib/rauc` on the state partition. There is no `[keyring]` yet, so `rauc install` refuses every bundle until #562 adds one.
+
+**The state inventory (#486 step 3).** Everything a running hosted box writes, and where it goes. It comes from a CI probe on the single-root image (run 36901760712: every boot, listing every path changed under `/` since boot) and was then proved on the read-only slot: every boot of run 36932849491, under both firmwares, ends with no failed unit and no host write that hit the slot.
+
+| What the box writes | Home |
+|---|---|
+| Users, groups and password hashes (`/etc/passwd`, `group`, `shadow`, `gshadow` and their `-` backups), `machine-id`, the SSH host keys, `sshd_config.d/moose-allowed.conf`, `/etc/ssh/moose-authorized-keys/`, the `rc?.d` links `systemctl` writes when SSH is turned off, the time zone (`/etc/localtime`) | `/etc` overlay, upper layer on the state partition |
+| `/etc/docker/daemon.json`, `/etc/subuid`, `/etc/subgid`, `/etc/login.defs` | pinned: copied into the upper layer on the first boot |
+| `/home` (users' files) | bind mount from `srv/moose/home` on the state partition |
+| `/var/lib/docker` (images, containers, volumes, Caddy's cert store in the `caddy_data` volume), `/var/lib/containerd` | bind mounts |
+| `/var/lib/moose` (brain SQLite, `images.json`, the staged compose and its ledger, the seed and its materialized state, the catalog cache, the baked control-plane images) | bind mount, copied once from the slot |
+| `/srv/moose` (the household shared tree host-agent makes on both profiles) | bind mount |
+| `/var/log` (the journal when it is persistent, `wtmp`) | bind mount |
+| `/var/lib/systemd` (timers, random seed, journal catalog, coredumps) | bind mount, copied once from the slot |
+| `/var/lib/rauc` (RAUC's status) | bind mount |
+| `/var/lib/sudo` (an admin's sudo lecture marks) | bind mount |
+| `/var/tmp` | tmpfs from `/etc/fstab`; nothing in it must outlive a reboot |
+| `/tmp`, `/run` | tmpfs, as before |
+| `/var/lib/dbus/machine-id` | a link to `/etc/machine-id`, made at build time (dbus's tmpfiles rule wrote it at boot) |
+| `/opt/containerd/bin`, `/opt/containerd/lib` | made empty at build time (containerd made them at start) |
+| `/etc/ld.so.cache`, `/var/cache/ldconfig` | regeneration rule: none. `ldconfig.service` is masked, and the slot ships the cache that matches its libraries. A copy in the upper layer would outlive its slot and, after a revert, name the newer slot's libraries |
+| `/etc/.updated`, `/var/.updated` | `systemd-update-done.service` is masked. The `ConditionNeedsUpdate=` jobs (`systemd-sysusers`, the journal catalog) then run on every boot, which an image that swaps under `/etc` needs anyway |
+| `/root` | no home. Nothing on a hosted box writes it; an admin's root shell history is lost |
+
+The boot lane's own writes moved with it: its SSH test key to `/run`, the remap boots' state to `/var/lib/moose/test/`, and the update boot's `host-agent` drop-in lands in the `/etc` upper layer like any box change.
 
 ### The bundle: what a box downloads
 
@@ -469,7 +525,7 @@ GitHub Actions or self-hosted CI — TBD, not architecturally interesting at thi
 - **Docker package source: `docker-ce` from Docker's official apt repo.** Revisit if Docker Inc. policy changes; swap to `docker.io` is a one-line apt source change.
 - **Docker runs with a daemon-wide `userns-remap`** on a `moose-remap` range (`1000000:65536`), `SUB_UID_COUNT 0` / `SUB_GID_COUNT 0` in `login.defs`, and the classic `overlay2` store that the remap implies. Both images; fixed for the life of a box (# User-namespace remap, `DECISIONS.md` 2026-09-29).
 - **`host-agent` ships inside the OS image**, not as a Debian package and not as a container (# 4, `DECISIONS.md` 2026-10-01).
-- **The OS is an A/B image** (# 1b): two 4 GiB whole-root slots and a state partition, RAUC with GRUB on UEFI and legacy BIOS, an `/etc` overlay with a pinned list, a signed `verity` bundle per release, and a Debian snapshot lock. Designed, not built (#486).
+- **The OS is an A/B image** (# 1b): two 1 GiB whole-root slots of read-only squashfs-xz, held to a 60% budget, and a state partition, RAUC with GRUB on UEFI and legacy BIOS, an `/etc` overlay with a pinned list, a signed `verity` bundle per release, and a Debian snapshot lock. The hosted image is built in this layout (#561) and the Debian snapshot lock is built (#560); the bundle, the update itself and the appliance image are not built yet (#562 to #564).
 - **`moose-brain` ships as an OCI image**, `debian:trixie-slim` runtime with the `docker` CLI + Compose plugin bundled (the brain shells out to them; distroless can't host them — `DECISIONS.md` 2026-06-13), from our own registry, also bundled in the ISO for offline first-boot.
 - **`moose-ui` ships as a second OCI image** (`caddy:alpine` + baked UI bundle), from our own registry, also bundled in the ISO. Launched by the brain, not host-agent (`CONTROL_PLANE.md`).
 - **Every third-party build input is pinned in one checked-in file** (`dev/control-plane/images.lock`, #432): upstream images by digest, base images by digest, the hosted Caddy's plugin by module version. Same reasoning as app images: a tag is not a lookup key. See # 5c for how to bump one.

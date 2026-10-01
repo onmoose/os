@@ -174,7 +174,19 @@ So this doc isn't read as a claim about the finished product:
 - **Boot, install ISO, updates.** The `mkosi` image build (`BUILD.md` # 2;
   proven in the test lane, not yet the production ISO) and stream A
   (an A/B OS image with RAUC and GRUB, `UPDATES.md` # 1 and `BUILD.md`
-  # 1b, #486) is spec-only. A box never updates its OS today. **The OS
+  # 1b, #486) is half built. **The hosted image is in the A/B layout (#561):**
+  the 128 MiB ESP, a BIOS boot partition and slot A, a read-only 1 GiB
+  squashfs (xz) holding the kernel and initramfs, in the image; slot B (1 GiB)
+  and a state partition (the rest of the disk, grown on every boot) made by
+  `systemd-repart` in the initramfs at first boot. The OS reserves 5.7% of a
+  40 GB disk, and the build fails when the squashfs fills more than 60% of its
+  slot (`dev/cloud/slotbudget`). GRUB on both firmwares from one `grub.cfg`
+  and `grubenv`; the `/etc` overlay, the four pinned files and the bind mounts
+  set up by an initramfs-tools hook (`dev/cloud/mkosi.extra/usr/lib/moose/state-setup`);
+  `rauc` and `rauc-service` with the slot config, no keyring yet. host-agent's
+  hosted build reports the state partition as its "System" volume
+  (`diskusage.NewHosted`). Not built: the bundle (#562), the update itself
+  (#563) and the appliance layout (#564), so a box never updates its OS today. **The OS
   package lock is built (#560)** for the hosted image: `dev/os-lock/` holds a
   snapshot.debian.org timestamp, exact Docker pins and the resolved package
   list, both cloud builds fail when they resolve to a different list, and

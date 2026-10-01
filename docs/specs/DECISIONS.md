@@ -21,6 +21,22 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-01 — OS slots are 1 GiB of read-only squashfs-xz, with a 60% budget (#561)
+
+**Previously:** `BUILD.md` # 1b planned two 4 GiB ext4 slots and a 512 MiB ESP: about 8.5 GiB (9.1 GB), or 23% of the smallest hosted box's 40 GB disk. The size came from the spike ("choose generously") and was not put to the maintainer (`../progress/ab-os-update-design.md` # Known gaps).
+
+**Now:** each OS slot is a **1 GiB read-only squashfs compressed with xz**, and the **ESP is 128 MiB**. With the 1 MiB BIOS boot partition that reserves about 2.3 GB, **5.7% of a 40 GB disk**. The state partition takes the rest, and it is the box's main data store: the databases (the brain's SQLite, `state/instances`, `state/services`, Docker's data) always stay on it, each on a bind mount of its own, and `/home` lives under `/srv/moose` as on the appliance. **The build fails when the squashfs in slot A fills more than 60% of its slot** (`dev/cloud/slotbudget`). The control-plane image tarballs stay baked in the slot. A/B stays.
+
+**Why:**
+
+- **Every GiB reserved for the OS is taken from every box for life.** Slot B is made right after slot A at first boot, so slots never shrink or grow later. On a 40 GB box, 8.5 GiB was almost a quarter of the disk for an OS that measures 1.13 GB uncompressed (CI run 36909222361).
+- **squashfs-xz is the one compressed format GRUB 2.12 reads.** The kernel and initramfs must stay inside the slot, so a slot is one unit and the kernel always matches its root (`BUILD.md` # 1b # Boot). erofs (no GRUB driver) or squashfs with zstd (no GRUB decoder) would need the kernel outside the slot. Compressed, the slot content is 435 MB (314 MB without the tarballs), 41% of 1 GiB.
+- **A slot never needs to be written in place.** The box never writes it, and RAUC writes a whole new image into the other slot, so a read-only filesystem costs nothing.
+- **The 60% budget fails long before the slot is full.** It leaves room for Debian to grow between now and the next major, and turns a slow creep into a red build someone has to look at.
+- **Considered and rejected by the maintainer:** dropping slot B, which would also drop the automatic revert that makes unattended OS updates safe (`UPDATES.md` # 1), and slots kept as files instead of partitions.
+
+**Affected docs:** `BUILD.md` # 1b (layout, boot, as built, disk budget), `ENVIRONMENT.md` # Storage (hosted) and # Boot (hosted), `NEXT.md` # A/B OS image (point 1), `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
 ## 2026-10-01 — An OS patch release for a lock bump is cut from `main` (#560)
 
 **Previously:** every release went `dev` -> `main`, and every PR targeted `dev` (`docs/dev/contributing.md` # Release model). How a security bump of the OS package lock became a release was open (`NEXT.md` # A/B OS image, point 6).
