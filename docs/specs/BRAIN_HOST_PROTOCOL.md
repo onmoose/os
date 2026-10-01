@@ -11,7 +11,7 @@
 - **mDNS / Avahi** publishing (per-app hostnames on the LAN).
 - **Tier-2 native ops** — `systemctl` toggles, write `/etc/samba/smb.conf`, run `tailscale up`, edit `authorized_keys`, run `passwd`.
 - **Disk / LUKS / TPM** — mount, format, smartctl probe, recovery-passphrase operations.
-- **System updates** — `apt`.
+- **System updates** — the OS update: today the control-plane update (`UPDATES.md` # 8.3); with the A/B OS image, writing the next image into the inactive slot and switching to it (`UPDATES.md` # 1, planned #486). There is no `apt` on the update path.
 - **Network configuration** — NetworkManager-backed: list/scan/connect/forget WiFi networks, DHCP vs. static IP per connection, primary-connection pinning, active-interface state. host-agent talks to NetworkManager over DBus; the brain talks to host-agent over this protocol.
 - **Power** — shutdown, reboot.
 - **Misc host state** — time zone, hostname, system summary.
@@ -22,7 +22,7 @@ Things that **don't** cross this protocol:
 - **Caddy.** Runs as a container; brain manages it like any other container.
 - **App-facing services** (Postgres, Redis, future background-job runner). Those are Tier-1 services apps consume; orthogonal to host-agent.
 
-If a host capability isn't in the list above, it doesn't live behind host-agent. The boundary is *"touches the host's root filesystem, systemd, or apt."*
+If a host capability isn't in the list above, it doesn't live behind host-agent. The boundary is *"touches the host's root filesystem, systemd, or the OS slots."*
 
 ## Transport: UNIX socket
 
@@ -409,7 +409,7 @@ Two deliberate differences from the text above:
 
 Job records live in host-agent memory and are lost on restart — matching "Dangerous: crash mid-flight = no auto-resume". That is also the right side of the socket for them: a control-plane update replaces the **brain** container, so a brain-side record would die halfway through the operation it was tracking.
 
-**What would make us build the rest:** a second job kind. `enroll-drive` is the likely one, and it is the case that needs resource classes (`disk` vs `apt`), the cross-class dangerous lock, and queueing rather than a flat refusal. Generalize then, not before.
+**What would make us build the rest:** a second job kind. `enroll-drive` is the likely one, and it is the case that needs resource classes (`disk` vs `os-update`), the cross-class dangerous lock, and queueing rather than a flat refusal. Generalize then, not before.
 
 ### Pattern C — SSE (streaming log/progress output)
 
@@ -430,7 +430,7 @@ GET /v1/jobs/j_a4f7b2/log
 Three primary uses:
 
 1. **App container logs** (`docker logs -f` equivalents, surfaced in the app-details view in the dashboard).
-2. **Long-running job output** — apt upgrade progress, image pull progress, install/update logs.
+2. **Long-running job output** — OS update progress, image pull progress, install/update logs.
 3. **Tier-2 service logs** — `journalctl -u smbd -f` for the SMB admin page, etc.
 
 Browsers speak SSE natively. When the dashboard surfaces these streams, the browser can subscribe through the brain to host-agent's SSE stream end-to-end with no translation.
@@ -476,17 +476,19 @@ This is the entire authn/authz model for this boundary. If group membership is w
 
 If a future tool ever needs host-agent access (a debug CLI, a recovery tool), we either add it explicitly to the test allowlist *and* the `moose` group, or it talks through the brain.
 
-## Versioning: lockstep with OS release
+## Versioning: a compatibility floor, not lockstep
 
-Brain and host-agent ship as part of the same OS release. Brain version N talks to host-agent version N. There is **no protocol-version negotiation** at connection.
+**The brain and host-agent are on two release lines** (`DECISIONS.md` 2026-10-01, `BUILD.md` # Versioning). `host-agent` ships inside the OS and carries the moose (OS) version from `VERSION`. The brain is a container on the control-plane line (`CONTROL_PLANE_VERSION`). They move on their own: a control-plane release needs no OS release, and an OS release never changes which brain a box runs (`UPDATES.md` # 3).
 
-**Why lockstep:**
+**What holds them together is one floor the brain declares:** `minimumAgentVersion` in `cmd/brain/main.go`, the oldest `host-agent` (so, the oldest moose OS release) this brain works with. A brain below a newer agent is fine. An agent below the floor raises a health issue (`HEALTH.md`), and the release manifest's `minimum_host_agent` keeps the same floor for appliance updates (`RELEASE_MANIFEST.md`). There is **no protocol-version negotiation** at connection.
 
-- The box is one atomic unit (`UPDATES.md` # What this doc covers — stream A: Debian base + kernel + firmware + host-agent). Both binaries ship in that unit and are upgraded together. Note this covers `host-agent`, not the brain: the brain is a container and rides stream B, so lockstep here is a **compat floor** the brain declares (`minimumAgentVersion`), not a guarantee that the two moved in the same transaction.
+**Why a floor and no negotiation:**
+
+- The protocol grows additively, so a newer agent serves an older brain. The floor only has to say when a brain needs something an older agent lacks.
 - No version-negotiation code to maintain or get wrong.
-- A crashed brain ↔ healthy host-agent imbalance is the only transient case; both binaries are tiny and can be upgraded together cheaply.
+- An OS downgrade never goes below the running brain's floor (`UPDATES.md` # 1), and a control-plane update that needs a newer OS waits for it (`UPDATES.md` # 7 Compatibility matrix).
 
-**Resolves an open item:** `NEXT.md` previously listed "brain ↔ host-agent protocol versioning" as open. Under lockstep, the question dissolves — there is no negotiation surface.
+**History:** this section used to say "lockstep with OS release: brain version N talks to host-agent version N", from when one repo version covered both. That resolved an old `NEXT.md` item ("brain ↔ host-agent protocol versioning"); the floor keeps it resolved, with no negotiation surface.
 
 ## Failure semantics
 
