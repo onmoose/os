@@ -17,6 +17,17 @@ Closes #560, a slice of #486, after [control-plane-version-line.md](control-plan
 - **`.github/workflows/os-lock-bump.yml`**, daily at 05:17 UTC and on dispatch. It moves the snapshot and the pins, builds the lean image in record mode, and does nothing when no package changed. Otherwise it commits the three files on `bot/os-lock`. With the `OS_LOCK_BOT_TOKEN` secret it opens or updates one PR into `dev`. Without it, it pushes with `GITHUB_TOKEN`, boots the branch by calling `ci-cloud-image.yml`, and writes the diff and an "open a PR" link to the job summary and to one tracking issue, then comments the boot result there. `base=hotfix/X.Y.Z` runs it for an OS patch release.
 - **Release process decided** (maintainer call): a lock-only OS patch release is cut from `main` as `hotfix/X.Y.Z`, the one PR into `main` that does not come from `dev`. A bump that changes a `trixie-security` package is released within 7 days; others ship with the next normal release. Written into `docs/dev/contributing.md` # Release model, `DECISIONS.md` 2026-10-01 and `NEXT.md` # A/B OS image point 6.
 
+## How it was verified
+
+All in CI, never locally, with every publish input false.
+
+- **Snapshot feasibility:** run 36867301586 (temporary probe, described above).
+- **First locked build:** run 36873363298 built the image at the lock and failed on purpose, because `cloud-packages.lock` did not exist yet. Its `cloud-packages-lock` artifact is the committed list: 163 packages, the four Docker pins at their pinned versions, the lean check still exact at 162 names.
+- **Two builds, one list, full boots:** run 36874269703 (`CI / Cloud image`, dispatch). The lean image and the boot-proof image each logged `package lock check passed: 163 packages`, then all of `unseeded seeded bios access update ssh remap` passed.
+- **The bump's no-token path, end to end:** run 36875320798, a temporary copy of `os-lock-bump.yml` on this branch with the token forced empty and the old lock edited so the change path runs. It resolved the snapshot, built in record mode, wrote the title (`OS lock (security): openssl 3.5.7-1~deb13u1 to 3.5.7-1~deb13u3, tzdata ...`) and the body, pushed `bot/os-lock-test-560` with `GITHUB_TOKEN`, and the called `ci-cloud-image.yml` built that ref with the full boot list and published nothing. The tracking-issue step was left out of the test to keep the repo free of a test issue. The test branch and the temporary workflow are removed.
+- **Final branch:** run 36878032035 (`CI / Cloud image`, dispatch, publish false).
+- `make check` green locally, with PAM headers; `actionlint` clean on every workflow.
+
 ## How it maps to the specs
 
 - `BUILD.md` # 1b # The OS package lock: the timestamp, the committed resolved list, exact pins for the third-party repo and the scheduled bump PR, all as designed. The section now carries an "As built" part.
@@ -25,7 +36,7 @@ Closes #560, a slice of #486, after [control-plane-version-line.md](control-plan
 
 ## Known gaps & deviations
 
-- **The token path is verified only after merge.** The maintainer created `OS_LOCK_BOT_TOKEN` while this PR was open. It was not used from the feature branch on purpose: a bump branch made from an unmerged branch would open a PR into `dev` that carries the unmerged changes. The first real bump is a dispatch after merge, `gh workflow run "OS lock bump" --ref dev`, and that run is the end-to-end check of the token path (one PR into `dev` from `bot/os-lock`, whose `CI / Cloud image` runs the full boot list). The no-token path was run before merge from a temporary copy of the workflow on this branch, with the token forced empty (see below).
+- **The token path is verified only after merge.** The maintainer created `OS_LOCK_BOT_TOKEN` while this PR was open. It was not used from the feature branch on purpose: a bump branch made from an unmerged branch would open a PR into `dev` that carries the unmerged changes. The first real bump is a dispatch after merge, `gh workflow run "OS lock bump" --ref dev`, and that run is the end-to-end check of the token path (one PR into `dev` from `bot/os-lock`, whose `CI / Cloud image` runs the full boot list). The no-token path was run before merge from a temporary copy of the workflow on this branch, with the token forced empty (# How it was verified).
 - **A force-push can be refused.** When `dev` changed a file under `.github/workflows/` since the last bump, GitHub refuses a push that moves a branch across that change unless the token may write workflows. The no-token path deletes and re-creates the branch, which does not hit this. The token path force-pushes so its PR stays open, and needs **Workflows: read and write** on the token if this shows up. The workflow and `contributing.md` both say so.
 - **The appliance lane (`dev/test-qemu/`) is not locked.** It is bookworm and local-only. It gets the lock with its move to trixie and the A/B layout (#564).
 - **The mkosi tools tree is not locked.** mkosi v26 does not pass the snapshot to it. It decides the build tools, not the image's packages.
