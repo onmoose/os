@@ -537,7 +537,7 @@ Protocol-shaped rules about *when and how* the protocol is exercised. Not new pr
 **host-agent self-update.** `host-agent` ships inside the OS image, so a new `host-agent` only arrives with an OS update, and only takes effect on the reboot into the new slot (`UPDATES.md` # 1, planned #486). Nothing installs a new binary into a running box. Before that reboot:
 
 1. Brain stops accepting new jobs.
-2. Brain waits for running jobs to drain. Hard cap (5 minutes): if a job is still running, the switch and reboot wait for the next window, with "an operation is still running".
+2. Brain waits for running jobs to drain. Hard cap (5 minutes): if a job is still running, tonight's attempt ends **not applied**, with "an operation is still running". The box stays on its current slot, nothing reverts, and the next window tries again. It counts as tonight's one attempt (`UPDATES.md` # 1).
 3. The box switches slots and reboots; the new slot's `host-agent` starts at boot.
 4. Brain reconnects with backoff; resumes.
 
@@ -571,7 +571,7 @@ Beyond the moose-group membership assertion (above), CI asserts:
 - **SSE reconnect: standard `Last-Event-ID` + ~256 KB rolling per-job buffer. Single `lost: true` event when the gap exceeds buffer.**
 - **Reconciler pattern lives in `APP_LIFECYCLE.md`.** Drift policy: brain auto-reconciles when *it* made the last change; surfaces (doesn't auto-fix) when something else did. Dangerous ops excluded from auto-reconcile.
 - **Heartbeat: 60 seconds.** Brain polls `GET /v1/state/summary`.
-- **host-agent self-update drains all jobs first**; 5-minute hard cap before failing the OS update.
+- **host-agent self-update drains all jobs first**; after a 5-minute hard cap, tonight's OS update ends not applied and is tried again in the next window.
 - **Network endpoints wrap NetworkManager over DBus.** host-agent is the only thing on the box that talks to NM. WiFi credentials live in NM's connection store (`/etc/NetworkManager/system-connections/`, root-only); the brain never persists them. See `BOOT.md` # NetworkManager and `DECISIONS.md` 2026-05-18.
 - **GPU capability is a host query, not a manifest fact.** `GET /v1/system/gpu` reports presence + vendor + the `render` group GID; the brain uses it for both the install-time capacity gate and the `/dev/dri` `group_add`. v1 detects the Intel iGPU only (`vendor: "intel"`); AMD/NVIDIA runtimes are follow-ons. See `APP_ISOLATION.md` # GPU.
 
