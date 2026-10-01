@@ -34,9 +34,10 @@ PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
 CANARY_VERSION="v25"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
-# A change to the OS package lock (#560) must rebuild too, so the lock is part
-# of the canary.
-CANARY_VERSION="${CANARY_VERSION}-lock-$(cat "${REPO_ROOT}/dev/os-lock/debian-snapshot" "${REPO_ROOT}/dev/os-lock/third-party.lock" | sha256sum | cut -c1-12)"
+# A change to the OS package lock (#560) must rebuild too, so all three lock
+# files are part of the canary. The resolved list is in it as well: a re-run
+# after only the list changed must not exit early and skip os_lock_check below.
+CANARY_VERSION="${CANARY_VERSION}-lock-$(cat "${REPO_ROOT}/dev/os-lock/debian-snapshot" "${REPO_ROOT}/dev/os-lock/third-party.lock" "${REPO_ROOT}/dev/os-lock/cloud-packages.lock" | sha256sum | cut -c1-12)"
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
