@@ -1,54 +1,61 @@
-# Auto-tag `main` when a merge bumps the repo-root `VERSION` file, and — only
-# on that bump — cut the release: a GitHub Release whose notes are the release
-# PR's own body plus the generated commit list, then the hosted cloud-image
-# build+publish.
+# Auto-tag `main` when a merge bumps a version file, and, only on that bump,
+# cut that line's release: a GitHub Release whose notes are the release PR's own
+# body plus the generated commit list, then the hosted cloud-image build, which
+# publishes what that line ships.
 #
-# The VERSION bump IS the release trigger. `docs/dev/contributing.md` #
-# Release model: the maintainer bumps VERSION in the dev->main PR; everything
-# from here down is automatic. A dev->main merge that does NOT bump VERSION
-# (docs-only, a hotfix that doesn't ship a new version yet, etc.) is a silent
-# no-op — this workflow still runs, sees the tag for the current VERSION
-# already exists, and exits clean without tagging, releasing, or building
-# anything. That no-op MUST stay green, not red: most merges to main won't
-# bump VERSION, and a failing/red run on every ordinary merge trains people to
-# ignore this workflow's status.
+# TWO version lines, one per update stream (BUILD.md # Versioning,
+# DECISIONS.md 2026-10-01), decided independently on every push:
 #
-# Ordering: tag + GitHub Release FIRST, image build+publish SECOND. Rationale
+#   - `VERSION` -> git tag `vX.Y.Z`, the moose (OS) release. Publishes the disk
+#     image, attached to the `vX.Y.Z` GitHub Release.
+#   - `CONTROL_PLANE_VERSION` -> git tag `control-plane-vX.Y.Z`, the control
+#     plane (moose-brain + moose-ui). Publishes the two ghcr images, tagged
+#     `vX.Y.Z` (+ `latest`) with the control-plane number: that image tag shape
+#     is what the private control plane resolves digests by, so only the git tag
+#     and the GitHub Release carry the `control-plane-` prefix. Its GitHub
+#     Release is created with `--latest=false`, so GitHub's "Latest release" (and
+#     its download link) stays on the OS release and its disk image.
+#
+# A bump of either file IS that line's release trigger (`docs/dev/contributing.md`
+# # Release model). A merge that bumps both cuts both, in one cloud-image run. A
+# merge that bumps neither is a silent no-op: this workflow still runs, sees both
+# tags already exist, and exits clean. That no-op MUST stay green, not red: most
+# merges to main won't bump anything, and a red run on every ordinary merge
+# trains people to ignore this workflow's status.
+#
+# The decision per line lives in dev/release/decide.sh, so it can be tested off
+# main (dev/release/decide_test.go runs it against throwaway git repos in
+# `make check`). It has three outcomes (release, no-op, hard error for a bump to
+# an already-tagged version) and, for the control plane, refuses a version whose
+# ghcr image tag is already published, so a release never overwrites released
+# images with new bytes under the same number.
+#
+# Ordering: tags + GitHub Releases FIRST, image build+publish SECOND. Rationale
 # (deliberately chosen over the reverse):
 #   - A git tag names a source commit's version; it doesn't assert "and an
-#     image was published from it." Those are separable facts, and BUILD.md's
-#     Versioning section already treats the tag as the source-of-truth marker
-#     for "this commit is vX.Y.Z" independent of any downstream artifact.
+#     image was published from it." Those are separable facts.
 #   - If the tag/release step ran AFTER a successful image build instead, a
-#     build failure — or the runner dying mid-build, which can happen on any
-#     job (the build is ~10min) — would leave NO tag and NO release for a commit whose
-#     VERSION was already bumped and merged to main. The next push to main
-#     (if VERSION isn't bumped again) would see the same untagged VERSION and
-#     retry the SAME multi-hour build every time until it succeeds, or worse,
-#     a following VERSION bump would race past the stuck one and the earlier
-#     version would simply never get tagged.
+#     build failure, or the runner dying mid-build, would leave NO tag and NO
+#     release for a commit whose version file was already bumped and merged to
+#     main. The next push to main would retry the SAME build every time until it
+#     succeeds, or a following bump would race past the stuck one and the
+#     earlier version would simply never get tagged.
 #   - Tagging first means a failed/slow image build is a visibly separate,
-#     independently retriable problem (re-run this workflow, or invoke
-#     `ci-cloud-image.yml` directly via workflow_dispatch against the tag) —
-#     without it blocking the source-level fact that vX.Y.Z exists and what
-#     commit it points at. A tag that exists whose image build later fails is
-#     a strictly easier incident to recover from (retry the build against a
-#     known-good, already-published tag/release) than a successful image
-#     published under no tag at all (which commit is it? what do you call it?
-#     nothing else in the release process can refer to it).
+#     independently retriable problem (invoke `ci-cloud-image.yml` directly via
+#     workflow_dispatch against the tagged commit), without it blocking the
+#     source-level fact that the version exists and what commit it points at.
 #
 # THE TRAP this design avoids: a tag pushed with the default GITHUB_TOKEN does
-# NOT fire another workflow's `push: tags` trigger — GitHub suppresses events
-# from GITHUB_TOKEN-authored pushes to prevent recursive workflow runs. So
-# this workflow does NOT rely on `ci-cloud-image.yml`'s `push: tags: v*`
-# trigger picking up the tag it pushes (it would silently never build or
-# publish). Instead it CALLS `ci-cloud-image.yml` directly as a reusable
-# workflow (`workflow_call`) with `publish: true`. `ci-cloud-image.yml`'s
-# `push: tags` trigger is kept as-is alongside `workflow_call` — it's the
-# manual escape hatch for a human pushing a tag by hand, and because the
-# GITHUB_TOKEN tag push here never fires it, the two paths cannot double-build
-# the same release. See the header comment on `ci-cloud-image.yml` for the
-# full reasoning.
+# NOT fire another workflow's `push: tags` trigger. GitHub suppresses events
+# from GITHUB_TOKEN-authored pushes to prevent recursive workflow runs. So this
+# workflow does NOT rely on `ci-cloud-image.yml`'s `push: tags: v*` trigger
+# picking up the tag it pushes (it would silently never build or publish).
+# Instead it CALLS `ci-cloud-image.yml` directly as a reusable workflow
+# (`workflow_call`) with one publish switch per line. `ci-cloud-image.yml`'s
+# `push: tags` trigger is kept alongside `workflow_call` as the manual escape
+# hatch for a human pushing an OS tag by hand; because the GITHUB_TOKEN tag push
+# here never fires it, the two paths cannot double-build the same release. See
+# the header comment on `ci-cloud-image.yml` for the full reasoning.
 name: Release
 
 on:
@@ -67,9 +74,9 @@ concurrency:
 
 jobs:
   tag:
-    name: Tag + GitHub Release (only if VERSION was bumped)
+    name: Tag + GitHub Release (only for a bumped version file)
     runs-on: ubuntu-latest
-    # `contents: write` to push the tag and create the Release, and
+    # `contents: write` to push the tags and create the Releases, and
     # `pull-requests: read` to look up the release PR whose body becomes the
     # Release notes. Set at job level: the workflow-level grant is
     # `contents: write` only, which leaves every other scope at `none`.
@@ -77,134 +84,126 @@ jobs:
       contents: write
       pull-requests: read
     outputs:
-      created: ${{ steps.decide.outputs.created }}
-      tag: ${{ steps.decide.outputs.tag }}
+      os_created: ${{ steps.decide.outputs.os_created }}
+      os_tag: ${{ steps.decide.outputs.os_tag }}
+      cp_created: ${{ steps.decide.outputs.cp_created }}
+      cp_tag: ${{ steps.decide.outputs.cp_tag }}
     steps:
       - uses: actions/checkout@v5
         with:
-          # Full history + tags: the decide step below compares VERSION against
+          # Full history + tags: the decision compares each version file against
           # the previous main commit and resolves where an existing tag points.
           # The default depth-1 checkout can do neither.
           fetch-depth: 0
 
-      # Decide whether this merge is a release. THREE outcomes, not two:
-      #
-      #   - no tag for VERSION       -> cut the release.
-      #   - tag exists, VERSION same -> ordinary merge; clean no-op, green.
-      #   - tag exists, VERSION bumped -> hard error.
-      #
-      # That third case is what a plain "does the tag exist?" check gets wrong,
-      # and it is not hypothetical. This workflow tags BEFORE building (see the
-      # header), so a release whose image build fails leaves the tag behind. If
-      # the fix is then merged without deleting that tag, a bare existence
-      # check sees the tag, exits green, and the release silently never
-      # happens — you merge a release PR, everything is green, and there is no
-      # tag movement, no Release, and no image. Bumping VERSION to a version
-      # that is already tagged is always a real release that cannot be cut, so
-      # say so loudly and say what to do about it.
-      - name: Decide whether this merge is a release
+      # Decide both lines before tagging either. If one line is a hard error,
+      # nothing is tagged, so a merge that bumps both never half-releases.
+      # The control-plane line also checks that its ghcr image tag is not
+      # already published (anonymous read; the images are public).
+      - name: Decide which lines this merge releases
         id: decide
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          want="v$(cat VERSION)"
-          echo "tag=$want" >> "$GITHUB_OUTPUT"
+          ./dev/release/decide.sh VERSION v "$BEFORE" | sed 's/^/os_/' > /tmp/os.out
+          RELEASE_IMAGE_CHECK="./dev/release/ghcr-tag-exists.sh ${GITHUB_REPOSITORY_OWNER,,}/brain" \
+            ./dev/release/decide.sh CONTROL_PLANE_VERSION control-plane-v "$BEFORE" | sed 's/^/cp_/' > /tmp/cp.out
+          cat /tmp/os.out /tmp/cp.out | tee -a "$GITHUB_OUTPUT"
 
-          if ! git ls-remote --exit-code --tags origin "refs/tags/$want" >/dev/null 2>&1; then
-            echo "created=true" >> "$GITHUB_OUTPUT"
-            echo "release: tag $want does not exist yet — cutting a release at ${GITHUB_SHA}"
-            exit 0
-          fi
-
-          # The tag exists. Did THIS push change VERSION? github.event.before is
-          # main's previous head; on the very first push, a force-push, or a
-          # commit where VERSION didn't yet exist it may be absent/unreadable,
-          # in which case we fall back to the old skip behaviour but say so.
-          before="${{ github.event.before }}"
-          prev=""
-          if [ -n "$before" ] \
-            && [ "$before" != "0000000000000000000000000000000000000000" ] \
-            && git cat-file -e "${before}^{commit}" 2>/dev/null; then
-            prev="$(git show "${before}:VERSION" 2>/dev/null | tr -d '[:space:]')" || prev=""
-          fi
-          cur="$(tr -d '[:space:]' < VERSION)"
-
-          if [ -n "$prev" ] && [ "$prev" != "$cur" ]; then
-            at="$(git rev-parse --short "refs/tags/$want" 2>/dev/null || echo unknown)"
-            echo "::error::VERSION was bumped ($prev -> $cur) but tag $want already exists (at $at). Refusing to skip a real release silently. Delete the stale tag and its GitHub Release and re-run this workflow, or bump VERSION again."
-            exit 1
-          fi
-
-          if [ -z "$prev" ]; then
-            echo "::warning::could not read VERSION at ${before:-<unknown>} to confirm whether this merge bumped it; assuming it did not, since tag $want already exists."
-          fi
-
-          echo "created=false" >> "$GITHUB_OUTPUT"
-          echo "skip: tag $want already exists and VERSION was not bumped by this merge — nothing to release"
-
-      # Tag the merge commit and open a GitHub Release. This uses the default
-      # GITHUB_TOKEN, which is exactly why ci-cloud-image.yml cannot rely on
-      # its `push: tags` trigger to notice this tag — see the header comment
-      # above and on ci-cloud-image.yml.
+      # Tag the merge commit and open a GitHub Release, once per line that this
+      # merge releases. This uses the default GITHUB_TOKEN, which is exactly why
+      # ci-cloud-image.yml cannot rely on its `push: tags` trigger to notice the
+      # tag (see the header comment above and on ci-cloud-image.yml).
       #
       # The release PR's body becomes the Release notes, with the generated
       # commit list appended under it (the API appends when both a body and
       # generate_release_notes are sent). The commit list alone is a poor
-      # answer to "should I upgrade?" — it lists 45 subjects and buries the
-      # three that matter. The PR body is where the person cutting the release
-      # already wrote that summary, so use it rather than asking them to write
-      # it twice.
+      # answer to "should I upgrade?". The PR body is where the person cutting
+      # the release already wrote that summary, so use it rather than asking
+      # them to write it twice. A merge that releases both lines uses the same
+      # body for both.
       #
       # It falls back to the generated notes alone when the body is missing or
-      # too short to be a summary. That matters: a release PR opened with a
-      # one-line body would otherwise produce notes strictly worse than the
-      # automatic ones. The threshold is deliberately low — it only screens out
-      # an empty or throwaway body, not a terse but real summary.
-      - name: Create tag + GitHub Release
-        if: steps.decide.outputs.created == 'true'
+      # too short to be a summary. The threshold is deliberately low: it only
+      # screens out an empty or throwaway body, not a terse but real summary.
+      #
+      # The generated list starts at the previous tag on the SAME line
+      # (`--notes-start-tag`), so a control-plane Release never lists commits
+      # since the last OS tag, and the other way round.
+      - name: Create tags + GitHub Releases
+        if: steps.decide.outputs.os_created == 'true' || steps.decide.outputs.cp_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.decide.outputs.tag }}
+          OS_CREATED: ${{ steps.decide.outputs.os_created }}
+          OS_TAG: ${{ steps.decide.outputs.os_tag }}
+          OS_PREV: ${{ steps.decide.outputs.os_prev_tag }}
+          CP_CREATED: ${{ steps.decide.outputs.cp_created }}
+          CP_TAG: ${{ steps.decide.outputs.cp_tag }}
+          CP_PREV: ${{ steps.decide.outputs.cp_prev_tag }}
         run: |
           set -euo pipefail
-          git tag "$TAG" "$GITHUB_SHA"
-          git push origin "$TAG"
 
           # The PR this merge came from, if any. A direct push to main has none,
           # which is a normal case here, not an error.
           body="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
             --jq '.[0].body // ""' 2>/dev/null || echo "")"
-
           if [ "${#body}" -ge 200 ]; then
             printf '%s\n' "$body" > /tmp/release-notes.md
             echo "notes: using the release PR body (${#body} chars) with the generated list appended"
-            gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" \
-              --notes-file /tmp/release-notes.md --generate-notes
           else
-            echo "::warning::release PR body is missing or too short (${#body} chars) — falling back to generated notes only. Write a summary in the release PR body so the Release page says what changed."
-            gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" --generate-notes
+            echo "::warning::release PR body is missing or too short (${#body} chars), falling back to generated notes only. Write a summary in the release PR body so the Release page says what changed."
           fi
+
+          release() { # TAG PREV [extra gh args...]
+            local tag="$1" prev="$2"; shift 2
+            local args=(--title "$tag" --target "$GITHUB_SHA" --generate-notes "$@")
+            if [ -n "$prev" ]; then args+=(--notes-start-tag "$prev"); fi
+            if [ -f /tmp/release-notes.md ]; then args+=(--notes-file /tmp/release-notes.md); fi
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "$tag"
+            gh release create "$tag" "${args[@]}"
+          }
+
+          # The OS release keeps GitHub's automatic "Latest" choice: it is the
+          # one with the disk image a person downloads. The control-plane
+          # Release never takes "Latest".
+          if [ "$OS_CREATED" = "true" ]; then release "$OS_TAG" "$OS_PREV"; fi
+          if [ "$CP_CREATED" = "true" ]; then release "$CP_TAG" "$CP_PREV" --latest=false; fi
 
       - name: Step summary
         env:
-          TAG: ${{ steps.decide.outputs.tag }}
-          CREATED: ${{ steps.decide.outputs.created }}
+          OS_CREATED: ${{ steps.decide.outputs.os_created }}
+          OS_TAG: ${{ steps.decide.outputs.os_tag }}
+          CP_CREATED: ${{ steps.decide.outputs.cp_created }}
+          CP_TAG: ${{ steps.decide.outputs.cp_tag }}
+          CP_VERSION: ${{ steps.decide.outputs.cp_version }}
         run: |
           {
-            if [ "$CREATED" = "true" ]; then
-              echo "### Released ${TAG}"
+            if [ "$OS_CREATED" = "true" ]; then
+              echo "### Released ${OS_TAG} (OS)"
               echo ""
-              echo "VERSION was bumped by this merge. Tag \`${TAG}\` pushed, GitHub Release created, and the hosted cloud-image build+publish was triggered (see the \`cloud-image\` job/workflow for its progress)."
+              echo "\`VERSION\` was bumped by this merge. Tag pushed, GitHub Release created, and the disk image will be built and attached by the \`cloud-image\` job."
             else
-              echo "### Skipped — \`${TAG}\` already exists"
+              echo "### OS: skipped, \`${OS_TAG}\` already exists"
+            fi
+            echo ""
+            if [ "$CP_CREATED" = "true" ]; then
+              echo "### Released ${CP_TAG} (control plane)"
               echo ""
-              echo "This merge to main did not bump \`VERSION\`. No tag, no release, no image build."
+              echo "\`CONTROL_PLANE_VERSION\` was bumped by this merge. Tag pushed, GitHub Release created, and the \`cloud-image\` job will push the brain and UI images to ghcr as \`v${CP_VERSION}\` after the boot proof."
+            else
+              echo "### Control plane: skipped, \`${CP_TAG}\` already exists"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   cloud-image:
     name: Build + publish hosted cloud image
     needs: tag
-    if: needs.tag.outputs.created == 'true'
+    # Either line released. A control-plane-only release still builds the disk
+    # image and runs the full boot proof, because the images it pushes are the
+    # ones baked into that image and proven to boot; it only skips the attach.
+    if: needs.tag.outputs.os_created == 'true' || needs.tag.outputs.cp_created == 'true'
     # A called reusable workflow can only NARROW the permissions its caller
     # grants, never widen them. This workflow's top-level `permissions:` is
     # `contents: write` only, which sets every other scope — including
@@ -223,5 +222,6 @@ jobs:
       packages: write
     uses: ./.github/workflows/ci-cloud-image.yml
     with:
-      publish: true
+      publish_os: ${{ needs.tag.outputs.os_created == 'true' }}
+      publish_control_plane: ${{ needs.tag.outputs.cp_created == 'true' }}
     secrets: inherit
