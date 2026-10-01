@@ -25,7 +25,12 @@ All in CI, never locally, with every publish input false.
 - **First locked build:** run 36873363298 built the image at the lock and failed on purpose, because `cloud-packages.lock` did not exist yet. Its `cloud-packages-lock` artifact is the committed list: 163 packages, the four Docker pins at their pinned versions, the lean check still exact at 162 names.
 - **Two builds, one list, full boots:** run 36874269703 (`CI / Cloud image`, dispatch). The lean image and the boot-proof image each logged `package lock check passed: 163 packages`, then all of `unseeded seeded bios access update ssh remap` passed.
 - **The bump's no-token path, end to end:** run 36875320798, a temporary copy of `os-lock-bump.yml` on this branch with the token forced empty and the old lock edited so the change path runs. It resolved the snapshot, built in record mode, wrote the title (`OS lock (security): openssl 3.5.7-1~deb13u1 to 3.5.7-1~deb13u3, tzdata ...`) and the body, pushed `bot/os-lock-test-560` with `GITHUB_TOKEN`, and the called `ci-cloud-image.yml` built that ref with the full boot list and published nothing. The tracking-issue step was left out of the test to keep the repo free of a test issue. The test branch and the temporary workflow are removed.
-- **Final branch:** run 36878032035 (`CI / Cloud image`, dispatch, publish false).
+- **Review fixes, the reworked bump (no-token path, a rejected token, a kept branch):** two runs of a temporary copy of the new `os-lock-bump.yml`, with a fake token value instead of the secret and the baseline edited so the change path runs. The tracking-issue step was left out.
+  - Run 36882113674: the branch did not exist. The `handover` job's API check rejected the fake token and warned "OS_LOCK_BOT_TOKEN is set but rejected; renew it", then pushed a new branch from the base with `GITHUB_TOKEN`. (Its boots were cancelled to make room for run 2.)
+  - A person's commit was then pushed to the branch by hand.
+  - Run 36883124055: the branch existed. `resolve` and `handover` both merged the base into it, one commit was added on top, and the push was a plain fast-forward: the person's commit is still in the history. The called `ci-cloud-image.yml` booted the branch with the full list and published nothing.
+  - The test branch and the temporary workflow are removed. The merge-conflict stop and the workflow-file refusal were not triggered in a test.
+- **Final branch:** the PR's own `CI / Cloud image` and `CI / Go` runs on the final head (see the PR).
 - `make check` green locally, with PAM headers; `actionlint` clean on every workflow.
 
 ## How it maps to the specs
