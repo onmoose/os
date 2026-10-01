@@ -84,6 +84,7 @@ Also: `make check` green, with the new `dev/cloud/slotbudget` tests. The lean ch
 
 ## Known gaps & deviations
 
+- **Review fixes (Greptile, confirmed by the code review).** The GRUB fallback, used when no slot is left to try, now clears only the try flag of the slot it falls back to: the last good slot in `ORDER`, slot A today. A failed slot keeps `TRY=1`, so it is never booted again; **#563 must reset that slot's flags when it installs into it.** And `state-setup` now resolves the boot disk from the device behind `/` and runs repart and the `moose-state` lookup on that disk only, with no fallback to another disk. The boot lane checks both the disk it reported and that the state partition is on it.
 - **No OS update yet.** No keyring (`rauc install` refuses every bundle), no bundle (#562), and nothing marks a slot good (#563). Until then GRUB sets `A_TRY=1` on one boot and its fallback resets it on the next, so it writes the grubenv on every boot and always boots slot A.
 - **QEMU only.** No boot on a provisioned Hetzner box. The QEMU lane boots a virtio-blk disk, Hetzner a virtio-SCSI one; the lane checks that the initramfs carries `sd_mod` and `virtio_scsi`, but does not boot that path.
 - **Two-repo seam: the private smoke test needs a disk of 20 GB or more.** The state partition takes the disk less 2.28 GB, and host-agent's hosted build now reports the state partition as its one "System" volume. This cannot be checked from this repo.
