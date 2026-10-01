@@ -1,0 +1,255 @@
+# TEMPORARY test of os-lock-bump.yml for #560 (no-token path). Removed before the PR.
+# Move the OS package lock forward (#560, BUILD.md # 1b # The OS package lock).
+#
+# Every day this takes the newest snapshot.debian.org timestamp and the newest
+# Docker versions within each pin's current major, builds the lean hosted image
+# with them, and compares the package list it resolved with the committed
+# dev/os-lock/cloud-packages.lock. When no package changed, nothing happens.
+# When one did, it commits the three lock files on one bot branch and names
+# every changed package and version in the commit, the PR title and the PR body.
+#
+# Two ways to get that change reviewed, chosen by one secret:
+#
+#   - OS_LOCK_BOT_TOKEN is set: the branch is pushed with it, and ONE PR into
+#     the base branch is opened, or updated in place when it is already open.
+#     A PR opened with a person's token starts CI like any human PR, so
+#     `CI / Cloud image` runs the full boot list on it (a PR that touches
+#     dev/os-lock/ gets the full list, see that workflow's "Choose the boots").
+#   - It is not set: the org does not let GitHub Actions open PRs
+#     (`can_approve_pull_request_reviews: false`, #484), and a push made with
+#     GITHUB_TOKEN starts no other workflow. So the branch is pushed with
+#     GITHUB_TOKEN, this workflow runs the boot proofs itself by calling
+#     ci-cloud-image.yml on that branch, and it writes the diff and an "open a
+#     PR" link to the job summary and to one tracking issue. A person opens the
+#     PR from the link (GitHub fills the title and body from the one commit),
+#     and CI runs again on it. A missing secret is never a failure.
+#
+# The token (read in exactly one place: the `BOT_TOKEN` env of the "Push and
+# hand over" step below) is a fine-grained personal access token for
+# onmoose/os only, with Contents: read and write and Pull requests: read and
+# write. It belongs to a person and expires (at most one year), so it must be
+# renewed. A GitHub App token is the cleaner later replacement: mint it in a
+# step before that one (actions/create-github-app-token) and pass it as
+# BOT_TOKEN. Nothing else in this file changes. See docs/dev/contributing.md
+# # Release model # OS package lock bumps.
+#
+# Hotfix use (an OS patch release cut from main, docs/dev/contributing.md
+# # Release model): dispatch with base=hotfix/X.Y.Z to resolve the lock for
+# that branch's package list. Only `dev` and `hotfix/X.Y.Z` are accepted.
+name: tmp OS lock bump test
+
+on:
+  push:
+    branches: [feat/560-os-package-lock]
+    paths: [".github/workflows/tmp-os-lock-bump-test.yml"]
+
+permissions:
+  contents: read
+
+# One bump per base at a time; a second one waits rather than racing the push.
+concurrency:
+  group: tmp-os-lock-bump-test
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve the newest lock
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write # push the bot branch with GITHUB_TOKEN when there is no OS_LOCK_BOT_TOKEN
+      issues: write # the tracking issue on that same path
+    env:
+      BASE: feat/560-os-package-lock
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      branch: ${{ steps.base.outputs.branch }}
+      has_token: ${{ steps.handover.outputs.has_token }}
+      issue: ${{ steps.handover.outputs.issue }}
+    steps:
+      - name: Check the base branch
+        id: base
+        run: |
+          set -euo pipefail
+          case "$BASE" in
+            feat/560-os-package-lock) branch="bot/os-lock-test-560" ;;
+            dev) branch="bot/os-lock" ;;
+            hotfix/[0-9]*.[0-9]*.[0-9]*) branch="bot/os-lock-${BASE//\//-}" ;;
+            *) echo "::error::base '${BASE}' is not dev or hotfix/X.Y.Z"; exit 1 ;;
+          esac
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "base ${BASE}, bot branch ${branch}"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BASE }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-mkosi
+
+      # The newest snapshot of the main archive. mkosi's own latest-snapshot verb
+      # reads the same field; debian-security at that timestamp resolves to its
+      # newest snapshot at or before it.
+      - name: Move the snapshot and the Docker pins forward
+        id: move
+        run: |
+          set -euo pipefail
+          old_ts="$(tr -d '[:space:]' < dev/os-lock/debian-snapshot)"
+          new_ts="$(curl -fsSL --retry 5 https://snapshot.debian.org/mr/timestamp/ \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["debian"][-1])')"
+          printf '%s\n' "$new_ts" | grep -Eq '^[0-9]{8}T[0-9]{6}Z$' || { echo "::error::snapshot.debian.org gave '$new_ts'"; exit 1; }
+
+          curl -fsSL --retry 5 https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages.gz \
+            | gunzip > "$RUNNER_TEMP/docker-Packages"
+          go run ./dev/os-lock/oslock newest-pins dev/os-lock/third-party.lock "$RUNNER_TEMP/docker-Packages" \
+            > "$RUNNER_TEMP/third-party.lock"
+
+          cp dev/os-lock/cloud-packages.lock "$RUNNER_TEMP/old-packages.lock"
+          cp dev/os-lock/third-party.lock "$RUNNER_TEMP/old-third-party.lock"
+          printf '%s\n' "$new_ts" > dev/os-lock/debian-snapshot
+          cp "$RUNNER_TEMP/third-party.lock" dev/os-lock/third-party.lock
+
+          echo "old_ts=${old_ts}" >> "$GITHUB_OUTPUT"
+          echo "new_ts=${new_ts}" >> "$GITHUB_OUTPUT"
+          echo "snapshot: ${old_ts} -> ${new_ts}"
+          diff "$RUNNER_TEMP/old-third-party.lock" dev/os-lock/third-party.lock || true
+
+      # Record mode: the build writes its resolved list to
+      # dev/os-lock/cloud-packages.lock instead of failing on it, and a failed
+      # lean check is kept for the PR body instead of stopping the bump.
+      - name: Build the lean image and record its package list
+        env:
+          MOOSE_OS_LOCK_RECORD: "1"
+        run: make build-cloud-image
+
+      - name: Compare with the committed lock
+        id: compare
+        env:
+          NEW_TS: ${{ steps.move.outputs.new_ts }}
+          OLD_TS: ${{ steps.move.outputs.old_ts }}
+        run: |
+          set -euo pipefail
+          # TEST ONLY: pretend the committed lock had an older tzdata and openssl,
+          # so the change path runs even on a day nothing moved.
+          sed -i -E 's/^(tzdata) [^ ]+/\1 2026a-0+deb13u1/; s/^(openssl) [^ ]+/\1 3.5.7-1~deb13u1/' "$RUNNER_TEMP/old-packages.lock"
+          if diff -q <(grep -v '^#' "$RUNNER_TEMP/old-packages.lock") <(grep -v '^#' dev/os-lock/cloud-packages.lock) >/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No package changed at snapshot ${NEW_TS}; nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          # trixie-security at the new snapshot, to mark which changes are
+          # security fixes (the 7-day release rule).
+          curl -fsSL --retry 5 "https://snapshot.debian.org/archive/debian-security/${NEW_TS}/dists/trixie-security/main/binary-amd64/Packages.xz" \
+            | xz -d > "$RUNNER_TEMP/security-Packages"
+
+          oslock() { go run ./dev/os-lock/oslock "$@"; }
+          oslock title -security "$RUNNER_TEMP/security-Packages" "$RUNNER_TEMP/old-packages.lock" dev/os-lock/cloud-packages.lock \
+            > "$RUNNER_TEMP/title.txt"
+          {
+            echo "Moves the OS package lock forward (\`BUILD.md\` # 1b # The OS package lock). Opened by \`.github/workflows/os-lock-bump.yml\`."
+            echo
+            echo "- Debian snapshot: \`${OLD_TS}\` to \`${NEW_TS}\`"
+            if ! diff -q "$RUNNER_TEMP/old-third-party.lock" dev/os-lock/third-party.lock >/dev/null; then
+              echo "- Docker pins: moved to the newest version within each major (\`dev/os-lock/third-party.lock\`)"
+            fi
+            echo
+            oslock diff -security "$RUNNER_TEMP/security-Packages" "$RUNNER_TEMP/old-packages.lock" dev/os-lock/cloud-packages.lock
+            if [ -f .dev/cloud/lean-check.txt ] && grep -q "LEAN CHECK FAILED" .dev/cloud/lean-check.txt; then
+              echo
+              echo "**The lean check failed for this bump.** Update \`dev/cloud/expected-packages.txt\` on this branch after review:"
+              echo
+              echo '```'
+              cat .dev/cloud/lean-check.txt
+              echo '```'
+            fi
+            echo
+            echo "Merging this puts the change on \`${BASE}\`, not on any box. It ships with the next OS release (\`docs/dev/contributing.md\` # Release model)."
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/title.txt"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push and hand over
+        id: handover
+        if: ${{ steps.compare.outputs.changed == 'true' }}
+        env:
+          # The ONLY place the bot token is read. Swap in a GitHub App token
+          # here later; nothing else changes.
+          BOT_TOKEN: ""
+          GH_DEFAULT_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.base.outputs.branch }}
+        run: |
+          set -euo pipefail
+          title="$(cat "$RUNNER_TEMP/title.txt")"
+          git config user.name "moose os-lock bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add dev/os-lock/debian-snapshot dev/os-lock/third-party.lock dev/os-lock/cloud-packages.lock
+          # The commit message is the PR title and body, so a PR opened by hand
+          # from the compare link is filled in by GitHub.
+          git commit -q -F - <<EOF
+          ${title}
+
+          $(cat "$RUNNER_TEMP/body.md")
+          EOF
+          repo_url="https://github.com/${GITHUB_REPOSITORY}.git"
+
+          if [ -n "${BOT_TOKEN}" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+            # Force-push so the one open PR is updated in place. If the base
+            # changed a workflow file since the last push, GitHub refuses this
+            # push unless the token may also write workflows; the error says so.
+            git -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$BOT_TOKEN" | base64 -w0)" \
+              push --force "$repo_url" "HEAD:refs/heads/${BRANCH}"
+            export GH_TOKEN="$BOT_TOKEN"
+            pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')"
+            if [ -n "$pr" ]; then
+              gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+              echo "Updated PR #${pr}." >> "$GITHUB_STEP_SUMMARY"
+            else
+              url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md")"
+              echo "Opened ${url}." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          echo "has_token=false" >> "$GITHUB_OUTPUT"
+          # No PR is open on this path, so the branch is replaced outright:
+          # delete, then create. A plain force-push with GITHUB_TOKEN is refused
+          # when the base changed a workflow file since the last bump.
+          auth="http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_DEFAULT_TOKEN" | base64 -w0)"
+          git -c "$auth" push "$repo_url" ":refs/heads/${BRANCH}" 2>/dev/null || true
+          git -c "$auth" push "$repo_url" "HEAD:refs/heads/${BRANCH}"
+
+          compare="https://github.com/${GITHUB_REPOSITORY}/compare/${BASE}...${BRANCH}?expand=1"
+          {
+            echo
+            echo "### Open the PR"
+            echo
+            echo "\`OS_LOCK_BOT_TOKEN\` is not set, so this workflow cannot open the PR. It pushed \`${BRANCH}\` and runs the boot proofs on it in the next job."
+            echo "Open the PR here: ${compare}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "TEST: tracking issue skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "issue=" >> "$GITHUB_OUTPUT"
+
+  # Only on the no-token path: nothing else would boot the branch, because a
+  # push made with GITHUB_TOKEN starts no workflow. With the token, the PR's own
+  # `CI / Cloud image` run does this.
+  boot-proofs:
+    name: Boot proofs on the bump branch
+    needs: resolve
+    if: ${{ needs.resolve.outputs.changed == 'true' && needs.resolve.outputs.has_token == 'false' }}
+    # The called workflow asks for these two at its top level, and a called
+    # workflow can only narrow what its caller grants. Nothing is published:
+    # both publish inputs are false, and a run with `ref` asserts it.
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/ci-cloud-image.yml
+    with:
+      ref: ${{ needs.resolve.outputs.branch }}
+      publish_os: false
+      publish_control_plane: false
+
