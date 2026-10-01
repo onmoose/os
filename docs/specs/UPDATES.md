@@ -46,7 +46,7 @@ The OS underneath us: kernel, libc, OpenSSL, firmware, Docker itself, and `host-
 
 **The revert covers the OS, never the data.** The state partition is shared by both slots, so the previous slot boots against whatever the new one wrote. Two rules follow, and they bind every release: the brain's SQLite and every on-disk format must stay readable by the previous release, and `host-agent` must accept state written by the next one.
 
-**Formats change only in minor releases, and a box never skips a minor.** A box can revert, on its own or by target, to whatever is in its other slot, so "the previous release" must mean every release it could land on. Three rules make that true:
+**Formats change only in minor releases, and a box never skips a minor.** Here a "minor" is a `MAJOR.MINOR` line, and lines are ordered as versions, not by the minor number alone: 2.0 is the line right after 1.9, a major release is the next minor like any other, and "one minor back" from 2.0 is 1.9. A box can revert, on its own or by target, to whatever is in its other slot, so "the previous release" must mean every release it could land on. Three rules make that true:
 
 - **A patch release never changes an on-disk format.** An OS patch release is a lock bump or a fix (`BUILD.md` # Versioning). So any patch of a minor reads what any other patch of it wrote.
 - **A minor release may change a format, and must still read and write the format of the minor before it.** 1.4 is held to 1.3's format, not to 1.2's.
