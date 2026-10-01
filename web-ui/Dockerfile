@@ -23,5 +23,13 @@ COPY . .
 RUN npx vite build
 
 FROM ${UI_RUNTIME_IMAGE} AS runtime
+# The control-plane release this image belongs to, and its commit, as standard
+# OCI labels (BUILD.md # Versioning). The build context is web-ui/, so the
+# repo-root CONTROL_PLANE_VERSION file is not in it; `make ui-image` passes the
+# value in instead.
+ARG CONTROL_PLANE_VERSION=unknown
+ARG MOOSE_COMMIT=unknown
+LABEL org.opencontainers.image.version="${CONTROL_PLANE_VERSION}" \
+      org.opencontainers.image.revision="${MOOSE_COMMIT}"
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /app/dist /srv/ui
