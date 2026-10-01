@@ -641,7 +641,26 @@ jobs:
           # the manifest `vX.Y.Z` already names, byte for byte, so nothing is
           # rebuilt or re-pushed and both tags carry the same digest. Only when
           # this run publishes this version: the git tag points at this commit
-          # (with no git tag, an existing image tag already refused above).
+          # (with no git tag, an existing image tag already refused above),
+          # and only when this version is the newest (move_latest, above).
+          # `latest` only ever moves FORWARD. Re-running an older tagged
+          # control-plane release passes the commit guard above, and a dispatch
+          # can publish any version, so neither may point `latest` back at
+          # older images. `latest` moves (by a push or by the repair below)
+          # only when this version is the newest `control-plane-v*` tag by
+          # semver. A tag list that cannot be read leaves `latest` alone,
+          # with a warning, and still publishes the version tag: a stale
+          # `latest` is a smaller harm than a missing release.
+          move_latest=false
+          rc=0
+          ./dev/release/is-newest.sh control-plane-v "$cp_version" || rc=$?
+          case "$rc" in
+            0) move_latest=true ;;
+            1) echo "::notice::control-plane ${cp_version} is not the newest control-plane release; leaving latest where it is" ;;
+            *) echo "::warning::could not tell whether control-plane ${cp_version} is the newest release (exit ${rc}); leaving latest where it is" ;;
+          esac
+          echo "move latest: ${move_latest}"
+
           for spec in "moose-brain:dev=brain" "moose-ui:dev=ui"; do
             local_img="${spec%%=*}"
             remote="${registry}/${spec##*=}"
@@ -650,7 +669,7 @@ jobs:
             ./dev/release/ghcr-tag-exists.sh "${owner}/${spec##*=}" "$tag" || rc=$?
             case "$rc" in
               0) echo "::notice::${remote}:${tag} is already published; leaving it (delete the tag on ghcr first to replace it)"
-                 if [ "$tag_commit" = "$GITHUB_SHA" ]; then
+                 if [ "$tag_commit" = "$GITHUB_SHA" ] && [ "$move_latest" = "true" ]; then
                    digest="$(GHCR_USER="${GITHUB_ACTOR}" GHCR_TOKEN="${GH_TOKEN}" \
                      ./dev/release/ghcr-retag.sh "${owner}/${spec##*=}" "$tag" latest)"
                    echo "pointed ${remote}:latest at ${remote}:${tag} (${digest})"
@@ -664,14 +683,16 @@ jobs:
             esac
 
             docker tag "$local_img" "${remote}:${tag}"
-            docker tag "$local_img" "${remote}:latest"
 
             # Read the digest out of the push output rather than from
             # `docker inspect .RepoDigests`: after pushing two tags of the same
             # image, RepoDigests holds an entry per tag and index 0 is not
             # guaranteed to be the one we want. The push line is authoritative.
             push_log="$(docker push "${remote}:${tag}" | tee /dev/stderr)"
-            docker push "${remote}:latest"
+            if [ "$move_latest" = "true" ]; then
+              docker tag "$local_img" "${remote}:latest"
+              docker push "${remote}:latest"
+            fi
 
             digest="$(printf '%s\n' "$push_log" | grep -oE 'sha256:[0-9a-f]{64}' | tail -n1)"
             [ -n "$digest" ] || { echo "::error::could not resolve pushed digest for ${remote}:${tag}"; exit 1; }

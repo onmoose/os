@@ -156,3 +156,51 @@ esac
 		t.Fatalf("want a failure when the registry disagrees on the digest, got 0\n%s", out)
 	}
 }
+
+// is-newest.sh guards `latest`: it moves only for the newest control-plane
+// version by semver, so an older release re-run or dispatched never moves it
+// back. An unreadable tag list is "unknown" (exit 2), never "newest".
+func TestIsNewestGuardsLatest(t *testing.T) {
+	r := newRepo(t)
+	base := r.commit(map[string]string{"CONTROL_PLANE_VERSION": "0.9.0"})
+	r.tag("control-plane-v0.9.0", base)
+	r.tag("control-plane-v0.10.0", base)
+	r.tag("control-plane-v99.0.0-rc1", base) // not X.Y.Z: ignored
+	r.tag("v99.0.0", base)                   // the OS line: does not count
+
+	newest := func(prefix, ver, remote string) int {
+		t.Helper()
+		script, err := filepath.Abs("is-newest.sh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", script, prefix, ver)
+		cmd.Dir = r.clone
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "RELEASE_REMOTE="+remote)
+		err = cmd.Run()
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return 0
+	}
+	cases := []struct {
+		name, prefix, ver, remote string
+		want                      int
+	}{
+		{"an older version never moves latest", "control-plane-v", "0.9.0", "origin", 1},
+		{"semver, not text: 0.10.0 is newer than 0.9.0", "control-plane-v", "0.10.0", "origin", 0},
+		{"a version newer than every tag", "control-plane-v", "0.11.0", "origin", 0},
+		{"no tags on the line yet", "nothing-v", "0.1.0", "origin", 0},
+		{"not X.Y.Z", "control-plane-v", "0.10", "origin", 2},
+		{"unreadable tag list", "control-plane-v", "0.10.0", filepath.Join(t.TempDir(), "missing.git"), 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := newest(c.prefix, c.ver, c.remote); got != c.want {
+				t.Errorf("exit = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
