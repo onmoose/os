@@ -523,25 +523,13 @@ jobs:
             *) echo "::error::release lookup for ${tag} returned HTTP ${status}; aborting rather than treating it as absent"; exit 1 ;;
           esac
 
-          # Never overwrite a published asset. Each file is uploaded only if the
-          # Release does not have it yet, so a re-run (a resumed release, or a
-          # dispatch that re-publishes the control plane) fills in what is
-          # missing and leaves what is there. An asset that is there was
-          # already downloadable, and a rebuild is not byte-identical, so
-          # replacing it would change a published file under the same name.
-          # To replace one on purpose, delete it first:
-          #   gh release delete-asset <tag> <name>
-          # No --clobber: if the asset appears between the check and the
-          # upload, the upload fails instead of overwriting it.
-          existing="$(gh release view "$tag" --json assets --jq '.assets[].name')"
-          for f in "$asset" "$checksum"; do
-            if grep -qxF "$f" <<<"$existing"; then
-              echo "::notice::release ${tag} already has ${f}; leaving it (delete it first to replace it)"
-            else
-              gh release upload "$tag" "$f"
-              echo "attached ${f} to release ${tag}"
-            fi
-          done
+          # The image and its checksum are ONE pair, and a published asset is
+          # never overwritten: both present is left, neither is uploaded, and
+          # exactly one (an upload that stopped halfway) refuses with the
+          # `gh release delete-asset` a person runs before re-running. The
+          # rules and why live in the script, which dev/release/decide_test.go
+          # tests with a stub gh.
+          ./dev/release/attach-image.sh "$tag" "$asset" "$checksum"
 
       # ---- publish the control-plane images to ghcr (only when requested) ----
 
@@ -642,9 +630,18 @@ jobs:
           # at this commit, an image already there was pushed by an earlier
           # attempt at this same release (a resume or a retry), and a rebuild
           # is not byte-identical, so pushing again would change what the tag
-          # names after something may already have resolved it. Its `latest`
-          # is left alone too. To replace one on purpose, delete the tag on
-          # ghcr first. An unclear answer refuses, as everywhere else.
+          # names after something may already have resolved it. To replace one
+          # on purpose, delete the tag on ghcr first. An unclear answer
+          # refuses, as everywhere else.
+          #
+          # `latest` is REPAIRED for such an image, not left alone: an attempt
+          # that pushed `vX.Y.Z` and died before `latest` would otherwise leave
+          # `latest` behind for good, and the brain and the UI could end with
+          # different `latest`. dev/release/ghcr-retag.sh points `latest` at
+          # the manifest `vX.Y.Z` already names, byte for byte, so nothing is
+          # rebuilt or re-pushed and both tags carry the same digest. Only when
+          # this run publishes this version: the git tag points at this commit
+          # (with no git tag, an existing image tag already refused above).
           for spec in "moose-brain:dev=brain" "moose-ui:dev=ui"; do
             local_img="${spec%%=*}"
             remote="${registry}/${spec##*=}"
@@ -653,7 +650,14 @@ jobs:
             ./dev/release/ghcr-tag-exists.sh "${owner}/${spec##*=}" "$tag" || rc=$?
             case "$rc" in
               0) echo "::notice::${remote}:${tag} is already published; leaving it (delete the tag on ghcr first to replace it)"
-                 echo "- \`${remote}:${tag}\`: already published, left as it is" >> "$GITHUB_STEP_SUMMARY"
+                 if [ "$tag_commit" = "$GITHUB_SHA" ]; then
+                   digest="$(GHCR_USER="${GITHUB_ACTOR}" GHCR_TOKEN="${GH_TOKEN}" \
+                     ./dev/release/ghcr-retag.sh "${owner}/${spec##*=}" "$tag" latest)"
+                   echo "pointed ${remote}:latest at ${remote}:${tag} (${digest})"
+                   echo "- \`${remote}:${tag}\`: already published, \`latest\` re-pointed to it (\`${digest}\`)" >> "$GITHUB_STEP_SUMMARY"
+                 else
+                   echo "- \`${remote}:${tag}\`: already published, left as it is" >> "$GITHUB_STEP_SUMMARY"
+                 fi
                  continue ;;
               1) ;;
               *) echo "::error::could not tell whether ${remote}:${tag} is published (exit ${rc}); refusing to push"; exit 1 ;;
