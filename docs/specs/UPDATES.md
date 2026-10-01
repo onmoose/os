@@ -46,7 +46,13 @@ The OS underneath us: kernel, libc, OpenSSL, firmware, Docker itself, and `host-
 
 **The revert covers the OS, never the data.** The state partition is shared by both slots, so the previous slot boots against whatever the new one wrote. Two rules follow, and they bind every release: the brain's SQLite and every on-disk format must stay readable by the previous release, and `host-agent` must accept state written by the next one.
 
-**So an OS downgrade may go back one release, no further.** The update loop applies whatever the target names, in either direction (# 8.4). For the OS that is only safe as far as the rule above reaches. The box refuses an OS target older than the release it ran just before its current one. So a box on 1.3 that came from 1.2 may go back to 1.2, but not to 1.1. A refusal is logged and changes nothing, like any other refused target. This is the same discipline the brain's own rollback already needs (`NEXT.md` # Brain state-migration framework).
+**Formats change only in minor releases, and a box never skips a minor.** A box can revert, on its own or by target, to whatever is in its other slot, so "the previous release" must mean every release it could land on. Three rules make that true:
+
+- **A patch release never changes an on-disk format.** An OS patch release is a lock bump or a fix (`BUILD.md` # Versioning). So any patch of a minor reads what any other patch of it wrote.
+- **A minor release may change a format, and must still read and write the format of the minor before it.** 1.4 is held to 1.3's format, not to 1.2's.
+- **A box never skips a minor.** Told to move from 1.2.x to 1.4.y, it installs the newest 1.3 patch first, and goes on to 1.4.y in a later window once 1.3 is marked good. So the release in its other slot is always the same minor or the one before, and both can read its state.
+
+**An OS downgrade by target follows the same reach.** The update loop applies whatever the target names, in either direction (# 8.4). For the OS, the box refuses a target that is more than one minor back (from 1.4.y: any 1.4 or 1.3 patch, never 1.2), and a target below the running control plane's floor (`minimumAgentVersion`, # 7 Compatibility matrix), since that would boot a `host-agent` the brain refuses to work with. A refusal is logged and changes nothing, like any other refused target. This is the same discipline the brain's own rollback already needs (`NEXT.md` # Brain state-migration framework).
 
 **A slot that hangs must still revert.** Boot counting only helps a slot that reboots. The spike saw a slot stop in the initrd's emergency shell and wait for ever. So the image reboots on emergency and rescue, sets `panic=` on the kernel command line, and runs a watchdog where the machine has one (`NEXT.md` # A/B OS image).
 
