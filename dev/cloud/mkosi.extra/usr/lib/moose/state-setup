@@ -30,10 +30,24 @@ STATE_LABEL=moose-state
 # userns-remap fixed for life (BUILD.md # User-namespace remap).
 PINNED="docker/daemon.json subuid subgid login.defs"
 
-# The bind mounts from the state partition (BUILD.md # 1b, the inventory). The
-# slot has an empty or default directory at each path; the build makes the
-# ones the packages do not.
-BINDS="home var/lib/docker var/lib/containerd var/lib/moose var/log var/lib/systemd var/lib/rauc var/lib/sudo srv/moose"
+# The bind mounts from the state partition (BUILD.md # 1b, the inventory), as
+# TARGET:SOURCE, with SOURCE relative to the state partition. The slot has an
+# empty or default directory at each target; the build makes the ones the
+# packages do not.
+#
+# Two rules shape this list (ENVIRONMENT.md # Storage (hosted)):
+#   - The databases stay on the local disk, each on a bind mount of its own:
+#     /var/lib/moose (the brain's SQLite, state/instances, state/services) and
+#     /var/lib/docker. They are never under /srv/moose.
+#   - User files live under /srv/moose, as on the appliance (STORAGE.md # Data
+#     drive(s)): /home comes from srv/moose/home. So a later storage pool at
+#     /srv/moose can take in the users' files without moving the databases.
+#     Nothing builds that pool yet.
+BINDS="srv/moose:srv/moose home:srv/moose/home
+var/lib/moose:var/lib/moose var/lib/docker:var/lib/docker
+var/lib/containerd:var/lib/containerd var/log:var/log
+var/lib/systemd:var/lib/systemd var/lib/rauc:var/lib/rauc
+var/lib/sudo:var/lib/sudo"
 
 # --- 1. partitions. With no device given, systemd-repart works on the disk
 # that backs /, which is the booted slot's disk. Idempotent: on a disk that is
@@ -93,8 +107,9 @@ fi
 # the state copy is the one in use, and a newer slot's baked copy stays
 # hidden. The copy goes to a temporary name first, so a power cut mid-copy is
 # retried whole on the next boot.
-for d in $BINDS; do
-    src="$STATE/$d"
+for pair in $BINDS; do
+    d="${pair%%:*}"
+    src="$STATE/${pair#*:}"
     [ -d "/$d" ] || die "/$d is missing from the slot (the build makes every bind target)"
     if [ ! -d "$src" ]; then
         mkdir -p "$(dirname "$src")"
@@ -105,4 +120,4 @@ for d in $BINDS; do
     fi
     mount --bind "$src" "/$d" || die "bind $src on /$d failed"
 done
-log "bind mounts done: $BINDS"
+log "bind mounts done: $(echo $BINDS)"

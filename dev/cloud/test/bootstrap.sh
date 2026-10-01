@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v26"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v27"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 # A change to the OS package lock (#560) must rebuild too, so all three lock
 # files are part of the canary. The resolved list is in it as well: a re-run
 # after only the list changed must not exit early and skip os_lock_check below.
@@ -322,6 +322,14 @@ if [ ! -f "$IMAGE_OUT" ]; then
     ls -la "$WORK" >&2 || true
     exit 1
 fi
+
+# The slot budget, reported but not gated (#561, dev/cloud/slot-budget.sh). The
+# 60% gate is on the image that ships (dev/cloud/bootstrap.sh); this one also
+# carries test-only images, so it only has to fit its 1 GiB slot, which
+# systemd-repart already enforces when it builds the image.
+# shellcheck source=dev/cloud/slot-budget.sh
+. "${CLOUD_DIR}/slot-budget.sh"
+slot_budget_check "$IMAGE_OUT" 100 "OS slot use (the boot-proof image, with test-only images; not gated)"
 
 echo -n "$CANARY_VERSION" > "$CANARY"
 [ -n "$CALLER" ] && chown "$CALLER":"$(id -gn "$CALLER")" "$CANARY" "$IMAGE_OUT" 2>/dev/null || true

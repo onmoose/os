@@ -209,10 +209,11 @@ qemu-img convert -f raw -O qcow2 "$IMAGE_OUT" "$QCOW2"
 [ -n "$CALLER" ] && chown "$CALLER":"$(id -gn "$CALLER" 2>/dev/null || echo "$CALLER")" "$QCOW2" 2>/dev/null || true
 
 # Writable overlays backed by the pristine artifact; the base is never written.
-# Each is DISK_SIZE, far bigger than the image (about 4.5 GiB: the ESP, the BIOS
-# boot partition and slot A), the way a provider disk is. First boot fills the
-# rest with slot B (4 GiB) and the state partition, and the layout check
-# (cloud-assertions.sh 1b) proves the state partition grew to the end of it.
+# Each is DISK_SIZE, far bigger than the image (about 1.13 GiB: the 128 MiB ESP,
+# the BIOS boot partition and the 1 GiB slot A), the way a provider disk is.
+# First boot fills the rest with slot B (1 GiB) and the state partition, and
+# the layout check (cloud-assertions.sh 1b) proves the state partition grew to
+# the end of it.
 DISK_SIZE="${MOOSE_CLOUD_DISK_SIZE:-24G}"
 new_overlay() { # PATH
     qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$1" "$DISK_SIZE" >/dev/null

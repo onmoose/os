@@ -161,8 +161,8 @@ func TestDisksRealDeviceID(t *testing.T) {
 }
 
 // TestNewHostedMeasuresStatePartition pins the hosted paths: the "System"
-// volume is the state partition seen through /var/lib/moose, never the 4 GiB
-// OS slot at / (BUILD.md # 1b). A box that reported / would show about 4 GB
+// volume is the state partition seen through /var/lib/moose, never the 1 GiB
+// OS slot at / (BUILD.md # 1b). A box that reported / would show about 1 GB
 // on a 40 GB disk.
 func TestNewHostedMeasuresStatePartition(t *testing.T) {
 	r := NewHosted()

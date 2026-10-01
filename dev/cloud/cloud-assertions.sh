@@ -184,7 +184,8 @@ for u in docker.service systemd-networkd.service host-agent.service moose-load-i
 done
 
 # --- 1b. the A/B layout (#561, BUILD.md # 1b). Every boot, both firmwares.
-# The image carries 3 partitions; the initramfs (state-setup, via the
+# The image carries 3 partitions (ESP 128 MiB, BIOS boot, slot A: a 1 GiB
+# squashfs); the initramfs (state-setup, via the
 # initramfs-tools hook) made slot B and the state partition at first boot,
 # grew the state partition to fill the disk (the harness gives the box a disk
 # far bigger than the image), and set up the /etc overlay, the pinned files and
@@ -200,10 +201,12 @@ for pair in "1:esp" "3:moose-slot-a" "4:moose-slot-b" "5:moose-state"; do
     got="$(lsblk -nr -o PARTN,PARTLABEL "$root_disk" | awk -v n="$n" '$1==n{print $2}')"
     [ "$got" = "$want" ] || layout_fail "partition $n is labelled '$got', want '$want'"
 done
+esp_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==1{print $2}')"
 slot_a_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==3{print $2}')"
 slot_b_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==4{print $2}')"
-[ "$slot_a_bytes" = 4294967296 ] && [ "$slot_b_bytes" = 4294967296 ] \
-    || layout_fail "slots are A=$slot_a_bytes B=$slot_b_bytes bytes, want 4 GiB each"
+[ "$esp_bytes" = 134217728 ] || layout_fail "the ESP is $esp_bytes bytes, want 128 MiB"
+[ "$slot_a_bytes" = 1073741824 ] && [ "$slot_b_bytes" = 1073741824 ] \
+    || layout_fail "slots are A=$slot_a_bytes B=$slot_b_bytes bytes, want 1 GiB each"
 [ "$root_src" = /dev/disk/by-partuuid/20202020-2020-4020-8020-202020202020 ] || [ "$(lsblk -no PARTUUID "$root_src")" = 20202020-2020-4020-8020-202020202020 ] \
     || layout_fail "/ is $root_src, not slot A"
 # Grown: the state partition reaches the end of the disk, and its ext4 fills it.
@@ -212,16 +215,29 @@ state_dev="$(findmnt -no SOURCE /state 2>/dev/null)"
 [ -n "$state_dev" ] || layout_fail "/state is not mounted"
 state_part_bytes="$(lsblk -bdn -o SIZE "$state_dev")"
 state_fs_bytes="$(df -B1 --output=size /state | tail -n1 | tr -d ' ')"
-# ESP 512 MiB + BIOS 1 MiB + two 4 GiB slots + GPT and alignment.
-used_before_state=$(( (512 + 1 + 8192 + 4) * 1024 * 1024 ))
+# ESP 128 MiB + BIOS 1 MiB + two 1 GiB slots + GPT and alignment.
+used_before_state=$(( (128 + 1 + 2048 + 4) * 1024 * 1024 ))
 [ "$state_part_bytes" -ge $(( disk_bytes - used_before_state )) ] \
     || layout_fail "state partition is $state_part_bytes bytes on a $disk_bytes byte disk: it did not grow to the end"
 # ext4 reserves its metadata and journal, so the filesystem is a little smaller.
 [ "$state_fs_bytes" -ge $(( state_part_bytes * 95 / 100 )) ] \
     || layout_fail "state ext4 is $state_fs_bytes bytes in a $state_part_bytes byte partition: it was not grown"
-echo "cloud-assertions: layout: $nparts partitions on $root_disk (${disk_bytes} bytes), slots 4 GiB each, state partition $state_dev ${state_part_bytes} bytes with ext4 ${state_fs_bytes} bytes"
-# The slot is read-only, and it is the slot GRUB chose.
+echo "cloud-assertions: layout: $nparts partitions on $root_disk (${disk_bytes} bytes), ESP 128 MiB, slots 1 GiB each, state partition $state_dev ${state_part_bytes} bytes with ext4 ${state_fs_bytes} bytes"
+# The slot is a read-only squashfs, and it is the slot GRUB chose.
 findmnt -no OPTIONS / | tr ',' '\n' | grep -qx ro || layout_fail "/ is not mounted read-only: $(findmnt -no OPTIONS /)"
+[ "$(findmnt -no FSTYPE /)" = squashfs ] || layout_fail "/ is $(findmnt -no FSTYPE /), want squashfs"
+# A squashfs keeps file owners as the build saw them. If the build had mapped
+# them wrong, sudo would be neither root's nor setuid.
+[ "$(stat -c '%u %a' /usr/bin/sudo)" = "0 4755" ] || layout_fail "/usr/bin/sudo is $(stat -c '%u %a' /usr/bin/sudo), want root-owned 4755"
+# The measured numbers for the disk budget (BUILD.md # 1b # Disk budget): the
+# squashfs's own size from its superblock (bytes_used, offset 40), the ESP's
+# use, and the state partition's use at this point of the boot.
+slot_a_dev=/dev/disk/by-partuuid/20202020-2020-4020-8020-202020202020
+sq_bytes="$(dd if="$slot_a_dev" bs=96 count=1 2>/dev/null | od -An -t u8 -j 40 -N 8 | tr -d ' ')"
+[ -n "$sq_bytes" ] && [ "$sq_bytes" -gt 0 ] || layout_fail "cannot read the squashfs size from slot A's superblock"
+esp_used="$(df -B1 --output=used /efi | tail -n1 | tr -d ' ')"
+state_used="$(df -B1 --output=used /state | tail -n1 | tr -d ' ')"
+echo "cloud-assertions: layout: measured: squashfs ${sq_bytes} bytes ($(( sq_bytes * 1000 / slot_a_bytes / 10 )).$(( sq_bytes * 1000 / slot_a_bytes % 10 ))% of the slot), ESP used ${esp_used} of ${esp_bytes} bytes, state partition used ${state_used} of ${state_fs_bytes} bytes"
 cmdline="$(cat /proc/cmdline)"
 for w in rauc.slot=A panic=10 ro psi=1 BOOT_IMAGE=/usr/lib/moose/boot/vmlinuz; do
     grep -qw -- "$w" <<<"$cmdline" || layout_fail "kernel command line lacks '$w': $cmdline"
@@ -236,6 +252,11 @@ state_devno="$(stat -c %d /state)"
 for d in /home /var/lib/docker /var/lib/containerd /var/lib/moose /var/log /var/lib/systemd /var/lib/rauc /var/lib/sudo /srv/moose; do
     [ "$(stat -c %d "$d")" = "$state_devno" ] || layout_fail "$d is not on the state partition ($(findmnt -no SOURCE,TARGET "$d" | tr '\n' ' '))"
 done
+# User files live under /srv/moose, as on the appliance; the databases have
+# their own bind mounts and never sit under it (ENVIRONMENT.md # Storage
+# (hosted)).
+findmnt -no SOURCE /home | grep -q '\[/srv/moose/home\]$' || layout_fail "/home is not bound from the state partition's srv/moose/home: $(findmnt -no SOURCE /home)"
+findmnt -no SOURCE /var/lib/moose | grep -q '\[/var/lib/moose\]$' || layout_fail "/var/lib/moose is not its own bind mount: $(findmnt -no SOURCE /var/lib/moose)"
 findmnt -no FSTYPE /var/tmp | grep -qx tmpfs || layout_fail "/var/tmp is not a tmpfs"
 echo "cloud-assertions: layout: /etc overlay and the bind mounts are on the state partition, /var/tmp is a tmpfs"
 # The per-box state is on the state partition: the four pinned files (the

@@ -34,7 +34,7 @@ const (
 	dataDiskLabel = "Data"
 
 	// hostedSystemMount is what a hosted box reports as its one "System"
-	// volume. On the A/B layout the root is a fixed 4 GiB OS slot that holds
+	// volume. On the A/B layout the root is a fixed 1 GiB OS slot that holds
 	// only the image, and everything the box writes (Docker, apps, the brain)
 	// lives on the state partition, which grows with the disk (BUILD.md # 1b).
 	// /var/lib/moose is bind-mounted from that partition, so its statfs is the

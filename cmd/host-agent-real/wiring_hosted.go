@@ -66,7 +66,7 @@ func buildAgent() (*hostagent.Agent, func()) {
 	a.Resources = rampressure.New()
 	// One diskusage.Reporter satisfies both disk seams: DataDisk() for the
 	// install-plan free_bytes (Disk) and Disks() for the Storage bars (DiskSpace).
-	// NewHosted measures the state partition, not the 4 GiB OS slot at /
+	// NewHosted measures the state partition, not the 1 GiB OS slot at /
 	// (BUILD.md # 1b).
 	du := diskusage.NewHosted()
 	a.Disk = du
