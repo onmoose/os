@@ -60,9 +60,7 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 **Why:** the two streams have different physics (`DECISIONS.md` 2026-08-11). A brain fix should not wait for an OS release and a reboot, and an OpenSSL fix should not need a brain release that changes nothing. "A box is described by two numbers" becomes literally true. The 2026-07-16 decision was against a counter per *component*; two lines per *stream* keeps its point: there are still no per-component counters.
 
-**What this doesn't change yet:** today's build and release workflows still read one `VERSION`. The split is built as its own slice of #486 (`BUILD.md` # Versioning says what is planned and what is built).
-
-**As built (#559):** `control-plane-vX.Y.Z` is the git tag and the GitHub Release. The ghcr images keep the `vX.Y.Z` image tag shape, with the control-plane number, because the private control plane resolves digests by that tag.
+**Built in #559** (`../progress/control-plane-version-line.md`). `control-plane-vX.Y.Z` is the git tag and the GitHub Release. The ghcr images keep the `vX.Y.Z` image tag shape, with the control-plane number, because the private control plane resolves digests by that tag.
 
 **Affected docs:** `BUILD.md` # 6, # Versioning, # Locked decisions; `UPDATES.md` # 3, # Compatibility matrix; `RELEASE_MANIFEST.md`. Flips both 2026-07-16 versioning entries in part: the image still inherits the moose version, but the control plane no longer does.
 
