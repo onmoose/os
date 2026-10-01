@@ -1,4 +1,4 @@
-# TEMPORARY test of os-lock-bump.yml for #560 review fixes. Removed before merge. Run 1.
+# TEMPORARY test of os-lock-bump.yml for #560 review fixes. Removed before merge. Run 2: the branch exists with a human commit.
 # Move the OS package lock forward (#560, BUILD.md # 1b # The OS package lock).
 #
 # Every day this takes the newest snapshot.debian.org timestamp and the newest
