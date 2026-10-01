@@ -26,7 +26,7 @@ The disk layout is the same for both engines, so the proofs compare like with li
 | 4 | slot B | 3G | made by `systemd-repart` at first boot |
 | 5 | data | the rest | made and grown by `systemd-repart` at first boot |
 
-A slot holds a whole root. Everything a box writes that must outlive a slot swap lives on the data partition:
+A slot holds a whole root. Everything a box writes that must outlive a slot swap lives on the data partition. In this entry "data partition" always means partition 5 of the **OS drive**. It is not the appliance's separate data drive (`STORAGE.md` # Data drive(s)).
 
 - `/etc` is an overlay. The slot's `/etc` is the lower layer, and the upper layer is on the data partition. So users, passwords, SSH host keys and `machine-id` land on the data partition.
 - On the first boot only, three files are copied up on purpose ("pinned"): `/etc/docker/daemon.json`, `/etc/subuid` and `/etc/subgid`. A pinned file never follows the image again. This is the #486 rule: the box keeps its remap setting for life.
@@ -135,6 +135,7 @@ The overlay is what makes whole-root work. It also sets three rules the design m
 
 1. **A file the box changes stops following the image.** That is right for users, passwords and host keys. It is wrong for a config file the image wants to change later. So the box should write as little as it can into `/etc`, and host-agent's own config should live under `/var/lib/moose`.
 2. **A pinned file never updates.** `daemon.json` is pinned whole, for the remap. If a later image needs to change another key in `daemon.json`, that change needs its own migration step. Docker has no drop-in directory for `daemon.json`, so the pin cannot be narrowed to the one key.
+   The spike pinned three files. The real list needs a fourth: **`/etc/login.defs`**, which carries `SUB_UID_COUNT 0` and `SUB_GID_COUNT 0` (#530). If a later image dropped those lines, `useradd` would start giving new users subordinate ID ranges from 100000 up, and after enough users they would run into the `moose-remap` range at 1000000. Pinning it whole has the same cost as `daemon.json`. The design may prefer to pin only those two keys, by having host-agent check them at boot.
 3. **New system users come from `sysusers.d`, never from `useradd` at build time.** The spike shows the `useradd` user does not reach an existing box.
 
 For #486 this is the first of its two options: the remap stays as the box was built, across every slot swap. Moving a box from off to on stays a separate design.
@@ -143,7 +144,7 @@ For #486 this is the first of its two options: the remap stays as the box was bu
 
 The hosted image today is an 8 GiB root that uses 1.1 GB (`CI / Cloud image` run 36694063081: "size is 8.5G, consumes 1.1G"). That includes the ESP's kernel and the baked brain and UI image tarballs. The spike's slot uses 600 to 680 MB.
 
-**Suggested: two 4 GiB slots.** That is about 3.5 times today's use, and two slots take the same 8 GiB the single root takes now. On a CX23's 40 GB disk that leaves about 31 GB for the data partition. If the brain and UI tarballs move out of the slot (they are stream B, and can be pulled to `/var/lib/docker`), the headroom grows further. Slot size is fixed for the life of a box, because slot B is made at first boot right after slot A, so this number should be chosen with care and generously.
+**Suggested: two 4 GiB slots.** That is about 3.5 times today's use. The 8 GiB is only the image's starting size: on a hosted box `moose-grow-root` grows the root to the whole provider disk, and Docker's data lives on that root. With A/B the OS slot is capped at 4 GiB, and the rest of the disk goes to the data partition instead, where `/var/lib/docker`, `/var/lib/moose` and `/home` live. On a CX23's 40 GB disk that is about 31 GB of data partition. So the space apps can use stays about the same, but anything the box writes to the root outside those bind mounts is now capped at the slot and is lost at each swap. `/var/log` (the journal) and `/var/cache` are the obvious ones. The design must decide which other parts of `/var` move to the data partition. If the brain and UI tarballs move out of the slot (they are stream B, and can be pulled to `/var/lib/docker`), the headroom grows further. Slot size is fixed for the life of a box, because slot B is made at first boot right after slot A, so this number should be chosen with care and generously.
 
 ### Artifact and signing
 
@@ -156,9 +157,11 @@ Either way, this is a third signing scheme. The appliance release manifest uses 
 
 Firmware is not a problem on the appliance: `FIRST_RUN.md` already requires UEFI. The question is encryption.
 
-With this layout the OS slots hold **no per-box secrets**. Passwords, SSH host keys, `machine-id`, the LUKS recovery key (`/etc/moose/secrets/`, `STORAGE.md`) and all user data are on the data partition, through the `/etc` overlay and the bind mounts. The slots hold only what we publish. So the slots need integrity, not secrecy.
+With this layout the OS slots hold **no per-box secrets**. Passwords, SSH host keys, `machine-id`, the LUKS recovery key (`/etc/moose/secrets/luks-recovery.key`) and the box's own state are on the data partition, through the `/etc` overlay and the bind mounts. The slots hold only what we publish. So the slots need integrity, not secrecy.
 
-**Suggested shape: OS slots unencrypted, each with dm-verity, and the data partition LUKS with TPM unseal against PCR 7.** PCR 7 is the Secure Boot policy, not the kernel, so an A/B swap does not break the unseal, the same as a kernel update today.
+That data partition is on the OS drive. So the recovery key stays where `STORAGE.md` puts it, on the encrypted OS drive, now in its data partition instead of its root. User content on the appliance stays on the separate data drive(s), as today. One thing changes: `STORAGE.md` says the OS drive holds no irreplaceable state. That is already not true of the recovery key, and the `/etc` upper layer adds the box's users and host keys. The design should say how a replaced OS drive gets them back.
+
+**Suggested shape: OS slots unencrypted, each with dm-verity, and the OS drive's data partition LUKS with TPM unseal against PCR 7.** PCR 7 is the Secure Boot policy, not the kernel, so an A/B swap does not break the unseal, the same as a kernel update today.
 
 - **RAUC** fits either way. A slot's `device=` is any block device, so an opened LUKS mapping should work as a slot (not tried here), at the cost of a TPM enrollment per slot. For verity, the bundle can carry a verity hash tree beside the image. The initrd must then set up `veritysetup` for the booted slot. That part is ours to build and was not tried.
 - **sysupdate** writes slots by raw offset into the GPT partition. It cannot target a LUKS mapping, so encrypted slots do not fit it. It fits verity well: ParticleOS's shape is a signed UKI with a verity root hash on its command line. That is also the path to PCR 11 sealing, which `NEXT.md` lists as a later upgrade.
@@ -206,6 +209,6 @@ What it costs, stated plainly:
 
 1. **The A/B design issue**, starting from RAUC with GRUB. It should first prove Secure Boot with Debian's signed GRUB and the `grub.cfg` above, and a verity slot set up in the initrd.
 2. **Pick the slot size** (4 GiB suggested) before the first A/B image ships, since it is fixed for the life of a box.
-3. **Write the `/etc` rules into the spec** (`BUILD.md` or a new A/B section of `UPDATES.md`): the overlay, the pinned list, and `sysusers.d` for system users.
+3. **Write the `/etc` rules into the spec** (`BUILD.md` or a new A/B section of `UPDATES.md`): the overlay, the pinned list (with `login.defs`), `sysusers.d` for system users, and which parts of `/var` live on the data partition.
 4. **Design artifact signing** together with the release-signing item in `NEXT.md`, so the box does not end up with three unrelated keys.
 5. **Check a CX23's firmware** on a real box, once, to settle whether CX Gen3 is BIOS or mixed.
