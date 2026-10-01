@@ -25,7 +25,7 @@ Closes #560, a slice of #486, after [control-plane-version-line.md](control-plan
 
 ## Known gaps & deviations
 
-- **The bump has not run on `dev` yet.** A schedule and a dispatch only run from the default branch, so its first run happens after merge. The PR path needs `OS_LOCK_BOT_TOKEN`, which does not exist yet. Until it does, the no-token path runs.
+- **The token path is verified only after merge.** The maintainer created `OS_LOCK_BOT_TOKEN` while this PR was open. It was not used from the feature branch on purpose: a bump branch made from an unmerged branch would open a PR into `dev` that carries the unmerged changes. The first real bump is a dispatch after merge, `gh workflow run "OS lock bump" --ref dev`, and that run is the end-to-end check of the token path (one PR into `dev` from `bot/os-lock`, whose `CI / Cloud image` runs the full boot list). The no-token path was run before merge from a temporary copy of the workflow on this branch, with the token forced empty (see below).
 - **A force-push can be refused.** When `dev` changed a file under `.github/workflows/` since the last bump, GitHub refuses a push that moves a branch across that change unless the token may write workflows. The no-token path deletes and re-creates the branch, which does not hit this. The token path force-pushes so its PR stays open, and needs **Workflows: read and write** on the token if this shows up. The workflow and `contributing.md` both say so.
 - **The appliance lane (`dev/test-qemu/`) is not locked.** It is bookworm and local-only. It gets the lock with its move to trixie and the A/B layout (#564).
 - **The mkosi tools tree is not locked.** mkosi v26 does not pass the snapshot to it. It decides the build tools, not the image's packages.
@@ -35,6 +35,6 @@ Closes #560, a slice of #486, after [control-plane-version-line.md](control-plan
 
 ## What's next
 
-1. The maintainer creates `OS_LOCK_BOT_TOKEN` (`docs/dev/contributing.md` # OS package lock bumps).
-2. The first daily run after merge; check that it opens the PR or the tracking issue.
+1. After merge, run the first bump by hand: `gh workflow run "OS lock bump" --ref dev`. Check that it opens one PR into `dev` from `bot/os-lock` (or, when no package moved since `20261001T082322Z`, that it ends with "No package changed"), and that the PR's `CI / Cloud image` run boots the full list.
+2. Renew `OS_LOCK_BOT_TOKEN` before it expires, or replace it with a GitHub App token (`docs/dev/contributing.md` # OS package lock bumps).
 3. Lock the appliance lane with #564.
