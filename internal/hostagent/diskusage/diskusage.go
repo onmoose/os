@@ -32,6 +32,14 @@ const (
 	osDiskLabel   = "System"
 	dataDiskMount = "/srv/moose"
 	dataDiskLabel = "Data"
+
+	// hostedSystemMount is what a hosted box reports as its one "System"
+	// volume. On the A/B layout the root is a fixed 4 GiB OS slot that holds
+	// only the image, and everything the box writes (Docker, apps, the brain)
+	// lives on the state partition, which grows with the disk (BUILD.md # 1b).
+	// /var/lib/moose is bind-mounted from that partition, so its statfs is the
+	// state partition's.
+	hostedSystemMount = "/var/lib/moose"
 )
 
 // Reporter implements hostagent.DiskReporter and hostagent.DiskSpaceReporter.
@@ -51,6 +59,19 @@ type Reporter struct {
 func New() *Reporter {
 	return &Reporter{
 		osPath:   osDiskMount,
+		dataPath: dataDiskMount,
+		deviceID: statDeviceID,
+	}
+}
+
+// NewHosted returns the Reporter for the hosted profile. Its "System" volume
+// is the state partition (measured through /var/lib/moose), not the OS slot
+// at /, because the slot is image-owned and its fullness is nothing the owner
+// can act on. /srv/moose is a bind mount of the same partition, so Disks
+// reports one volume and DataDisk reports the same partition.
+func NewHosted() *Reporter {
+	return &Reporter{
+		osPath:   hostedSystemMount,
 		dataPath: dataDiskMount,
 		deviceID: statDeviceID,
 	}
