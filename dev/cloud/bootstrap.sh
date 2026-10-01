@@ -16,14 +16,18 @@
 #   2. Stage the first-boot wiring into mkosi.extra.wiring/ via the shared
 #      dev/cloud/stage-control-plane.sh (slim host-agent + units + control-plane
 #      bundle + seed materializer; the SAME staging the test lane runs).
-#   3. Stage Docker's apt repo (trixie pocket) into mkosi.pkgmngr/ so docker-ce
-#      resolves at build time (build-host network only; the VM never apt-installs).
-#   4. `mkosi build` → a raw GPT disk image under .dev/cloud/.
+#   3. Stage the OS package lock (#560, dev/os-lock/os-lock.sh) into
+#      mkosi.pkgmngr/: Docker's apt repo (trixie pocket) with exact version pins,
+#      trixie-updates from the snapshot, and apt retries (build-host network only;
+#      the VM never apt-installs).
+#   4. `mkosi build --snapshot <dev/os-lock/debian-snapshot>` → a raw GPT disk
+#      image under .dev/cloud/.
 #   5. Assert the built package manifest matches the checked-in expected set
 #      (expected-packages.txt) exactly — any off-list package (bloat, e.g.
 #      recommends drift) or unexpectedly-dropped package fails the build, not
 #      just a hardcoded appliance cut list (#238). Then source-sanity-check the
-#      committed ExtraTrees marker reads `hosted`.
+#      committed ExtraTrees marker reads `hosted`. Then assert the resolved
+#      package list, versions included, equals dev/os-lock/cloud-packages.lock.
 #
 # Needs root: it builds the control-plane image bundle (docker) and chowns build
 # artifacts back to the caller; mkosi itself runs as the caller (it auto-escalates
@@ -167,16 +171,14 @@ mkdir -p "$WORK"
 . "${CLOUD_DIR}/stage-control-plane.sh"
 stage_control_plane
 
-# --- 3. Docker apt repo for the build's package manager.# The build host has network; the VM never apt-installs Docker (baked). trixie
-# pocket — the cloud image is Release=trixie (the test lane uses bookworm).
-rm -rf "$PKGMNGR"
-mkdir -p "$PKGMNGR/etc/apt/keyrings" "$PKGMNGR/etc/apt/sources.list.d"
-curl -fsSL https://download.docker.com/linux/debian/gpg \
-    -o "$PKGMNGR/etc/apt/keyrings/docker.asc"
-chmod a+r "$PKGMNGR/etc/apt/keyrings/docker.asc"
-cat > "$PKGMNGR/etc/apt/sources.list.d/docker.list" <<'EOF'
-deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable
-EOF
+# --- 3. the OS package lock (#560): the build's apt sources and pins, from
+# dev/os-lock/. Debian comes from snapshot.debian.org at the locked timestamp,
+# Docker from its own repo at the pinned versions (the trixie pocket — the cloud
+# image is Release=trixie). Build-host network only; the VM never apt-installs.
+# shellcheck source=dev/os-lock/os-lock.sh
+. "${REPO_ROOT}/dev/os-lock/os-lock.sh"
+stage_os_lock_apt "$PKGMNGR"
+OS_LOCK_SNAPSHOT="$(os_lock_snapshot)"
 
 # --- 4. build. mkosi runs as the caller (it auto-sudos for privileged disk ops);
 # re-own the staged trees first. NOT $CP_BUNDLE (shared with the medium lane; mkosi
@@ -205,9 +207,9 @@ fi
 
 if [ -n "$CALLER" ]; then
     sudo -u "$CALLER" env "MKOSI_INTERPRETER=$MKOSI_INTERPRETER" \
-        "$MKOSI_BIN" --directory "$CLOUD_DIR" --force build
+        "$MKOSI_BIN" --directory "$CLOUD_DIR" --snapshot "$OS_LOCK_SNAPSHOT" --force build
 else
-    MKOSI_INTERPRETER="$MKOSI_INTERPRETER" "$MKOSI_BIN" --directory "$CLOUD_DIR" --force build
+    MKOSI_INTERPRETER="$MKOSI_INTERPRETER" "$MKOSI_BIN" --directory "$CLOUD_DIR" --snapshot "$OS_LOCK_SNAPSHOT" --force build
 fi
 
 # --- 5. assert lean
@@ -227,7 +229,13 @@ fi
 # names only, so version bumps don't churn it. Regenerate it by pasting the
 # reported sets when a package change is intended (see expected-packages.txt).
 EXPECTED="${CLOUD_DIR}/expected-packages.txt"
-python3 - "$MANIFEST" "$EXPECTED" <<'PY'
+#
+# In the bump workflow's record mode (MOOSE_OS_LOCK_RECORD=1) a failed lean
+# check does not stop the build: the bump still needs the resolved list to show
+# in its PR. The result goes to .dev/cloud/lean-check.txt for the PR body, and
+# the PR's own CI run then fails the check, so a person reviews the new set.
+lean_rc=0
+python3 - "$MANIFEST" "$EXPECTED" > "$WORK/lean-check.txt" 2>&1 <<'PY' || lean_rc=$?
 import json, re, sys
 
 manifest_path, expected_path = sys.argv[1], sys.argv[2]
@@ -276,6 +284,20 @@ if unexpected or missing:
 print(f"lean check passed — manifest matches expected-packages.txt exactly "
       f"({len(installed)} packages)")
 PY
+cat "$WORK/lean-check.txt"
+if [ "$lean_rc" -ne 0 ]; then
+    if [ "${MOOSE_OS_LOCK_RECORD:-}" = "1" ]; then
+        echo "lean check failed (rc=$lean_rc); going on because MOOSE_OS_LOCK_RECORD=1" >&2
+    else
+        exit "$lean_rc"
+    fi
+fi
+
+# OS package lock (#560): the resolved package list must equal the committed
+# dev/os-lock/cloud-packages.lock, so two builds of one commit install the same
+# versions. The resolved list is written to .dev/cloud/cloud-packages.lock either
+# way (CI uploads it).
+os_lock_check "$MANIFEST" "$WORK/cloud-packages.lock"
 
 # Source-sanity check: verify the committed ExtraTrees source file reads `hosted`
 # so a stale or accidentally blanked file fails fast before the next build.

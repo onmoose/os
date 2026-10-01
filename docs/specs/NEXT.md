@@ -159,10 +159,10 @@ The shape is decided (`BUILD.md` # 1b, `UPDATES.md` # 1, `DECISIONS.md` 2026-10-
 3. **A slot that hangs.** Rebooting on emergency and rescue and `panic=` cover most cases. A watchdog covers the rest, but whether Hetzner VMs expose a watchdog device is unknown.
 4. **A replaced OS drive (appliance).** The state partition now holds users, password hashes and host keys, and the OS drive was sold as replaceable (`STORAGE.md` # OS drive). Decide how they come back: from the off-box backup, or by rebuilding them from the brain's records.
 5. **A Debian major across the overlay.** A file in the `/etc` upper layer stays at the old major's version under a new major's packages. Decide whether a major release resets the upper layer to a known list, or ships a migration step.
-6. **How OS patch releases are cut.** A lock bump is a PR (`BUILD.md` # 1b # The OS package lock), but releases come from `dev` into `main`, and `dev` may hold unreleased work. Decide the branch a security release is cut from, and how fast one must ship.
+6. **How OS patch releases are cut.** *Resolved 2026-10-01 (#560, `DECISIONS.md` 2026-10-01).* A lock-only release is cut from `main` on a `hotfix/X.Y.Z` branch: the bump is re-run against it, `VERSION` is bumped there, the PR goes into `main`, and `main` is then carried into `dev` as after every release. A bump that changes any package from `trixie-security` is released within 7 days; any other bump ships with the next normal release (`docs/dev/contributing.md` # OS patch releases from a lock bump).
 
 **Context:** `BUILD.md` # 1b, `UPDATES.md` # 1, `STORAGE.md` # OS drive, `RELEASE_MANIFEST.md`, #486.
-**Why Tier 2:** none of it blocks the hosted build, which has no Secure Boot, no verity and no replaceable drive. Points 1, 2 and 4 block the appliance build; 3 and 6 block shipping either.
+**Why Tier 2:** none of it blocks the hosted build, which has no Secure Boot, no verity and no replaceable drive. Points 1, 2 and 4 block the appliance build; 3 blocks shipping either.
 
 ## Tier 3 — Defer-able, but pin the shape
 

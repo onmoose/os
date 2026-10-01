@@ -21,6 +21,16 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-01 — An OS patch release for a lock bump is cut from `main` (#560)
+
+**Previously:** every release went `dev` -> `main`, and every PR targeted `dev` (`docs/dev/contributing.md` # Release model). How a security bump of the OS package lock became a release was open (`NEXT.md` # A/B OS image, point 6).
+
+**Now:** a release that only moves the OS package lock is cut **from `main`**. A `hotfix/X.Y.Z` branch is made from `main`, the bump workflow is re-run against it, `VERSION` is bumped there, and the PR goes into `main`. `main` is then carried into `dev` as after every release. This is the one PR into `main` that does not come from `dev`. **Speed:** a bump that changes any package from `trixie-security` is released within 7 days; any other bump ships with the next normal release.
+
+**Why:** with no `apt` on the box, the lock is the only way a Debian security fix reaches the fleet, so its latency is ours. `dev` often holds work that is not ready to release, and a security fix should not wait for it. Re-running the bump on the hotfix branch, instead of cherry-picking `dev`'s lock, keeps the lock true to `main`'s package list. Until the A/B applier lands (#561 to #564), such a release reaches only new boxes.
+
+**Affected docs:** `docs/dev/contributing.md` # Release model; `BUILD.md` # 1b # The OS package lock; `NEXT.md` # A/B OS image (point 6 resolved).
+
 ## 2026-10-01 — Stream A is an A/B OS image, built with RAUC and GRUB, on both profiles (#486)
 
 **Previously:** stream A (Debian base, kernel, firmware, `host-agent`) was realized by `apt`: `unattended-upgrades` security-only for Debian, our own apt repo for `host-agent`. An A/B image was the end state, deferred to v2 (`UPDATES.md` # 1, # 2; `DECISIONS.md` 2026-08-11). `BUILD.md` # 2 left the update engine open on purpose.

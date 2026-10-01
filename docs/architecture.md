@@ -174,7 +174,12 @@ So this doc isn't read as a claim about the finished product:
 - **Boot, install ISO, updates.** The `mkosi` image build (`BUILD.md` # 2;
   proven in the test lane, not yet the production ISO) and stream A
   (an A/B OS image with RAUC and GRUB, `UPDATES.md` # 1 and `BUILD.md`
-  # 1b, #486) is spec-only. A box never updates its OS today. **Stream B — the
+  # 1b, #486) is spec-only. A box never updates its OS today. **The OS
+  package lock is built (#560)** for the hosted image: `dev/os-lock/` holds a
+  snapshot.debian.org timestamp, exact Docker pins and the resolved package
+  list, both cloud builds fail when they resolve to a different list, and
+  `os-lock-bump.yml` moves it forward daily. The appliance lane is not locked
+  yet (`BUILD.md` # 1b # The OS package lock). **Stream B — the
   control-plane update — is half built.** A box declares its brain/UI pair in
   two files (`internal/hostagent/controlplane`: the staged compose plus an
   `images.json` ledger), the apply/health-check/revert transaction exists

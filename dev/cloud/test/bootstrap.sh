@@ -34,6 +34,10 @@ PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
 CANARY_VERSION="v25"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+# A change to the OS package lock (#560) must rebuild too, so all three lock
+# files are part of the canary. The resolved list is in it as well: a re-run
+# after only the list changed must not exit early and skip os_lock_check below.
+CANARY_VERSION="${CANARY_VERSION}-lock-$(cat "${REPO_ROOT}/dev/os-lock/debian-snapshot" "${REPO_ROOT}/dev/os-lock/third-party.lock" "${REPO_ROOT}/dev/os-lock/cloud-packages.lock" | sha256sum | cut -c1-12)"
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -258,15 +262,13 @@ docker pull "$POSTGRES_REF"
 docker tag "$POSTGRES_REF" postgres:16
 docker save postgres:16 -o "$EXTRA/var/lib/moose/test-images/postgres-16.tar"
 
-# --- 4. Docker apt repo for the build's package manager (trixie pocket — the
-# cloud image is Release=trixie). Build-host network only; the VM never apt-installs.
-rm -rf "$PKGMNGR"
-mkdir -p "$PKGMNGR/etc/apt/keyrings" "$PKGMNGR/etc/apt/sources.list.d"
-curl -fsSL https://download.docker.com/linux/debian/gpg -o "$PKGMNGR/etc/apt/keyrings/docker.asc"
-chmod a+r "$PKGMNGR/etc/apt/keyrings/docker.asc"
-cat > "$PKGMNGR/etc/apt/sources.list.d/docker.list" <<'EOF'
-deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable
-EOF
+# --- 4. the OS package lock (#560): the same apt sources, snapshot and pins as
+# the lean build (dev/os-lock/os-lock.sh), so this image installs the versions
+# the shipped image does. Build-host network only; the VM never apt-installs.
+# shellcheck source=dev/os-lock/os-lock.sh
+. "${REPO_ROOT}/dev/os-lock/os-lock.sh"
+stage_os_lock_apt "$PKGMNGR"
+OS_LOCK_SNAPSHOT="$(os_lock_snapshot)"
 
 # --- 5. mkosi build (from dev/cloud/test; Include=.. pulls in the production base
 # + its wiring). Re-own the staged trees + work dir to the caller; mkosi runs as
@@ -296,10 +298,18 @@ fi
 
 if [ -n "$CALLER" ]; then
     sudo -u "$CALLER" env "MKOSI_INTERPRETER=$MKOSI_INTERPRETER" \
-        "$MKOSI_BIN" --directory "$TEST_DIR" --force build
+        "$MKOSI_BIN" --directory "$TEST_DIR" --snapshot "$OS_LOCK_SNAPSHOT" --force build
 else
-    MKOSI_INTERPRETER="$MKOSI_INTERPRETER" "$MKOSI_BIN" --directory "$TEST_DIR" --force build
+    MKOSI_INTERPRETER="$MKOSI_INTERPRETER" "$MKOSI_BIN" --directory "$TEST_DIR" --snapshot "$OS_LOCK_SNAPSHOT" --force build
 fi
+
+# The boot-proof image is a second, separate build of the same package set, so
+# it must resolve to the same committed lock as the lean one. In CI this is the
+# "two builds of one commit install the same versions" proof (#560). Never in
+# record mode: only the lean build records.
+TEST_MANIFEST="$(ls -1 "$WORK"/*.manifest 2>/dev/null | head -n1 || true)"
+[ -n "$TEST_MANIFEST" ] || { echo "no package manifest under $WORK" >&2; exit 1; }
+MOOSE_OS_LOCK_RECORD= os_lock_check "$TEST_MANIFEST" "$WORK/cloud-packages.lock"
 
 # mkosi writes to OutputDirectory=.dev/cloud-boot. Confirm the raw exists.
 if [ ! -f "$IMAGE_OUT" ]; then

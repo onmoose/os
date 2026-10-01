@@ -208,9 +208,68 @@ Then open the PR from `release/X.Y.Z` into `main`, let `ci-go.yml` and `ci-web.y
 
 The version files conflict here too, in the other direction. **Resolve each to `dev`'s value**, the version being worked towards, not the one `main` just released. Resolving it the other way walks the version backwards on `dev`.
 
-Anything *other* than the release merge showing up in step 3 means a PR was opened against `main` directly. That is the mistake to catch, not to clean up after: **every PR targets `dev`**, including docs-only and gap-ledger changes. If you find one open, retarget it to `dev` rather than merging it.
+Anything *other* than the release merge showing up in step 3 means a PR was opened against `main` directly. That is the mistake to catch, not to clean up after: **every PR targets `dev`**, including docs-only and gap-ledger changes. If you find one open, retarget it to `dev` rather than merging it. The one exception is an OS patch release cut from `main` for a lock bump, below.
 
 This used to be a `sync-dev.yml` workflow that opened the `main` -> `dev` PR by itself. It was removed in favour of the step above: it needed an org-wide "Actions may create pull requests" permission that the org does not grant, so every run failed and the PR had to be opened by hand anyway (#484).
+
+### OS package lock bumps
+
+The OS image installs every package at a locked version (`../specs/BUILD.md` # 1b # The OS package lock): a Debian snapshot timestamp, exact Docker pins and the resolved package list, all in `dev/os-lock/`. `.github/workflows/os-lock-bump.yml` moves them forward **daily**. When no package changed, it does nothing. When one did, it commits the three files on the `bot/os-lock` branch, with a title and body that name every changed package and version and mark the ones from `trixie-security`.
+
+**The bot branch keeps your work.** The bump never deletes `bot/os-lock` and never force-pushes it. When the branch exists, the bump merges `dev` into it, resolves the lock on the result, and adds a commit only when the lock files changed. So a fix you push to the branch (such as the `expected-packages.txt` change below) stays, and a PR you opened from it stays open. When `dev` does not merge cleanly into the branch, the run stops with a summary and changes nothing: merge `dev` in by hand and re-run. The branch is made fresh from `dev` only when it does not exist, for example after its PR merged and the branch was deleted.
+
+**Two jobs, so the token never meets the build.** `resolve` builds the image (as root, with a lot of third-party code) and holds no secret. `handover` builds nothing: it gets only the three lock files and the PR title and body from `resolve` as an artifact, commits them and pushes.
+
+What `handover` does next depends on one secret:
+
+- **`OS_LOCK_BOT_TOKEN` is set and works.** It pushes the branch with it and opens one PR into `dev`, or updates that PR in place when it is open. CI runs on it like on any human PR, and because it touches `dev/os-lock/`, `CI / Cloud image` runs the lock check and the full boot list.
+- **It is not set, or it is set but rejected.** The org does not let Actions open PRs, and a push made with `GITHUB_TOKEN` starts no workflow. So the workflow pushes the branch with `GITHUB_TOKEN`, runs the boot proofs itself (it calls `ci-cloud-image.yml` on the branch, publishing nothing), and puts the diff and an "open a PR" link in the job summary and in one open issue titled "OS lock bump ready for dev". Open the PR from that link: GitHub fills in the title and body from the newest commit. A missing secret is not a failure.
+- **It pushes, but cannot open or edit PRs.** The branch is already pushed with `OS_LOCK_BOT_TOKEN`, and the run does not push again. From there it does the same hand-over as above: the boot proofs, the summary and the tracking issue, which open with a note to give the token **Pull requests: read and write**. Because this push was made with the token and not with `GITHUB_TOKEN`, it does start workflows: if a bump PR is already open, its CI runs on the new commit as well.
+
+**The token.** A maintainer makes a **fine-grained personal access token** for `onmoose/os` only, with **Contents: read and write** and **Pull requests: read and write**, and stores it as the repo secret `OS_LOCK_BOT_TOKEN`. It is read in one place, the `BOT_TOKEN` env of the "Push and hand over" step in the `handover` job of `os-lock-bump.yml`. It belongs to a person and **expires** (at most one year), so put the renewal in a calendar. An expired or revoked token is still a set secret, so the workflow checks it with an API call before it pushes, and also falls back if the push with it is refused. Either way it takes the no-token path and says **"OS_LOCK_BOT_TOKEN is set but rejected ... Renew it"** at the top of the job summary and the tracking issue. A token that can push but cannot open or edit PRs (no **Pull requests: write**) pushes the branch, then the PR call fails: the run then takes the no-token hand-over without pushing again (boot proofs in the workflow, summary, tracking issue) and says **"OS_LOCK_BOT_TOKEN pushed the branch but cannot open or edit PRs. Give it Pull requests: read and write"**. A GitHub App token is the cleaner later replacement: mint it in a step before that one (`actions/create-github-app-token`) and pass it as `BOT_TOKEN`. Nothing else changes.
+
+**Workflow files.** When `dev` changed a file under `.github/workflows/` since the last bump, merging `dev` into the bot branch brings that change in, and GitHub refuses the push unless the token may write workflows. `GITHUB_TOKEN` never may. The run then stops and says so. Give the token **Workflows: read and write**, or merge `dev` into the branch by hand, and re-run.
+
+**A bump that adds or drops a package** fails the lean check on its PR, on purpose. Review the new set and update `dev/cloud/expected-packages.txt` on the bot branch. To bump by hand (for example to test a change), dispatch the workflow: `gh workflow run "OS lock bump" --ref dev`.
+
+**When the lock check fails on your own PR,** the build resolved to a different list than `dev/os-lock/cloud-packages.lock`. That only happens when you changed the package list in `dev/cloud/mkosi.conf`, the snapshot or a pin. Take the resolved list from the run's `cloud-packages-lock` artifact and commit it with your change.
+
+### OS patch releases from a lock bump
+
+Merging a lock bump puts the change on `dev`, not on any box. It ships with an OS release (`VERSION`). **Until the A/B applier lands (#561 to #564), an OS release reaches only new boxes**; a running box keeps the OS it was built with.
+
+- **A bump that changes any package from `trixie-security` is released within 7 days.** The bump PR's body says so when it applies.
+- **Any other bump ships with the next normal release.**
+
+`dev` may hold unreleased work that is not ready, so a lock-only release is cut **from `main`**, not from `dev`. This is the one PR into `main` that does not come from `dev`:
+
+```bash
+# 1. A hotfix branch from what is released.
+git fetch origin
+git checkout -b hotfix/X.Y.Z origin/main      # X.Y.Z: the next patch number
+git push -u origin hotfix/X.Y.Z
+
+# 2. Re-run the bump against it, so the lock is resolved for main's package list
+#    (a cherry-picked lock from dev may name packages main does not install).
+gh workflow run "OS lock bump" --ref dev -f base=hotfix/X.Y.Z
+#    It opens (or links) a PR from bot/os-lock-hotfix-X.Y.Z into hotfix/X.Y.Z.
+#    CI / Go and CI / Cloud image run on PRs into hotfix/** too, so that PR gets
+#    the lock check and the full boot list. Merge it once they are green.
+
+# 3. Bump VERSION on the hotfix branch and open the release PR into main.
+git pull
+echo "X.Y.Z" > VERSION
+# commit, push, open a PR from hotfix/X.Y.Z into main. Its CI runs the full boot
+# list (the PR touches dev/os-lock/). Merge it; release.yml tags vX.Y.Z and
+# attaches the image.
+
+# 4. Carry main into dev, as after every release.
+git checkout dev && git pull
+git merge origin/main
+git push
+```
+
+In step 4, resolve `VERSION` to the new `X.Y.Z`: that is now the last released version, and `dev` did not have it. Resolve `dev/os-lock/` to `dev`'s side when it is newer; the next daily bump moves `dev` forward anyway. Step 2 needs `dev/os-lock/` and the shared mkosi setup on `main`, so it works from the first release after #560.
 
 ## Definition of done — checklist
 
