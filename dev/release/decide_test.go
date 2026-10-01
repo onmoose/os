@@ -192,8 +192,10 @@ func TestFileThatIsNotAVersionIsRefused(t *testing.T) {
 func TestFirstPushWithNoPreviousFileWarnsAndSkips(t *testing.T) {
 	r := newRepo(t)
 	before := r.commit(map[string]string{"VERSION": "0.15.0"})
-	head := r.commit(map[string]string{"CONTROL_PLANE_VERSION": "0.15.0"})
-	r.tag("control-plane-v0.15.0", head)
+	r.commit(map[string]string{"CONTROL_PLANE_VERSION": "0.15.0"})
+	// The one-time hand tag sits at an older commit, as control-plane-v0.15.0
+	// does at v0.15.0.
+	r.tag("control-plane-v0.15.0", before)
 
 	cp := r.decide("CONTROL_PLANE_VERSION", "control-plane-v", before, "")
 	if !cp.ok || cp.out["created"] != "false" {
@@ -201,5 +203,102 @@ func TestFirstPushWithNoPreviousFileWarnsAndSkips(t *testing.T) {
 	}
 	if !strings.Contains(cp.logs, "::warning::") {
 		t.Errorf("want a warning that the previous value could not be read; got:\n%s", cp.logs)
+	}
+}
+
+// A run that tagged one line and then died (on the other line's tag, or on a
+// GitHub Release) must be resumable: a re-run sees its own tag at this commit
+// and carries on, instead of tripping the "bumped to an already-tagged
+// version" error. A tag at any other commit is never resumed.
+func TestTagAtThisCommitResumes(t *testing.T) {
+	r := newRepo(t)
+	base := r.commit(map[string]string{"VERSION": "0.15.0", "CONTROL_PLANE_VERSION": "0.15.0"})
+	r.tag("v0.15.0", base)
+	r.tag("control-plane-v0.15.0", base)
+	head := r.commit(map[string]string{"VERSION": "0.16.0", "CONTROL_PLANE_VERSION": "0.16.0"})
+	r.tag("v0.16.0", head) // the first run got this far
+
+	// The image check would refuse, but a resume must not run it: the images
+	// may be half-pushed by the run being resumed, and that is what it finishes.
+	osLine := r.decide("VERSION", "v", base, "true")
+	if !osLine.ok || osLine.out["created"] != "true" || osLine.out["tag_exists"] != "true" {
+		t.Fatalf("OS line: want a resume (created, tag_exists), got ok=%v out=%v\n%s", osLine.ok, osLine.out, osLine.logs)
+	}
+	cp := r.decide("CONTROL_PLANE_VERSION", "control-plane-v", base, "false")
+	if !cp.ok || cp.out["created"] != "true" || cp.out["tag_exists"] != "false" {
+		t.Fatalf("control-plane line: want a fresh release, got ok=%v out=%v\n%s", cp.ok, cp.out, cp.logs)
+	}
+
+	// The same tag, but this run releases a later commit: a hard error, as
+	// for any bump to a version tagged elsewhere.
+	r.commit(map[string]string{"VERSION": "0.16.0", "README": "x"})
+	if again := r.decide("VERSION", "v", base, ""); again.ok {
+		t.Fatalf("want a hard error for a tag at another commit, got out=%v", again.out)
+	}
+}
+
+// An annotated tag at this commit resumes too: the tag object is not the
+// commit, so the script must compare the peeled commit.
+func TestAnnotatedTagAtThisCommitResumes(t *testing.T) {
+	r := newRepo(t)
+	base := r.commit(map[string]string{"VERSION": "0.15.0"})
+	head := r.commit(map[string]string{"VERSION": "0.16.0"})
+	run(t, r.clone, "git", "tag", "-a", "-m", "m", "v0.16.0", head)
+	run(t, r.clone, "git", "push", "-q", "origin", "v0.16.0")
+	res := r.decide("VERSION", "v", base, "")
+	if !res.ok || res.out["created"] != "true" || res.out["tag_exists"] != "true" {
+		t.Fatalf("want a resume for an annotated tag, got ok=%v out=%v\n%s", res.ok, res.out, res.logs)
+	}
+}
+
+// ghcr-tag-exists.sh with a stub curl: one call checks several repositories,
+// any one published means "exists", and an unclear answer is never "missing".
+func TestImageCheckAcrossRepos(t *testing.T) {
+	bin := t.TempDir()
+	stub := `#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *ghcr.io/token*) echo '{"token":"t"}'; exit 0 ;;
+    *ghcr.io/v2/*/manifests/*)
+      name="${a#https://ghcr.io/v2/}"; name="${name%%/manifests/*}"; name="${name//\//_}"
+      var="FAKE_${name}"; printf '%s' "${!var:-404}"; exit 0 ;;
+  esac
+done
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script, err := filepath.Abs("ghcr-tag-exists.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		brain, ui  string
+		wantExitRC int
+	}{
+		{"both missing", "404", "404", 1},
+		{"only the ui is published", "404", "200", 0},
+		{"only the brain is published", "200", "404", 0},
+		{"ui unclear, brain missing", "404", "500", 2},
+		{"ui unclear, brain published", "200", "500", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := exec.Command("bash", script, "onmoose/brain", "onmoose/ui", "v0.16.0")
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
+				"FAKE_onmoose_brain="+c.brain, "FAKE_onmoose_ui="+c.ui)
+			err := cmd.Run()
+			rc := 0
+			if ee, ok := err.(*exec.ExitError); ok {
+				rc = ee.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if rc != c.wantExitRC {
+				t.Errorf("exit = %d, want %d", rc, c.wantExitRC)
+			}
+		})
 	}
 }

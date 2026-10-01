@@ -25,10 +25,13 @@
 #
 # The decision per line lives in dev/release/decide.sh, so it can be tested off
 # main (dev/release/decide_test.go runs it against throwaway git repos in
-# `make check`). It has three outcomes (release, no-op, hard error for a bump to
-# an already-tagged version) and, for the control plane, refuses a version whose
-# ghcr image tag is already published, so a release never overwrites released
-# images with new bytes under the same number.
+# `make check`). It has four outcomes: release; resume, when the tag already
+# points at this commit because an earlier run of this workflow for the same
+# push tagged it and then failed; no-op; and a hard error for a bump to a version
+# tagged at another commit. For the control plane it also refuses a version
+# whose ghcr image tag is already published for the brain or the UI, so a
+# release never overwrites released images with new bytes under the same
+# number. A failed run is recovered by re-running this workflow.
 #
 # Ordering: tags + GitHub Releases FIRST, image build+publish SECOND. Rationale
 # (deliberately chosen over the reverse):
@@ -99,7 +102,15 @@ jobs:
       # Decide both lines before tagging either. If one line is a hard error,
       # nothing is tagged, so a merge that bumps both never half-releases.
       # The control-plane line also checks that its ghcr image tag is not
-      # already published (anonymous read; the images are public).
+      # already published, for the brain AND the UI (anonymous read; the images
+      # are public). Either one published refuses, and so does an unclear
+      # registry answer.
+      #
+      # A line whose tag already points at this commit is a RESUME
+      # (`tag_exists=true`): an earlier run of this workflow for this same push
+      # tagged it and then failed. Re-running finishes the job: no second tag,
+      # a Release only if it is missing, and the publish steps add only what is
+      # missing.
       - name: Decide which lines this merge releases
         id: decide
         env:
@@ -107,7 +118,8 @@ jobs:
         run: |
           set -euo pipefail
           ./dev/release/decide.sh VERSION v "$BEFORE" | sed 's/^/os_/' > /tmp/os.out
-          RELEASE_IMAGE_CHECK="./dev/release/ghcr-tag-exists.sh ${GITHUB_REPOSITORY_OWNER,,}/brain" \
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          RELEASE_IMAGE_CHECK="./dev/release/ghcr-tag-exists.sh ${owner}/brain ${owner}/ui" \
             ./dev/release/decide.sh CONTROL_PLANE_VERSION control-plane-v "$BEFORE" | sed 's/^/cp_/' > /tmp/cp.out
           cat /tmp/os.out /tmp/cp.out | tee -a "$GITHUB_OUTPUT"
 
@@ -138,9 +150,11 @@ jobs:
           OS_CREATED: ${{ steps.decide.outputs.os_created }}
           OS_TAG: ${{ steps.decide.outputs.os_tag }}
           OS_PREV: ${{ steps.decide.outputs.os_prev_tag }}
+          OS_TAGGED: ${{ steps.decide.outputs.os_tag_exists }}
           CP_CREATED: ${{ steps.decide.outputs.cp_created }}
           CP_TAG: ${{ steps.decide.outputs.cp_tag }}
           CP_PREV: ${{ steps.decide.outputs.cp_prev_tag }}
+          CP_TAGGED: ${{ steps.decide.outputs.cp_tag_exists }}
         run: |
           set -euo pipefail
 
@@ -155,21 +169,33 @@ jobs:
             echo "::warning::release PR body is missing or too short (${#body} chars), falling back to generated notes only. Write a summary in the release PR body so the Release page says what changed."
           fi
 
-          release() { # TAG PREV [extra gh args...]
-            local tag="$1" prev="$2"; shift 2
+          release() { # TAG PREV TAGGED [extra gh args...]
+            local tag="$1" prev="$2" tagged="$3"; shift 3
             local args=(--title "$tag" --target "$GITHUB_SHA" --generate-notes "$@")
             if [ -n "$prev" ]; then args+=(--notes-start-tag "$prev"); fi
             if [ -f /tmp/release-notes.md ]; then args+=(--notes-file /tmp/release-notes.md); fi
-            git tag "$tag" "$GITHUB_SHA"
-            git push origin "$tag"
-            gh release create "$tag" "${args[@]}"
+            if [ "$tagged" = "true" ]; then
+              echo "resume: tag $tag already points at this commit; not tagging again"
+            else
+              git tag "$tag" "$GITHUB_SHA"
+              git push origin "$tag"
+            fi
+            # Create the Release only on a definite "not found". Any other
+            # failure aborts, rather than be misread as absence.
+            local status
+            status="$(gh api -i "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>/dev/null | head -n1 | awk '{print $2}' || true)"
+            case "$status" in
+              200) echo "resume: Release $tag already exists; leaving it as it is" ;;
+              404) gh release create "$tag" "${args[@]}" ;;
+              *) echo "::error::Release lookup for $tag returned '${status:-no answer}'; aborting rather than treating it as absent"; exit 1 ;;
+            esac
           }
 
           # The OS release keeps GitHub's automatic "Latest" choice: it is the
           # one with the disk image a person downloads. The control-plane
           # Release never takes "Latest".
-          if [ "$OS_CREATED" = "true" ]; then release "$OS_TAG" "$OS_PREV"; fi
-          if [ "$CP_CREATED" = "true" ]; then release "$CP_TAG" "$CP_PREV" --latest=false; fi
+          if [ "$OS_CREATED" = "true" ]; then release "$OS_TAG" "$OS_PREV" "$OS_TAGGED"; fi
+          if [ "$CP_CREATED" = "true" ]; then release "$CP_TAG" "$CP_PREV" "$CP_TAGGED" --latest=false; fi
 
       - name: Step summary
         env:

@@ -13,20 +13,32 @@
 # (release.yml checks out with fetch-depth: 0). It writes key=value lines to
 # stdout, ready to append to $GITHUB_OUTPUT, and explains itself on stderr:
 #
-#   created=true|false   cut a release on this line
+#   created=true|false   this commit releases this line: publish what it ships
+#   tag_exists=true|false the git tag is already there (at this commit). Then
+#                        release.yml does not tag again, creates the GitHub
+#                        Release only if it is missing, and the publish steps
+#                        add only what is missing.
 #   tag=<prefix><X.Y.Z>  the tag the file names
 #   version=<X.Y.Z>      the file's contents
 #   prev_tag=<tag>       the newest earlier tag on this line, or empty. The
 #                        Release notes start from it, so a control-plane Release
 #                        never lists commits since the last OS tag.
 #
-# THREE outcomes, not two:
+# FOUR outcomes:
 #
-#   - no tag for the file's version -> cut the release.
-#   - tag exists, file unchanged    -> ordinary merge; clean no-op, green.
-#   - tag exists, file bumped       -> hard error (exit 1).
+#   - no tag for the file's version           -> cut the release.
+#   - tag exists at THIS commit                -> resume: the release was cut
+#                                                 here already, so carry on and
+#                                                 publish what is still missing.
+#   - tag exists elsewhere, file unchanged     -> ordinary merge; clean no-op.
+#   - tag exists elsewhere, file bumped        -> hard error (exit 1).
 #
-# That third case is what a plain "does the tag exist?" check gets wrong.
+# The resume case is what makes a half-done run recoverable. A run that tags the
+# OS line and then fails on the control-plane tag, or on either GitHub Release,
+# leaves a tag at this commit; re-running the workflow must finish the job, not
+# trip over the tag it made itself. A tag at another commit is never resumed.
+#
+# The last case is what a plain "does the tag exist?" check gets wrong.
 # release.yml tags BEFORE building, so a release whose image build fails leaves
 # the tag behind. If the fix is then merged without deleting that tag, a bare
 # existence check sees the tag, exits green, and the release silently never
@@ -37,18 +49,22 @@
 # with an older line. The control plane pushes ghcr images tagged v<X.Y.Z>, the
 # shape every release before the split used (the private control plane resolves
 # digests by that tag). If RELEASE_IMAGE_CHECK is set, it is run with v<X.Y.Z>
-# when the git tag is missing: exit 0 means that image tag already exists, and
+# as its last argument when the git tag is missing: exit 0 means an image tag
+# already exists (release.yml checks the brain and the UI in one call), and
 # the release is refused rather than overwrite released images with new bytes
 # under the same number. Exit 1 means it does not exist. Anything else is an
 # error, never "missing".
 #
-# RELEASE_REMOTE names the remote to read tags from (default: origin).
+# RELEASE_REMOTE names the remote to read tags from (default: origin), and
+# RELEASE_SHA the commit this run releases (default: HEAD; release.yml checks out
+# GITHUB_SHA, so the two agree there).
 set -euo pipefail
 
 file="${1:?usage: decide.sh <version-file> <tag-prefix> <before-sha>}"
 prefix="${2:?usage: decide.sh <version-file> <tag-prefix> <before-sha>}"
 before="${3:-}"
 remote="${RELEASE_REMOTE:-origin}"
+sha="$(git rev-parse "${RELEASE_SHA:-HEAD}^{commit}")"
 
 err() { echo "::error::$*" >&2; exit 1; }
 
@@ -70,7 +86,11 @@ prev_tag="$(git ls-remote --tags --refs "$remote" "refs/tags/${prefix}*" \
     | tail -n1 || true)"
 echo "prev_tag=$prev_tag"
 
-if ! git ls-remote --exit-code --tags "$remote" "refs/tags/$want" >/dev/null 2>&1; then
+# The commit the tag points at, peeled, so an annotated tag compares as its
+# commit. ls-remote lists the peeled "^{}" line after the tag's own line.
+tag_commit="$(git ls-remote --tags "$remote" "refs/tags/$want" "refs/tags/$want^{}" | tail -n1 | cut -f1)"
+
+if [ -z "$tag_commit" ]; then
     if [ -n "${RELEASE_IMAGE_CHECK:-}" ]; then
         rc=0
         $RELEASE_IMAGE_CHECK "v${cur}" || rc=$?
@@ -81,7 +101,15 @@ if ! git ls-remote --exit-code --tags "$remote" "refs/tags/$want" >/dev/null 2>&
         esac
     fi
     echo "created=true"
+    echo "tag_exists=false"
     echo "release: tag $want does not exist yet; cutting a release" >&2
+    exit 0
+fi
+
+if [ "$tag_commit" = "$sha" ]; then
+    echo "created=true"
+    echo "tag_exists=true"
+    echo "resume: tag $want already points at this commit; carrying on with what is not yet published" >&2
     exit 0
 fi
 
@@ -106,4 +134,5 @@ if [ -z "$prev" ]; then
 fi
 
 echo "created=false"
+echo "tag_exists=true"
 echo "skip: tag $want already exists and $file was not bumped by this merge; nothing to release on this line" >&2
