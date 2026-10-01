@@ -503,7 +503,7 @@ JobKind {
   Name           "system-update" | "app-install" | "disk-format" | ...
   MaxDuration    e.g. 30m for system-update, 60s for systemctl ops
   Dangerous      bool — crash mid-flight = no auto-resume (see APP_LIFECYCLE)
-  ResourceClass  "apt" | "disk" | "systemd" | "network" | "none"
+  ResourceClass  "os-update" | "disk" | "systemd" | "network" | "none"
   StallPolicy    optional: "no progress for X = stalled"
 }
 ```
@@ -512,9 +512,9 @@ JobKind {
 
 **Stalled vs. failed.** Distinct statuses. `stalled` means "we're not sure — it's running too long or producing no progress"; `failed` means "we know it broke." The UI surfaces these with different messaging — important for non-technical users.
 
-**Resource-class serialization.** Two jobs sharing a `ResourceClass` cannot run concurrently. The second queues; job response carries queue position. Two `apt` operations can never race. `ResourceClass: "none"` ops have no serialization.
+**Resource-class serialization.** Two jobs sharing a `ResourceClass` cannot run concurrently. The second queues; job response carries queue position. Two OS updates can never race. `ResourceClass: "none"` ops have no serialization.
 
-**Cross-class dangerous lock.** Any job with `Dangerous: true` waits for **all** running jobs (across resource classes) to drain before starting, and blocks any new jobs while it runs. Catches the case where, e.g., a disk format and an apt upgrade are technically different resource classes but you really don't want both at once.
+**Cross-class dangerous lock.** Any job with `Dangerous: true` waits for **all** running jobs (across resource classes) to drain before starting, and blocks any new jobs while it runs. Catches the case where, e.g., a disk format and an OS update are technically different resource classes but you really don't want both at once.
 
 **Registration is required-by-construction.** host-agent's job-kind registration function takes these attributes as required Go-typed parameters. You can't register an op without declaring them.
 
@@ -534,11 +534,11 @@ Covered in Pattern C above. Self-contained: monotonic event IDs, ~256 KB per-job
 
 Protocol-shaped rules about *when and how* the protocol is exercised. Not new protocol surface.
 
-**host-agent self-update.** When the OS updater installs a new `moose-host-agent` package:
+**host-agent self-update.** `host-agent` ships inside the OS image, so a new `host-agent` only arrives with an OS update, and only takes effect on the reboot into the new slot (`UPDATES.md` # 1, planned #486). Nothing installs a new binary into a running box. Before that reboot:
 
 1. Brain stops accepting new jobs.
-2. Brain waits for running jobs to drain. Hard cap (5 minutes): if a job is still running, the OS update fails with "an operation is still running, retry later."
-3. apt installs the new binary; systemd restarts host-agent.
+2. Brain waits for running jobs to drain. Hard cap (5 minutes): if a job is still running, the switch and reboot wait for the next window, with "an operation is still running".
+3. The box switches slots and reboots; the new slot's `host-agent` starts at boot.
 4. Brain reconnects with backoff; resumes.
 
 Brain treats "host-agent unreachable" during this window as expected, not as an error.
@@ -580,7 +580,7 @@ Beyond the moose-group membership assertion (above), CI asserts:
 - `CONTROL_PLANE.md` — points to this doc as the authoritative spec for the brain↔host-agent boundary.
 - `AUTH.md` — the "Brain ↔ host-agent in the auth path" section is consistent with this protocol (private channel, no app-layer token); the moose-group test invariant is now documented here.
 - `SERVICE_PROVISIONING.md` — Tier-2 ops (systemctl, config edits) flow through host-agent via this protocol's Pattern A and Pattern B.
-- `UPDATES.md` — apt operations are Pattern B (jobs with SSE log streams). The "brain ↔ host-agent protocol versioning" open item is resolved (lockstep).
+- `UPDATES.md` — update operations are Pattern B (jobs with SSE log streams). The "brain ↔ host-agent protocol versioning" open item is resolved (a `minimumAgentVersion` floor, # Versioning).
 - `NEXT.md` — carries the future web-terminal and app-facing-background-jobs items (failure semantics is now closed).
 - `HEALTH.md` — the # Detector catalog owns the per-issue measurement/cadence/threshold contract; this doc owns the `GET /v1/health/system` transport that carries locus-B findings to the brain.
 - `APP_ISOLATION.md` — # GPU owns the locked install-refusal-on-no-GPU behaviour and the `/dev/dri` + render-group override stanza; this doc owns the `GET /v1/system/gpu` transport that feeds both. The OS-image media stack and the real `/dev/dri` detection are tracked in issue #125.
