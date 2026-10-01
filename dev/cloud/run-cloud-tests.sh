@@ -9,9 +9,11 @@
 # hosted — "the disk IS the installed system", ENVIRONMENT.md # Provisioning), PLUS
 # the seed delivery + wizard the medium lane has no analogue for.
 #
-# Three sequential UEFI boots over ONE persisted qcow2 overlay (so the brain's
-# box-id + first admin carry boot→boot), then a fourth legacy-BIOS smoke boot on
-# its own overlay (#277), one virtio NIC with restrict=on (air-gapped — the seed
+# Every boot runs twice, once under UEFI (OVMF) and once under legacy BIOS
+# (SeaBIOS), each firmware on its own overlays (#561; #277 is why BIOS matters).
+# Per firmware: three sequential boots over ONE persisted qcow2 overlay (so the
+# brain's box-id + first admin carry boot→boot), then the boots that each take
+# their own fresh overlay. One virtio NIC with restrict=on (air-gapped — the seed
 # arrives over SMBIOS, never the network), serial-log capture per boot. The in-VM
 # self-check (cloud-assertions.sh, run by moose-cloud-assertions.
 # service) reads which scenario to assert from a `moose.assert` SMBIOS credential,
@@ -28,9 +30,6 @@
 #   boot 3  frozen      a DIFFERENT seed B delivered, same overlay → the brain ignores
 #                       it (identity frozen in SQLite); the dashboard + /api still serve
 #                       under box_id A and the brain does not re-ingest
-#   boot 4  bios        the SAME image re-booted under legacy BIOS (SeaBIOS, no OVMF)
-#                       on its own overlay → proves the dual-firmware image (grub BIOS
-#                       + systemd-boot UEFI) boots where a UEFI-only one hung (#277)
 #   access              own overlay + box-id, seeded with a TEST-PORTAL key the harness
 #                       holds → a real owner session, then the per-app forward-auth
 #                       access modes end-to-end through real Caddy (#308), and the
@@ -72,7 +71,7 @@ VERSION="$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || e
 QCOW2="${WORK}/moose-${VERSION}-amd64.qcow2"
 
 RUN_DIR="$(mktemp -d -t moose-cloud.XXXXXX)"
-OVERLAY="${RUN_DIR}/overlay.qcow2"   # writable, persisted across the three boots
+OVERLAY=""   # set per firmware and per boot below (new_overlay)
 QEMU_SERIAL="${RUN_DIR}/serial.log"  # set per-phase by run_boot
 QEMU_PID=""
 VERDICT=""
@@ -96,10 +95,10 @@ BOX_ID_SSH=heron-birch
 # second boot is a reboot of the disk the first one installed apps on.
 BOX_ID_REMAP=moss-lynx
 
-# Which boots to run, space-separated (unseeded seeded frozen bios access).
+# Which boots to run, space-separated (unseeded seeded frozen access update ssh remap).
 # Default: all.
 # A subset lets a caller run only the boots it needs — notably the cloud-image
-# publish gate, which runs "unseeded seeded bios access" to prove the built image's
+# publish gate, which runs "unseeded seeded access update ssh remap" to prove the built image's
 # brain accepts the current seed schema (the regression that gate exists for) and
 # leaves out the frozen-identity boot. Frozen is orthogonal to that gate (it
 # checks that a re-delivered seed is IGNORED on a later boot) and has shown a
@@ -108,10 +107,7 @@ BOX_ID_REMAP=moss-lynx
 # publish gate. Order still holds: frozen reuses the overlay seeded leaves
 # behind, so run seeded whenever frozen runs.
 #
-# Two boots stand outside that ordering, each on its OWN fresh overlay:
-#   - `bios` (#277) re-boots the image under legacy BIOS (SeaBIOS) instead of UEFI,
-#     so providers that only do legacy BIOS are covered; no ordering dependency, and
-#     the publish gate includes it directly.
+# These boots stand outside that ordering, each on its OWN fresh overlay:
 #   - `access` (#308, #469) proves the per-app forward-auth access modes end-to-end
 #     (restricted gate, owner proxy-through, public, whole-Cookie-header strip) and
 #     the hosted confirm step that opens the re-auth window without a password. It
@@ -135,7 +131,14 @@ BOX_ID_REMAP=moss-lynx
 #     checks them all again. One name runs both, because the second needs what
 #     the first left on the disk.
 # All of these are in the gate: see ci-cloud-image.yml.
-BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen bios access update ssh remap}"
+BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen access update ssh remap}"
+# Which firmwares run the boots (#561): by default every boot runs under UEFI and
+# again under legacy BIOS. `bios` used to be a boot of its own (one un-seeded
+# boot under SeaBIOS); it is a firmware now.
+FIRMWARES="${MOOSE_CLOUD_FIRMWARES:-uefi bios}"
+for f in $FIRMWARES; do
+    case "$f" in uefi|bios) ;; *) echo "unknown firmware '$f' in MOOSE_CLOUD_FIRMWARES='$FIRMWARES' (known: uefi bios)" >&2; exit 1 ;; esac
+done
 should_run() { case " $BOOTS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # Refuse a name this script does not know. The workflow lets a person type the
 # list (its `boots` input), and a typo would otherwise run nothing and pass.
@@ -144,8 +147,9 @@ boot_count=0
 for b in $BOOTS; do
     boot_count=$((boot_count + 1))
     case "$b" in
-        unseeded|seeded|frozen|bios|access|update|ssh|remap) ;;
-        *) echo "unknown boot '$b' in MOOSE_CLOUD_BOOTS='$BOOTS' (known: unseeded seeded frozen bios access update ssh remap)" >&2; exit 1 ;;
+        unseeded|seeded|frozen|access|update|ssh|remap) ;;
+        bios) echo "'bios' is no longer a boot: every boot runs under both firmwares (MOOSE_CLOUD_FIRMWARES, default 'uefi bios')" >&2; exit 1 ;;
+        *) echo "unknown boot '$b' in MOOSE_CLOUD_BOOTS='$BOOTS' (known: unseeded seeded frozen access update ssh remap)" >&2; exit 1 ;;
     esac
 done
 [ "$boot_count" -gt 0 ] || { echo "MOOSE_CLOUD_BOOTS='$BOOTS' names no boot" >&2; exit 1; }
@@ -204,10 +208,16 @@ echo "converting raw -> qcow2 cloud artifact: $(basename "$QCOW2")"
 qemu-img convert -f raw -O qcow2 "$IMAGE_OUT" "$QCOW2"
 [ -n "$CALLER" ] && chown "$CALLER":"$(id -gn "$CALLER" 2>/dev/null || echo "$CALLER")" "$QCOW2" 2>/dev/null || true
 
-# A single writable overlay backed by the pristine artifact, reused across all
-# three boots so the box-id + first admin the seeded boot writes survive into the
-# frozen-identity boot. The base artifact is never written.
-qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$OVERLAY" >/dev/null
+# Writable overlays backed by the pristine artifact; the base is never written.
+# Each is DISK_SIZE, far bigger than the image (about 4.5 GiB: the ESP, the BIOS
+# boot partition and slot A), the way a provider disk is. First boot fills the
+# rest with slot B (4 GiB) and the state partition, and the layout check
+# (cloud-assertions.sh 1b) proves the state partition grew to the end of it.
+DISK_SIZE="${MOOSE_CLOUD_DISK_SIZE:-24G}"
+new_overlay() { # PATH
+    qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$1" "$DISK_SIZE" >/dev/null
+}
+
 
 # --- 3. resolve OVMF firmware (varies by distro). One VARS copy, reused across
 # boots so the EFI state persists like a real machine power-cycle.
@@ -409,12 +419,21 @@ run_boot() {
     esac
 }
 
+# --- 4. every boot, once per firmware (#561). The provider's server type decides
+# the firmware (ENVIRONMENT.md # Boot (hosted)), so the whole list runs under UEFI
+# (OVMF) and again under legacy BIOS (SeaBIOS, QEMU's own firmware, as Hetzner CX
+# presents it). Each firmware gets its own overlays, so the two never share a disk.
+for FIRMWARE in $FIRMWARES; do
+OVERLAY="${RUN_DIR}/overlay-${FIRMWARE}.qcow2"
+new_overlay "$OVERLAY"
+echo "=== firmware ${FIRMWARE}: boots ${BOOTS} ==="
+
 # --- 4. boot 1: un-seeded. No seed credential → the brain stays unprovisioned and
 # GET /_moose/sso returns 503 and /setup returns 403 (the SSO gate is armed but
 # closed — never the appliance's open empty-box behavior). Also the standalone C2
 # control-plane-up proof.
 if should_run unseeded; then
-if ! run_boot "unseeded" "unseeded"; then
+if ! run_boot "${FIRMWARE}-unseeded" "unseeded"; then
     echo "cloud gate proof: ${VERDICT}" >&2
     exit 1
 fi
@@ -426,7 +445,7 @@ fi
 # (disabled on hosted). The ingested box-id A persists on the overlay. The positive
 # owner-create + wizard path needs the portal private key (cloud on-ramp).
 if should_run seeded; then
-if ! run_boot "seeded" "seeded" -smbios "type=11,value=$(seed_cred "$BOX_ID_A")"; then
+if ! run_boot "${FIRMWARE}-seeded" "seeded" -smbios "type=11,value=$(seed_cred "$BOX_ID_A")"; then
     echo "cloud gate proof: ${VERDICT}" >&2
     exit 1
 fi
@@ -439,32 +458,11 @@ fi
 # re-ingest. Proves a re-delivered or changed seed cannot re-key a provisioned box
 # (MOOSE_NETWORK.md frozen identity).
 if should_run frozen; then
-if ! run_boot "frozen" "frozen:${BOX_ID_A}" -smbios "type=11,value=$(seed_cred "$BOX_ID_B")"; then
+if ! run_boot "${FIRMWARE}-frozen" "frozen:${BOX_ID_A}" -smbios "type=11,value=$(seed_cred "$BOX_ID_B")"; then
     echo "cloud gate proof: ${VERDICT}" >&2
     exit 1
 fi
 echo "boot 3 OK — frozen identity held across reboot (re-delivered seed B ignored, box_id still ${BOX_ID_A})"
-fi
-
-# --- 7. boot 4: legacy-BIOS smoke (#277). The three boots above all run under UEFI
-# (OVMF). This one boots the SAME image under QEMU's built-in SeaBIOS — the legacy-
-# BIOS firmware a Hetzner CX (Intel) VM presents, where a UEFI-only image hangs at
-# "Booting from Hard Disk" and never reaches userspace. It proves the image's grub
-# BIOS boot path (BiosBootloader=grub + the BIOS Boot Partition) actually boots to
-# a running control plane. It reuses the un-seeded assertion (control plane up, SSO
-# gate armed) as the "did it boot and come up" proof — the firmware path is what's
-# under test here, not provisioning — on its OWN fresh overlay so it can run
-# independently of (and never perturb) the UEFI provisioning sequence above.
-if should_run bios; then
-BIOS_OVERLAY="${RUN_DIR}/overlay-bios.qcow2"
-qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$BIOS_OVERLAY" >/dev/null
-OVERLAY="$BIOS_OVERLAY"
-FIRMWARE=bios
-if ! run_boot "bios" "unseeded"; then
-    echo "cloud BIOS boot proof: ${VERDICT}" >&2
-    exit 1
-fi
-echo "boot 4 OK — image boots under legacy BIOS (SeaBIOS), control plane up"
 fi
 
 # --- 8. access boot: per-app forward-auth access modes end-to-end (#308). Its OWN
@@ -501,17 +499,16 @@ if should_run access; then
     # independent of the A/B identity the shared overlay carries. OVERLAY and FIRMWARE
     # are run_boot's globals, and the bios boot above leaves them pointing at ITS
     # overlay under SeaBIOS — so set both explicitly here rather than inheriting them.
-    ACCESS_OVERLAY="${RUN_DIR}/overlay-access.qcow2"
-    qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$ACCESS_OVERLAY" >/dev/null
+    ACCESS_OVERLAY="${RUN_DIR}/overlay-${FIRMWARE}-access.qcow2"
+    new_overlay "$ACCESS_OVERLAY"
     OVERLAY="$ACCESS_OVERLAY"
-    FIRMWARE=uefi
 
     # Wider outer ceiling: the access scenario's in-guest work (SSO + app install +
     # exposure toggle) adds ~180s of worst-case internal poll time over the shared
     # prechecks, which alone can approach the 480s default under CI's TCG-only QEMU.
     # The two folder-app installs (#519) add up to ~240s more.
     VERDICT_TIMEOUT=960
-    if ! run_boot "access" "access" \
+    if ! run_boot "${FIRMWARE}-access" "access" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_ACCESS" "$ACCESS_KEY")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$ACCESS_TOKEN" | base64 -w0)" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token2=$(printf '%s' "$ACCESS_TOKEN2" | base64 -w0)" \
@@ -555,17 +552,16 @@ if should_run update; then
 
     # Same explicit-globals reasoning as the access boot: OVERLAY and FIRMWARE are
     # run_boot's globals and the boots above leave them pointing elsewhere.
-    UPDATE_OVERLAY="${RUN_DIR}/overlay-update.qcow2"
-    qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$UPDATE_OVERLAY" >/dev/null
+    UPDATE_OVERLAY="${RUN_DIR}/overlay-${FIRMWARE}-update.qcow2"
+    new_overlay "$UPDATE_OVERLAY"
     OVERLAY="$UPDATE_OVERLAY"
-    FIRMWARE=uefi
 
     # The widest ceiling in the lane, and it is not padding: on top of the shared
     # prechecks this boot loads and starts a registry, commits and pushes two images,
     # then runs TWO full update transactions — the second of which spends a 60s health
     # wait failing on purpose before it reverts. Under CI's TCG-only QEMU that adds up.
     VERDICT_TIMEOUT=1500
-    if ! run_boot "update" "update" \
+    if ! run_boot "${FIRMWARE}-update" "update" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_UPDATE" "$UPDATE_KEY" "$UPDATE_TARGET_URL")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$UPDATE_TOKEN" | base64 -w0)"; then
         echo "cloud update proof: ${VERDICT}" >&2
@@ -601,10 +597,9 @@ if should_run ssh; then
     # Same explicit-globals reasoning as the access and update boots: OVERLAY and
     # FIRMWARE are run_boot's globals and the boots above leave them pointing
     # elsewhere.
-    SSH_OVERLAY="${RUN_DIR}/overlay-ssh.qcow2"
-    qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$SSH_OVERLAY" >/dev/null
+    SSH_OVERLAY="${RUN_DIR}/overlay-${FIRMWARE}-ssh.qcow2"
+    new_overlay "$SSH_OVERLAY"
     OVERLAY="$SSH_OVERLAY"
-    FIRMWARE=uefi
 
     # Wider than the default for the same reason as the access boot: on top of the
     # shared prechecks this one drives SSO, an elevation, a key add, three sshd
@@ -612,7 +607,7 @@ if should_run ssh; then
     # a systemctl round-trip through host-agent, and under CI's TCG-only QEMU those
     # add up well past the 480s default.
     VERDICT_TIMEOUT=900
-    if ! run_boot "ssh" "ssh" \
+    if ! run_boot "${FIRMWARE}-ssh" "ssh" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_SSH" "$SSH_KEY_B64")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$SSH_TOKEN" | base64 -w0)"; then
         echo "cloud ssh proof: ${VERDICT}" >&2
@@ -646,10 +641,9 @@ if should_run remap; then
 
     # Same explicit-globals reasoning as the access boot: OVERLAY and FIRMWARE
     # are run_boot's globals and the boots above leave them pointing elsewhere.
-    REMAP_OVERLAY="${RUN_DIR}/overlay-remap.qcow2"
-    qemu-img create -f qcow2 -b "$QCOW2" -F qcow2 "$REMAP_OVERLAY" >/dev/null
+    REMAP_OVERLAY="${RUN_DIR}/overlay-${FIRMWARE}-remap.qcow2"
+    new_overlay "$REMAP_OVERLAY"
     OVERLAY="$REMAP_OVERLAY"
-    FIRMWARE=uefi
 
     # The first boot loads postgres:16 and runs five installs, one of them with
     # a managed Postgres spin-up, then a recreate and a second round of checks.
@@ -657,7 +651,7 @@ if should_run remap; then
     # so it gets the update boot's ceiling. The reboot only waits for the apps
     # to come back.
     VERDICT_TIMEOUT=1500
-    if ! run_boot "remap" "remap" \
+    if ! run_boot "${FIRMWARE}-remap" "remap" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_REMAP" "$REMAP_KEY")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$REMAP_TOKEN" | base64 -w0)"; then
         echo "cloud remap proof: ${VERDICT}" >&2
@@ -665,7 +659,7 @@ if should_run remap; then
     fi
     echo "boot remap OK: one app per userns tier installed and checked, the caps-tier data kept across a recreate (box_id=${BOX_ID_REMAP})"
     VERDICT_TIMEOUT=900
-    if ! run_boot "remap-reboot" "remap-reboot" \
+    if ! run_boot "${FIRMWARE}-remap-reboot" "remap-reboot" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_REMAP" "$REMAP_KEY")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$REMAP_TOKEN2" | base64 -w0)"; then
         echo "cloud remap reboot proof: ${VERDICT}" >&2
@@ -674,6 +668,9 @@ if should_run remap; then
     echo "boot remap-reboot OK: every tier checked again after a real reboot of the same disk (box_id=${BOX_ID_REMAP})"
 fi
 
-echo "cloud end-to-end: PASS (boots: ${BOOTS})"
+echo "firmware ${FIRMWARE}: every boot OK (${BOOTS})"
+done
+
+echo "cloud end-to-end: PASS (boots: ${BOOTS}; firmwares: ${FIRMWARES})"
 echo "qcow2 cloud artifact: ${QCOW2}"
 exit 0

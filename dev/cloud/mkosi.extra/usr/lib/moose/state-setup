@@ -1,0 +1,108 @@
+#!/bin/bash
+# moose early state setup (BUILD.md # 1b # What a slot holds). Runs on every
+# boot, in the initramfs, before systemd starts: the initramfs-tools hook
+# /etc/initramfs-tools/scripts/local-bottom/moose-state mounts the booted slot
+# read-only at $rootmnt and runs this script chrooted into it, so the tools it
+# uses are the slot's own and it works the same in every slot.
+#
+#   1. systemd-repart makes slot B and the state partition on the first boot,
+#      and grows the state partition on a later boot when the disk grew.
+#   2. The state partition is checked and mounted at /state, and its ext4 is
+#      grown to fill the partition.
+#   3. /etc becomes an overlay: the slot's /etc below, /state/etc/upper above.
+#   4. On the first boot only, the four pinned files are copied up and never
+#      follow the image again.
+#   5. The bind mounts from the state partition. When a state directory does
+#      not exist yet, the slot's directory is copied into it first (copy once).
+#
+# Any failure is fatal: the hook panics, and panic=10 reboots the box, so a
+# broken slot never hangs and never comes up without its state.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+log() { echo "moose-state: $*" > /dev/kmsg 2>/dev/null || echo "moose-state: $*" >&2; }
+die() { log "FAILED: $*"; exit 1; }
+
+STATE=/state
+STATE_LABEL=moose-state
+
+# The four pinned files (BUILD.md # 1b, rule 2). They keep a box's
+# userns-remap fixed for life (BUILD.md # User-namespace remap).
+PINNED="docker/daemon.json subuid subgid login.defs"
+
+# The bind mounts from the state partition (BUILD.md # 1b, the inventory). The
+# slot has an empty or default directory at each path; the build makes the
+# ones the packages do not.
+BINDS="home var/lib/docker var/lib/containerd var/lib/moose var/log var/lib/systemd var/lib/rauc var/lib/sudo srv/moose"
+
+# --- 1. partitions. With no device given, systemd-repart works on the disk
+# that backs /, which is the booted slot's disk. Idempotent: on a disk that is
+# already laid out and has not grown, it changes nothing.
+if ! out="$(systemd-repart --dry-run=no --no-pager 2>&1)"; then
+    while IFS= read -r line; do log "repart: $line"; done <<< "$out"
+    die "systemd-repart failed"
+fi
+log "systemd-repart done"
+
+# --- 2. the state partition. A new partition can take a moment to show up.
+dev=""
+for _ in $(seq 1 100); do
+    dev="$(blkid -o device -t PARTLABEL="$STATE_LABEL" 2>/dev/null | head -n1 || true)"
+    [ -n "$dev" ] && [ -b "$dev" ] && break
+    dev=""
+    sleep 0.1
+done
+[ -n "$dev" ] || die "no partition labelled $STATE_LABEL"
+
+# -p fixes what is safe to fix. 1 means it fixed something, which is fine
+# before a mount; 4 and up means it could not.
+rc=0
+e2fsck -p "$dev" >/dev/null 2>&1 || rc=$?
+[ "$rc" -lt 4 ] || die "e2fsck $dev exited $rc"
+
+mount -t ext4 -o rw,noatime "$dev" "$STATE" || die "mount $dev on $STATE failed"
+# The partition may have grown (repart above). Grow the ext4 to fill it, online.
+/usr/lib/systemd/systemd-growfs "$STATE" >/dev/null 2>&1 || die "systemd-growfs $STATE failed"
+log "state partition $dev mounted on $STATE"
+
+# --- 3. /etc as an overlay. Every change the box makes in /etc (users,
+# passwords, SSH host keys, machine-id, the rendered sshd drop-ins) lands in
+# the upper layer. A file the box never touched still comes from the slot.
+mkdir -p "$STATE/etc/upper" "$STATE/etc/work"
+chmod 0755 "$STATE/etc/upper"
+mount -t overlay overlay \
+    -o "lowerdir=/etc,upperdir=$STATE/etc/upper,workdir=$STATE/etc/work" /etc \
+    || die "overlay on /etc failed"
+log "/etc is an overlay (upper on $STATE/etc/upper)"
+
+# --- 4. pinned files, first boot only. Copying a file onto itself through the
+# overlay puts it in the upper layer, where it hides every later slot's copy.
+if [ ! -e "$STATE/etc/.moose-pinned" ]; then
+    for f in $PINNED; do
+        [ -e "/etc/$f" ] || die "pinned file /etc/$f is not in the image"
+        cp -p "/etc/$f" "/etc/$f.moose-pin"
+        mv -f "/etc/$f.moose-pin" "/etc/$f"
+        log "pinned /etc/$f"
+    done
+    touch "$STATE/etc/.moose-pinned"
+fi
+
+# --- 5. bind mounts. Copy once: when the state directory does not exist yet,
+# the slot's directory (with whatever the image baked into it, such as the
+# control-plane images under /var/lib/moose) is copied into it. From then on
+# the state copy is the one in use, and a newer slot's baked copy stays
+# hidden. The copy goes to a temporary name first, so a power cut mid-copy is
+# retried whole on the next boot.
+for d in $BINDS; do
+    src="$STATE/$d"
+    [ -d "/$d" ] || die "/$d is missing from the slot (the build makes every bind target)"
+    if [ ! -d "$src" ]; then
+        mkdir -p "$(dirname "$src")"
+        rm -rf "$src.moose-new"
+        cp -a "/$d" "$src.moose-new"
+        mv "$src.moose-new" "$src"
+        log "$src made from the slot's /$d"
+    fi
+    mount --bind "$src" "/$d" || die "bind $src on /$d failed"
+done
+log "bind mounts done: $BINDS"

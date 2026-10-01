@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v25"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v26"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 # A change to the OS package lock (#560) must rebuild too, so all three lock
 # files are part of the canary. The resolved list is in it as well: a re-run
 # after only the list changed must not exit early and skip os_lock_check below.
