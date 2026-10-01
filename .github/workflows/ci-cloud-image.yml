@@ -28,7 +28,8 @@
 #     pushing a `vX.Y.Z` tag by hand. It publishes the disk image only, never the
 #     control-plane images (a `v*` tag is an OS release now). A
 #     `control-plane-v*` tag does not match `v*` and triggers nothing; re-publish
-#     the control plane with workflow_dispatch instead (e.g. re-cutting an image for an already-tagged release
+#     the control plane with workflow_dispatch instead (`publish=false
+#     publish_control_plane=true`) (e.g. re-cutting an image for an already-tagged release
 #     without touching `release.yml`). Deliberately KEPT alongside
 #     `workflow_call` rather than replaced by it, for a reason that is easy to
 #     "fix" into a bug if you don't know it: a tag created by `release.yml`
@@ -44,8 +45,11 @@
 #     never for the auto-tag `release.yml` creates.
 #   - `workflow_dispatch` — manual, on-demand, ad hoc ref. The `publish` input
 #     governs whether the run publishes BOTH lines (default true);
-#     `publish=false` gives a build-only smoke run. Each publish step still
-#     refuses to overwrite a release cut from another commit (see the guards).
+#     `publish=false` gives a build-only smoke run. To re-publish one line only,
+#     pass `publish=false` with `publish_os=true` or `publish_control_plane=true`.
+#     Each publish step refuses to overwrite a release cut from another commit,
+#     and adds only what is missing: it never replaces an asset on a Release or
+#     an image tag on ghcr that is already published (see the guards).
 #   - `pull_request` (path-filtered, #389) — the UPDATER GUARD. A PR that touches
 #     the control-plane updater runs this lane automatically and boots ONLY the
 #     `update` scenario (see the boot-test step). It publishes nothing: no tag
@@ -58,8 +62,8 @@
 #     hand (the same argument that put the `access` boot in the gate).
 #
 # `workflow_dispatch` and `workflow_call` inputs both surface as the same
-# `inputs.*` context. Dispatch has one `publish` switch for both lines; the call
-# has one per line. An input a trigger does not declare reads as null, which is
+# `inputs.*` context. Dispatch has a `publish` switch for both lines plus one per
+# line; the call has one per line. An input a trigger does not declare reads as null, which is
 # falsy, so each SHOULD_PUBLISH_* below simply ORs the inputs that may set it.
 #
 # Either way the full build takes ~10 min and a publish is a deliberate act,
@@ -127,6 +131,16 @@ on:
         description: "Publish both lines: attach the disk image to the v<VERSION> Release and push the control-plane images to ghcr"
         type: boolean
         default: true
+      # One line at a time, for a re-publish of just that line. Use with
+      # publish=false, or `publish` turns both lines on anyway.
+      publish_os:
+        description: "With publish=false: attach the disk image to the v<VERSION> Release only"
+        type: boolean
+        default: false
+      publish_control_plane:
+        description: "With publish=false: push the control-plane images to ghcr only"
+        type: boolean
+        default: false
       # Run only some boots, for a quick proof of one scenario (#531), for
       # example `remap`. Empty runs the full gate list below. The names are the
       # ones dev/cloud/run-cloud-tests.sh knows, and it refuses any other, so a
@@ -179,11 +193,11 @@ jobs:
     # "either line", for the asserts that must hold whatever is published.
     #
     # OS: a real `v*` tag push always publishes the disk image (that's the
-    # point of tagging an OS release); otherwise dispatch's `publish` or the
-    # call's `publish_os`. On a `push` event no input is defined, which is why
+    # point of tagging an OS release); otherwise `publish` (dispatch) or
+    # `publish_os` (dispatch or call). On a `push` event no input is defined, which is why
     # the tag-push half of the OR is needed.
-    # Control plane: only dispatch's `publish` or the call's
-    # `publish_control_plane`. A `v*` tag push is an OS release and never
+    # Control plane: only `publish` (dispatch) or `publish_control_plane`
+    # (dispatch or call). A `v*` tag push is an OS release and never
     # pushes the control-plane images.
     # Each expression ends in `&& 'true' || 'false'` so the env value is always
     # the string true or false, never an empty string from a null input.
@@ -509,11 +523,25 @@ jobs:
             *) echo "::error::release lookup for ${tag} returned HTTP ${status}; aborting rather than treating it as absent"; exit 1 ;;
           esac
 
-          # --clobber: a legitimate re-run against this same commit's tag (e.g.
-          # retrying a failed publish) replaces the asset instead of erroring on
-          # "already exists".
-          gh release upload "$tag" "$asset" "$checksum" --clobber
-          echo "attached $asset + $checksum to release $tag"
+          # Never overwrite a published asset. Each file is uploaded only if the
+          # Release does not have it yet, so a re-run (a resumed release, or a
+          # dispatch that re-publishes the control plane) fills in what is
+          # missing and leaves what is there. An asset that is there was
+          # already downloadable, and a rebuild is not byte-identical, so
+          # replacing it would change a published file under the same name.
+          # To replace one on purpose, delete it first:
+          #   gh release delete-asset <tag> <name>
+          # No --clobber: if the asset appears between the check and the
+          # upload, the upload fails instead of overwriting it.
+          existing="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+          for f in "$asset" "$checksum"; do
+            if grep -qxF "$f" <<<"$existing"; then
+              echo "::notice::release ${tag} already has ${f}; leaving it (delete it first to replace it)"
+            else
+              gh release upload "$tag" "$f"
+              echo "attached ${f} to release ${tag}"
+            fi
+          done
 
       # ---- publish the control-plane images to ghcr (only when requested) ----
 
@@ -586,17 +614,21 @@ jobs:
             exit 0
           fi
 
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+
           # With no git tag at all (a dispatch run ahead of any release), the
           # image tag may still be published already, by a release before the
-          # split or by an earlier dispatch. Refuse rather than overwrite it.
-          # release.yml makes the same check before it tags (dev/release/decide.sh).
+          # split or by an earlier dispatch. Check the brain AND the UI before
+          # pushing either, and refuse if either is there or the registry gives
+          # no clear answer. release.yml makes the same check before it tags
+          # (dev/release/decide.sh).
           if [ -z "$tag_commit" ]; then
             rc=0
-            ./dev/release/ghcr-tag-exists.sh "${GITHUB_REPOSITORY_OWNER,,}/brain" "$tag" || rc=$?
+            ./dev/release/ghcr-tag-exists.sh "${owner}/brain" "${owner}/ui" "$tag" || rc=$?
             case "$rc" in
-              0) echo "::error::no git tag ${git_tag}, but ${registry}/brain:${tag} is already published. Refusing to overwrite it; bump CONTROL_PLANE_VERSION."; exit 1 ;;
+              0) echo "::error::no git tag ${git_tag}, but ${tag} is already published for the brain or the UI. Refusing to overwrite it; bump CONTROL_PLANE_VERSION."; exit 1 ;;
               1) ;;
-              *) echo "::error::could not tell whether ${registry}/brain:${tag} is published (exit ${rc}); refusing to push"; exit 1 ;;
+              *) echo "::error::could not tell whether ${tag} is published for the brain and the UI (exit ${rc}); refusing to push"; exit 1 ;;
             esac
           fi
 
@@ -606,9 +638,26 @@ jobs:
           # by digest, not by either tag; the tags are for humans and for the
           # offline `docker load` path.
           echo "### Control-plane images" >> "$GITHUB_STEP_SUMMARY"
+          # Push only an image whose tag is not published yet. With the git tag
+          # at this commit, an image already there was pushed by an earlier
+          # attempt at this same release (a resume or a retry), and a rebuild
+          # is not byte-identical, so pushing again would change what the tag
+          # names after something may already have resolved it. Its `latest`
+          # is left alone too. To replace one on purpose, delete the tag on
+          # ghcr first. An unclear answer refuses, as everywhere else.
           for spec in "moose-brain:dev=brain" "moose-ui:dev=ui"; do
             local_img="${spec%%=*}"
             remote="${registry}/${spec##*=}"
+
+            rc=0
+            ./dev/release/ghcr-tag-exists.sh "${owner}/${spec##*=}" "$tag" || rc=$?
+            case "$rc" in
+              0) echo "::notice::${remote}:${tag} is already published; leaving it (delete the tag on ghcr first to replace it)"
+                 echo "- \`${remote}:${tag}\`: already published, left as it is" >> "$GITHUB_STEP_SUMMARY"
+                 continue ;;
+              1) ;;
+              *) echo "::error::could not tell whether ${remote}:${tag} is published (exit ${rc}); refusing to push"; exit 1 ;;
+            esac
 
             docker tag "$local_img" "${remote}:${tag}"
             docker tag "$local_img" "${remote}:latest"
