@@ -1,4 +1,4 @@
-# TEMPORARY test of os-lock-bump.yml for #560 (no-token path). Removed before the PR. Run 2.
+# TEMPORARY test of os-lock-bump.yml for #560 (no-token path). Removed before the PR. Run 3 (test commits empty: nothing really moved).
 # Move the OS package lock forward (#560, BUILD.md # 1b # The OS package lock).
 #
 # Every day this takes the newest snapshot.debian.org timestamp and the newest
@@ -188,7 +188,7 @@ jobs:
           git add dev/os-lock/debian-snapshot dev/os-lock/third-party.lock dev/os-lock/cloud-packages.lock
           # The commit message is the PR title and body, so a PR opened by hand
           # from the compare link is filled in by GitHub.
-          git commit -q -F - <<EOF
+          git commit -q --allow-empty -F - <<EOF
           ${title}
 
           $(cat "$RUNNER_TEMP/body.md")
