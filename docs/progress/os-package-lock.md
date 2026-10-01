@@ -29,6 +29,7 @@ All in CI, never locally, with every publish input false.
   - Run 36882113674: the branch did not exist. The `handover` job's API check rejected the fake token and warned "OS_LOCK_BOT_TOKEN is set but rejected; renew it", then pushed a new branch from the base with `GITHUB_TOKEN`. (Its boots were cancelled to make room for run 2.)
   - A person's commit was then pushed to the branch by hand.
   - Run 36883124055: the branch existed. `resolve` and `handover` both merged the base into it, one commit was added on top, and the push was a plain fast-forward: the person's commit is still in the history. The called `ci-cloud-image.yml` booted the branch with the full list and published nothing.
+  - Run 36889384994 (after a later review fix): the copy let a fake token pass the check and pushed with `GITHUB_TOKEN` in its place, so the first PR call failed (HTTP 401). The run warned "OS_LOCK_BOT_TOKEN cannot open or edit PRs; give it Pull requests: read and write", pushed once only, and started the boot-proofs job (then cancelled, since run 36883124055 already proved that job).
   - The test branch and the temporary workflow are removed. The merge-conflict stop and the workflow-file refusal were not triggered in a test.
 - **Final branch:** the PR's own `CI / Cloud image` and `CI / Go` runs on the final head (see the PR).
 - `make check` green locally, with PAM headers; `actionlint` clean on every workflow.
