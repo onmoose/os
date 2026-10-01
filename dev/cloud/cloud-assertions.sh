@@ -243,6 +243,17 @@ for w in rauc.slot=A panic=10 ro psi=1 BOOT_IMAGE=/usr/lib/moose/boot/vmlinuz; d
     grep -qw -- "$w" <<<"$cmdline" || layout_fail "kernel command line lacks '$w': $cmdline"
 done
 echo "cloud-assertions: layout: / is slot A read-only, booted by GRUB from the slot's own kernel ($cmdline)"
+# The slot's initramfs can find a provider's disk. Hetzner Cloud presents the
+# boot disk as virtio-SCSI, which needs virtio_scsi and the SCSI disk driver
+# sd_mod; without sd_mod no /dev/sda appears and the boot hangs in the
+# initramfs (diagnosed once on a live Hetzner box, when mkosi built the
+# initrd). Debian's initramfs-tools (MODULES=most) carries them; this lane
+# boots virtio-blk, so only this check would notice them gone.
+initrd_mods="$(lsinitramfs /usr/lib/moose/boot/initrd.img 2>/dev/null)" || layout_fail "lsinitramfs cannot read /usr/lib/moose/boot/initrd.img"
+for m in sd_mod virtio_scsi virtio_blk squashfs overlay ext4; do
+    grep -qE "/${m}\.ko(\.[a-z]+)?$" <<<"$initrd_mods" || layout_fail "the slot's initramfs has no ${m} module"
+done
+echo "cloud-assertions: layout: the slot's initramfs carries sd_mod, virtio_scsi, virtio_blk, squashfs, overlay and ext4"
 # /etc is an overlay with its upper layer on the state partition.
 etc_opts="$(findmnt -no FSTYPE,OPTIONS /etc)"
 grep -q '^overlay' <<<"$etc_opts" && grep -q 'upperdir=/state/etc/upper' <<<"$etc_opts" \
