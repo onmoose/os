@@ -29,7 +29,9 @@
 #     A PR opened with a person's token starts CI like any human PR, so
 #     `CI / Cloud image` runs the lock check and the full boot list on it (a PR
 #     that touches dev/os-lock/ gets the full list, into dev or hotfix/**).
-#   - It is not set, or it is set but rejected (expired, revoked, no access):
+#   - It is not set, it is set but rejected (expired, revoked, no access), or
+#     it pushed the branch but cannot open or edit PRs (no Pull requests:
+#     write; then the branch is not pushed again):
 #     the org does not let GitHub Actions open PRs (#484), and a push made with
 #     GITHUB_TOKEN starts no other workflow. So the branch is pushed with
 #     GITHUB_TOKEN, this workflow runs the boot proofs itself by calling
@@ -354,6 +356,7 @@ jobs:
               stop "\`${BRANCH}\` moved while this run worked on it. Nothing was overwritten. Re-run this workflow."
             fi
           }
+          pushed_with=OS_LOCK_BOT_TOKEN
           if [ "$mode" = token ] && ! push_with "$BOT_TOKEN"; then
             explain_refusal
             token_note="**OS_LOCK_BOT_TOKEN is set but its push was refused (expired, revoked or without Contents: write). Renew it** (\`docs/dev/contributing.md\` # OS package lock bumps). This run fell back to the no-token path."
@@ -361,33 +364,47 @@ jobs:
             mode=notoken
           fi
           if [ "$mode" = notoken ]; then
+            pushed_with=GITHUB_TOKEN
             push_with "$GH_DEFAULT_TOKEN" || { explain_refusal; stop "The push of \`${BRANCH}\` with GITHUB_TOKEN failed; see the log."; }
           fi
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
-          # 5a. The token path: one PR, opened or updated in place.
-          if [ "$mode" = token ]; then
-            export GH_TOKEN="$BOT_TOKEN"
-            pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')"
+          # 5a. The token path: one PR, opened or updated in place. A token
+          #     that can push but not open or edit PRs (no Pull requests:
+          #     write) gets here too, so a failed PR call falls back to the
+          #     no-token hand-over below. The branch is already pushed, so
+          #     nothing is pushed again; the boot proofs and the tracking
+          #     issue run instead.
+          pr_with_token() {
+            local pr url
+            pr="$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')" || return 1
             if [ -n "$pr" ]; then
-              gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body"
+              GH_TOKEN="$BOT_TOKEN" gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body" || return 1
               echo "Updated PR #${pr}." >> "$GITHUB_STEP_SUMMARY"
             else
-              url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$body")"
+              url="$(GH_TOKEN="$BOT_TOKEN" gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$body")" || return 1
               echo "Opened ${url}." >> "$GITHUB_STEP_SUMMARY"
             fi
-            echo "mode=token" >> "$GITHUB_OUTPUT"
-            exit 0
+          }
+          if [ "$mode" = token ]; then
+            if pr_with_token; then
+              echo "mode=token" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            token_note="**OS_LOCK_BOT_TOKEN pushed the branch but cannot open or edit PRs. Give it Pull requests: read and write** (\`docs/dev/contributing.md\` # OS package lock bumps). This run fell back to the no-token hand-over: the boot proofs run in this workflow, and the PR must be opened by hand."
+            echo "::warning::OS_LOCK_BOT_TOKEN cannot open or edit PRs; give it Pull requests: read and write. Falling back to the no-token hand-over."
+            mode=notoken
           fi
 
-          # 5b. The no-token path: a summary and one tracking issue. A push with
-          #     GITHUB_TOKEN starts no CI, so the next job boots the branch.
+          # 5b. The no-token hand-over: a summary and one tracking issue, and
+          #     the next job boots the branch. Reached with no usable token, or
+          #     after 5a fell back (then the branch went up with the token).
           echo "mode=notoken" >> "$GITHUB_OUTPUT"
           export GH_TOKEN="$GH_DEFAULT_TOKEN"
           pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')"
           compare="https://github.com/${GITHUB_REPOSITORY}/compare/${BASE}...${BRANCH}?expand=1"
           if [ -n "$pr" ]; then
-            where="PR #${pr} is open from \`${BRANCH}\` and now has the new commit. Its own CI does not re-run for a push made with GITHUB_TOKEN, so this workflow boots the branch in its next job."
+            where="PR #${pr} is open from \`${BRANCH}\` and now has the new commit. This workflow boots the branch in its next job, so the boot proofs run even when the PR's own CI does not (a push made with GITHUB_TOKEN starts none)."
           else
             where="No PR is open from \`${BRANCH}\` yet. Open it here: ${compare} (GitHub fills in the title and body from the newest commit)."
           fi
@@ -396,7 +413,7 @@ jobs:
             echo "### Hand-over"
             echo
             [ -z "$token_note" ] || { echo "$token_note"; echo; }
-            echo "Pushed \`${BRANCH}\` with GITHUB_TOKEN. ${where}"
+            echo "Pushed \`${BRANCH}\` with ${pushed_with}. ${where}"
           } >> "$GITHUB_STEP_SUMMARY"
 
           issue_title="OS lock bump ready for ${BASE}"
