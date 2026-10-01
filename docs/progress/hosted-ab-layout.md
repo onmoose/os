@@ -61,9 +61,12 @@ Runs on `feat/561-hosted-ab-layout`, in order:
 | 36930171023 | `unseeded` | red: GRUB booted the squashfs slot and the initramfs hook ran, then `systemd-repart` could not make a temporary file on the read-only slot. The box panicked and rebooted, as designed |
 | 36931341902 | `unseeded` | green under UEFI and legacy BIOS |
 | 36935891502 | `unseeded`, after the initramfs module check | green under UEFI and legacy BIOS |
+| 36937301690 | the full list, the PR's first head (`fab2d8e`) | green, all 14 boots |
+| 36940136412 | the full list, after the two review fixes | red at the first boot: the boot-disk lookup used `lsblk`, which needs the udev database the initramfs chroot does not have |
+| **36941147838** | **the full list, on the final image head (`5e21891`), after the review fixes** | **green, all 14 boots: 7 under UEFI, 7 under legacy BIOS** |
 | **36932849491** | the full list: `unseeded seeded access update ssh remap` (7 boots) | **green, all 14 boots: 7 under UEFI, 7 under legacy BIOS** (boot step 21 min) |
 
-One check was added after run 36932849491 (the initramfs carries `sd_mod` and `virtio_scsi`), and run 36935891502 booted `unseeded` with it under both firmwares: green. The final full-list run, on the PR's head, is the PR's own `CI / Cloud image` run (the PR touches `dev/os-lock/`, so it boots the full list under both firmwares); its ID is in the PR body.
+One check was added after run 36932849491 (the initramfs carries `sd_mod` and `virtio_scsi`), and run 36935891502 booted `unseeded` with it under both firmwares: green. After the review fixes (the GRUB fallback and the boot-disk lookup), **run 36941147838** booted the full list on head `5e21891` under both firmwares: all 14 boots green. Only this docs entry changed after it.
 
 **Measured** (run 36932849491; `BUILD.md` # 1b # Disk budget):
 
