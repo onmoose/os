@@ -173,7 +173,8 @@ So this doc isn't read as a claim about the finished product:
   wherever Docker puts volumes.
 - **Boot, install ISO, updates.** The `mkosi` image build (`BUILD.md` # 2;
   proven in the test lane, not yet the production ISO) and stream A
-  (`unattended-upgrades` + the apt repo) are spec-only. **Stream B — the
+  (an A/B OS image with RAUC and GRUB, `UPDATES.md` # 1 and `BUILD.md`
+  # 1b, #486) is spec-only. A box never updates its OS today. **Stream B — the
   control-plane update — is half built.** A box declares its brain/UI pair in
   two files (`internal/hostagent/controlplane`: the staged compose plus an
   `images.json` ledger), the apply/health-check/revert transaction exists

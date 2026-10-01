@@ -56,7 +56,7 @@ Minimum to be a moose box:
 - `docker-ce` (or `docker.io` from Debian; see below) — runtime for everything.
 - `avahi-daemon` — mDNS publishing for `*.local` app hostnames and SMB service discovery (`_smb._tcp`).
 - `caddy` — only if we ship it on host; if it runs as a container under the brain (per `CONTROL_PLANE.md`), skip on host.
-- `moose-host-agent` — our own `.deb`.
+- `moose-host-agent` — baked into the OS image (# 4).
 - `openssh-server` — SSH daemon, scoped to LAN + mesh via nftables (see "SSH" below).
 - `samba` — SMB file shares for cross-device access (`STORAGE.md` # Cross-device access).
 - `mergerfs` — userspace union for data drives (`STORAGE.md` # Data drives). Activates whenever a data drive is present.
@@ -104,7 +104,7 @@ Both images, hosted and appliance, configure Docker with a **daemon-wide `userns
 
 **With the remap on, Docker turns its containerd image store off** and uses the classic **`overlay2`** store, with its data under `/var/lib/docker/1000000.1000000`. Docker 29 does this by itself (moby#47377). The first-boot `docker load` of the baked control-plane images, the app pulls, and the control-plane update and revert all work on it. No buildkit build ran under the remap; the box builds no images today (admission refuses `build:`).
 
-**The remap is fixed for the life of a box.** Turning it on moves Docker to a new data root, so every image and container made before is out of sight, and it changes who owns every app's data. So it is set when the image is built and never flipped on a running box. An existing box is not migrated. **Nothing replaces `/etc/docker/daemon.json` on a box today**: the image ships it, apt does not own it, and a box never updates its OS, because the image-based OS update is not built. So new boxes are built with the remap on, and boxes built before #530 keep it off. Both are safe, and the brain reads which one it is on (`APP_ISOLATION.md` # User-namespace tiers). The risk starts only with the image-based OS update, so the rule lives on that issue (#486): an OS update must keep each box's remap setting as it is, treating `daemon.json`, `/etc/subuid` and `/etc/subgid` as per-box state, or move a box over on purpose, as its own step that re-owns app data and recreates containers.
+**The remap is fixed for the life of a box.** Turning it on moves Docker to a new data root, so every image and container made before is out of sight, and it changes who owns every app's data. So it is set when the image is built and never flipped on a running box. An existing box is not migrated. **Nothing replaces `/etc/docker/daemon.json` on a box today**: the image ships it, apt does not own it, and a box never updates its OS, because the image-based OS update is not built. So new boxes are built with the remap on, and boxes built before #530 keep it off. Both are safe, and the brain reads which one it is on (`APP_ISOLATION.md` # User-namespace tiers). **The A/B image keeps it that way:** `daemon.json`, `/etc/subuid`, `/etc/subgid` and `/etc/login.defs` are pinned at first boot and never follow a new image (# 1b, #486). Moving a box from off to on stays a separate design, as its own step that re-owns app data and recreates containers.
 
 **Turning it on was the last step of the rollout.** The brain and host-agent changes landed first and are inert on a daemon without the remap (the brain reads the daemon, `APP_ISOLATION.md` # User-namespace tiers; `--userns=host` is a no-op there, `CONTROL_PLANE.md` # Locked: control-plane container hardening). The `daemon.json` change came after them, in both images at once (#530). The hosted image sets it in `dev/cloud/mkosi.extra/etc/docker/daemon.json` and `dev/cloud/mkosi.postinst.chroot`, and the appliance test image in `dev/test-qemu/bootstrap.sh` and `dev/test-qemu/mkosi.postinst.chroot`. Every boot of both QEMU lanes checks it on the booted box: `docker info` lists `name=userns` and the `overlay2` store, and the socket proxy and the brain run in the host user namespace while Caddy and `moose-ui` are remapped.
 
@@ -112,6 +112,73 @@ Both images, hosted and appliance, configure Docker with a **daemon-wide `userns
 
 - Desktop environment, X/Wayland session manager (except as needed for the installer — see #3).
 - Anything from `tasksel`'s "standard" set beyond what we explicitly list.
+
+---
+
+## 1b. The A/B OS image *(stream A)*
+
+The box's OS is one image written into one of two slots (`UPDATES.md` # 1, `DECISIONS.md` 2026-10-01). This section is the image's shape: what is on the disk, how it boots, and where per-box state lives. The spike in #485 proved the shape on both firmwares (`../progress/ab-update-engine-spike.md`).
+
+> **Status: designed, not built (#486).** Both images still build a single root today (`dev/cloud/mkosi.repart/`, `dev/test-qemu/mkosi.repart/`).
+
+### Partition layout
+
+The same on both profiles. The image carries the first three; first boot makes the rest with `systemd-repart`.
+
+| # | Partition | Size | Holds |
+|---|---|---|---|
+| 1 | ESP | 512M | GRUB for UEFI, `grub.cfg` and the `grubenv` that holds the slot order |
+| 2 | BIOS boot | 1M | GRUB's core image for legacy BIOS (#277) |
+| 3 | slot A | 4G | one whole root, kernel and initramfs included |
+| 4 | slot B | 4G | made empty at first boot; the first update fills it |
+| 5 | state | the rest | per-box state (below); made at first boot and grown on every boot when the disk grew |
+
+On hosted, the state partition takes over the job of `moose-grow-root` (`ENVIRONMENT.md` # Storage (hosted)): the root no longer grows, the state partition does. On the appliance this is the **OS drive's** layout. The data drive(s) and their mergerfs pool are unchanged (`STORAGE.md`).
+
+**Slot size: 4 GiB, fixed for the life of the box.** The hosted root uses 1.1 GB today, so 4 GiB is about 3.5 times that. Slot B is made right after slot A at first boot, so a slot can never grow later without moving the state partition. Choose generously.
+
+### Boot: GRUB on both firmwares
+
+GRUB boots the box under UEFI (`x86_64-efi`) and under legacy BIOS (`i386-pc`), from **one** `grub.cfg` and **one** `grubenv` on the ESP. This replaces the hosted image's split of systemd-boot for UEFI and GRUB for BIOS.
+
+- The slot choice is RAUC's GRUB backend: `ORDER`, `<slot>_OK` and `<slot>_TRY` in `grubenv`. GRUB boots the first slot in `ORDER` that is good and not yet tried, and sets its `TRY` before booting it. `rauc status mark-good` clears it. A slot that never gets there is skipped on the next boot. **One attempt per update.**
+- When no slot is left to try, GRUB boots the first good slot rather than stopping at a prompt nobody will see.
+- The kernel and initramfs live **inside** each slot, where GRUB reads them from the slot's ext4. A slot is one self-contained unit: the kernel always matches the root it boots.
+- A slot that hangs instead of rebooting would never revert, so the image reboots on emergency and rescue, sets `panic=`, and runs a watchdog where the machine has one (`UPDATES.md` # 1).
+- **Appliance, Secure Boot:** shim plus Debian's signed GRUB, which limits the modules and files GRUB may load. That this `grub.cfg` works under it is not proved yet (`NEXT.md` # A/B OS image).
+
+### What a slot holds, and what the state partition holds
+
+**A slot holds a whole root and is never written by the box.** It holds only what we publish, so it can be checked but needs no secrecy.
+
+**Everything the box writes that must outlive a slot swap lives on the state partition**, set up early in boot (in the initrd), before systemd reads `/etc`:
+
+- **`/etc` is an overlay.** The slot's `/etc` is the lower layer and `/etc` on the state partition is the upper layer. Users, groups, password hashes, SSH host keys, `machine-id`, the rendered sshd drop-ins and `/etc/moose/secrets/` all land in the upper layer and survive the swap. A file the box never touched still comes from the new slot, so image defaults keep updating.
+- **Bind mounts from the state partition:** `/home`, `/var/lib/docker`, `/var/lib/moose` (brain SQLite, `images.json`, the staged compose, the seed and its materialized state, Caddy's cert store), `/var/log` (so the journal of a slot that failed is still there to read), `/var/lib/systemd` and RAUC's own data directory. The full inventory of what a running box writes is part of the build (#486 step 3); anything it finds goes here or gets a regeneration rule.
+- **Image-owned:** `/usr` and the rest of the root, including `/var/lib/dpkg`, which must describe the slot it is in.
+
+Three rules follow from the overlay, and every image change must respect them:
+
+1. **A file the box changes stops following the image.** That is right for users and host keys, and wrong for a config file a later image wants to change. So the box writes as little as it can into `/etc`. `host-agent`'s own settings live under `/var/lib/moose`.
+2. **A pinned file never updates.** On first boot four files are copied up on purpose and never follow the image again: `/etc/docker/daemon.json`, `/etc/subuid`, `/etc/subgid` and `/etc/login.defs`. This is what keeps a box's userns-remap fixed for life (# User-namespace remap). A later change to one of them needs its own migration step, because Docker has no drop-in directory for `daemon.json`.
+3. **System users come from `sysusers.d`, never from `useradd` at build time.** The box's `/etc/passwd` is already in the upper layer, so a user a new image adds with `useradd` is hidden. The spike proved both halves.
+
+**Appliance encryption.** The slots are not encrypted: they hold no per-box secret. Each slot gets dm-verity, set up in the initrd for the booted slot, so a changed byte fails to read. The state partition is LUKS with TPM unseal against PCR 7, as the OS root is today (`STORAGE.md` # Encryption posture). PCR 7 is the Secure Boot policy, not the kernel, so a slot swap does not break the unseal. Hosted keeps its custodian model (`ENVIRONMENT.md` # Storage (hosted)).
+
+### The bundle: what a box downloads
+
+One **RAUC bundle** per OS release, in the `verity` format: the slot image in a squashfs plus a CMS signature over it. About 350 MB for the spike's image. The box checks the signature against an X.509 CA baked into the image (`/etc/rauc/keyring.pem`), and on top of that checks the bundle's digest against the update target (`UPDATES.md` # 1). The CA's key custody belongs with the rest of release signing (`NEXT.md`).
+
+### The OS package lock
+
+With no `apt` on the box, every package version in the OS is chosen at build time, so the build pins them the way `package-lock.json` pins npm packages.
+
+- **The lock is a Debian snapshot timestamp** in a checked-in file under `dev/os-lock/`. The image installs from `snapshot.debian.org` at that moment, `debian-security` included, so one commit always builds the same OS.
+- **The resolved package list is committed next to it** (mkosi's JSON manifest), so a lock change shows up as a readable diff of package versions.
+- **Docker's own apt repo is not in the Debian snapshot.** `docker-ce` and its plugins come from `download.docker.com` (# Docker package source), so the lock names their exact versions, and the build installs those versions. A bump of either source goes through the same PR.
+- **A scheduled CI job moves the timestamp forward.** When any package changed, it opens a PR that names the changes ("openssl 3.5.1-1 to 3.5.1-1+deb13u1"). CI builds the image and runs the boot proofs on it. Merging it is what makes an OS patch release (# Versioning).
+
+> **Status: designed, not built.** Built as its own slice of #486. `snapshot.debian.org` is read only at build time; a box never talks to it.
 
 ---
 
@@ -165,7 +232,7 @@ Why mkosi-now rather than live-build-then-migrate:
 
 What this decision **does not** settle (kept open — see `NEXT.md`):
 
-- **The OTA update orchestrator.** mkosi's presumptive partner is `systemd-sysupdate`, but that is *not* chosen here. Umbrel uses Mender, Home Assistant OS uses RAUC — both with a deeper production track record than `systemd-sysupdate` for Debian appliances. Naming the orchestrator waits for the A/B work.
+- **The OTA update orchestrator.** Named on 2026-10-01: **RAUC**, with GRUB on both firmwares, not `systemd-sysupdate` (# 1b, `DECISIONS.md` 2026-10-01). mkosi builds the slot image; RAUC writes it and owns the slot switch.
 - **The interactive installer is unchanged.** mkosi vs live-build is only *how the bootable artifact is assembled* — moose still ships the guided first-run installer of # 3 / `FIRST_RUN.md` Phase 1 (disk selection, recovery passphrase, confirm-wipe). The USB stick boots that installer, which writes the OS to the machine's internal disk. We are **not** adopting the competitors' direct-flash-the-image-onto-the-target model.
 
 Knowingly accepted costs:
@@ -222,13 +289,10 @@ Three options:
 - **B — Bake the binary directly into the live filesystem at ISO build time** (no `.deb`, just a file + a systemd unit). Simpler, but no apt-managed update path.
 - **C — Distribute as a container alongside the brain.** Inverts the architecture — host-agent is the *one* thing that should be on the host, not in a container (`CONTROL_PLANE.md`). Reject.
 
-**Recommendation: A.** Ship `moose-host-agent.deb` from our apt repo.
+**Decision (2026-10-01): B, baked into the OS image.** With an A/B OS (# 1b), the image is the update unit, so `host-agent` needs no package of its own. It is a file plus a systemd unit in the slot, and it updates when the slot does (`UPDATES.md` # 2). The apt repo this section used to plan is not built. Option A's main argument was the apt update path, and that path retired with the A/B image (`DECISIONS.md` 2026-10-01).
 
-- Native package, native systemd unit, native logs.
-- apt is how host-agent updates until we move to A/B images. When we do, the `.deb` gets baked into the immutable image and the apt path retires. Cheap migration.
-- Our apt repo (`apt.onmoose.io` or similar) hosts this one package for v1. Adding more later is mechanical.
-
-The repo is signed; the ISO build trusts our key. Key management is a release-infra concern, deferred to the release-infra doc.
+- Native systemd unit, native logs, as before.
+- Its version is the moose (OS) version (# Versioning).
 
 ---
 
@@ -313,11 +377,13 @@ The case that matters is an **upstream Caddy security release**: bump `CADDY_IMA
 
 ### Per-release artifacts
 
-All artifacts of a release share the **one** `vX.Y.Z` from the repo `VERSION` file (# Versioning, above) — there is no independent per-component tag to keep in sync.
+> **Planned (#486, `DECISIONS.md` 2026-10-01): two release lines.** A moose release `vX.Y.Z` will be the **OS release**: the disk images and the RAUC bundle below. The control plane will be released on its own line, `control-plane-vX.Y.Z`: the brain and UI images. Until that slice lands, every artifact below still shares the one `VERSION`, as this list describes.
+
+All artifacts of a release share the **one** `vX.Y.Z` from the repo `VERSION` file (# Versioning, below) — there is no independent per-component tag to keep in sync.
 
 - `moose-vX.Y.Z-amd64.qcow2` — the **cloud VM image** (priority target; the hosted product provisions tenants from it — `ENVIRONMENT.md` # Provisioning). Emitted by mkosi `Format=disk`.
 - `moose-vX.Y.Z-amd64.raw` — the **bare-metal install medium**, `dd`'d / flashed to a USB stick (the "old laptop in the pantry" path). Same mkosi `Format=disk` rootfs; not optical media (no `.iso` — see # 2's 2026-06-17 resolution and `DECISIONS.md`).
-- `moose-host-agent_X.Y.Z_amd64.deb` — published to `apt.onmoose.io`.
+- `moose-vX.Y.Z-amd64.raucb` — the **OS update bundle** (# 1b), signed, what a running box downloads to update its OS. Planned (#486). `host-agent` ships inside it and inside the disk images; there is no `.deb` and no apt repo (# 4).
 - `registry.onmoose.io/moose/brain:vX.Y.Z` — the brain image. `latest` tag advances on stable channel.
 - `registry.onmoose.io/moose/ui:vX.Y.Z` — the dashboard image. Same `vX.Y.Z` as the brain (one repo version); both bundled in the ISO for offline first-boot.
 - **The control-plane images are published publicly**, and `registry.onmoose.io` is a name we can point wherever later (the first realization is `ghcr.io/onmoose/…`, which costs nothing and has no egress bill for public packages). Public rather than private+credential because there is nothing to protect: the brain and UI are built from this public repo, and every secret a box holds is per-box and seeded at provision time (`ENVIRONMENT.md` # Provisioning), never baked into an image. A private registry would buy no confidentiality and would put a pull credential on every box — one more thing to seed, rotate, and fail at 03:00 on a machine nobody can SSH into. Boxes pull **by digest**, not by tag, using the same pinning the app installer already uses (`APP_LIFECYCLE.md`), so a public registry does not mean a mutable one.
@@ -329,16 +395,25 @@ All artifacts of a release share the **one** `vX.Y.Z` from the repo `VERSION` fi
 - **Beta** — opt-in via Settings. Same artifacts, different repo / tag suffix.
 - *(No nightly in v1. Internal CI builds exist but aren't a user-facing channel.)*
 
-A box's channel determines which apt repo it follows for `host-agent` and which brain tag it tracks.
+A box's channel determines which OS release and which control-plane release it is offered.
 
 ### Versioning
 
-**One repo version for the whole monorepo** (`vMAJOR.MINOR.PATCH`), not independent per-component SemVer (DECISIONS.md 2026-07-16, flipping the two bullets this section used to carry). `host-agent`, `moose-brain`, and `moose-ui` all ship from one commit in one repo — an independent counter per component was bookkeeping with no consumer once that was true.
+**Two version lines, one per update stream** (`DECISIONS.md` 2026-10-01, which flips 2026-07-16 in part):
+
+- **moose `vMAJOR.MINOR.PATCH` is the OS release.** It names one A/B image: Debian at the locked snapshot (# 1b # The OS package lock), the kernel, firmware and `host-agent`. It keeps the repo-root **`VERSION`** file and the `vX.Y.Z` tags. A lock bump that changes packages is an OS patch release. `host-agent --version` prints it.
+- **The control plane has its own `vMAJOR.MINOR.PATCH`**, for `moose-brain` and `moose-ui` together, in a repo-root **`CONTROL_PLANE_VERSION`** file, tagged `control-plane-vX.Y.Z`. `moose-brain --version` prints it. A control-plane release needs no OS release.
+- **They meet at one check.** A control-plane build names the oldest moose release it runs on: `minimumAgentVersion` in `cmd/brain/main.go`, and `minimum_host_agent` in the release manifest. Both already compare against `host-agent`'s version, which is the moose version, so nothing on the wire changes.
+- **The disk images bake the control plane current at build time**, for offline first boot only (# 5). After that a box follows the control-plane line, and an OS update never changes which control plane it runs (`UPDATES.md` # 3).
+
+> **Status: designed, not built.** Today one `VERSION` still covers everything, as the rest of this section describes. The split is its own slice of #486: two version files, two tag shapes in `release.yml`, the build stamp of each binary, and the release steps in `docs/dev/contributing.md` # Release model.
+
+**As built today, one repo version** (`vMAJOR.MINOR.PATCH`, DECISIONS.md 2026-07-16). `host-agent`, `moose-brain`, and `moose-ui` all ship from one commit in one repo.
 
 - **`VERSION`** — a plain-text file at the repo root, the single source of truth. It holds the **last released** version and changes only in the dev->main release PR (`docs/dev/contributing.md` # Release model): bump `VERSION` -> merge dev->main -> a push to `main` auto-tags `vX.Y.Z` matching `VERSION` (`.github/workflows/release.yml`, no-op if the tag already exists) -> the tag + GitHub Release are created automatically and the image build+publish is triggered directly (not via the tag-push event — see the workflow's header comment for why). No `-dev` suffix, no "next target" bookkeeping between releases.
-- **Every build stamps two fields, not one:** the repo version (from `VERSION`) and the git commit it was built from (`git rev-parse --short HEAD`), via `-ldflags -X` into `internal/version` — e.g. `moose-brain --version` prints `moose 0.4.0 (g1a2b3c)`. On a tagged release the commit is the tag's commit; on a dev build between releases it isn't, and that's visible without needing a suffix on the version string itself. `VERSION` (not `git describe`) is the source CI asserts a pushed tag against, because the brain's container build and the mkosi cloud-image build both run from contexts without full `.git` history (the Dockerfile's build context excludes `.git` entirely — `.dockerignore`).
-- **The image inherits the repo SemVer, not CalVer.** The ISO/cloud-image build used to be planned as `YYYY.MM` on the reasoning that it's a snapshot of host-agent + brain + Debian + apps, not a single component — that reasoning assumed independent per-component versions needed reconciling into something else for the image. With one repo version, brain/UI/host-agent/image are all just "the same commit," so the image takes the same `vX.Y.Z` the commit already has. One commit, one identity, not two.
-- The image still carries a manifest listing the exact versions of every component it bundles (Debian base version, kernel, etc. — components genuinely external to this repo).
+- **Every build stamps two fields, not one:** the repo version (from `VERSION`) and the git commit it was built from (`git rev-parse --short HEAD`), via `-ldflags -X` into `internal/version` — e.g. `moose-brain --version` prints `moose 0.4.0 (g1a2b3c)`. On a tagged release the commit is the tag's commit; on a dev build between releases it isn't, and that's visible without needing a suffix on the version string itself. `VERSION` (not `git describe`) is the source CI asserts a pushed tag against, because the brain's container build and the mkosi cloud-image build both run from contexts without full `.git` history (the Dockerfile's build context excludes `.git` entirely — `.dockerignore`). The commit stamp stays on both lines after the split.
+- **The image inherits the repo SemVer, not CalVer.** After the split it inherits the moose (OS) version only.
+- The image still carries a manifest listing the exact versions of every component it bundles (Debian base version, kernel, etc. — components genuinely external to this repo). With the OS lock (# 1b) that list is the committed package list.
 
 ---
 
@@ -352,7 +427,7 @@ Not locking specifics, but the rough shape:
             ▼
        CI (build, test)
             │
-            ├──► host-agent .deb ──► apt.onmoose.io
+            ├──► host-agent binary ─► into the OS image (# 4)
             ├──► brain image ─────► registry.onmoose.io
             └──► ui image ────────► registry.onmoose.io  (caddy:alpine + bundle, see WEB_UI.md)
                                      │
@@ -362,6 +437,7 @@ Not locking specifics, but the rough shape:
                                      ▼
                   moose-vX.Y.Z-amd64.qcow2 (cloud VM, priority)
                   moose-vX.Y.Z-amd64.raw   (bare-metal USB)
+                  moose-vX.Y.Z-amd64.raucb (OS update bundle, planned #486)
                                      │
                                      ▼
                               releases.onmoose.io
@@ -383,14 +459,15 @@ GitHub Actions or self-hosted CI — TBD, not architecturally interesting at thi
 - **Installer execution model: kiosk web installer.** Minimal compositor (`cage` / `weston --kiosk`) + Chromium pointed at a local installer service. Closest production reference: Fedora's Anaconda Web UI.
 - **Docker package source: `docker-ce` from Docker's official apt repo.** Revisit if Docker Inc. policy changes; swap to `docker.io` is a one-line apt source change.
 - **Docker runs with a daemon-wide `userns-remap`** on a `moose-remap` range (`1000000:65536`), `SUB_UID_COUNT 0` / `SUB_GID_COUNT 0` in `login.defs`, and the classic `overlay2` store that the remap implies. Both images; fixed for the life of a box (# User-namespace remap, `DECISIONS.md` 2026-09-29).
-- **`host-agent` ships as a Debian package** from our own apt repo, not as a container.
+- **`host-agent` ships inside the OS image**, not as a Debian package and not as a container (# 4, `DECISIONS.md` 2026-10-01).
+- **The OS is an A/B image** (# 1b): two 4 GiB whole-root slots and a state partition, RAUC with GRUB on UEFI and legacy BIOS, an `/etc` overlay with a pinned list, a signed `verity` bundle per release, and a Debian snapshot lock. Designed, not built (#486).
 - **`moose-brain` ships as an OCI image**, `debian:trixie-slim` runtime with the `docker` CLI + Compose plugin bundled (the brain shells out to them; distroless can't host them — `DECISIONS.md` 2026-06-13), from our own registry, also bundled in the ISO for offline first-boot.
 - **`moose-ui` ships as a second OCI image** (`caddy:alpine` + baked UI bundle), from our own registry, also bundled in the ISO. Launched by the brain, not host-agent (`CONTROL_PLANE.md`).
 - **Every third-party build input is pinned in one checked-in file** (`dev/control-plane/images.lock`, #432): upstream images by digest, base images by digest, the hosted Caddy's plugin by module version. Same reasoning as app images: a tag is not a lookup key. See # 5c for how to bump one.
 - **Same root filesystem serves both the live (installer) environment and the installed system.**
 - **SSH daemon installed but not enabled at boot; it follows the per-account opt-in** (# SSH, `AUTH.md` # Device access). Root login disabled. Appliance image only so far — hosted packaging is #467.
 - **Channels: stable only in v1, no beta, no nightly.** Beta is additive when triggered (see `RELEASE_MANIFEST.md`).
-- **Versioning: one repo SemVer for the whole monorepo, the image inherits it.** `VERSION` at the repo root is the source of truth; every build additionally stamps the git commit as a separate field. No independent per-component counters, no CalVer for the image (DECISIONS.md 2026-07-16, flipping both prior positions).
+- **Versioning: two lines, one per stream.** moose `vX.Y.Z` (repo-root `VERSION`) is the OS release, and the image inherits it; the control plane has its own semver (`CONTROL_PLANE_VERSION`, `control-plane-vX.Y.Z`). Every build additionally stamps the git commit. No per-component counters (`DECISIONS.md` 2026-10-01, flipping 2026-07-16 in part). The split is planned; one `VERSION` still covers both today.
 
 ## Open questions
 

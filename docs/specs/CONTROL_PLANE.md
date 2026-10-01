@@ -73,10 +73,10 @@ A small native Go binary running as a systemd service. **Does as little as possi
 
 - Bootstrap the system at boot — unlock and mount the data drive(s), assemble the mergerfs union, check disks, start Docker.
 - Pull and start the `moose-brain`.
-- Apply OS-level updates (today: `apt`; tomorrow: A/B image swaps).
+- Apply OS-level updates: A/B image swaps (`UPDATES.md` # 1, planned #486).
 - Recover the brain if it crashes.
 
-When we eventually move to A/B immutable updates, this is the only piece that's *part of* the immutable OS image. It's small, changes rarely. **This positioning makes the future immutable migration painless.**
+With the A/B OS image (`BUILD.md` # 1b), this is the only moose piece that's *part of* the OS image. It's small, changes rarely. **This positioning makes the future immutable migration painless.**
 
 For v1, host-agent could be a few hundred lines of Go. Deliberately boring.
 

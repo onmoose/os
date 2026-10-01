@@ -155,9 +155,8 @@ Networking concerns beyond the LAN — TLS, the onmoose.io apex, cloud DNS, cert
 
 ## OS update model
 
-- **v1: plain Debian + apt.** Ship fastest, accept that bad updates can brick the box.
-- **Future:** migrate to A/B immutable updates (likely Debian + RAUC/mender, or a switch to an ostree-based base) once the product has traction and the support load justifies the plumbing investment.
-- This is a **conscious tradeoff** — we know the pantry-laptop use case is fragile under apt; we're betting that early users tolerate it and that we can migrate before the audience broadens to fully non-technical users.
+- **An A/B OS image, on both profiles** (`DECISIONS.md` 2026-10-01, #486): Debian, built with mkosi and switched with RAUC and GRUB. The box writes the next image into its other slot, reboots into it at night, and goes back to the old one on its own if the new one is not healthy. Nothing a user installs goes on the host. Mechanics in `UPDATES.md` # 1 and `BUILD.md` # 1b.
+- **Earlier plan, retired:** plain Debian + apt in v1, with A/B images later. It was dropped because the hosted image has no apt at all, so a box could never be patched, and because the pantry-laptop user is exactly who a bad apt update strands.
 
 ## Non-goals (for now)
 

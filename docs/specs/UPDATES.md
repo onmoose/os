@@ -8,14 +8,14 @@ This doc is **draft / option-survey**. Most sections present alternatives with a
 
 A box has **two update streams**. The split is not by component, it is by **what the thing runs on**:
 
-- **Stream A — the box.** Debian base, kernel, firmware, and `host-agent`. This is the machine itself. It is slow, it sometimes needs a reboot, and it is **one atomic unit**: you do not get to have a new kernel with an old `host-agent`. Today that unit is realized by `apt` (# 1, # 2); the end state is an A/B image, deferred to v2 (`SPEC.md`).
+- **Stream A — the box.** Debian base, kernel, firmware, and `host-agent`. This is the machine itself. It is slow, it needs a reboot, and it is **one atomic unit**: you do not get to have a new kernel with an old `host-agent`. That unit is an **A/B OS image** (# 1, # 2; `DECISIONS.md` 2026-10-01), designed and not yet built (#486). Its version is the moose release.
 - **Stream B — the containers.** `moose-brain`, `moose-ui`, apps, and managed services. These are images. They are frequent, they need no reboot, and each one already carries its own rollback story, because "keep the old image" is what a container registry is for.
 
 Within stream B the components still have their own policies — the control plane is admin-triggered or cloud-pushed, apps auto-apply unless permissions expand, managed services are invisible infrastructure. Those policies are in # 3, # 4, and # 5 below and are unchanged by the two-stream framing. What the framing fixes is the **unit of testing and the unit of rollback**: two streams means we ship and verify two combinations, not the cross-product of five.
 
 This doc spells out the policy for each component, plus the cross-cutting concerns: scheduling, rollback, dependency ordering, failure handling. Sections # 1 to # 7 describe the **appliance** profile — a box moose does not operate. The **hosted** profile (`ENVIRONMENT.md`) keeps both streams and all the apply/rollback mechanics, but moves the update *decision* from the box admin to the cloud control plane. That delta is # 8.
 
-It does **not** cover the eventual A/B immutable migration mechanics — that's a v2 design once the product has traction (`SPEC.md`).
+It covers the A/B OS image's update policy (# 1). The image's layout and build are in `BUILD.md` # 1b.
 
 ### Why two and not five
 
@@ -27,55 +27,46 @@ We are not copying their mechanism (they are image-based appliances; our stream 
 
 ---
 
-## 1. Debian base *(stream A — the box)*
+## 1. The OS image *(stream A: the box)*
 
-The OS underneath us — kernel, libc, OpenSSL, firmware, Docker itself.
+The OS underneath us: kernel, libc, OpenSSL, firmware, Docker itself, and `host-agent` (# 2). Since `DECISIONS.md` 2026-10-01 this is **one A/B image**, on both profiles. There is no `apt` on the update path and no `unattended-upgrades`. The image layout, the per-box state rules and the build are in `BUILD.md` # 1b; this section is the update policy.
 
-### Options
+> **Status: designed, not built (#486).** Every box today, appliance or hosted, runs a single root and never updates its OS. The engine was chosen by the spike in #485 (`../progress/ab-update-engine-spike.md`). Existing boxes are not migrated to the A/B layout: they are replaced.
 
-- **A — `unattended-upgrades`, security-only.** Debian's stock auto-update. Pulls patches from `*-security` only. Conservative.
-- **B — `unattended-upgrades`, full stable.** Same mechanism, broader scope (`stable`, `stable-updates`, `stable-security`). More fixes, more change surface.
-- **C — Manual / admin-triggered only.** Settings → System → "Check for OS updates." User decides.
-- **D — No automatic OS updates at all.** Lock to whatever shipped with the ISO; users reinstall to get a newer base.
+### The update transaction
 
-### Recommendation: A — security-only auto-updates
+1. **The box learns the target OS version** through the one update-target seam (# 8.4): the cloud's answer on hosted, the signed release manifest on appliance (`RELEASE_MANIFEST.md`). The target names an OS version and the digest of its bundle. The box never resolves "latest" for the OS, for the same reason it never resolves a tag for the brain.
+2. **Download and install ahead of the window.** host-agent hands the bundle to RAUC, which checks its signature and writes it into the **inactive slot** while the box keeps serving. A failure here changes nothing: the running slot was never touched.
+3. **Switch and reboot inside the window.** The new slot is set to boot next with **one attempt**. Stream A goes last in the window (# 7), after stream B is done.
+4. **Mark good only when the box is healthy.** After the reboot, host-agent marks the slot good once `host-agent` itself and the brain answer their health checks. Until then the slot stays on trial.
+5. **Revert on its own.** A slot that is not marked good is not booted again: the next boot goes back to the previous slot. A failed health check reboots on purpose, so the revert happens with nobody at a console, under UEFI and under legacy BIOS alike.
+6. **Report.** Admins get a notification afterwards (`NOTIFICATIONS.md`, admins only). On hosted the outcome also goes back to the cloud (# 8.4 step 5).
 
-- The "pantry laptop that just works" pitch (`SPEC.md`) requires security updates to apply without intervention. Most non-technical users will never click an update button.
-- Full-stable auto-updates is the territory where `apt` actually breaks things. We deliberately scope to `*-security` to minimize that risk while still keeping the box patched.
-- Larger upgrades (Debian point releases, dist-upgrade) stay manual / admin-triggered until A/B images land.
+**One attempt per target per window**, as stream B does. A failed OS update is tried again the next night, not in a loop.
 
-Pros:
-- Standard Debian mechanism, well-understood, audited.
-- Security floor without admin attention.
+**The revert covers the OS, never the data.** The state partition is shared by both slots, so the previous slot boots against whatever the new one wrote. Two rules follow, and they bind every release: the brain's SQLite and every on-disk format must stay readable by the previous release, and `host-agent` must accept state written by the next one. This is the same discipline the brain's own rollback already needs (`NEXT.md` # Brain state-migration framework).
 
-Cons:
-- A bad security update can still brick boot. SPEC.md already accepts this as a v1 risk we cure with A/B images later.
-- `unattended-upgrades` has corner cases (kernel updates leave old initrd, disk-full mid-upgrade) — Debian-standard problems with Debian-standard mitigations.
+**A slot that hangs must still revert.** Boot counting only helps a slot that reboots. The spike saw a slot stop in the initrd's emergency shell and wait for ever. So the image reboots on emergency and rescue, sets `panic=` on the kernel command line, and runs a watchdog where the machine has one (`NEXT.md` # A/B OS image).
+
+### Policy: automatic on both profiles
+
+**The OS update applies by itself and reboots in the window, on appliance and on hosted** (`DECISIONS.md` 2026-10-01). An A/B update only takes effect after a reboot, so a box that waited for a click would never be patched. The automatic revert is what makes this safe; it is the rollback this doc used to say auto-apply was waiting for.
+
+- Security fixes and every other change to the OS ship the same way: as a new OS release (`BUILD.md` # Versioning). There is no separate "security only" track, because there is no package manager on the box to pick packages with.
+- A Debian major upgrade (13 to 14) is also just a new OS image. Nobody reinstalls (`NEXT.md` # OS major-version upgrade commitment, resolved).
+- What the admin sees about the reboot is a UX question still open (`NEXT.md` # Reboot scheduling UX).
 
 ---
 
-## 2. `host-agent` *(stream A — the box)*
+## 2. `host-agent` *(stream A: the box)*
 
-Tiny native binary, supervises the brain (`CONTROL_PLANE.md`). Updates are rare — anything that changes often lives in the brain instead.
+Tiny native binary, supervises the brain (`CONTROL_PLANE.md`). **It ships inside the OS image** and updates with it (# 1). It has no update path of its own: no `.deb` in an apt repo, no self-update.
 
-### Options
+- It is the one moose component on the host, so it belongs to the host's atomic unit. A new `host-agent` and a new kernel arrive in one image, tested together.
+- Its version is the moose (OS) version (`BUILD.md` # Versioning). The control plane's compatibility floor reads it (# 7 Compatibility matrix).
+- The brain never updates it. Brain orchestrating its own supervisor would be a layering inversion.
 
-- **A — Auto-update via `unattended-upgrades` from our apt repo.** Same mechanism as the Debian base, just one more source list.
-- **B — Brain orchestrates host-agent updates.** Brain detects a new version on `apt.onmoose.io`, downloads, calls a host-agent self-update endpoint.
-- **C — Admin-triggered only.** Settings → "Update moose system."
-
-### Recommendation: A — `unattended-upgrades` from our apt repo
-
-- Boring, native, exactly what the apt machinery is for.
-- host-agent shouldn't be updating itself while running — apt's preinst/postinst handle the systemd-unit restart cleanly.
-- Brain orchestrating its own supervisor is a layering inversion we don't want.
-
-Pros:
-- Same plumbing as #1 — no new mechanism.
-- apt's transactional model means partial-failure states are rare.
-
-Cons:
-- Coupled to apt cron schedule (typically nightly). New host-agent versions take up to 24h to roll out. Acceptable — it changes rarely.
+The apt-based options this section used to weigh (`unattended-upgrades` from our repo, brain-orchestrated, admin-triggered) were retired by `DECISIONS.md` 2026-10-01.
 
 ---
 
@@ -84,6 +75,8 @@ Cons:
 The control plane ships as **two container images** on **one release manifest**: `moose-brain` (the daemon) and `moose-ui` (the dashboard, per `WEB_UI.md`). Most weeks the UI moves and the brain doesn't; occasionally the brain moves and the UI doesn't; occasionally they move together (coordinated change requiring a new brain endpoint that the UI consumes).
 
 This is the most user-visible update stream because the brain + UI together *are* moose from the user's perspective.
+
+**The control plane has its own version line** (`DECISIONS.md` 2026-10-01, `BUILD.md` # Versioning). A control-plane release never needs an OS release, and an OS release never changes which control plane a box runs: the ledger (# 8.3) keeps naming the pair the box was on, so a new slot launches the same brain and UI. The control plane only ever waits for the OS through its compatibility floor (# 7).
 
 **One channel, two artifacts.** The user sees a single "auto-update moose" affordance. The updater pulls and recreates only what changed — UI-only ship recreates only `moose-ui`; brain-only ship recreates only `moose-brain`; coordinated ship recreates both as one transaction (pull both, recreate both, verify both healthy, commit; on failure, revert both).
 
@@ -310,29 +303,27 @@ No other UX-driven manifest fields in v1.
 
 ```
 stream B:  moose-brain + moose-ui  →  apps & managed services
-stream A:  Debian base + host-agent  (last; may reboot)
+stream A:  the OS image, host-agent inside it  (last; reboots)
 ```
 
 Reasoning:
 - Brain must support the manifest_version of any app coming next, so the control plane moves before the apps that depend on it.
-- Stream A goes last because it often wants a reboot, and we'd rather reboot once at the end of the window than mid-flight.
-- Stream A is internally ordered by `apt`, not by us. Debian base and `host-agent` are one transaction (# What this doc covers); asking which of the two goes first is asking about apt's dependency solver, not about moose policy.
+- Stream A goes last because it always needs a reboot, and we'd rather reboot once at the end of the window than mid-flight.
+- Stream A has no internal order. Debian base and `host-agent` are one image, swapped as one slot (# 1).
 
 The one ordering constraint that crosses the streams is the **`host-agent` ↔ brain compat floor**: a brain build declares the oldest `host-agent` it will talk to (`minimumAgentVersion` in `cmd/brain/main.go`, surfaced as a health issue per `HEALTH.md`). If a stream-B update would land a brain that needs a newer `host-agent` than stream A has delivered, the update parks with a clear reason rather than proceeding — see # Compatibility matrix.
 
 ### Reboots
 
-Debian base updates set `/var/run/reboot-required` when applicable. Policy:
+An OS update always reboots, and that reboot is part of the update (# 1): it happens inside the window, with no prompt, on both profiles (`DECISIONS.md` 2026-10-01). Nothing else reboots the box on its own.
 
-- **Reboot opportunistically in the update window** if the marker is set and no app is mid-update.
-- **Otherwise wait.** Don't reboot during the day.
-- After 7 days of a pending reboot, surface "your moose needs to restart" in the dashboard, but never force.
-
-Reboot at v1 means roughly 30–60s of full unavailability. Acceptable nightly, hostile mid-day.
+- **Only in the window**, and only after stream B has finished. An app that is mid-update holds the reboot until it is done or the window closes; a reboot that misses the window waits for the next night.
+- Reboot means roughly 30 to 60 s of full unavailability. Acceptable nightly, hostile mid-day.
+- `/var/run/reboot-required` has no meaning any more: no package manager writes it.
 
 ### Compatibility matrix
 
-The release manifest (#3) carries `minimum_host_agent`. The brain carries `minimum_manifest_version` and `maximum_manifest_version` for apps. host-agent carries `minimum_brain_version`.
+The release manifest (#3) carries `minimum_host_agent`. Since `host-agent` ships inside the OS image and carries the moose (OS) version (# 2), that floor reads as **the oldest moose release this control plane runs on**. The field name and the brain's `minimumAgentVersion` stay as they are. The brain carries `minimum_manifest_version` and `maximum_manifest_version` for apps. host-agent carries `minimum_brain_version`.
 
 If an app update wants a manifest_version newer than the running brain supports, the brain refuses the update and surfaces "moose needs to update first" in the UI. The next brain update should resolve it; if it doesn't, the app stays pinned.
 
@@ -357,14 +348,13 @@ Telemetry is a **signal that accelerates our reaction time**, not a gate. Boxes 
 
 | Stream | Component | Rollback mechanism |
 |---|---|---|
-| A — the box | Debian base | None in v1; A/B images later |
-| A — the box | `host-agent` | apt revert (manual, rare path) |
+| A — the box | The OS image, `host-agent` inside it | The previous slot, automatic when the new slot is not marked good (# 1). Designed, not built (#486) |
 | B — containers | `moose-brain` + `moose-ui` | Previous image pair + SQLite snapshot; revert as a pair, automatic on health-check fail of either |
 | B — containers | App | Previous image + pre-update tar of `data_volumes` (+ `pg_dump` of managed-service DB if any), automatic on health-check fail; keep 7 days |
 | B — containers | Managed service (patch) | Previous image; data is shared so this is a tag-flip |
 | B — containers | Managed service (major migration) | Pre-migration dump, automatic on app-update fail |
 
-The table shows the asymmetry that motivates the two-stream split: **every rollback in stream B is automatic and mechanical, and neither rollback in stream A is.** Containers keep their previous image by construction; a box that has run `apt upgrade` has no previous state to return to. Stream A's "no real rollback" is the v1 hole we accept, and A/B images are how it closes.
+The two streams roll back in different ways, and both do it on their own: stream B keeps the previous image, stream A keeps the previous slot. Until the A/B image is built, stream A has no rollback because it has no update at all (# 1 Status).
 
 ---
 
@@ -441,7 +431,7 @@ The ledger is not bookkeeping. `host-agent` leaves an existing brain container a
 - **An unusable target is refused, not resolved away (#404, #407).** If the seed's `update_target_url` is set but is not an absolute `http` or `https` URL with a host, host-agent logs an error and **does not start the update loop at all**. It does not fall back to the fleet endpoint: a box that was deliberately pinned to a candidate must never quietly join stable because of a typo. The box keeps serving whatever it is already running. **A seed that will not parse is refused the same way**, because the bytes we could not read might have carried a target and we cannot tell; a seed that is simply absent is not an error and falls through, since that is the appliance and the un-steered hosted box. An unusable **window** is not treated like any of this and falls back to 03:00-04:00 with a warning, because a wrong hour can only apply an update at the wrong time, while a wrong target sends the box to the wrong version.
 - **The loop applies whatever the target names, in either direction. A box running something newer than its target rolls back to it.** The compare is "does the running pair differ from the target pair", with no notion of "forward", so setting a box's target to an older release is how a deliberate downgrade is performed, and pointing a box at a stale target is how one happens by accident. This is correct (per-box pinning wants deliberate downgrades) and it is surprising, so it is written here rather than left to be discovered. It nearly bit us the day the loop shipped: a box provisioned from the v0.7.0 image would have rolled itself back to v0.6.0 overnight had `stable` not been promoted the same hour. **Before pointing a box at a target, check which way it moves that box.**
 3. **Stream B:** pull by digest, snapshot the brain's SQLite, write the staged compose, recreate the changed containers, health-check, revert both on failure of either (# 3).
-4. **Stream A:** unchanged from # 1 and # 2 — `unattended-upgrades` security-only plus our apt repo, last in the window, reboot opportunistically. A hosted VM reboot is cheaper than an appliance one: no user is physically waiting, and the window is ours.
+4. **Stream A:** the A/B transaction of # 1, last in the window. The answer gains an OS version and its bundle digest beside the brain and UI references (planned, #486). A hosted VM reboot is cheaper than an appliance one: no user is physically waiting, and the window is ours.
 5. The box reports the outcome back to the cloud: version now running, success or failure, and the failure mode if it rolled back.
 
 Step 5 is what the whole design is for. On appliance our visibility into a bad release is "GitHub issues and the forum, hours to days" (# 3). On hosted it is a fleet view that tells us a version is failing before the second box tries it.
@@ -455,20 +445,21 @@ Step 5 is what the whole design is for. On appliance our visibility into a bad r
 
 ## Locked decisions
 
-- **Two update streams, split by what the thing runs on:** stream A is **the box** (Debian base + kernel + firmware + `host-agent`) — one atomic unit, may reboot, realized by `apt` today and by an A/B image later. Stream B is **the containers** (brain, UI, apps, managed services) — per-image, no reboot, rollback by keeping the previous image. Flipped from the earlier five-stream model in `DECISIONS.md` 2026-08-11.
-- **Two-track posture, modeled after Android:** silent auto-apply for security patches; admin-prompted for anything that changes meaningful surface (brain, app permissions, OS major upgrades).
-- **Debian base: `unattended-upgrades` security-only.** Full upgrades and Debian point-releases stay admin-triggered until A/B images.
-- **`host-agent`: `unattended-upgrades` from our apt repo.**
+- **Two update streams, split by what the thing runs on:** stream A is **the box** (Debian base + kernel + firmware + `host-agent`): one atomic unit, reboots, realized as an A/B OS image (`DECISIONS.md` 2026-10-01). Stream B is **the containers** (brain, UI, apps, managed services) — per-image, no reboot, rollback by keeping the previous image. Flipped from the earlier five-stream model in `DECISIONS.md` 2026-08-11.
+- **Two-track posture, modeled after Android:** silent auto-apply for the OS (every OS release, security or major, with an automatic revert) and for apps whose permissions do not grow; admin-prompted for anything that changes meaningful surface (the brain on appliance, app permissions).
+- **The OS: an A/B image, built with RAUC and GRUB on both firmwares.** No `apt` on the update path. Downloaded ahead of the window, switched and rebooted inside it with no prompt on both profiles, marked good only once `host-agent` and the brain are healthy, reverted to the previous slot on its own otherwise. One attempt per target per window. The revert covers the OS, never the state partition (# 1).
+- **`host-agent` ships inside the OS image** and has no update path of its own (# 2).
+- **Two version lines:** moose `X.Y.Z` is the OS release; the control plane has its own semver. They meet only at the control plane's compatibility floor (`BUILD.md` # Versioning).
 - **Control plane (`moose-brain` + `moose-ui`): release-manifest-driven, admin-prompted.** Manifest carries `brain`, `ui`, `minimum_host_agent`, and `rollback_to` (full schema + signing + publishing pipeline in `RELEASE_MANIFEST.md`). v1 ships a single `stable` channel; phased rollout and beta channel are deferred (additive when triggers fire — see `RELEASE_MANIFEST.md` # Future work). Telemetry is a halt-fast signal, not a rollout gate. Updater recreates only what changed; brain+UI revert as a pair on failure.
 - **Apps: auto-update by default** (per `SPEC.md`); **prompt the instance owner only when the manifest's `permissions:` block expands** (new key or widened value). Permission-neutral updates of any size auto-apply. Different users on the same box may temporarily run different versions of the same app — by design, since instances are already per-user isolated. Tier-2 apps prompt the admin (box-wide).
 - **Pre-update snapshot of `data_volumes` (plus `pg_dump` of any managed-service DB)** is taken before every app update. Restored on health-check failure alongside the image revert. Hooks remain deferred; the snapshot is the v1 safety net for app-driven schema migrations. Kept 7 days.
 - **Permission-expansion prompt surfaces on next login of the instance owner**, modal on first dashboard load, two buttons (Allow & update / Keep current version). Accept applies immediately, not at 03:00. Admin sees per-user pending-update facts in Settings → Users; cannot accept on another user's behalf.
 - **Update surfaces in the dashboard:** per-app tile badge for available/applied/failed; Settings → Updates for the aggregate view and rollback affordance; auto-dismissing toast for overnight batches.
 - **Managed services: brain-owned, no user toggle.** Patches in update window; cross-major migrations triggered transparently by app updates with a pre-migration backup.
-- **Update window: 03:00–04:00 local** for apps, managed services, Debian base, reboots. Configurable, advanced setting. Brain has no fixed window — it's admin-triggered.
-- **Update ordering: stream B before stream A** — brain + UI → apps & managed services → the box (which may reboot). Stream A's internal order is apt's business, not ours.
-- **Reboots: opportunistic in window only.** Surface a dashboard nag after 7 days; never force.
-- **Rollback: previous image + state snapshot kept for 7 days** for brain, apps, and managed-service patches. Debian base has no rollback in v1.
+- **Update window: 03:00–04:00 local** for apps, managed services, the OS image and its reboot. Configurable, advanced setting. Brain has no fixed window — it's admin-triggered.
+- **Update ordering: stream B before stream A:** brain + UI → apps & managed services → the OS image (which reboots).
+- **Reboots: only as part of an OS update, only in the window, with no prompt** (`DECISIONS.md` 2026-10-01).
+- **Rollback: previous image + state snapshot kept for 7 days** for brain, apps, and managed-service patches. The OS rolls back to its previous slot.
 - **All updates require internet; offline boxes stay current at their last-applied versions.**
 - **Hosted: the target version is per-box, held by the cloud control plane** (# 8.1). No `stable.json`, no minisign, no hourly manifest poll — that path is appliance-only (`RELEASE_MANIFEST.md`). The box polls outbound; the cloud never connects in.
 - **Hosted: updates are pushed, not prompted** (# 8.2). They apply in the window and the tenant admin is notified afterwards. **The app permission-expansion prompt is the one carve-out** — it still goes to the instance owner, because widening access to a user's data is their decision even on a box we operate.
