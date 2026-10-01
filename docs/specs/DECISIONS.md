@@ -21,6 +21,51 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-01 — Stream A is an A/B OS image, built with RAUC and GRUB, on both profiles (#486)
+
+**Previously:** stream A (Debian base, kernel, firmware, `host-agent`) was realized by `apt`: `unattended-upgrades` security-only for Debian, our own apt repo for `host-agent`. An A/B image was the end state, deferred to v2 (`UPDATES.md` # 1, # 2; `DECISIONS.md` 2026-08-11). `BUILD.md` # 2 left the update engine open on purpose.
+
+**Now:** stream A is an **A/B OS image** on both profiles, and `apt` is not on the update path at all. The box writes the next image into its inactive slot, reboots into it in the window, and goes back to the previous slot on its own if the new one never reports healthy. The engine is **RAUC**, with **GRUB** as the boot loader under both UEFI and legacy BIOS. A slot holds a whole root. Everything the box writes that must survive a slot swap lives on a **state partition** on the same drive: `/etc` is an overlay with its upper layer there, and a short **pinned** list (`daemon.json`, `subuid`, `subgid`, `login.defs`) is copied up at first boot and never follows the image again. Nothing a user installs goes on the host. Curated Tier-2 packages (`SERVICE_PROVISIONING.md` # Tier 2) are baked into the image, each with its specced run state, and updated with the OS, since nothing can be apt-installed at runtime. A control-plane floor (`minimum_host_agent`) never holds back an OS update, because the OS update is how a box gets above it.
+
+**Why:**
+
+- **The host could never be patched.** The hosted image has no `apt` and `host-agent` is a bare binary, so a box kept the kernel, OpenSSL, Docker and sshd it was built with for life. An apt-based fix would bring back the "no rollback for stream A" hole that `UPDATES.md` # Rollback summary already names.
+- **RAUC is the only candidate with automatic rollback under legacy BIOS.** Hetzner CX boots legacy BIOS (#277). systemd-sysupdate's rollback rests on systemd-boot, which is UEFI-only, and UEFI-only server types cost about 3.5 times as much (CPX22 €19.49 against CX23 €5.49 a month). The spike proved all four proofs for RAUC under both firmwares, from one `grub.cfg` (`../progress/ab-update-engine-spike.md`).
+- **RAUC is a Debian package; sysupdate is not.** Debian builds systemd without sysupdate, so moose would build and patch it itself. The spike also hit a silent failure in the part Debian does ship (`systemd-import` writes a `.zst` through unpacked and reports success).
+- **The pinned list keeps the userns-remap rule from #486.** The spike showed a box keeps its remap setting across the swap even when the new image ships it off.
+
+**The trade-off:** an extra tool beside mkosi, an X.509 CA for bundle signatures, a GRUB script moose owns, and no UKI. The hosted UEFI path moves from systemd-boot to GRUB.
+
+**Affected docs:** `UPDATES.md` # What this doc covers, # 1, # 2, # 7, # 8.4, # Locked decisions; `BUILD.md` # 1b (new), # 2, # 4, # User-namespace remap, # 6, # Locked decisions; `STORAGE.md` # OS drive; `ENVIRONMENT.md` # Storage (hosted), # Boot (hosted), # Updates (hosted); `RELEASE_MANIFEST.md`; `SERVICE_PROVISIONING.md` # Tier 2; `HEALTH.md` (`reboot-required`); `NOTIFICATIONS.md` # Updates; `SPEC.md` # OS update model; `CONTROL_PLANE.md` # host-agent; `docs/architecture.md`; `NEXT.md` (# OS major-version upgrade commitment resolved, # A/B OS image added).
+
+## 2026-10-01 — Appliance OS updates apply automatically and reboot in the window
+
+**Previously:** on the appliance, Debian security patches applied silently through `unattended-upgrades`, but a reboot was **never forced**. A pending reboot only raised a dashboard nag after 7 days (`UPDATES.md` # Reboots).
+
+**Now:** on both profiles, an OS update is downloaded ahead of the window, then the box switches slots and reboots inside the 03:00 to 04:00 window, with no prompt. If the new slot does not come up healthy, the box goes back to the old one on its own. Admins are told afterwards, as hosted already does.
+
+**Why:** an A/B update only takes effect after a reboot, so "never force a reboot" would mean "never apply the patch" on a box whose admin does not click. That is the pantry-laptop failure `SPEC.md` warns about. `UPDATES.md` held auto-apply back because there was no rollback for the OS. The A/B image is that rollback.
+
+**Affected docs:** `UPDATES.md` # 1, # Reboots, # Locked decisions; `NEXT.md` # Reboot scheduling UX.
+
+## 2026-10-01 — A moose release is the OS release; the control plane has its own version
+
+**Previously:** one repo version for everything (`DECISIONS.md` 2026-07-16). `VERSION` at the repo root named one `vX.Y.Z` that `host-agent`, the brain, the UI and the disk image all carried, and every release was one dev->main PR.
+
+**Now:** **two version lines, one per update stream.**
+
+- **moose `X.Y.Z` is the OS release:** Debian, kernel, firmware, `host-agent` and the OS package lock, as one A/B image. It keeps the repo-root `VERSION` file and the `vX.Y.Z` tags. A Debian security fix becomes an OS patch release.
+- **The control plane (`moose-brain` + `moose-ui`) has its own semver**, in a `CONTROL_PLANE_VERSION` file at the repo root, tagged `control-plane-vX.Y.Z`. It can ship as often as needed and never needs a new OS.
+- **The two meet at one check:** a control-plane build declares the oldest moose version it runs on. That is today's `minimumAgentVersion` and `minimum_host_agent`, with no wire change, because `host-agent` now carries the moose version.
+
+**Why:** the two streams have different physics (`DECISIONS.md` 2026-08-11). A brain fix should not wait for an OS release and a reboot, and an OpenSSL fix should not need a brain release that changes nothing. "A box is described by two numbers" becomes literally true. The 2026-07-16 decision was against a counter per *component*; two lines per *stream* keeps its point: there are still no per-component counters.
+
+**What this doesn't change yet:** today's build and release workflows still read one `VERSION`. The split is built as its own slice of #486 (`BUILD.md` # Versioning says what is planned and what is built).
+
+**Affected docs:** `BUILD.md` # 6, # Versioning, # Locked decisions; `UPDATES.md` # 3, # Compatibility matrix; `RELEASE_MANIFEST.md`. Flips both 2026-07-16 versioning entries in part: the image still inherits the moose version, but the control plane no longer does.
+
+---
+
 ## 2026-09-30 — The box hides apps it cannot run, on top of the server-side environment filter (#544)
 
 **Previously:** the environment filter is the catalog service's (`?env=`), and the box "runs no second visibility pass" (`APP_STORE.md`, #434). Every app the box received was shown.

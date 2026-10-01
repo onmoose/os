@@ -131,7 +131,7 @@ Issues that exist to be visible without blocking anything. Same shape; all block
 | `update-available` | info | 2 | A brain/UI, app, or OS update is ready to apply. See `UPDATES.md`. |
 | `backup-overdue` | warning | 2 | No successful backup within the configured window. See `STORAGE.md` (backup architecture, deferred). |
 | `tls-cert-near-expiry` | warning | 1/2 | A `.onmoose.io` certificate is within its renewal-failure window. See `MOOSE_NETWORK.md`. |
-| `reboot-required` | info | 2 | A kernel or security update was applied that needs a reboot to take effect. Tier-2 action: reboot now / schedule. See `UPDATES.md`. |
+| `reboot-required` | info | 2 | A kernel or security update was applied that needs a reboot to take effect. Tier-2 action: reboot now / schedule. See `UPDATES.md`. *Retires with the A/B OS image (#486): an OS update reboots in its window by itself, and no package manager writes the marker file (`UPDATES.md` # Reboots).* |
 | `ram-pressure` | warning | 1 | The box is under sustained memory pressure (swap thrashing). Informational — points the user at the per-container monitor to see what's heavy. See `LOCAL_ANALYTICS.md`. |
 | `journal-disk-pressure` | warning | 2 | The persistent journal is near its size cap and competing for OS-drive space. Tier-2 action: vacuum the journal. See `LOGGING.md`. |
 

@@ -126,6 +126,7 @@ The curated set of events that produce a notification. New entries are added by 
 |---|---|---|
 | OS / host-agent / brain+UI update available | info | **Admin only** |
 | System update applied; reboot pending > 7 days | info | Admin |
+| OS update applied, or reverted to the previous release (planned with the A/B OS image, #486; replaces the row above) | info, or warning when reverted | Admin |
 | App auto-updated overnight | info | **Owner** (Tier-2 → Admin) |
 | App update needs permission approval | warning | **Owner** (mirrors the existing on-login modal) |
 | App update failed / rolled back | error | **Owner** (Tier-2 → Admin) |

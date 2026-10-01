@@ -1,8 +1,8 @@
 # moose Release Manifest
 
-> How moose publishes a new brain + UI version to the fleet. Sibling to `UPDATES.md` (which covers the box-side update model) and `BUILD.md` (which covers ISO and `.deb` artifacts). This doc owns the **control-plane release manifest** — the JSON file that tells every box "the current moose is X.Y.Z."
+> How moose publishes a new brain + UI version to the fleet. Sibling to `UPDATES.md` (which covers the box-side update model) and `BUILD.md` (which covers the disk images and the OS bundle). This doc owns the **control-plane release manifest** — the JSON file that tells every box "the current moose is X.Y.Z." With the planned two version lines (`BUILD.md` # Versioning), it names the current control-plane release, plus the current OS release once the `os` field exists.
 
-The scope here is brain + UI only. Debian base updates flow through `unattended-upgrades`; `host-agent` flows through our apt repo; both are described in `UPDATES.md` and `BUILD.md` and do not use this manifest.
+The scope here is brain + UI only, as built. The OS (Debian base and `host-agent`) is planned to become an A/B image with its own release line (`UPDATES.md` # 1, `BUILD.md` # Versioning, #486). When it is built, this manifest gains the OS too: an optional `os` field listing OS releases with the digests of their RAUC bundles, one per minor (the newest patch of each) from the oldest supported minor up to the current release, so a box that missed a minor can step through it (`UPDATES.md` # 1), additive like the pinned-reference fields in `NEXT.md`. `minimum_host_agent` then reads as the oldest moose release the named control plane runs on, since `host-agent` carries the moose version. **That floor gates only `brain` and `ui`, never `os`.** A box below the floor still reads and applies the `os` field, because the OS release is the only way it gets above the floor. Ignoring the whole manifest would hold such a box on its old OS for good.
 
 > **Appliance only.** Everything in this doc — the static JSON file, the CDN, the minisign signature, the hourly poll, and the `rollback_to` kill switch — applies to boxes moose does **not** operate. A **hosted** box (`ENVIRONMENT.md`) never fetches this manifest. Its target version is held per-box by the cloud control plane and the box asks for it directly, because on hosted we have an authenticated channel to each box and do not need a signed broadcast to reach machines we cannot otherwise address. See `UPDATES.md` # 8.1. The two profiles share the apply-and-rollback transaction; they differ only in what triggers it.
 
@@ -41,7 +41,7 @@ Fields:
 - **`channel`** — the channel this manifest applies to. v1 only ships `"stable"`. Included from day one to make a future `"beta"` channel additive rather than a flag day.
 - **`brain`** — semver of the moose-brain image to run.
 - **`ui`** — semver of the moose-ui image to run. **Note:** `BUILD.md` # Versioning moved to one repo version for the whole monorepo (DECISIONS.md 2026-07-16) — `brain` and `ui` are cut from the same commit and are always the same value in practice. They stay two fields here rather than being collapsed into one, since this schema is unbuilt and collapsing it is out of scope for that change; don't read the two fields as independently-versioned.
-- **`minimum_host_agent`** — semver. If the box's host-agent is older, the manifest is ignored and the prompt does not surface. host-agent updates ride apt and roll out on their own cadence; this field is the safety belt.
+- **`minimum_host_agent`** — semver. If the box's host-agent is older, the brain and UI half of the manifest is ignored and the prompt does not surface. (Once the planned `os` field exists, the box still acts on it: see the scope note at the top.) host-agent updates ride the OS release (planned A/B image, `UPDATES.md` # 2) and roll out on their own cadence; this field is the safety belt.
 - **`released_at`** — RFC 3339 timestamp. Informational; not used for any gating in v1. (Phased rollouts would use it; see "Future work" below.)
 - **`rollback_to`** — the kill switch. `null` in steady state. When set to a prior `{"brain": "...", "ui": "..."}` pair, every box behaves as follows:
   - **Boxes that haven't yet applied the current version:** the prompt is silently retracted. They never saw a known-bad offer.
@@ -75,7 +75,7 @@ Why minisign:
 **Verifier accepts a list of pubkeys, not a single constant.** This is the one design choice that prevents future pain. Key rotation (or migrating to a different signing scheme entirely) then follows the standard pattern:
 
 1. Ship a host-agent release that accepts `{old_pubkey, new_pubkey}`.
-2. Wait for the apt-driven host-agent rollout to reach the fleet.
+2. Wait for the OS release carrying that host-agent to reach the fleet.
 3. Dual-sign manifests for a transition window.
 4. Stop signing with the old key.
 5. In a later host-agent release, drop the old key from the accepted list.
@@ -106,7 +106,7 @@ Promoting a new version is a pull request that updates `stable.json` and `stable
    - JSON parses against the schema (`manifest_version`, required fields, semver shape).
    - Signature verifies against the published pubkey.
    - Both image tags (`brain:vX.Y.Z`, `ui:vY.Y.Z`) exist in the registry and pass a manifest-pull check.
-   - `minimum_host_agent` is satisfied by a host-agent version that already exists in the apt repo.
+   - `minimum_host_agent` is satisfied by a moose (OS) release that already exists.
 4. Maintainer merges. CDN picks up the new file on its next sync (seconds).
 5. Boxes pick up the new manifest on their next hourly poll.
 
@@ -127,7 +127,7 @@ This is the load-bearing protection in v1. It is independent of phased rollout �
 - **Box can't reach `releases.onmoose.io`:** host-agent keeps the last-known manifest in `/var/lib/moose/manifest.json` (with its signature). Updates pause until connectivity returns. Consistent with `UPDATES.md`: an offline box stays current at its last-applied version.
   **As built** (`internal/hostagent/relmanifest`): the manifest and its signature share **one** file at that path, and the reason is a crash. Two files means two renames, and a power cut between them leaves the new manifest beside the old signature — a pair that cannot verify, with the previous good manifest already overwritten. The box would then have no usable cache at all, which is not "the previous valid manifest stays in effect". One file is one rename. The cache is also **re-verified when it is read**, so writing `/var/lib/moose` is not a way around the signature.
 - **Signature verification fails:** host-agent logs and ignores the manifest. The previous valid manifest stays in effect. A persistent signature failure surfaces as a dashboard warning after 24 hours (operator should investigate; could indicate a CDN/storage corruption or, very rarely, a compromised publishing path).
-- **`minimum_host_agent` not satisfied:** the manifest is honored as far as "this is the current release" but the prompt does not surface. The next host-agent update from apt resolves it; the prompt appears on the following poll.
+- **`minimum_host_agent` not satisfied:** the manifest is honored as far as "this is the current release" but the prompt does not surface. The next OS release resolves it; the prompt appears on the following poll.
 - **Image tag missing from registry at update time:** the update fails health-check and rolls back per `UPDATES.md`. The release was malformed (CI should have caught this — the missing-image precondition exists for that reason).
 
 ## Future work — phased rollout / cohorts
