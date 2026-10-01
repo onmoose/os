@@ -29,7 +29,7 @@ These cannot be regular apps because:
 
 **Home: moose Settings UI**, not the App Store. **Curated by us** — no third-party Tier-2 modules in v1.
 
-**Implementation is locked: native Debian packages, managed under systemd, with admin UIs surfaced inside the moose dashboard.** No Tier-2 service runs in a Docker container; no Tier-2 service exposes its upstream admin UI at its own subdomain. The user-facing surface is "Settings → Tailscale" (a moose-built UI on `moose.local/settings/tailscale`), not "Install Tailscale from store" or "open the Tailscale admin UI at tailscale.local." See `DECISIONS.md` 2026-05-14 and `AUTH.md` for the reasoning chain.
+**Implementation is locked: native Debian packages, managed under systemd, with admin UIs surfaced inside the moose dashboard.** With the planned A/B OS image (#486, `BUILD.md` # 1b) the packages are baked into the image, switched off until turned on, and updated with the OS; nothing is apt-installed at runtime. No Tier-2 service runs in a Docker container; no Tier-2 service exposes its upstream admin UI at its own subdomain. The user-facing surface is "Settings → Tailscale" (a moose-built UI on `moose.local/settings/tailscale`), not "Install Tailscale from store" or "open the Tailscale admin UI at tailscale.local." See `DECISIONS.md` 2026-05-14 and `AUTH.md` for the reasoning chain.
 
 ### Tier 3 — Regular apps
 
@@ -383,7 +383,7 @@ Locked now: **the moose mesh is the intended transport for future cross-box serv
 - **Generated secrets (`MOOSE_SECRET_*`):** a manifest `secrets:` declaration makes the brain generate a CSPRNG value once at install, persist it, and re-emit it stably across restarts. The only injected variable moose creates rather than reflects. A secret marked `show: true` is owner-visible at `GET /apps/{id}/secrets` (owner-or-admin, surfaced on the app detail page) so a self-auth app's bootstrap token can be per-instance random instead of a published constant (#152); unmarked secrets stay internal. Security hardening is open (`NEXT.md` # App-secret injection hardening).
 - **Outgoing mail is BYO (`MOOSE_MAIL_*`), not a moose relay.** Each user adds their own external SMTP accounts; the brain injects the bound provider's credentials per instance and the app dials the provider itself. No smarthost, no queue, no inbound mail in v1; unbound apps get nothing injected and must run with email off (`mail: optional: true` is the only admitted shape).
 - **Tier 2 is curated, not open.** No third-party Tier-2 in v1.
-- **Tier 2 runs as native Debian packages under systemd**, not as Docker containers. The admin UI lives in the moose dashboard at `/settings/<service>/*` — no upstream admin UI is exposed at its own subdomain. Tier 2 updates ride apt.
+- **Tier 2 runs as native Debian packages under systemd**, not as Docker containers. The admin UI lives in the moose dashboard at `/settings/<service>/*` — no upstream admin UI is exposed at its own subdomain. Tier 2 updates ride apt. **Planned with the A/B OS image (#486):** every curated Tier-2 package is baked into the OS image and stays switched off until the admin turns it on, and its updates ride the OS release instead of apt (`BUILD.md` # 1b). Nothing is installed on the host at runtime.
 
 ## Open questions
 

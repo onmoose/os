@@ -44,7 +44,9 @@ The OS underneath us: kernel, libc, OpenSSL, firmware, Docker itself, and `host-
 
 **One attempt per target per window**, as stream B does. A failed OS update is tried again the next night, not in a loop.
 
-**The revert covers the OS, never the data.** The state partition is shared by both slots, so the previous slot boots against whatever the new one wrote. Two rules follow, and they bind every release: the brain's SQLite and every on-disk format must stay readable by the previous release, and `host-agent` must accept state written by the next one. This is the same discipline the brain's own rollback already needs (`NEXT.md` # Brain state-migration framework).
+**The revert covers the OS, never the data.** The state partition is shared by both slots, so the previous slot boots against whatever the new one wrote. Two rules follow, and they bind every release: the brain's SQLite and every on-disk format must stay readable by the previous release, and `host-agent` must accept state written by the next one.
+
+**So an OS downgrade may go back one release, no further.** The update loop applies whatever the target names, in either direction (# 8.4). For the OS that is only safe as far as the rule above reaches. The box refuses an OS target older than the release it ran just before its current one. So a box on 1.3 that came from 1.2 may go back to 1.2, but not to 1.1. A refusal is logged and changes nothing, like any other refused target. This is the same discipline the brain's own rollback already needs (`NEXT.md` # Brain state-migration framework).
 
 **A slot that hangs must still revert.** Boot counting only helps a slot that reboots. The spike saw a slot stop in the initrd's emergency shell and wait for ever. So the image reboots on emergency and rescue, sets `panic=` on the kernel command line, and runs a watchdog where the machine has one (`NEXT.md` # A/B OS image).
 
@@ -90,7 +92,7 @@ This is the most user-visible update stream because the brain + UI together *are
 ### Decision: B — release manifest, admin-prompted
 
 - Release manifest (not raw `latest` tag) because we need a kill switch. If we ship a bad version and 5% of boxes start crashlooping, we want to flip the manifest back and stop *availability* of that version *now*, before more boxes prompt their admin to install it.
-- Admin-prompted (not auto-applied) because v1 has no A/B rollback at the OS level. Phone-OS-style auto-apply assumes hardware-backed rollback we don't have until A/B images land. Surfacing "moose X.Y.Z is available" and waiting for the admin is the honest posture.
+- Admin-prompted (not auto-applied) because v1 has no A/B rollback at the OS level. *(That reason no longer holds once the A/B OS image ships (# 1). The control plane stays admin-prompted on appliance for now: it has its own rollback, and the policy was not reopened with `DECISIONS.md` 2026-10-01.)* Phone-OS-style auto-apply assumes hardware-backed rollback we don't have until A/B images land. Surfacing "moose X.Y.Z is available" and waiting for the admin is the honest posture.
 - The manifest names both `brain` and `ui` versions, plus `minimum_host_agent` and `rollback_to`. Full schema, signing (minisign / Ed25519), and publishing pipeline live in `RELEASE_MANIFEST.md`. v1 ships a single `stable` channel with no phased rollout — admin-prompting provides natural pacing at v1 scale.
 
 The updater compares each named version against what's currently installed:
@@ -113,7 +115,7 @@ Both are deferred from v1 with explicit triggers documented in `RELEASE_MANIFEST
 ### Update mechanics
 
 1. host-agent polls the release manifest hourly.
-2. If a newer manifest applies to this box (channel, host-agent compat), host-agent surfaces a "moose update available — vX.Y.Z" notification in the dashboard. Current versions keep running.
+2. If a newer manifest applies to this box (channel, host-agent compat), host-agent surfaces a "moose update available — vX.Y.Z" notification in the dashboard. With the planned two version lines (`BUILD.md` # Versioning), the version shown here is the control-plane release, not the moose (OS) release. Current versions keep running.
 3. When the admin clicks **Update**, host-agent runs the changed-only transaction:
    a. Pull each image whose version moved (`moose-brain`, `moose-ui`, or both).
    b. **If brain moved:** snapshot the brain's SQLite database to `/var/lib/moose/brain-snapshots/<old-version>.db`. Cheap (SQLite is one file, single-digit MB at v1 scale).
