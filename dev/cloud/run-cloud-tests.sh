@@ -13,7 +13,7 @@
 # (SeaBIOS), each firmware on its own overlays (#561; #277 is why BIOS matters).
 # Per firmware: three sequential boots over ONE persisted qcow2 overlay (so the
 # brain's box-id + first admin carry boot→boot), then the boots that each take
-# their own fresh overlay. One virtio NIC with restrict=on (air-gapped — the seed
+# their own fresh overlay. One virtio NIC with restrict=on (air-gapped: the seed
 # arrives over SMBIOS, never the network), serial-log capture per boot. The in-VM
 # self-check (cloud-assertions.sh, run by moose-cloud-assertions.
 # service) reads which scenario to assert from a `moose.assert` SMBIOS credential,
