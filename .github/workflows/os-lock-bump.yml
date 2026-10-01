@@ -7,34 +7,50 @@
 # When one did, it commits the three lock files on one bot branch and names
 # every changed package and version in the commit, the PR title and the PR body.
 #
-# Two ways to get that change reviewed, chosen by one secret:
+# The bot branch keeps human work. A person may push to it (for example the
+# fix to dev/cloud/expected-packages.txt that a new package needs) or open its
+# PR by hand. So the branch is never deleted and never force-pushed:
 #
-#   - OS_LOCK_BOT_TOKEN is set: the branch is pushed with it, and ONE PR into
-#     the base branch is opened, or updated in place when it is already open.
+#   - It does not exist (the first bump, or its PR merged and the branch was
+#     deleted): it is made from the base branch.
+#   - It exists: the base is merged into it, the lock is resolved on the
+#     result, and a new commit is added only when the lock files changed. A
+#     merge conflict stops the run with a summary; nothing is discarded.
+#
+# Two jobs, so the token never meets the build. `resolve` builds the image as
+# root with a lot of third-party code and holds no secret. `handover` builds
+# nothing: it takes only the three lock files and the PR title and body from
+# `resolve` (an artifact), commits them and pushes.
+#
+# How the change gets reviewed is chosen in `handover`, by one secret:
+#
+#   - OS_LOCK_BOT_TOKEN is set and works: the branch is pushed with it, and ONE
+#     PR into the base branch is opened, or updated in place when it is open.
 #     A PR opened with a person's token starts CI like any human PR, so
-#     `CI / Cloud image` runs the full boot list on it (a PR that touches
-#     dev/os-lock/ gets the full list, see that workflow's "Choose the boots").
-#   - It is not set: the org does not let GitHub Actions open PRs
-#     (`can_approve_pull_request_reviews: false`, #484), and a push made with
+#     `CI / Cloud image` runs the lock check and the full boot list on it (a PR
+#     that touches dev/os-lock/ gets the full list, into dev or hotfix/**).
+#   - It is not set, or it is set but rejected (expired, revoked, no access):
+#     the org does not let GitHub Actions open PRs (#484), and a push made with
 #     GITHUB_TOKEN starts no other workflow. So the branch is pushed with
 #     GITHUB_TOKEN, this workflow runs the boot proofs itself by calling
 #     ci-cloud-image.yml on that branch, and it writes the diff and an "open a
-#     PR" link to the job summary and to one tracking issue. A person opens the
-#     PR from the link (GitHub fills the title and body from the one commit),
-#     and CI runs again on it. A missing secret is never a failure.
+#     PR" link to the job summary and to one tracking issue. A rejected token is
+#     said loudly in both places ("renew it"). A missing secret is never a
+#     failure.
 #
 # The token (read in exactly one place: the `BOT_TOKEN` env of the "Push and
-# hand over" step below) is a fine-grained personal access token for
-# onmoose/os only, with Contents: read and write and Pull requests: read and
-# write. It belongs to a person and expires (at most one year), so it must be
-# renewed. A GitHub App token is the cleaner later replacement: mint it in a
-# step before that one (actions/create-github-app-token) and pass it as
+# hand over" step in the `handover` job) is a fine-grained personal access
+# token for onmoose/os only, with Contents: read and write and Pull requests:
+# read and write. It belongs to a person and expires (at most one year), so it
+# must be renewed. A GitHub App token is the cleaner later replacement: mint it
+# in a step before that one (actions/create-github-app-token) and pass it as
 # BOT_TOKEN. Nothing else in this file changes. See docs/dev/contributing.md
-# # Release model # OS package lock bumps.
+# # OS package lock bumps.
 #
 # Hotfix use (an OS patch release cut from main, docs/dev/contributing.md
-# # Release model): dispatch with base=hotfix/X.Y.Z to resolve the lock for
-# that branch's package list. Only `dev` and `hotfix/X.Y.Z` are accepted.
+# # OS patch releases from a lock bump): dispatch with base=hotfix/X.Y.Z to
+# resolve the lock for that branch's package list. Only `dev` and
+# `hotfix/X.Y.Z` are accepted.
 name: OS lock bump
 
 on:
@@ -62,16 +78,16 @@ jobs:
     name: Resolve the newest lock
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # Read only, and no secret anywhere in this job.
     permissions:
-      contents: write # push the bot branch with GITHUB_TOKEN when there is no OS_LOCK_BOT_TOKEN
-      issues: write # the tracking issue on that same path
+      contents: read
     env:
       BASE: ${{ inputs.base || 'dev' }}
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
       branch: ${{ steps.base.outputs.branch }}
-      has_token: ${{ steps.handover.outputs.has_token }}
-      issue: ${{ steps.handover.outputs.issue }}
+      base_sha: ${{ steps.start.outputs.base_sha }}
+      branch_sha: ${{ steps.start.outputs.branch_sha }}
     steps:
       - name: Check the base branch
         id: base
@@ -88,7 +104,52 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.BASE }}
+          fetch-depth: 0
           persist-credentials: false
+
+      # Resolve on what the PR will hold: the bot branch with the base merged
+      # in, so a person's edits on the branch (a package list change, say) are
+      # part of the build. The repo is public, so reading the branch needs no
+      # credential.
+      - name: Start from the bot branch when it exists
+        id: start
+        env:
+          BRANCH: ${{ steps.base.outputs.branch }}
+        run: |
+          set -euo pipefail
+          base_sha="$(git rev-parse HEAD)"
+          branch_sha=""
+          if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null; then
+            git fetch -q origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+            branch_sha="$(git rev-parse "origin/${BRANCH}")"
+            git config user.name "moose os-lock bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -q -B "$BRANCH" "$branch_sha"
+            if ! git merge -q --no-edit "$base_sha"; then
+              git merge --abort || true
+              {
+                echo "### OS lock bump stopped: merge conflict"
+                echo
+                echo "\`${BASE}\` does not merge cleanly into \`${BRANCH}\`. Nothing was changed or discarded."
+                echo "Merge \`${BASE}\` into \`${BRANCH}\` by hand (or delete the branch if it holds no work you need), then re-run this workflow."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::${BASE} does not merge cleanly into ${BRANCH}; merge it by hand, then re-run"
+              exit 1
+            fi
+            echo "bot branch ${BRANCH} exists at ${branch_sha}; merged ${BASE} (${base_sha}) into it"
+          else
+            echo "bot branch ${BRANCH} does not exist; starting from ${BASE} (${base_sha})"
+          fi
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+          echo "branch_sha=${branch_sha}" >> "$GITHUB_OUTPUT"
+
+          # The "did anything change" baseline is what the branch holds now.
+          # The PR text compares with the base, because that is what the PR
+          # changes as a whole.
+          cp dev/os-lock/cloud-packages.lock "$RUNNER_TEMP/branch-packages.lock"
+          git show "${base_sha}:dev/os-lock/cloud-packages.lock" > "$RUNNER_TEMP/old-packages.lock"
+          git show "${base_sha}:dev/os-lock/third-party.lock" > "$RUNNER_TEMP/old-third-party.lock"
+          git show "${base_sha}:dev/os-lock/debian-snapshot" | tr -d '[:space:]' > "$RUNNER_TEMP/old-snapshot"
 
       - uses: ./.github/actions/setup-mkosi
 
@@ -99,7 +160,6 @@ jobs:
         id: move
         run: |
           set -euo pipefail
-          old_ts="$(tr -d '[:space:]' < dev/os-lock/debian-snapshot)"
           new_ts="$(curl -fsSL --retry 5 https://snapshot.debian.org/mr/timestamp/ \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["debian"][-1])')"
           printf '%s\n' "$new_ts" | grep -Eq '^[0-9]{8}T[0-9]{6}Z$' || { echo "::error::snapshot.debian.org gave '$new_ts'"; exit 1; }
@@ -109,14 +169,12 @@ jobs:
           go run ./dev/os-lock/oslock newest-pins dev/os-lock/third-party.lock "$RUNNER_TEMP/docker-Packages" \
             > "$RUNNER_TEMP/third-party.lock"
 
-          cp dev/os-lock/cloud-packages.lock "$RUNNER_TEMP/old-packages.lock"
-          cp dev/os-lock/third-party.lock "$RUNNER_TEMP/old-third-party.lock"
           printf '%s\n' "$new_ts" > dev/os-lock/debian-snapshot
           cp "$RUNNER_TEMP/third-party.lock" dev/os-lock/third-party.lock
 
-          echo "old_ts=${old_ts}" >> "$GITHUB_OUTPUT"
+          echo "old_ts=$(cat "$RUNNER_TEMP/old-snapshot")" >> "$GITHUB_OUTPUT"
           echo "new_ts=${new_ts}" >> "$GITHUB_OUTPUT"
-          echo "snapshot: ${old_ts} -> ${new_ts}"
+          echo "snapshot: $(cat "$RUNNER_TEMP/old-snapshot") -> ${new_ts}"
           diff "$RUNNER_TEMP/old-third-party.lock" dev/os-lock/third-party.lock || true
 
       # Record mode: the build writes its resolved list to
@@ -127,14 +185,14 @@ jobs:
           MOOSE_OS_LOCK_RECORD: "1"
         run: make build-cloud-image
 
-      - name: Compare with the committed lock
+      - name: Compare with the bot branch
         id: compare
         env:
           NEW_TS: ${{ steps.move.outputs.new_ts }}
           OLD_TS: ${{ steps.move.outputs.old_ts }}
         run: |
           set -euo pipefail
-          if diff -q <(grep -v '^#' "$RUNNER_TEMP/old-packages.lock") <(grep -v '^#' dev/os-lock/cloud-packages.lock) >/dev/null; then
+          if diff -q <(grep -v '^#' "$RUNNER_TEMP/branch-packages.lock") <(grep -v '^#' dev/os-lock/cloud-packages.lock) >/dev/null; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No package changed at snapshot ${NEW_TS}; nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -146,11 +204,12 @@ jobs:
           curl -fsSL --retry 5 "https://snapshot.debian.org/archive/debian-security/${NEW_TS}/dists/trixie-security/main/binary-amd64/Packages.xz" \
             | xz -d > "$RUNNER_TEMP/security-Packages"
 
+          mkdir -p "$RUNNER_TEMP/bump"
           oslock() { go run ./dev/os-lock/oslock "$@"; }
           oslock title -security "$RUNNER_TEMP/security-Packages" "$RUNNER_TEMP/old-packages.lock" dev/os-lock/cloud-packages.lock \
-            > "$RUNNER_TEMP/title.txt"
+            > "$RUNNER_TEMP/bump/title.txt"
           {
-            echo "Moves the OS package lock forward (\`BUILD.md\` # 1b # The OS package lock). Opened by \`.github/workflows/os-lock-bump.yml\`."
+            echo "Moves the OS package lock forward (\`BUILD.md\` # 1b # The OS package lock). Made by \`.github/workflows/os-lock-bump.yml\`."
             echo
             echo "- Debian snapshot: \`${OLD_TS}\` to \`${NEW_TS}\`"
             if ! diff -q "$RUNNER_TEMP/old-third-party.lock" dev/os-lock/third-party.lock >/dev/null; then
@@ -160,7 +219,7 @@ jobs:
             oslock diff -security "$RUNNER_TEMP/security-Packages" "$RUNNER_TEMP/old-packages.lock" dev/os-lock/cloud-packages.lock
             if [ -f .dev/cloud/lean-check.txt ] && grep -q "LEAN CHECK FAILED" .dev/cloud/lean-check.txt; then
               echo
-              echo "**The lean check failed for this bump.** Update \`dev/cloud/expected-packages.txt\` on this branch after review:"
+              echo "**The lean check failed for this bump.** Update \`dev/cloud/expected-packages.txt\` on this branch after review; the next bump keeps that commit:"
               echo
               echo '```'
               cat .dev/cloud/lean-check.txt
@@ -168,81 +227,188 @@ jobs:
             fi
             echo
             echo "Merging this puts the change on \`${BASE}\`, not on any box. It ships with the next OS release (\`docs/dev/contributing.md\` # Release model)."
-          } > "$RUNNER_TEMP/body.md"
-          cat "$RUNNER_TEMP/title.txt"
-          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+          } > "$RUNNER_TEMP/bump/body.md"
+          cp dev/os-lock/debian-snapshot dev/os-lock/third-party.lock dev/os-lock/cloud-packages.lock "$RUNNER_TEMP/bump/"
+          cat "$RUNNER_TEMP/bump/title.txt"
+          cat "$RUNNER_TEMP/bump/body.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Only these five files cross into the job that holds the token.
+      - name: Hand the lock files and PR text to the push job
+        if: ${{ steps.compare.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: os-lock-bump
+          path: |
+            ${{ runner.temp }}/bump/debian-snapshot
+            ${{ runner.temp }}/bump/third-party.lock
+            ${{ runner.temp }}/bump/cloud-packages.lock
+            ${{ runner.temp }}/bump/title.txt
+            ${{ runner.temp }}/bump/body.md
+          if-no-files-found: error
+
+  handover:
+    name: Push and open the PR (or the tracking issue)
+    needs: resolve
+    if: ${{ needs.resolve.outputs.changed == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # push the bot branch with GITHUB_TOKEN on the no-token path
+      issues: write # the tracking issue on that same path
+      pull-requests: read # find a PR a person opened by hand
+    env:
+      BASE: ${{ inputs.base || 'dev' }}
+      BRANCH: ${{ needs.resolve.outputs.branch }}
+      BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+      BRANCH_SHA: ${{ needs.resolve.outputs.branch_sha }}
+    outputs:
+      pushed: ${{ steps.handover.outputs.pushed }}
+      mode: ${{ steps.handover.outputs.mode }}
+      issue: ${{ steps.handover.outputs.issue }}
+    steps:
+      # This job builds nothing and runs no code from the repo: it only commits
+      # the five files from `resolve`. persist-credentials stays false, and
+      # each push names its token explicitly.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BASE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: os-lock-bump
+          path: ${{ runner.temp }}/bump
 
       - name: Push and hand over
         id: handover
-        if: ${{ steps.compare.outputs.changed == 'true' }}
         env:
           # The ONLY place the bot token is read. Swap in a GitHub App token
           # here later; nothing else changes.
           BOT_TOKEN: ${{ secrets.OS_LOCK_BOT_TOKEN }}
           GH_DEFAULT_TOKEN: ${{ github.token }}
-          BRANCH: ${{ steps.base.outputs.branch }}
         run: |
           set -euo pipefail
-          title="$(cat "$RUNNER_TEMP/title.txt")"
+          title="$(cat "$RUNNER_TEMP/bump/title.txt")"
+          body="$RUNNER_TEMP/bump/body.md"
+          repo_url="https://github.com/${GITHUB_REPOSITORY}.git"
           git config user.name "moose os-lock bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
+          echo "pushed=false" >> "$GITHUB_OUTPUT"
+
+          stop() {
+            { echo "### OS lock bump stopped"; echo; echo "$1"; } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$1"
+            exit 1
+          }
+
+          # 1. Which token. A set but rejected token falls back, loudly.
+          mode=notoken
+          token_note=""
+          if [ -n "$BOT_TOKEN" ]; then
+            if GH_TOKEN="$BOT_TOKEN" gh api "repos/${GITHUB_REPOSITORY}" --jq .full_name >/dev/null 2>&1; then
+              mode=token
+            else
+              token_note="**OS_LOCK_BOT_TOKEN is set but rejected (expired, revoked or without access to this repo). Renew it** (\`docs/dev/contributing.md\` # OS package lock bumps). This run fell back to the no-token path."
+              echo "::warning::OS_LOCK_BOT_TOKEN is set but rejected; renew it. Falling back to the no-token path."
+            fi
+          fi
+
+          # 2. The branch: keep it and its human commits. Merge the base in,
+          #    exactly as `resolve` did; make it from the base only when absent.
+          if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null; then
+            git fetch -q origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+            git checkout -q -B "$BRANCH" "origin/${BRANCH}"
+            if ! git merge -q --no-edit "$BASE_SHA"; then
+              git merge --abort || true
+              stop "\`${BASE}\` does not merge cleanly into \`${BRANCH}\`. Nothing was changed or discarded. Merge it by hand, then re-run this workflow."
+            fi
+          else
+            [ -z "$BRANCH_SHA" ] || stop "\`${BRANCH}\` existed when the lock was resolved and is gone now. Re-run this workflow."
+            git checkout -q -B "$BRANCH" "$BASE_SHA"
+          fi
+
+          # 3. Apply the lock files; add a commit only if they changed. The
+          #    commit message is the PR title and body, so a PR opened by hand
+          #    from the compare link is filled in by GitHub.
+          cp "$RUNNER_TEMP/bump/debian-snapshot" "$RUNNER_TEMP/bump/third-party.lock" "$RUNNER_TEMP/bump/cloud-packages.lock" dev/os-lock/
           git add dev/os-lock/debian-snapshot dev/os-lock/third-party.lock dev/os-lock/cloud-packages.lock
-          # The commit message is the PR title and body, so a PR opened by hand
-          # from the compare link is filled in by GitHub.
-          git commit -q -F - <<EOF
-          ${title}
+          if git diff --cached --quiet; then
+            echo "The lock files on ${BRANCH} already match; nothing to push." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          { echo "$title"; echo; cat "$body"; } | git commit -q -F -
 
-          $(cat "$RUNNER_TEMP/body.md")
-          EOF
-          repo_url="https://github.com/${GITHUB_REPOSITORY}.git"
+          # 4. Push. Never a force-push, so a person's commits on the branch
+          #    stay. The bump only ever adds commits on top.
+          push_with() {
+            git -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$1" | base64 -w0)" \
+              push "$repo_url" "HEAD:refs/heads/${BRANCH}" 2> "$RUNNER_TEMP/push.err"
+          }
+          explain_refusal() {
+            cat "$RUNNER_TEMP/push.err" >&2
+            if grep -qi "workflow" "$RUNNER_TEMP/push.err"; then
+              stop "GitHub refused the push of \`${BRANCH}\` because it brings in a change to a file under \`.github/workflows/\` from \`${BASE}\`, and the token may not write workflows. Give OS_LOCK_BOT_TOKEN Workflows: read and write, or merge \`${BASE}\` into \`${BRANCH}\` by hand, then re-run."
+            fi
+            if grep -qiE "non-fast-forward|fetch first|rejected" "$RUNNER_TEMP/push.err"; then
+              stop "\`${BRANCH}\` moved while this run worked on it. Nothing was overwritten. Re-run this workflow."
+            fi
+          }
+          if [ "$mode" = token ] && ! push_with "$BOT_TOKEN"; then
+            explain_refusal
+            token_note="**OS_LOCK_BOT_TOKEN is set but its push was refused (expired, revoked or without Contents: write). Renew it** (\`docs/dev/contributing.md\` # OS package lock bumps). This run fell back to the no-token path."
+            echo "::warning::the push with OS_LOCK_BOT_TOKEN was refused; renew it. Falling back to the no-token path."
+            mode=notoken
+          fi
+          if [ "$mode" = notoken ]; then
+            push_with "$GH_DEFAULT_TOKEN" || { explain_refusal; stop "The push of \`${BRANCH}\` with GITHUB_TOKEN failed; see the log."; }
+          fi
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
 
-          if [ -n "${BOT_TOKEN}" ]; then
-            echo "has_token=true" >> "$GITHUB_OUTPUT"
-            # Force-push so the one open PR is updated in place. If the base
-            # changed a workflow file since the last push, GitHub refuses this
-            # push unless the token may also write workflows; the error says so.
-            git -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$BOT_TOKEN" | base64 -w0)" \
-              push --force "$repo_url" "HEAD:refs/heads/${BRANCH}"
+          # 5a. The token path: one PR, opened or updated in place.
+          if [ "$mode" = token ]; then
             export GH_TOKEN="$BOT_TOKEN"
             pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')"
             if [ -n "$pr" ]; then
-              gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+              gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body"
               echo "Updated PR #${pr}." >> "$GITHUB_STEP_SUMMARY"
             else
-              url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md")"
+              url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$body")"
               echo "Opened ${url}." >> "$GITHUB_STEP_SUMMARY"
             fi
+            echo "mode=token" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "has_token=false" >> "$GITHUB_OUTPUT"
-          # No PR is open on this path, so the branch is replaced outright:
-          # delete, then create. A plain force-push with GITHUB_TOKEN is refused
-          # when the base changed a workflow file since the last bump.
-          auth="http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_DEFAULT_TOKEN" | base64 -w0)"
-          git -c "$auth" push "$repo_url" ":refs/heads/${BRANCH}" 2>/dev/null || true
-          git -c "$auth" push "$repo_url" "HEAD:refs/heads/${BRANCH}"
-
+          # 5b. The no-token path: a summary and one tracking issue. A push with
+          #     GITHUB_TOKEN starts no CI, so the next job boots the branch.
+          echo "mode=notoken" >> "$GITHUB_OUTPUT"
+          export GH_TOKEN="$GH_DEFAULT_TOKEN"
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')"
           compare="https://github.com/${GITHUB_REPOSITORY}/compare/${BASE}...${BRANCH}?expand=1"
+          if [ -n "$pr" ]; then
+            where="PR #${pr} is open from \`${BRANCH}\` and now has the new commit. Its own CI does not re-run for a push made with GITHUB_TOKEN, so this workflow boots the branch in its next job."
+          else
+            where="No PR is open from \`${BRANCH}\` yet. Open it here: ${compare} (GitHub fills in the title and body from the newest commit)."
+          fi
           {
             echo
-            echo "### Open the PR"
+            echo "### Hand-over"
             echo
-            echo "\`OS_LOCK_BOT_TOKEN\` is not set, so this workflow cannot open the PR. It pushed \`${BRANCH}\` and runs the boot proofs on it in the next job."
-            echo "Open the PR here: ${compare}"
+            [ -z "$token_note" ] || { echo "$token_note"; echo; }
+            echo "Pushed \`${BRANCH}\` with GITHUB_TOKEN. ${where}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          export GH_TOKEN="$GH_DEFAULT_TOKEN"
           issue_title="OS lock bump ready for ${BASE}"
           {
-            echo "The scheduled OS lock bump found package changes and pushed \`${BRANCH}\`. Nobody can open the PR from inside Actions here, so please open it: ${compare}"
+            [ -z "$token_note" ] || { echo "$token_note"; echo; }
+            echo "The scheduled OS lock bump found package changes and pushed \`${BRANCH}\`. ${where}"
             echo
             echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} (its boot proofs run on the branch too; the result is added below)."
             echo
             echo "## ${title}"
             echo
-            cat "$RUNNER_TEMP/body.md"
+            cat "$body"
           } > "$RUNNER_TEMP/issue.md"
           issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"${issue_title}\"" --json number,title \
             --jq "map(select(.title == \"${issue_title}\")) | .[0].number // empty")"
@@ -256,12 +422,12 @@ jobs:
           echo "Tracking issue: #${issue}" >> "$GITHUB_STEP_SUMMARY"
 
   # Only on the no-token path: nothing else would boot the branch, because a
-  # push made with GITHUB_TOKEN starts no workflow. With the token, the PR's own
-  # `CI / Cloud image` run does this.
+  # push made with GITHUB_TOKEN starts no workflow. On the token path the PR's
+  # own `CI / Cloud image` run does this, into dev and into hotfix/** alike.
   boot-proofs:
     name: Boot proofs on the bump branch
-    needs: resolve
-    if: ${{ needs.resolve.outputs.changed == 'true' && needs.resolve.outputs.has_token == 'false' }}
+    needs: [resolve, handover]
+    if: ${{ needs.handover.outputs.pushed == 'true' && needs.handover.outputs.mode == 'notoken' }}
     # The called workflow asks for these two at its top level, and a called
     # workflow can only narrow what its caller grants. Nothing is published:
     # both publish inputs are false, and a run with `ref` asserts it.
@@ -276,8 +442,8 @@ jobs:
 
   report:
     name: Add the boot result to the tracking issue
-    needs: [resolve, boot-proofs]
-    if: ${{ always() && needs.resolve.outputs.changed == 'true' && needs.resolve.outputs.has_token == 'false' && needs.resolve.outputs.issue != '' }}
+    needs: [handover, boot-proofs]
+    if: ${{ always() && needs.handover.outputs.mode == 'notoken' && needs.handover.outputs.issue != '' }}
     runs-on: ubuntu-24.04
     permissions:
       issues: write
@@ -285,7 +451,7 @@ jobs:
       - name: Comment
         env:
           GH_TOKEN: ${{ github.token }}
-          ISSUE: ${{ needs.resolve.outputs.issue }}
+          ISSUE: ${{ needs.handover.outputs.issue }}
           RESULT: ${{ needs.boot-proofs.result }}
         run: |
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body \
