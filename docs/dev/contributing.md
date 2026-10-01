@@ -214,12 +214,20 @@ This used to be a `sync-dev.yml` workflow that opened the `main` -> `dev` PR by 
 
 ### OS package lock bumps
 
-The OS image installs every package at a locked version (`../specs/BUILD.md` # 1b # The OS package lock): a Debian snapshot timestamp, exact Docker pins and the resolved package list, all in `dev/os-lock/`. `.github/workflows/os-lock-bump.yml` moves them forward **daily**. When no package changed, it does nothing. When one did, it commits the three files on the `bot/os-lock` branch, with a title and body that name every changed package and version and mark the ones from `trixie-security`. What happens next depends on one secret:
+The OS image installs every package at a locked version (`../specs/BUILD.md` # 1b # The OS package lock): a Debian snapshot timestamp, exact Docker pins and the resolved package list, all in `dev/os-lock/`. `.github/workflows/os-lock-bump.yml` moves them forward **daily**. When no package changed, it does nothing. When one did, it commits the three files on the `bot/os-lock` branch, with a title and body that name every changed package and version and mark the ones from `trixie-security`.
 
-- **`OS_LOCK_BOT_TOKEN` is set.** The workflow pushes the branch with it and opens one PR into `dev`, or updates that PR in place when it is open. CI runs on it like on any human PR, and because it touches `dev/os-lock/`, `CI / Cloud image` runs the full boot list.
-- **It is not set.** The org does not let Actions open PRs, and a push made with `GITHUB_TOKEN` starts no workflow. So the workflow pushes the branch with `GITHUB_TOKEN`, runs the boot proofs itself (it calls `ci-cloud-image.yml` on the branch, publishing nothing), and puts the diff and an "open a PR" link in the job summary and in one open issue titled "OS lock bump ready for dev". Open the PR from that link: GitHub fills in the title and body from the one commit. A missing secret is not a failure.
+**The bot branch keeps your work.** The bump never deletes `bot/os-lock` and never force-pushes it. When the branch exists, the bump merges `dev` into it, resolves the lock on the result, and adds a commit only when the lock files changed. So a fix you push to the branch (such as the `expected-packages.txt` change below) stays, and a PR you opened from it stays open. When `dev` does not merge cleanly into the branch, the run stops with a summary and changes nothing: merge `dev` in by hand and re-run. The branch is made fresh from `dev` only when it does not exist, for example after its PR merged and the branch was deleted.
 
-**The token.** A maintainer makes a **fine-grained personal access token** for `onmoose/os` only, with **Contents: read and write** and **Pull requests: read and write**, and stores it as the repo secret `OS_LOCK_BOT_TOKEN`. It is read in one place, the `BOT_TOKEN` env of the "Push and hand over" step in `os-lock-bump.yml`. It belongs to a person and **expires** (at most one year), so put the renewal in a calendar; when it expires the workflow falls back to the no-token path, which still works. If the push is refused with a message about workflow files, `dev` changed a file under `.github/workflows/` since the last bump, and the token also needs **Workflows: read and write**. A GitHub App token is the cleaner later replacement: mint it in a step before that one (`actions/create-github-app-token`) and pass it as `BOT_TOKEN`. Nothing else changes.
+**Two jobs, so the token never meets the build.** `resolve` builds the image (as root, with a lot of third-party code) and holds no secret. `handover` builds nothing: it gets only the three lock files and the PR title and body from `resolve` as an artifact, commits them and pushes.
+
+What `handover` does next depends on one secret:
+
+- **`OS_LOCK_BOT_TOKEN` is set and works.** It pushes the branch with it and opens one PR into `dev`, or updates that PR in place when it is open. CI runs on it like on any human PR, and because it touches `dev/os-lock/`, `CI / Cloud image` runs the lock check and the full boot list.
+- **It is not set, or it is set but rejected.** The org does not let Actions open PRs, and a push made with `GITHUB_TOKEN` starts no workflow. So the workflow pushes the branch with `GITHUB_TOKEN`, runs the boot proofs itself (it calls `ci-cloud-image.yml` on the branch, publishing nothing), and puts the diff and an "open a PR" link in the job summary and in one open issue titled "OS lock bump ready for dev". Open the PR from that link: GitHub fills in the title and body from the newest commit. A missing secret is not a failure.
+
+**The token.** A maintainer makes a **fine-grained personal access token** for `onmoose/os` only, with **Contents: read and write** and **Pull requests: read and write**, and stores it as the repo secret `OS_LOCK_BOT_TOKEN`. It is read in one place, the `BOT_TOKEN` env of the "Push and hand over" step in the `handover` job of `os-lock-bump.yml`. It belongs to a person and **expires** (at most one year), so put the renewal in a calendar. An expired or revoked token is still a set secret, so the workflow checks it with an API call before it pushes, and also falls back if the push with it is refused. Either way it takes the no-token path and says **"OS_LOCK_BOT_TOKEN is set but rejected ... Renew it"** at the top of the job summary and the tracking issue. A GitHub App token is the cleaner later replacement: mint it in a step before that one (`actions/create-github-app-token`) and pass it as `BOT_TOKEN`. Nothing else changes.
+
+**Workflow files.** When `dev` changed a file under `.github/workflows/` since the last bump, merging `dev` into the bot branch brings that change in, and GitHub refuses the push unless the token may write workflows. `GITHUB_TOKEN` never may. The run then stops and says so. Give the token **Workflows: read and write**, or merge `dev` into the branch by hand, and re-run.
 
 **A bump that adds or drops a package** fails the lean check on its PR, on purpose. Review the new set and update `dev/cloud/expected-packages.txt` on the bot branch. To bump by hand (for example to test a change), dispatch the workflow: `gh workflow run "OS lock bump" --ref dev`.
 
@@ -243,7 +251,9 @@ git push -u origin hotfix/X.Y.Z
 # 2. Re-run the bump against it, so the lock is resolved for main's package list
 #    (a cherry-picked lock from dev may name packages main does not install).
 gh workflow run "OS lock bump" --ref dev -f base=hotfix/X.Y.Z
-#    It opens (or links) a PR from bot/os-lock-hotfix-X.Y.Z into hotfix/X.Y.Z. Merge it.
+#    It opens (or links) a PR from bot/os-lock-hotfix-X.Y.Z into hotfix/X.Y.Z.
+#    CI / Go and CI / Cloud image run on PRs into hotfix/** too, so that PR gets
+#    the lock check and the full boot list. Merge it once they are green.
 
 # 3. Bump VERSION on the hotfix branch and open the release PR into main.
 git pull
