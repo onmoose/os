@@ -154,17 +154,27 @@ If the box-side half is not happening now, open an issue here describing it in b
 
 ## Release model
 
-Feature work always branches off `dev` and PRs into `dev` — that's covered above. Releases are a separate, maintainer-only step layered on top, and **the `VERSION` bump is what makes a merge a release** — everything past that point is automatic:
+Feature work always branches off `dev` and PRs into `dev` — that's covered above. Releases are a separate, maintainer-only step layered on top. moose has **two release lines**, one per update stream (`../specs/BUILD.md` # Versioning, `../specs/DECISIONS.md` 2026-10-01), and **a version-file bump is what makes a merge a release** on that line. Everything past that point is automatic:
 
-- The maintainer bumps the repo-root `VERSION` file to the new `X.Y.Z` (BUILD.md # Versioning: one repo version for the whole monorepo, not independent per-component SemVer — DECISIONS.md 2026-07-16) as part of preparing the release, and opens a PR from `dev` into `main`. A dev->main PR **is** a release candidate — but only if it bumps `VERSION`; a dev->main merge that doesn't touch `VERSION` ships nothing (see below).
+| Line | File | Git tag + GitHub Release | What it publishes |
+|---|---|---|---|
+| moose (OS) | `VERSION` | `vX.Y.Z` | the disk image, attached to the Release as `moose-vX.Y.Z-amd64.raw.xz` + `.sha256` |
+| control plane (brain + UI) | `CONTROL_PLANE_VERSION` | `control-plane-vX.Y.Z` | `ghcr.io/onmoose/brain` and `ghcr.io/onmoose/ui`, image tag `vX.Y.Z` + `latest` |
+
+- **To cut an OS release**, bump `VERSION`. **To cut a control-plane release**, bump `CONTROL_PLANE_VERSION`. Bump both to cut both. Each file holds the **last released** version of its line. A dev->main PR **is** a release candidate, but only if it bumps one of them; a dev->main merge that bumps neither ships nothing.
+- The control-plane image tag has **no** `control-plane-` prefix, on purpose: the private control plane resolves digests by the `vX.Y.Z` image tag. Only the git tag and the GitHub Release carry the prefix.
 - Both `ci-go.yml` and `ci-web.yml` gate the dev->main PR the same way they gate every feature PR, so a release can't merge with a broken build or a stale OpenAPI/TS client.
-- Once the dev->main PR merges, `.github/workflows/release.yml` runs on every push to `main`. It reads `VERSION` and checks whether a `vX.Y.Z` tag for it already exists:
-  - **If the tag already exists** (this merge didn't bump `VERSION`), the run is a clean no-op — no tag, no release, no image build. This is the common case for most `main` pushes and is expected to stay green.
-  - **If the tag doesn't exist** (this merge bumped `VERSION`), the workflow tags the merge commit `vX.Y.Z`, creates a GitHub Release for it, and then triggers the hosted cloud-image build+publish (`ci-cloud-image.yml`) for that same commit with publishing enabled. The Release notes are the **release PR's own body**, with the generated commit list appended under it; if that body is missing or too short to be a summary, the notes fall back to the generated list alone. So the summary you write in the release PR is what people read on the Release page — write it for someone deciding whether to upgrade, not for someone reading commits.
-- The cloud-image build is invoked directly as a reusable workflow (`workflow_call`), not via `ci-cloud-image.yml`'s `push: tags` trigger — a tag pushed with the default `GITHUB_TOKEN` (as `release.yml` does) does not fire another workflow's tag-push trigger, so relying on that event would silently tag a release and never build or publish it. `ci-cloud-image.yml`'s `push: tags: v*` trigger still exists as a manual escape hatch for a human pushing a tag by hand; see that workflow's header comment for the full reasoning.
-- A tagged release always ships an image stamped with that same version, runs the full seeded-boot gate, and attaches the image to the GitHub Release as `moose-vX.Y.Z-amd64.raw.xz` + a `.sha256` sidecar. That Release asset is the only published artifact — the provider-snapshot upload was removed in #352, so a release no longer pushes to any hosting provider. `workflow_dispatch` on `ci-cloud-image.yml` remains available for manual build-only or build+publish runs outside the release flow (see the workflow's header comment).
+- Once the dev->main PR merges, `.github/workflows/release.yml` runs on every push to `main` and decides each line on its own (`dev/release/decide.sh`):
+  - **If the tag for the file's version already exists** and this merge did not change the file, that line is a clean no-op. This is the common case and is expected to stay green.
+  - **If the tag doesn't exist**, the workflow tags the merge commit, creates a GitHub Release for it, and then runs the hosted cloud-image build (`ci-cloud-image.yml`) for that same commit with that line's publish switch on. The Release notes are the **release PR's own body**, with the commit list since the previous tag on the same line appended under it; if that body is missing or too short to be a summary, the notes fall back to the generated list alone. So the summary you write in the release PR is what people read on the Release page — write it for someone deciding whether to upgrade, not for someone reading commits. A control-plane Release is created with `--latest=false`, so GitHub's "Latest release" stays on the OS release with the disk image.
+  - **If the tag already points at this merge commit**, an earlier run for this same push got that far and then failed. The run carries on: it does not tag again, creates the Release only if it is missing, and publishes only what is not published yet. **To recover a failed release, re-run `release.yml`.**
+  - **If the file was bumped to a version tagged at another commit**, the run fails and says so. It never skips a real release silently.
+  - **If the control-plane version's image tag is already on ghcr**, for the brain or the UI, with no `control-plane-vX.Y.Z` git tag, the run fails before tagging anything, rather than overwrite released images with new bytes under the same number.
+- **Every release runs the full boot proof.** A control-plane-only release still builds the disk image and boots it, then pushes the images that image baked and skips only the disk-image attach. An OS-only release attaches the disk image and pushes nothing to ghcr. A release that bumps both does both from one run.
+- The cloud-image build is invoked directly as a reusable workflow (`workflow_call`), not via `ci-cloud-image.yml`'s `push: tags` trigger — a tag pushed with the default `GITHUB_TOKEN` (as `release.yml` does) does not fire another workflow's tag-push trigger, so relying on that event would silently tag a release and never build or publish it. `ci-cloud-image.yml`'s `push: tags: v*` trigger still exists as a manual escape hatch for a human pushing an OS tag by hand (it publishes the disk image only); see that workflow's header comment for the full reasoning. `workflow_dispatch` on `ci-cloud-image.yml` remains available for manual build-only runs (`-f publish=false`), build+publish runs of both lines (`publish=true`, the default), or one line (`-f publish=false -f publish_control_plane=true`, or `publish_os=true`). A publish never replaces an asset already on a Release or an image tag already on ghcr; delete it first to replace it on purpose.
+- The disk image bakes the brain and UI built from the same commit. An OS-only release made while `main` holds unreleased control-plane changes therefore bakes those changes under the last control-plane number. If that matters for a release, bump `CONTROL_PLANE_VERSION` in the same PR.
 
-Contributors never push directly to `main`; the tag and the GitHub Release are created automatically by `release.yml`, not by hand.
+Contributors never push directly to `main`; the tags and the GitHub Releases are created automatically by `release.yml`, not by hand. **The one exception is a one-time step** for the control-plane line's first tag. `CONTROL_PLANE_VERSION` starts at `0.15.0`, and the `v0.15.0` images on ghcr were built at the `v0.15.0` commit. So tag that commit `control-plane-v0.15.0` once, before the first dev->main merge after #559 lands: `git tag control-plane-v0.15.0 v0.15.0 && git push origin control-plane-v0.15.0`. Until that tag exists, `release.yml` refuses on every push to `main`, because the `v0.15.0` image tag is already published.
 
 ### Cutting a release, step by step
 
@@ -174,7 +184,8 @@ The mechanics above say what happens automatically. This is the part a person do
 # 1. Land the version bump on dev, like any other change.
 git checkout dev && git pull
 git checkout -b release/X.Y.Z
-echo "X.Y.Z" > VERSION
+echo "X.Y.Z" > VERSION                   # an OS release
+echo "X.Y.Z" > CONTROL_PLANE_VERSION     # a control-plane release (either, or both)
 # commit, PR into dev, merge.
 
 # 2. Cut the release branch and bring main back into it.
@@ -185,17 +196,17 @@ git merge origin/main                    # expect conflicts; see below
 
 # 3. After the release PR merges, carry main back into dev.
 git checkout dev && git pull
-git merge origin/main                    # resolve VERSION to dev's value; see below
+git merge origin/main                    # resolve the version files to dev's values; see below
 git push
 ```
 
-`VERSION` conflicts on every release, because `main` still holds the previous number. **Always resolve it to the new `X.Y.Z`** — that file is the release trigger, so resolving it the other way ships nothing. Other conflicts are ordinary content: keep both sides unless they genuinely contradict.
+A bumped version file conflicts on every release, because `main` still holds the previous number. **Always resolve it to the new `X.Y.Z`**: that file is the release trigger, so resolving it the other way ships nothing. Other conflicts are ordinary content: keep both sides unless they genuinely contradict.
 
 Then open the PR from `release/X.Y.Z` into `main`, let `ci-go.yml` and `ci-web.yml` gate it, and merge. `release.yml` does the rest.
 
 **Why step 3 is needed at all:** anything that landed on `main` without going through `dev` is missing from `dev`, and the next `dev` -> `main` PR then conflicts. The release merge itself is always one such commit, so `dev` falls behind at every release even when nothing else slipped in. Step 3 is what keeps the next release starting from a clean `dev`. Do it right after the release PR merges: the work only grows if left.
 
-`VERSION` conflicts here too, in the other direction. **Resolve it to `dev`'s value**, the version being worked towards, not the one `main` just released. Resolving it the other way walks the version backwards on `dev`.
+The version files conflict here too, in the other direction. **Resolve each to `dev`'s value**, the version being worked towards, not the one `main` just released. Resolving it the other way walks the version backwards on `dev`.
 
 Anything *other* than the release merge showing up in step 3 means a PR was opened against `main` directly. That is the mistake to catch, not to clean up after: **every PR targets `dev`**, including docs-only and gap-ledger changes. If you find one open, retarget it to `dev` rather than merging it.
 

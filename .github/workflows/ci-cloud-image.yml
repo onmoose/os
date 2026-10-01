@@ -5,15 +5,31 @@
 # separate, downstream concern that consumes this asset; this workflow does not
 # do it and holds no provider credentials.
 #
-# Three triggers, three intents:
+# Two release lines publish from here (BUILD.md # Versioning, DECISIONS.md
+# 2026-10-01), each behind its own switch:
+#   - the OS line (`VERSION`, git tag `vX.Y.Z`): the disk image, attached to the
+#     `vX.Y.Z` GitHub Release. Gated on SHOULD_PUBLISH_OS.
+#   - the control-plane line (`CONTROL_PLANE_VERSION`, git tag
+#     `control-plane-vX.Y.Z`): the brain and UI images pushed to ghcr, tagged
+#     `v<CONTROL_PLANE_VERSION>` + `latest`. Gated on SHOULD_PUBLISH_CP.
+# Both lines share the one build and the one boot proof: a control-plane-only
+# release builds the disk image too, boots it, and pushes the images that image
+# baked, so a control plane is only ever published after it was proven to boot.
+#
+# Triggers and their intents:
 #   - `workflow_call` — the AUTOMATED release path. `release.yml` runs on every
-#     push to `main`; when it finds `VERSION` names a version with no matching
-#     tag yet, it creates the tag + GitHub Release itself, THEN calls this
-#     workflow with `publish: true` (`secrets: inherit`) to build and publish
-#     the image for that same commit. This is the path a release actually
-#     takes now — read on for why it isn't the `push: tags` trigger below.
-#   - `push: tags: v*` — the MANUAL escape hatch: a human pushing a `vX.Y.Z`
-#     tag by hand (e.g. re-cutting an image for an already-tagged release
+#     push to `main`; when it finds a version file names a version with no
+#     matching tag yet, it creates the tag + GitHub Release itself, THEN calls
+#     this workflow with `publish_os` and/or `publish_control_plane` set
+#     (`secrets: inherit`) to build and publish for that same commit. This is
+#     the path a release actually takes now — read on for why it isn't the
+#     `push: tags` trigger below.
+#   - `push: tags: v*` — the MANUAL escape hatch for the OS line: a human
+#     pushing a `vX.Y.Z` tag by hand. It publishes the disk image only, never the
+#     control-plane images (a `v*` tag is an OS release now). A
+#     `control-plane-v*` tag does not match `v*` and triggers nothing; re-publish
+#     the control plane with workflow_dispatch instead (`publish=false
+#     publish_control_plane=true`) (e.g. re-cutting an image for an already-tagged release
 #     without touching `release.yml`). Deliberately KEPT alongside
 #     `workflow_call` rather than replaced by it, for a reason that is easy to
 #     "fix" into a bug if you don't know it: a tag created by `release.yml`
@@ -28,8 +44,12 @@
 #     human-originated tag push (a PAT or a person's own `git push --tags`),
 #     never for the auto-tag `release.yml` creates.
 #   - `workflow_dispatch` — manual, on-demand, ad hoc ref. The `publish` input
-#     still governs whether the run publishes (default true); `publish=false`
-#     gives a build-only smoke run. Unchanged from before tags existed.
+#     governs whether the run publishes BOTH lines (default true);
+#     `publish=false` gives a build-only smoke run. To re-publish one line only,
+#     pass `publish=false` with `publish_os=true` or `publish_control_plane=true`.
+#     Each publish step refuses to overwrite a release cut from another commit,
+#     and adds only what is missing: it never replaces an asset on a Release or
+#     an image tag on ghcr that is already published (see the guards).
 #   - `pull_request` (path-filtered, #389) — the UPDATER GUARD. A PR that touches
 #     the control-plane updater runs this lane automatically and boots ONLY the
 #     `update` scenario (see the boot-test step). It publishes nothing: no tag
@@ -41,11 +61,10 @@
 #     updater lands on `dev` and stays green until someone runs this workflow by
 #     hand (the same argument that put the `access` boot in the gate).
 #
-# The three publish-capable triggers share one `publish` input name/shape (`workflow_dispatch` and
-# `workflow_call` inputs both surface as the same `inputs.*` context), which
-# is why `SHOULD_PUBLISH` below needs no per-trigger special-casing for the
-# call path: `inputs.publish` already carries the right value regardless of
-# whether a human or `release.yml` set it.
+# `workflow_dispatch` and `workflow_call` inputs both surface as the same
+# `inputs.*` context. Dispatch has a `publish` switch for both lines plus one per
+# line; the call has one per line. An input a trigger does not declare reads as null, which is
+# falsy, so each SHOULD_PUBLISH_* below simply ORs the inputs that may set it.
 #
 # Either way the full build takes ~10 min and a publish is a deliberate act,
 # not a per-push one.
@@ -109,9 +128,19 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Attach the built image to the tagged GitHub Release as an asset"
+        description: "Publish both lines: attach the disk image to the v<VERSION> Release and push the control-plane images to ghcr"
         type: boolean
         default: true
+      # One line at a time, for a re-publish of just that line. Use with
+      # publish=false, or `publish` turns both lines on anyway.
+      publish_os:
+        description: "With publish=false: attach the disk image to the v<VERSION> Release only"
+        type: boolean
+        default: false
+      publish_control_plane:
+        description: "With publish=false: push the control-plane images to ghcr only"
+        type: boolean
+        default: false
       # Run only some boots, for a quick proof of one scenario (#531), for
       # example `remap`. Empty runs the full gate list below. The names are the
       # ones dev/cloud/run-cloud-tests.sh knows, and it refuses any other, so a
@@ -125,10 +154,14 @@ on:
         default: ""
   workflow_call:
     inputs:
-      publish:
-        description: "Attach the built image to the tagged GitHub Release as an asset"
+      publish_os:
+        description: "OS release: attach the built disk image to the v<VERSION> GitHub Release"
         type: boolean
-        default: true
+        default: false
+      publish_control_plane:
+        description: "Control-plane release: push the brain and UI images to ghcr as v<CONTROL_PLANE_VERSION>"
+        type: boolean
+        default: false
 
 # contents: write is the minimum grant for `gh release upload`/`gh release
 # create` in the release-asset step below. packages: write is what lets the
@@ -155,17 +188,19 @@ jobs:
     # pull_request runs — a tag push, a dispatch or the release call has no draft
     # field and passes the first half of the condition.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    # Single source of truth for "should this run publish", computed once and
-    # read by the release-asset step below.
-    # A real tag push always publishes (that's the point of tagging a release);
-    # a workflow_dispatch OR workflow_call run publishes iff its `publish`
-    # input says so. On a `push` event `inputs.publish` is undefined, which is
-    # why the tag-push half of the OR is needed — `inputs.publish` alone would
-    # evaluate falsy and silently skip publishing on every tagged release.
-    # `workflow_call` and `workflow_dispatch` both populate the SAME `inputs`
-    # context under the same input name (`publish`), so `release.yml` calling
-    # this workflow with `publish: true` flows through the `inputs.publish`
-    # half identically to a human running `workflow_dispatch publish=true`.
+    # Single source of truth for "should this run publish", one per line,
+    # computed once and read by the two publish steps below. SHOULD_PUBLISH is
+    # "either line", for the asserts that must hold whatever is published.
+    #
+    # OS: a real `v*` tag push always publishes the disk image (that's the
+    # point of tagging an OS release); otherwise `publish` (dispatch) or
+    # `publish_os` (dispatch or call). On a `push` event no input is defined, which is why
+    # the tag-push half of the OR is needed.
+    # Control plane: only `publish` (dispatch) or `publish_control_plane`
+    # (dispatch or call). A `v*` tag push is an OS release and never
+    # pushes the control-plane images.
+    # Each expression ends in `&& 'true' || 'false'` so the env value is always
+    # the string true or false, never an empty string from a null input.
     #
     # `startsWith(github.ref, 'refs/tags/')` is LOAD-BEARING, not
     # belt-and-braces. In a reusable workflow the `github` context is the
@@ -177,7 +212,9 @@ jobs:
     # would publish anyway. Keyed on the ref, the only path that publishes
     # without an explicit input is a genuine tag push.
     env:
-      SHOULD_PUBLISH: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish }}
+      SHOULD_PUBLISH_OS: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os) && 'true' || 'false' }}
+      SHOULD_PUBLISH_CP: ${{ (inputs.publish || inputs.publish_control_plane) && 'true' || 'false' }}
+      SHOULD_PUBLISH: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'true' || 'false' }}
     # Pin 24.04 explicitly: this is the exact environment that reproduces the
     # mkosi-sandbox EPERM (#189), so the fix has to be proven here, not on a
     # floating ubuntu-latest.
@@ -235,10 +272,17 @@ jobs:
           fi
           echo "boots='${BOOTS_INPUT}', SHOULD_PUBLISH=${SHOULD_PUBLISH}: nothing will be published"
 
+      # Say what this run will publish, per line, before the build. It costs
+      # nothing and makes a wrong switch visible in the log at once.
+      - name: What this run publishes
+        run: |
+          echo "OS (disk image on the v$(tr -d '[:space:]' < VERSION) Release): ${SHOULD_PUBLISH_OS}"
+          echo "Control plane (ghcr brain + ui as v$(tr -d '[:space:]' < CONTROL_PLANE_VERSION)): ${SHOULD_PUBLISH_CP}"
+
       # Fail FAST on a mistagged release, before the ~10min build below runs.
-      # VERSION (repo root) is the single source of truth for the monorepo's
-      # one version (BUILD.md # Versioning, DECISIONS.md 2026-07-16); a `v*`
-      # tag push is only a real release if it matches. workflow_dispatch has no
+      # VERSION (repo root) is the source of truth for the moose (OS) release
+      # (BUILD.md # Versioning, DECISIONS.md 2026-10-01); a `v*` tag push is
+      # only a real OS release if it matches. workflow_dispatch has no
       # tag (github.ref_name is the branch/ref it ran against), so this only
       # runs — and only can fail — on a genuine `push: tags: v*` trigger.
       #
@@ -412,22 +456,22 @@ jobs:
       # a publish emits: the `.raw` built in step 1 lives under `.dev/cloud/`;
       # we xz it here and attach it plus a checksum to the Release.
       #
-      # Naming follows BUILD.md # 6's existing per-release artifact scheme
-      # (`moose-vX.Y.Z-amd64.<ext>`, one `vX.Y.Z` from the repo `VERSION`
-      # file) — `.raw.xz` names the actual shipped format (raw disk image,
+      # Naming follows BUILD.md # 6's per-release artifact scheme
+      # (`moose-vX.Y.Z-amd64.<ext>`, the OS release `vX.Y.Z` from the repo
+      # `VERSION` file) — `.raw.xz` names the actual shipped format (raw disk image,
       # xz-compressed) rather than the `.qcow2` that section's cloud-image
       # bullet names, since this lane's build produces `.raw` (mkosi
       # `Format=disk`), not a qcow2 conversion.
       #
       # Tag resolution: `v$(cat VERSION)` matches the tag on both paths that
-      # reach here with SHOULD_PUBLISH=true — a human tag push (asserted
+      # reach here with SHOULD_PUBLISH_OS=true — a human tag push (asserted
       # equal to VERSION by the earlier gate step) and the workflow_call from
       # the release automation (which tags from VERSION by construction
       # before calling this workflow). The create-if-missing fallback only
       # matters for a workflow_dispatch publish run against a commit whose
       # VERSION hasn't been tagged yet.
       - name: Attach image + checksum to the GitHub Release
-        if: ${{ env.SHOULD_PUBLISH == 'true' }}
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -479,11 +523,13 @@ jobs:
             *) echo "::error::release lookup for ${tag} returned HTTP ${status}; aborting rather than treating it as absent"; exit 1 ;;
           esac
 
-          # --clobber: a legitimate re-run against this same commit's tag (e.g.
-          # retrying a failed publish) replaces the asset instead of erroring on
-          # "already exists".
-          gh release upload "$tag" "$asset" "$checksum" --clobber
-          echo "attached $asset + $checksum to release $tag"
+          # The image and its checksum are ONE pair, and a published asset is
+          # never overwritten: both present is left, neither is uploaded, and
+          # exactly one (an upload that stopped halfway) refuses with the
+          # `gh release delete-asset` a person runs before re-running. The
+          # rules and why live in the script, which dev/release/decide_test.go
+          # tests with a stub gh.
+          ./dev/release/attach-image.sh "$tag" "$asset" "$checksum"
 
       # ---- publish the control-plane images to ghcr (only when requested) ----
 
@@ -515,6 +561,13 @@ jobs:
       # red and is retried on its own, while the release still carries its
       # image.
       #
+      # VERSIONING (BUILD.md # Versioning, DECISIONS.md 2026-10-01): the images
+      # are the control-plane line. Their number is CONTROL_PLANE_VERSION, and
+      # the image tag is `v<that number>`: the shape every release before the
+      # split used, and the one the private control plane resolves digests by.
+      # The git tag and GitHub Release for the same release are named
+      # `control-plane-v<that number>`, which is what the guard below checks.
+      #
       # Images are PUBLIC by design (BUILD.md # 6): the brain and UI are built
       # from this public repo, and every secret a box holds is per-box and
       # seeded at provision time, never baked into an image. A private registry
@@ -523,27 +576,48 @@ jobs:
       # them to public is a one-time manual change in the package settings and
       # cannot be done from here.
       - name: Publish control-plane images to ghcr
-        if: ${{ env.SHOULD_PUBLISH == 'true' }}
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          moose_version="$(cat VERSION)"
-          tag="v${moose_version}"
+          cp_version="$(tr -d '[:space:]' < CONTROL_PLANE_VERSION)"
+          git_tag="control-plane-v${cp_version}"
+          tag="v${cp_version}"
           registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
 
-          # Same guard as the Release-asset step below, and duplicated rather
-          # than shared on purpose: SHOULD_PUBLISH is also true for a manual
-          # workflow_dispatch, which can run against ANY commit while VERSION
-          # still names an already-shipped release. Pushing then would overwrite
-          # a released version's images with ones built from another source.
+          # Same guard as the Release-asset step above, and duplicated rather
+          # than shared on purpose: SHOULD_PUBLISH_CP is also true for a manual
+          # workflow_dispatch, which can run against ANY commit while
+          # CONTROL_PLANE_VERSION still names an already-shipped release.
+          # Pushing then would overwrite a released version's images with ones
+          # built from another source. The guard reads the control-plane GIT
+          # tag, since the image tag carries no prefix.
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
           tag_commit="$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
-            "${api}/commits/${tag}" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("sha","") if isinstance(d,dict) else "")')"
+            "${api}/commits/${git_tag}" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("sha","") if isinstance(d,dict) else "")')"
           if [ -n "$tag_commit" ] && [ "$tag_commit" != "$GITHUB_SHA" ]; then
-            echo "::notice::tag ${tag} points at ${tag_commit}, not this build (${GITHUB_SHA}); skipping ghcr push to avoid clobbering released images"
+            echo "::notice::tag ${git_tag} points at ${tag_commit}, not this build (${GITHUB_SHA}); skipping ghcr push to avoid clobbering released images"
             exit 0
+          fi
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+
+          # With no git tag at all (a dispatch run ahead of any release), the
+          # image tag may still be published already, by a release before the
+          # split or by an earlier dispatch. Check the brain AND the UI before
+          # pushing either, and refuse if either is there or the registry gives
+          # no clear answer. release.yml makes the same check before it tags
+          # (dev/release/decide.sh).
+          if [ -z "$tag_commit" ]; then
+            rc=0
+            ./dev/release/ghcr-tag-exists.sh "${owner}/brain" "${owner}/ui" "$tag" || rc=$?
+            case "$rc" in
+              0) echo "::error::no git tag ${git_tag}, but ${tag} is already published for the brain or the UI. Refusing to overwrite it; bump CONTROL_PLANE_VERSION."; exit 1 ;;
+              1) ;;
+              *) echo "::error::could not tell whether ${tag} is published for the brain and the UI (exit ${rc}); refusing to push"; exit 1 ;;
+            esac
           fi
 
           echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
@@ -552,19 +626,73 @@ jobs:
           # by digest, not by either tag; the tags are for humans and for the
           # offline `docker load` path.
           echo "### Control-plane images" >> "$GITHUB_STEP_SUMMARY"
+          # Push only an image whose tag is not published yet. With the git tag
+          # at this commit, an image already there was pushed by an earlier
+          # attempt at this same release (a resume or a retry), and a rebuild
+          # is not byte-identical, so pushing again would change what the tag
+          # names after something may already have resolved it. To replace one
+          # on purpose, delete the tag on ghcr first. An unclear answer
+          # refuses, as everywhere else.
+          #
+          # `latest` is REPAIRED for such an image, not left alone: an attempt
+          # that pushed `vX.Y.Z` and died before `latest` would otherwise leave
+          # `latest` behind for good, and the brain and the UI could end with
+          # different `latest`. dev/release/ghcr-retag.sh points `latest` at
+          # the manifest `vX.Y.Z` already names, byte for byte, so nothing is
+          # rebuilt or re-pushed and both tags carry the same digest. Only when
+          # this run publishes this version: the git tag points at this commit
+          # (with no git tag, an existing image tag already refused above),
+          # and only when this version is the newest (move_latest, above).
+          # `latest` only ever moves FORWARD. Re-running an older tagged
+          # control-plane release passes the commit guard above, and a dispatch
+          # can publish any version, so neither may point `latest` back at
+          # older images. `latest` moves (by a push or by the repair below)
+          # only when this version is the newest `control-plane-v*` tag by
+          # semver. A tag list that cannot be read leaves `latest` alone,
+          # with a warning, and still publishes the version tag: a stale
+          # `latest` is a smaller harm than a missing release.
+          move_latest=false
+          rc=0
+          ./dev/release/is-newest.sh control-plane-v "$cp_version" || rc=$?
+          case "$rc" in
+            0) move_latest=true ;;
+            1) echo "::notice::control-plane ${cp_version} is not the newest control-plane release; leaving latest where it is" ;;
+            *) echo "::warning::could not tell whether control-plane ${cp_version} is the newest release (exit ${rc}); leaving latest where it is" ;;
+          esac
+          echo "move latest: ${move_latest}"
+
           for spec in "moose-brain:dev=brain" "moose-ui:dev=ui"; do
             local_img="${spec%%=*}"
             remote="${registry}/${spec##*=}"
 
+            rc=0
+            ./dev/release/ghcr-tag-exists.sh "${owner}/${spec##*=}" "$tag" || rc=$?
+            case "$rc" in
+              0) echo "::notice::${remote}:${tag} is already published; leaving it (delete the tag on ghcr first to replace it)"
+                 if [ "$tag_commit" = "$GITHUB_SHA" ] && [ "$move_latest" = "true" ]; then
+                   digest="$(GHCR_USER="${GITHUB_ACTOR}" GHCR_TOKEN="${GH_TOKEN}" \
+                     ./dev/release/ghcr-retag.sh "${owner}/${spec##*=}" "$tag" latest)"
+                   echo "pointed ${remote}:latest at ${remote}:${tag} (${digest})"
+                   echo "- \`${remote}:${tag}\`: already published, \`latest\` re-pointed to it (\`${digest}\`)" >> "$GITHUB_STEP_SUMMARY"
+                 else
+                   echo "- \`${remote}:${tag}\`: already published, left as it is" >> "$GITHUB_STEP_SUMMARY"
+                 fi
+                 continue ;;
+              1) ;;
+              *) echo "::error::could not tell whether ${remote}:${tag} is published (exit ${rc}); refusing to push"; exit 1 ;;
+            esac
+
             docker tag "$local_img" "${remote}:${tag}"
-            docker tag "$local_img" "${remote}:latest"
 
             # Read the digest out of the push output rather than from
             # `docker inspect .RepoDigests`: after pushing two tags of the same
             # image, RepoDigests holds an entry per tag and index 0 is not
             # guaranteed to be the one we want. The push line is authoritative.
             push_log="$(docker push "${remote}:${tag}" | tee /dev/stderr)"
-            docker push "${remote}:latest"
+            if [ "$move_latest" = "true" ]; then
+              docker tag "$local_img" "${remote}:latest"
+              docker push "${remote}:latest"
+            fi
 
             digest="$(printf '%s\n' "$push_log" | grep -oE 'sha256:[0-9a-f]{64}' | tail -n1)"
             [ -n "$digest" ] || { echo "::error::could not resolve pushed digest for ${remote}:${tag}"; exit 1; }

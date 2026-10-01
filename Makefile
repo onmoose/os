@@ -11,12 +11,15 @@ DEV_DIR := .dev
 STATE_DIR := $(DEV_DIR)/state
 AGENT_SOCK := $(abspath $(DEV_DIR)/agent.sock)
 
-# Build identity (BUILD.md # Versioning): one repo VERSION for the whole
-# monorepo, plus the git commit a build was cut from — two stamped fields, no
-# "-dev" suffix logic (DECISIONS.md 2026-07-16). VERSION is read from the repo
-# root; the commit falls back to "unknown" outside a git checkout (e.g. a
-# container build context with no .git) rather than failing the build.
+# Build identity (BUILD.md # Versioning): two version lines, one per update
+# stream (DECISIONS.md 2026-10-01). VERSION is the moose (OS) release and stamps
+# host-agent; CONTROL_PLANE_VERSION is the control-plane release and stamps the
+# brain (and labels both control-plane images). Every build also stamps the git
+# commit it was cut from, with no "-dev" suffix logic. The commit falls back to
+# "unknown" outside a git checkout (e.g. a container build context with no .git)
+# rather than failing the build.
 MOOSE_VERSION := $(shell cat $(CURDIR)/VERSION)
+CONTROL_PLANE_VERSION := $(shell cat $(CURDIR)/CONTROL_PLANE_VERSION)
 MOOSE_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 # The minisign public keys a host-agent build accepts for the appliance release
 # manifest (RELEASE_MANIFEST.md # Signing). Comma-separated base64 key lines.
@@ -28,6 +31,10 @@ MOOSE_RELEASE_KEYS ?=
 LDFLAGS := -X github.com/onmoose/os/internal/version.Version=$(MOOSE_VERSION) \
            -X github.com/onmoose/os/internal/version.Commit=$(MOOSE_COMMIT) \
            -X github.com/onmoose/os/internal/hostagent/relmanifest.BakedKeys=$(MOOSE_RELEASE_KEYS)
+# The brain is on the control-plane line, so it gets its own version stamp. It
+# takes no release keys: those are host-agent's.
+BRAIN_LDFLAGS := -X github.com/onmoose/os/internal/version.Version=$(CONTROL_PLANE_VERSION) \
+           -X github.com/onmoose/os/internal/version.Commit=$(MOOSE_COMMIT)
 
 export MOOSE_AGENT_SOCK := $(AGENT_SOCK)
 export MOOSE_STATE_DIR := $(STATE_DIR)
@@ -182,7 +189,7 @@ host-agent-real-hosted:
 	$(GO) build -tags hosted -ldflags "$(LDFLAGS)" -o $(DEV_DIR)/host-agent-real-hosted ./cmd/host-agent-real
 
 brain:
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(DEV_DIR)/brain ./cmd/brain
+	$(GO) build -ldflags "$(BRAIN_LDFLAGS)" -o $(DEV_DIR)/brain ./cmd/brain
 
 # ---- Control-plane images (M0, #163) -----------------------------------
 # Build the two moose OCI images and `docker save` them — together with the two
@@ -209,6 +216,7 @@ PROXY_TAG := $(firstword $(subst @, ,$(PROXY_IMAGE)))
 
 brain-image:
 	docker build -f cmd/brain/Dockerfile --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
+	  --build-arg CONTROL_PLANE_VERSION=$(CONTROL_PLANE_VERSION) \
 	  --build-arg BRAIN_BUILDER_IMAGE=$(BRAIN_BUILDER_IMAGE) \
 	  --build-arg BRAIN_RUNTIME_IMAGE=$(BRAIN_RUNTIME_IMAGE) \
 	  -t $(BRAIN_IMAGE) .
@@ -217,6 +225,8 @@ brain-image:
 # for both, not two pins to keep level.
 ui-image:
 	docker build -f web-ui/Dockerfile \
+	  --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
+	  --build-arg CONTROL_PLANE_VERSION=$(CONTROL_PLANE_VERSION) \
 	  --build-arg UI_BUILDER_IMAGE=$(UI_BUILDER_IMAGE) \
 	  --build-arg UI_RUNTIME_IMAGE=$(CADDY_IMAGE) \
 	  -t $(UI_IMAGE) web-ui
@@ -386,7 +396,7 @@ dev: check-state-owner build caddy
 	@mkdir -p $(STATE_DIR)
 	@cd web-ui && [ -d node_modules ] || npm install
 	@trap 'kill 0' INT TERM EXIT; \
-	  (GO="$(GO)" DEV_DIR="$(DEV_DIR)" LDFLAGS="$(LDFLAGS)" ./dev/dev-go.sh) & \
+	  (GO="$(GO)" DEV_DIR="$(DEV_DIR)" LDFLAGS="$(LDFLAGS)" BRAIN_LDFLAGS="$(BRAIN_LDFLAGS)" ./dev/dev-go.sh) & \
 	  (cd web-ui && npm run dev 2>&1 | sed -u 's/^/[ui]    /') & \
 	  wait
 

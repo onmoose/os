@@ -26,6 +26,9 @@ set -uo pipefail
 GO=${GO:-go}
 DEV_DIR=${DEV_DIR:-.dev}
 LDFLAGS=${LDFLAGS:-}
+# The brain is stamped from CONTROL_PLANE_VERSION, host-agent from VERSION
+# (BUILD.md # Versioning), so each gets its own flags.
+BRAIN_LDFLAGS=${BRAIN_LDFLAGS:-}
 WATCH_DIRS=${MOOSE_DEV_WATCH_DIRS:-cmd internal}
 DEBOUNCE=${MOOSE_DEV_DEBOUNCE:-10}
 POLL=${MOOSE_DEV_POLL:-2}
@@ -84,7 +87,7 @@ build_go() {
   mkdir -p "$STAGE"
   touch "$STAMP"
   $GO build -ldflags "$LDFLAGS" -o "$STAGE/host-agent" ./cmd/host-agent || return 1
-  $GO build -ldflags "$LDFLAGS" -o "$STAGE/brain" ./cmd/brain || return 1
+  $GO build -ldflags "$BRAIN_LDFLAGS" -o "$STAGE/brain" ./cmd/brain || return 1
 }
 
 # -newermt with a relative time is a GNU find extension. Without it the loop

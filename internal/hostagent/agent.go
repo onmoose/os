@@ -43,10 +43,11 @@ var ErrNotADirectory = errors.New("not a directory")
 // gap). So this derives from the real stamped internal/version.Version rather
 // than a "-fake" literal: a "-fake" suffix would mislabel host-agent-real too,
 // which this same constant also feeds until real per-binary system-status
-// reporting is built out. It also keeps a `make dev` brain (also stamped from
-// the same VERSION file) and the fake agent trivially in range of each
-// other's minimumAgentVersion check (cmd/brain's checkAgentVersion) without
-// a prerelease-suffix special case.
+// reporting is built out. Both host-agent binaries are stamped from the OS line
+// (VERSION), so this is the moose version the brain's minimumAgentVersion
+// check (cmd/brain's checkAgentVersion) compares against. A `make dev` brain is
+// stamped from CONTROL_PLANE_VERSION instead; the floor is a separate, older
+// number, so the two stay in range without a prerelease-suffix special case.
 var AgentVersion = version.Version
 
 // PasswordVerifier is a consumer-side interface: it lives here because this is
