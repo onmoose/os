@@ -19,6 +19,13 @@
 # broken slot never hangs and never comes up without its state.
 set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# The slot is read-only, and /tmp and /var/tmp are still the slot's own
+# directories here (their tmpfs comes later, from systemd and /etc/fstab).
+# systemd-repart and mkfs need a writable temp dir, so use the /run tmpfs
+# the initramfs hook mounted (run 36930171023: "Failed to create temporary
+# file: Read-only file system").
+mkdir -p /run/moose-state-tmp
+export TMPDIR=/run/moose-state-tmp
 
 log() { echo "moose-state: $*" > /dev/kmsg 2>/dev/null || echo "moose-state: $*" >&2; }
 die() { log "FAILED: $*"; exit 1; }
