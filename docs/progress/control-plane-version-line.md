@@ -1,0 +1,57 @@
+# The control plane gets its own version line
+
+- **Status:** done
+- **Date:** 2026-10-01
+- **Specs touched:** docs/specs/BUILD.md, docs/specs/DECISIONS.md, docs/specs/UPDATES.md, docs/specs/RELEASE_MANIFEST.md, docs/dev/contributing.md, docs/architecture.md
+
+Closes #559, a slice of #486. It builds the split that [ab-os-update-design.md](ab-os-update-design.md) and `DECISIONS.md` 2026-10-01 ("A moose release is the OS release; the control plane has its own version") designed: moose `vX.Y.Z` is the OS release, and the brain and UI are released on their own line.
+
+## What was done
+
+**Two version files.** `VERSION` stays and now means the moose (OS) release. A new repo-root `CONTROL_PLANE_VERSION` holds the control-plane version. It starts at `0.15.0`, the number the brain already reported, so nothing a box shows jumps.
+
+**Each binary is stamped from its own line.** `internal/version` keeps one `Version` var, and the build decides which file fills it. The Makefile has `LDFLAGS` (host-agent, real and fake, from `VERSION`) and a new `BRAIN_LDFLAGS` (the brain, from `CONTROL_PLANE_VERSION`), and `dev/dev-go.sh` takes both. `cmd/brain/Dockerfile` reads `CONTROL_PLANE_VERSION` instead of `VERSION`. `dev/cloud/stage-control-plane.sh` builds only host-agent, so it keeps reading `VERSION` and is unchanged. Every build still stamps the commit.
+
+**The two `--version` outputs name their line.** host-agent keeps `moose 0.15.0 (g<sha>)`, the shape the cloud boot proof greps (`cloud-assertions.sh` 1c). The brain prints `moose control plane 0.15.0 (g<sha>)` through a new `version.ControlPlaneString()`. Nothing in the tree parses the brain's string, so no test or boot proof needed changing. Both images now carry `org.opencontainers.image.version` (the control-plane version) and `org.opencontainers.image.revision` (the commit) labels. The UI's build context is `web-ui/`, so `make ui-image` passes the version in as a build arg.
+
+**`release.yml` decides each line on its own.** The three-way decision (release, green no-op, hard error for a bump to an already-tagged version) moved out of inline YAML into `dev/release/decide.sh`, which runs once per line. Both decisions run before anything is tagged, so a merge that bumps both files never releases one line and not the other.
+- A `VERSION` bump tags `vX.Y.Z`, creates its GitHub Release, and runs the cloud-image build with `publish_os`.
+- A `CONTROL_PLANE_VERSION` bump tags `control-plane-vX.Y.Z`, creates its GitHub Release with `--latest=false`, and runs the cloud-image build with `publish_control_plane`.
+- A merge that bumps both does both from one cloud-image run.
+- The generated notes start at the previous tag on the same line (`--notes-start-tag`), so a control-plane Release never lists commits since the last OS tag.
+
+**The ghcr image tag keeps the `vX.Y.Z` shape, with the control-plane number.** The private control plane resolves digests by that tag, so only the git tag and the GitHub Release carry the `control-plane-` prefix. `DECISIONS.md` 2026-10-01 gained a one-line "as built" note saying so.
+
+**A published image tag is never overwritten.** The `vX.Y.Z` image tag shape is shared with every release before the split, so a control-plane version could name an image tag that is already published. `decide.sh` takes an optional image check (`RELEASE_IMAGE_CHECK`). In `release.yml` that is `dev/release/ghcr-tag-exists.sh`, an anonymous read of ghcr. If the git tag is missing but the image tag exists, the release is refused before anything is tagged. If the registry gives no clear answer, the release is refused too, and it is never read as "missing". The ghcr push step in `ci-cloud-image.yml` makes the same check when a dispatch run has no git tag to compare against.
+
+**`ci-cloud-image.yml` has one publish switch per line.** `SHOULD_PUBLISH_OS` gates the disk-image attach: a `v*` tag push, dispatch `publish`, or the call's `publish_os`. `SHOULD_PUBLISH_CP` gates the ghcr push: dispatch `publish`, or the call's `publish_control_plane`. A `v*` tag push is an OS release now and no longer pushes the control-plane images. `SHOULD_PUBLISH` stays as "either", for the asserts that a PR run and a run with its own boot list publish nothing. Each value is forced to the string `true` or `false`, so a null input never shows up as an empty string. A control-plane-only release still builds and boots the disk image and skips only the attach, so the images it pushes are the ones that just booted. The ghcr push reads `CONTROL_PLANE_VERSION`, and its "tag points at another commit" guard now reads the `control-plane-vX.Y.Z` git tag. A new step prints what the run will publish, per line, before the build.
+
+**Docs.** `BUILD.md` # Versioning swaps "designed, not built" for an as-built list; # 5, # 5b and # 6 say which number each artifact carries; the locked-decisions line drops "planned". `docs/dev/contributing.md` # Release model now has a table of the two lines and how to cut each, plus the one-time hand tag below. `UPDATES.md` # 3, `RELEASE_MANIFEST.md` (`ui` field note) and the `version` row in `docs/architecture.md` follow.
+
+## How it was verified
+
+- **`make check`** is green, including the new tests below.
+- **`dev/release/decide_test.go`** runs `decide.sh` against throwaway origin and clone git repos, the way `release.yml` calls it. It covers: a control-plane-only bump releases only that line, with `prev_tag` from the same line; a `VERSION`-only bump releases only the OS; a bump to an already-tagged version fails loudly; a published image tag is refused, and so is an unclear registry answer, while a free one releases; a file that is not `X.Y.Z` is refused; and the first push, where the file did not exist at `before`, warns and skips. It lives in `dev/release/`, so `make check` and CI's Go job run it. `release.yml` itself only runs on `main`, so it was not run end to end. Its steps were checked with actionlint, and the decide step was run by hand against this repo's real remote tags and the real ghcr. The OS line said no-op. The control-plane line refused, because `v0.15.0` is published, which is the expected state before the one-time tag.
+- **`internal/version/version_test.go`** pins both display forms.
+- **Built binaries:** `make build` gives `moose control plane 0.15.0 (gb90f181)` for the brain and `moose 0.15.0 (gb90f181)` for host-agent. Built with `CONTROL_PLANE_VERSION=0.99.0`, only the brain moved, which proves each binary reads its own file.
+- **Built control-plane images (Docker only, no disk image):** with the file set to `0.99.1`, `docker run moose-brain:dev --version` printed `moose control plane 0.99.1 (gb90f181)`, and both images carried `0.99.1` and `b90f181` in their OCI labels.
+- **`CI / Cloud image` with `publish=false`** on this branch: see the PR body for the run and its result. It exercises the changed Makefile and Dockerfile build args inside the real image build and the full gate boot list, including the host-agent stamp assertion. It cannot exercise the publish steps, which only run with publishing on.
+
+## How it maps to the specs
+
+Realizes `DECISIONS.md` 2026-10-01 (two version lines, one per update stream) and `BUILD.md` # Versioning. The meeting point is unchanged: `minimumAgentVersion` still compares against host-agent's version, which is now the moose version, with no wire change (`UPDATES.md` # Compatibility matrix). Its comment in `cmd/brain/main.go` no longer says host-agent rides apt.
+
+## Known gaps & deviations
+
+- **One-time hand tag before the next dev->main merge.** The `v0.15.0` images on ghcr were built at the `v0.15.0` commit (`f60390e`), and `CONTROL_PLANE_VERSION` starts at `0.15.0`. Until `control-plane-v0.15.0` is tagged at that commit, `release.yml` refuses on every push to `main`. It refuses on purpose, so it does not overwrite those images with new bytes. The command is in `docs/dev/contributing.md` # Release model. This branch does not push it, because tags are a maintainer act.
+- **Same number, different bytes in the disk image.** An OS-only release bakes the brain and UI built from the same commit. If `main` holds unreleased control-plane changes, they are baked under the last `CONTROL_PLANE_VERSION`. A box replaces them at its first control-plane update. Follow-up: #566, which bakes the last released control plane from ghcr by digest.
+- **Settings > About shows the control-plane number labelled as moose.** `AboutSection.vue` shows `version` from `GET /api/v1/system/version`, which is the brain's version and now the control-plane line. It is left as it is on purpose until #509 lands (show every version on the box). The two numbers are equal today, so nothing visible is wrong yet.
+- **Two-repo seam: the private control plane.** It resolves digests by ghcr tag `v<version>`. After this change it must feed the control-plane number, not the OS number. It keeps its own control-plane version file, so likely no change is needed, but this cannot be checked from this repo.
+- **A manual `v*` tag push no longer pushes ghcr images.** Before, it pushed both. A `v*` tag is an OS release now. A `control-plane-v*` tag push triggers nothing; re-publish the control plane with `workflow_dispatch`.
+- **The image check reads only the brain's tag.** The two images are always pushed together under the same tag, so the brain's tag stands for both.
+
+## What's next
+
+1. The maintainer tags `control-plane-v0.15.0` at `v0.15.0` before the next release merge.
+2. #566: bake the last released control plane into OS releases.
+3. #509: show every version on the box in Settings > About.

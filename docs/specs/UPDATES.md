@@ -121,7 +121,7 @@ Both are deferred from v1 with explicit triggers documented in `RELEASE_MANIFEST
 ### Update mechanics
 
 1. host-agent polls the release manifest hourly.
-2. If a newer manifest applies to this box (channel, host-agent compat), host-agent surfaces a "moose update available — vX.Y.Z" notification in the dashboard. With the planned two version lines (`BUILD.md` # Versioning), the version shown here is the control-plane release, not the moose (OS) release. Current versions keep running.
+2. If a newer manifest applies to this box (channel, host-agent compat), host-agent surfaces a "moose update available — vX.Y.Z" notification in the dashboard. With the two version lines (`BUILD.md` # Versioning), the version shown here is the control-plane release, not the moose (OS) release. Current versions keep running.
 3. When the admin clicks **Update**, host-agent runs the changed-only transaction:
    a. Pull each image whose version moved (`moose-brain`, `moose-ui`, or both).
    b. **If brain moved:** snapshot the brain's SQLite database to `/var/lib/moose/brain-snapshots/<old-version>.db`. Cheap (SQLite is one file, single-digit MB at v1 scale).
