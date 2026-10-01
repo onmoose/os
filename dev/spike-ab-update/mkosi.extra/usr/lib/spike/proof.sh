@@ -74,6 +74,14 @@ install_version() {
         /usr/lib/systemd/systemd-sysupdate --no-pager list 2>&1 | sed 's/^/SPIKE:   sysupdate: /'
         /usr/lib/systemd/systemd-sysupdate --no-pager update "$v" 2>&1 | sed 's/^/SPIKE:   sysupdate: /'
         [ "${PIPESTATUS[0]}" -eq 0 ] || fail "systemd-sysupdate update $v failed"
+        # sysupdate reports success even when systemd-import wrote the bytes
+        # through without decompressing them (it does that for zstd), so check
+        # the slot holds a filesystem before trusting the reboot.
+        udevadm settle
+        local fstype
+        fstype=$(blkid -s TYPE -o value "/dev/disk/by-partlabel/moose-spike_$v" 2>/dev/null)
+        [ "$fstype" = ext4 ] || fail "the new slot moose-spike_$v holds '$fstype', not ext4"
+        say "the new slot moose-spike_$v holds ext4"
     fi
     t1=$(date +%s)
     say "install of v$v took $((t1 - t0))s"

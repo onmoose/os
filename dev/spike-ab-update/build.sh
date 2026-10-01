@@ -112,7 +112,9 @@ EOF
     else
         d="$OUT/ctl/sysupdate/v$V"
         mkdir -p "$d"
-        zstd -q -T0 -10 "$root" -o "$d/moose-spike_$V.root-x86-64.raw.zst"
+        # xz, not zstd: trixie's systemd-import (257) writes a .zst through
+        # without decompressing it, and reports success.
+        xz -q -T0 -6 -c "$root" > "$d/moose-spike_$V.root-x86-64.raw.xz"
         cp "$OUT/v$V/moose-spike_$V.efi" "$d/"
         (cd "$d" && sha256sum -- * > SHA256SUMS)
     fi

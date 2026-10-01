@@ -8,7 +8,7 @@ Verify=no
 [Source]
 Type=regular-file
 Path=/run/spike-src
-MatchPattern=moose-spike_@v.root-x86-64.raw.zst
+MatchPattern=moose-spike_@v.root-x86-64.raw.xz
 
 [Target]
 Type=partition
