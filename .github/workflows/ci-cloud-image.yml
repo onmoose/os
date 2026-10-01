@@ -120,7 +120,11 @@ on:
     # skips draft PRs (see the job's `if`), so marking one ready has to be what
     # starts the run. Without it a PR opened as a draft would never build.
     types: [opened, synchronize, reopened, ready_for_review]
-    branches: [dev, main]
+    # hotfix/** (#560): an OS lock bump for a patch release opens its PR into
+    # hotfix/X.Y.Z (docs/dev/contributing.md # OS patch releases from a lock
+    # bump). It touches dev/os-lock/, so it gets the lock check and the full
+    # boot list like a bump into dev.
+    branches: [dev, main, "hotfix/**"]
     paths:
       - "internal/hostagent/**"
       - "cmd/host-agent-real/**"
