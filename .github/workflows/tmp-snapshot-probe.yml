@@ -1,0 +1,75 @@
+# TEMPORARY feasibility probe for #560. Removed before the PR.
+# Does mkosi v26 Snapshot= work for Debian trixie, debian-security included,
+# and does a pinned third-party Docker version install?
+name: tmp snapshot probe
+on:
+  push:
+    branches: [feat/560-os-package-lock]
+    paths: [".github/workflows/tmp-snapshot-probe.yml"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        ts: ["20260901T000000Z", "20261001T082322Z"]
+    steps:
+      - name: Relax userns
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install mkosi v26
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uidmap mmdebstrap debian-archive-keyring systemd-container
+          git clone --depth=1 --branch v26 https://github.com/systemd/mkosi.git /tmp/mkosi-src
+          sudo ln -sf /tmp/mkosi-src/bin/mkosi /usr/local/bin/mkosi
+      - name: Write probe config
+        env:
+          TS: ${{ matrix.ts }}
+        run: |
+          set -euo pipefail
+          mkdir -p probe/mkosi.pkgmngr/etc/apt/sources.list.d probe/mkosi.pkgmngr/etc/apt/keyrings
+          cd probe
+          echo "$TS" > mkosi.snapshot
+          cat > mkosi.conf <<'CONF'
+          [Distribution]
+          Distribution=debian
+          Release=trixie
+          [Output]
+          Format=directory
+          ManifestFormat=json
+          [Build]
+          ToolsTree=default
+          ToolsTreeRelease=trixie
+          [Content]
+          WithRecommends=no
+          Bootable=no
+          Packages=
+                  openssh-server
+                  openssl
+                  tzdata
+                  docker-ce-cli=5:28.5.2-1~debian.13~trixie
+          CONF
+          sed -i 's/^          //' mkosi.conf
+          curl -fsSL https://download.docker.com/linux/debian/gpg -o mkosi.pkgmngr/etc/apt/keyrings/docker.asc
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable" > mkosi.pkgmngr/etc/apt/sources.list.d/docker.list
+          echo "deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://snapshot.debian.org/archive/debian/$TS trixie-updates main" > mkosi.pkgmngr/etc/apt/sources.list.d/updates.list
+          cat mkosi.conf mkosi.snapshot mkosi.pkgmngr/etc/apt/sources.list.d/*
+      - name: summary
+        working-directory: probe
+        run: mkosi summary | grep -i -E "snapshot|mirror|release" || true
+      - name: build
+        working-directory: probe
+        run: time mkosi --force build
+      - name: manifest
+        working-directory: probe
+        run: |
+          ls -la
+          python3 -c 'import json,glob; d=json.load(open(glob.glob("*.manifest")[0])); [print(p["name"],p["version"]) for p in d["packages"]]' | grep -E "^(openssh-server|openssl|libssl3t64|tzdata|docker-ce-cli|libc6|base-files) "
+          python3 -c 'import json,glob; d=json.load(open(glob.glob("*.manifest")[0])); print(len(d["packages"]), "packages"); print(json.dumps(d["config"]))'
+          sudo find image -path '*sources.list.d*' -type f -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; || true
+      - name: latest-snapshot verb
+        working-directory: probe
+        run: mkosi latest-snapshot || true
