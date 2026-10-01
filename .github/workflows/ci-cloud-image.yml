@@ -110,7 +110,11 @@ on:
   #   - internal/api/system*.go    POST /api/v1/system/update, the trigger the
   #                                boot drives
   #   - dev/cloud/**               the lane and its in-guest assertions
-  #   - this workflow
+  #   - dev/os-lock/**             the OS package lock (#560). A PR that touches
+  #                                it runs the FULL boot list, not only `update`
+  #                                (see "Choose the boots"): a lock bump changes
+  #                                every package the boots stand on.
+  #   - the shared mkosi setup action, and this workflow
   pull_request:
     # `ready_for_review` is not in the default set and is needed here: the job
     # skips draft PRs (see the job's `if`), so marking one ready has to be what
@@ -124,6 +128,8 @@ on:
       - "internal/lifecycle/lifecycle.go"
       - "internal/api/system*.go"
       - "dev/cloud/**"
+      - "dev/os-lock/**"
+      - ".github/actions/setup-mkosi/**"
       - ".github/workflows/ci-cloud-image.yml"
   workflow_dispatch:
     inputs:
@@ -162,6 +168,15 @@ on:
         description: "Control-plane release: push the brain and UI images to ghcr as v<CONTROL_PLANE_VERSION>"
         type: boolean
         default: false
+      # The OS lock bump (os-lock-bump.yml, #560) calls this workflow to boot
+      # its bot/os-lock branch when no PR can be opened for it. A called
+      # workflow checks out the CALLER's ref by default, so the bump names the
+      # branch here. A run with a ref must not publish (asserted below): the
+      # publish steps describe github.sha, which is not the commit built.
+      ref:
+        description: "Git ref to build instead of the caller's (the OS lock bump branch)"
+        type: string
+        default: ""
 
 # contents: write is the minimum grant for `gh release upload`/`gh release
 # create` in the release-asset step below. packages: write is what lets the
@@ -238,6 +253,19 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Assert a run that builds another ref publishes nothing
+        if: ${{ inputs.ref != '' && inputs.ref != null }}
+        env:
+          REF_INPUT: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${SHOULD_PUBLISH}" = "true" ]; then
+            echo "::error::ref='${REF_INPUT}' builds a ref other than the caller's, so this run must not publish."
+            exit 1
+          fi
+          echo "building ref '${REF_INPUT}', SHOULD_PUBLISH=${SHOULD_PUBLISH}: nothing will be published"
 
       # A PR run must never publish. That already falls out of SHOULD_PUBLISH
       # (a pull_request event has no tag ref and no `publish` input, so both
@@ -309,33 +337,9 @@ jobs:
           fi
           echo "tag ${{ github.ref_name }} matches VERSION"
 
-      # mkosi 26 builds rootless: it unshares a user namespace and drops
-      # capabilities inside it. Ubuntu 24.04 ships
-      # kernel.apparmor_restrict_unprivileged_userns=1, which hands an unconfined
-      # process a userns with no CAP_SETPCAP, so mkosi's PR_CAPBSET_DROP returns
-      # EPERM and the build dies at sandbox bring-up (#189). Relaxing the knob is
-      # safe on an ephemeral runner.
-      - name: Relax AppArmor unprivileged-userns restriction
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          echo "before: $(cat "$knob" 2>/dev/null || echo 'n/a')"
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          echo "after:  $(cat "$knob")"
-
-      # Host tooling mkosi needs to bootstrap a Debian tools tree and build
-      # rootless (uidmap/mmdebstrap/keyring; dosfstools/mtools for the ESP;
-      # squashfs-tools/e2fsprogs for the root; systemd-container for the nspawn
-      # build sandbox; libpam0g-dev for the slim host-agent-real CGO build).
-      - name: Install mkosi and image-build tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            uidmap mmdebstrap debian-archive-keyring \
-            dosfstools mtools squashfs-tools e2fsprogs systemd-container \
-            libpam0g-dev
-          git clone --depth=1 --branch v26 \
-            https://github.com/systemd/mkosi.git /tmp/mkosi-src
-          sudo ln -sf /tmp/mkosi-src/bin/mkosi /usr/local/bin/mkosi
+      # The userns knob (#189), the image-build tools and mkosi v26. Shared with
+      # the OS lock bump (os-lock-bump.yml), so both build the same way.
+      - uses: ./.github/actions/setup-mkosi
 
       # QEMU + UEFI firmware for the seeded-boot test lane (run-cloud-tests.sh).
       # GitHub-hosted Linux runners expose /dev/kvm; the lane uses it when present
@@ -370,8 +374,22 @@ jobs:
       # 1. Build the production image that will be published. A fresh checkout has
       #    no .dev/ cache, so make rebuilds the control-plane images (brain/ui)
       #    from source — this is what removes the stale-cached-brain failure mode.
-      - name: Build the hosted cloud image (+ lean check)
+      - name: Build the hosted cloud image (+ lean check + OS package lock check)
         run: make build-cloud-image
+
+      # The package list this build resolved to (#560). When the lock check
+      # fails, this is the file to compare with dev/os-lock/cloud-packages.lock,
+      # or to commit when the change was on purpose. Uploaded on failure too,
+      # which is when it matters.
+      - name: Upload the resolved package list
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-packages-lock
+          path: |
+            .dev/cloud/cloud-packages.lock
+            .dev/cloud/lean-check.txt
+          if-no-files-found: ignore
 
       # 2. SEEDED-BOOT GATE. Boot the image under QEMU with a current-schema seed
       #    and assert the brain ingests it (cloud-assertions.sh 'seeded' boot). A
@@ -441,9 +459,41 @@ jobs:
       # under `sudo -E`, and sudo's secure_path resets PATH, so `go` on the runner's
       # PATH is invisible to the script; pass it explicitly (run-cloud-tests.sh
       # honours ${GO:-}, and -E preserves it).
-      - name: Boot test (${{ github.event_name == 'pull_request' && 'control-plane update only' || inputs.boots || 'seed schema + BIOS/UEFI + access modes + control-plane update + SSH + userns tiers' }})
+      # Which boots run. A PR boots only `update` (the updater guard, #389),
+      # unless it touches the OS package lock: a lock bump changes every package
+      # the boots stand on, so it runs the full gate list (#560). Any other run
+      # takes the `boots` input or the full list. The PR's file list comes from
+      # the compare API, so the checkout can stay shallow.
+      - name: Choose the boots
+        id: boots
         env:
-          MOOSE_CLOUD_BOOTS: ${{ github.event_name == 'pull_request' && 'update' || inputs.boots || 'unseeded seeded bios access update ssh remap' }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BOOTS_INPUT: ${{ inputs.boots }}
+        run: |
+          set -euo pipefail
+          full="unseeded seeded bios access update ssh remap"
+          if [ "$EVENT" = "pull_request" ]; then
+            # The compare API needs only `contents: read`, which this job has. The
+            # PR files API would need `pull-requests: read`, and asking for it
+            # here would break release.yml's call, which does not grant it.
+            files="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.files[].filename')"
+            if printf '%s\n' "$files" | grep -q '^dev/os-lock/'; then
+              list="$full"; why="this PR changes the OS package lock"
+            else
+              list="update"; why="control-plane update only"
+            fi
+          else
+            list="${BOOTS_INPUT:-$full}"; why="full gate list or the boots input"
+          fi
+          echo "boots: ${list} (${why})"
+          echo "list=${list}" >> "$GITHUB_OUTPUT"
+
+      - name: Boot test (${{ steps.boots.outputs.list }})
+        env:
+          MOOSE_CLOUD_BOOTS: ${{ steps.boots.outputs.list }}
           GO: ${{ steps.go.outputs.go-bin }}
         run: make test-cloud-qemu
 
