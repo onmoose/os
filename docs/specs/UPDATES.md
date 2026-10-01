@@ -35,7 +35,7 @@ The OS underneath us: kernel, libc, OpenSSL, firmware, Docker itself, and `host-
 
 ### The update transaction
 
-1. **The box learns the target OS version** through the one update-target seam (# 8.4): the cloud's answer on hosted, the signed release manifest on appliance (`RELEASE_MANIFEST.md`). The target names an OS version and the digest of its bundle. The box never resolves "latest" for the OS, for the same reason it never resolves a tag for the brain.
+1. **The box learns the target OS version** through the one update-target seam (# 8.4): the cloud's answer on hosted, the signed release manifest on appliance (`RELEASE_MANIFEST.md`). The target names OS releases with the digests of their bundles: one per minor on the way, so a box that missed a minor can step through it (below). The box never resolves "latest" for the OS, for the same reason it never resolves a tag for the brain.
 2. **Download and install ahead of the window.** host-agent hands the bundle to RAUC, which checks its signature and writes it into the **inactive slot** while the box keeps serving. A failure here changes nothing: the running slot was never touched.
 3. **Switch and reboot inside the window.** The new slot is set to boot next with **one attempt**. Stream A goes last in the window (# 7), after stream B is done.
 4. **Mark good only when the box is healthy.** After the reboot, host-agent marks the slot good once `host-agent` itself and the brain answer their health checks. Until then the slot stays on trial.
@@ -50,7 +50,7 @@ The OS underneath us: kernel, libc, OpenSSL, firmware, Docker itself, and `host-
 
 - **A patch release never changes an on-disk format.** An OS patch release is a lock bump or a fix (`BUILD.md` # Versioning). So any patch of a minor reads what any other patch of it wrote.
 - **A minor release may change a format, and must still read and write the format of the minor before it.** 1.4 is held to 1.3's format, not to 1.2's.
-- **A box never skips a minor.** Told to move from 1.2.x to 1.4.y, it installs the newest 1.3 patch first, and goes on to 1.4.y in a later window once 1.3 is marked good. So the release in its other slot is always the same minor or the one before, and both can read its state.
+- **A box never skips a minor.** Told to move from 1.2.x to 1.4.y, it installs the newest 1.3 patch first, and goes on to 1.4.y in a later window once 1.3 is marked good. **So the OS part of a target is a list, not one release:** the newest patch of each minor from the oldest one still supported up to the target, each with its bundle digest. The box installs the first entry whose minor is above its own; an entry in its own minor is a patch update. The hosted answer and the appliance manifest's `os` field both carry this list (`RELEASE_MANIFEST.md`). So the release in its other slot is always the same minor or the one before, and both can read its state.
 
 **An OS downgrade by target follows the same reach.** The update loop applies whatever the target names, in either direction (# 8.4). For the OS, the box refuses a target that is more than one minor back (from 1.4.y: any 1.4 or 1.3 patch, never 1.2), and a target below the running control plane's floor (`minimumAgentVersion`, # 7 Compatibility matrix), since that would boot a `host-agent` the brain refuses to work with. A refusal is logged and changes nothing, like any other refused target. This is the same discipline the brain's own rollback already needs (`NEXT.md` # Brain state-migration framework).
 
