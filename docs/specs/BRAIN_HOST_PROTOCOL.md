@@ -11,7 +11,7 @@
 - **mDNS / Avahi** publishing (per-app hostnames on the LAN).
 - **Tier-2 native ops** — `systemctl` toggles, write `/etc/samba/smb.conf`, run `tailscale up`, edit `authorized_keys`, run `passwd`.
 - **Disk / LUKS / TPM** — mount, format, smartctl probe, recovery-passphrase operations.
-- **System updates** — `apt`.
+- **System updates** — the OS update: today the control-plane update (`UPDATES.md` # 8.3); with the A/B OS image, writing the next image into the inactive slot and switching to it (`UPDATES.md` # 1, planned #486). There is no `apt` on the update path.
 - **Network configuration** — NetworkManager-backed: list/scan/connect/forget WiFi networks, DHCP vs. static IP per connection, primary-connection pinning, active-interface state. host-agent talks to NetworkManager over DBus; the brain talks to host-agent over this protocol.
 - **Power** — shutdown, reboot.
 - **Misc host state** — time zone, hostname, system summary.
@@ -22,7 +22,7 @@ Things that **don't** cross this protocol:
 - **Caddy.** Runs as a container; brain manages it like any other container.
 - **App-facing services** (Postgres, Redis, future background-job runner). Those are Tier-1 services apps consume; orthogonal to host-agent.
 
-If a host capability isn't in the list above, it doesn't live behind host-agent. The boundary is *"touches the host's root filesystem, systemd, or apt."*
+If a host capability isn't in the list above, it doesn't live behind host-agent. The boundary is *"touches the host's root filesystem, systemd, or the OS slots."*
 
 ## Transport: UNIX socket
 
@@ -409,7 +409,7 @@ Two deliberate differences from the text above:
 
 Job records live in host-agent memory and are lost on restart — matching "Dangerous: crash mid-flight = no auto-resume". That is also the right side of the socket for them: a control-plane update replaces the **brain** container, so a brain-side record would die halfway through the operation it was tracking.
 
-**What would make us build the rest:** a second job kind. `enroll-drive` is the likely one, and it is the case that needs resource classes (`disk` vs `apt`), the cross-class dangerous lock, and queueing rather than a flat refusal. Generalize then, not before.
+**What would make us build the rest:** a second job kind. `enroll-drive` is the likely one, and it is the case that needs resource classes (`disk` vs `os-update`), the cross-class dangerous lock, and queueing rather than a flat refusal. Generalize then, not before.
 
 ### Pattern C — SSE (streaming log/progress output)
 
@@ -430,7 +430,7 @@ GET /v1/jobs/j_a4f7b2/log
 Three primary uses:
 
 1. **App container logs** (`docker logs -f` equivalents, surfaced in the app-details view in the dashboard).
-2. **Long-running job output** — apt upgrade progress, image pull progress, install/update logs.
+2. **Long-running job output** — OS update progress, image pull progress, install/update logs.
 3. **Tier-2 service logs** — `journalctl -u smbd -f` for the SMB admin page, etc.
 
 Browsers speak SSE natively. When the dashboard surfaces these streams, the browser can subscribe through the brain to host-agent's SSE stream end-to-end with no translation.
@@ -476,17 +476,19 @@ This is the entire authn/authz model for this boundary. If group membership is w
 
 If a future tool ever needs host-agent access (a debug CLI, a recovery tool), we either add it explicitly to the test allowlist *and* the `moose` group, or it talks through the brain.
 
-## Versioning: lockstep with OS release
+## Versioning: a compatibility floor, not lockstep
 
-Brain and host-agent ship as part of the same OS release. Brain version N talks to host-agent version N. There is **no protocol-version negotiation** at connection.
+**The brain and host-agent are on two release lines** (`DECISIONS.md` 2026-10-01, `BUILD.md` # Versioning). `host-agent` ships inside the OS and carries the moose (OS) version from `VERSION`. The brain is a container on the control-plane line (`CONTROL_PLANE_VERSION`). They move on their own: a control-plane release needs no OS release, and an OS release never changes which brain a box runs (`UPDATES.md` # 3).
 
-**Why lockstep:**
+**What holds them together is one floor the brain declares:** `minimumAgentVersion` in `cmd/brain/main.go`, the oldest `host-agent` (so, the oldest moose OS release) this brain works with. A brain below a newer agent is fine. An agent below the floor raises a health issue (`HEALTH.md`), and the release manifest's `minimum_host_agent` keeps the same floor for appliance updates (`RELEASE_MANIFEST.md`). There is **no protocol-version negotiation** at connection.
 
-- The box is one atomic unit (`UPDATES.md` # What this doc covers — stream A: Debian base + kernel + firmware + host-agent). Both binaries ship in that unit and are upgraded together. Note this covers `host-agent`, not the brain: the brain is a container and rides stream B, so lockstep here is a **compat floor** the brain declares (`minimumAgentVersion`), not a guarantee that the two moved in the same transaction.
+**Why a floor and no negotiation:**
+
+- The protocol grows additively, so a newer agent serves an older brain. The floor only has to say when a brain needs something an older agent lacks.
 - No version-negotiation code to maintain or get wrong.
-- A crashed brain ↔ healthy host-agent imbalance is the only transient case; both binaries are tiny and can be upgraded together cheaply.
+- An OS downgrade never goes below the running brain's floor (`UPDATES.md` # 1), and a control-plane update that needs a newer OS waits for it (`UPDATES.md` # 7 Compatibility matrix).
 
-**Resolves an open item:** `NEXT.md` previously listed "brain ↔ host-agent protocol versioning" as open. Under lockstep, the question dissolves — there is no negotiation surface.
+**History:** this section used to say "lockstep with OS release: brain version N talks to host-agent version N", from when one repo version covered both. That resolved an old `NEXT.md` item ("brain ↔ host-agent protocol versioning"); the floor keeps it resolved, with no negotiation surface.
 
 ## Failure semantics
 
@@ -501,7 +503,7 @@ JobKind {
   Name           "system-update" | "app-install" | "disk-format" | ...
   MaxDuration    e.g. 30m for system-update, 60s for systemctl ops
   Dangerous      bool — crash mid-flight = no auto-resume (see APP_LIFECYCLE)
-  ResourceClass  "apt" | "disk" | "systemd" | "network" | "none"
+  ResourceClass  "os-update" | "disk" | "systemd" | "network" | "none"
   StallPolicy    optional: "no progress for X = stalled"
 }
 ```
@@ -510,9 +512,9 @@ JobKind {
 
 **Stalled vs. failed.** Distinct statuses. `stalled` means "we're not sure — it's running too long or producing no progress"; `failed` means "we know it broke." The UI surfaces these with different messaging — important for non-technical users.
 
-**Resource-class serialization.** Two jobs sharing a `ResourceClass` cannot run concurrently. The second queues; job response carries queue position. Two `apt` operations can never race. `ResourceClass: "none"` ops have no serialization.
+**Resource-class serialization.** Two jobs sharing a `ResourceClass` cannot run concurrently. The second queues; job response carries queue position. Two OS updates can never race. `ResourceClass: "none"` ops have no serialization.
 
-**Cross-class dangerous lock.** Any job with `Dangerous: true` waits for **all** running jobs (across resource classes) to drain before starting, and blocks any new jobs while it runs. Catches the case where, e.g., a disk format and an apt upgrade are technically different resource classes but you really don't want both at once.
+**Cross-class dangerous lock.** Any job with `Dangerous: true` waits for **all** running jobs (across resource classes) to drain before starting, and blocks any new jobs while it runs. Catches the case where, e.g., a disk format and an OS update are technically different resource classes but you really don't want both at once.
 
 **Registration is required-by-construction.** host-agent's job-kind registration function takes these attributes as required Go-typed parameters. You can't register an op without declaring them.
 
@@ -532,11 +534,11 @@ Covered in Pattern C above. Self-contained: monotonic event IDs, ~256 KB per-job
 
 Protocol-shaped rules about *when and how* the protocol is exercised. Not new protocol surface.
 
-**host-agent self-update.** When the OS updater installs a new `moose-host-agent` package:
+**host-agent self-update.** `host-agent` ships inside the OS image, so a new `host-agent` only arrives with an OS update, and only takes effect on the reboot into the new slot (`UPDATES.md` # 1, planned #486). Nothing installs a new binary into a running box. Before that reboot:
 
 1. Brain stops accepting new jobs.
-2. Brain waits for running jobs to drain. Hard cap (5 minutes): if a job is still running, the OS update fails with "an operation is still running, retry later."
-3. apt installs the new binary; systemd restarts host-agent.
+2. Brain waits for running jobs to drain. Hard cap (5 minutes): if a job is still running, tonight's attempt ends **not applied**, with "an operation is still running". The box stays on its current slot, nothing reverts, and the next window tries again. It counts as tonight's one attempt (`UPDATES.md` # 1).
+3. The box switches slots and reboots; the new slot's `host-agent` starts at boot.
 4. Brain reconnects with backoff; resumes.
 
 Brain treats "host-agent unreachable" during this window as expected, not as an error.
@@ -569,7 +571,7 @@ Beyond the moose-group membership assertion (above), CI asserts:
 - **SSE reconnect: standard `Last-Event-ID` + ~256 KB rolling per-job buffer. Single `lost: true` event when the gap exceeds buffer.**
 - **Reconciler pattern lives in `APP_LIFECYCLE.md`.** Drift policy: brain auto-reconciles when *it* made the last change; surfaces (doesn't auto-fix) when something else did. Dangerous ops excluded from auto-reconcile.
 - **Heartbeat: 60 seconds.** Brain polls `GET /v1/state/summary`.
-- **host-agent self-update drains all jobs first**; 5-minute hard cap before failing the OS update.
+- **host-agent self-update drains all jobs first**; after a 5-minute hard cap, tonight's OS update ends not applied and is tried again in the next window.
 - **Network endpoints wrap NetworkManager over DBus.** host-agent is the only thing on the box that talks to NM. WiFi credentials live in NM's connection store (`/etc/NetworkManager/system-connections/`, root-only); the brain never persists them. See `BOOT.md` # NetworkManager and `DECISIONS.md` 2026-05-18.
 - **GPU capability is a host query, not a manifest fact.** `GET /v1/system/gpu` reports presence + vendor + the `render` group GID; the brain uses it for both the install-time capacity gate and the `/dev/dri` `group_add`. v1 detects the Intel iGPU only (`vendor: "intel"`); AMD/NVIDIA runtimes are follow-ons. See `APP_ISOLATION.md` # GPU.
 
@@ -578,7 +580,7 @@ Beyond the moose-group membership assertion (above), CI asserts:
 - `CONTROL_PLANE.md` — points to this doc as the authoritative spec for the brain↔host-agent boundary.
 - `AUTH.md` — the "Brain ↔ host-agent in the auth path" section is consistent with this protocol (private channel, no app-layer token); the moose-group test invariant is now documented here.
 - `SERVICE_PROVISIONING.md` — Tier-2 ops (systemctl, config edits) flow through host-agent via this protocol's Pattern A and Pattern B.
-- `UPDATES.md` — apt operations are Pattern B (jobs with SSE log streams). The "brain ↔ host-agent protocol versioning" open item is resolved (lockstep).
+- `UPDATES.md` — update operations are Pattern B (jobs with SSE log streams). The "brain ↔ host-agent protocol versioning" open item is resolved (a `minimumAgentVersion` floor, # Versioning).
 - `NEXT.md` — carries the future web-terminal and app-facing-background-jobs items (failure semantics is now closed).
 - `HEALTH.md` — the # Detector catalog owns the per-issue measurement/cadence/threshold contract; this doc owns the `GET /v1/health/system` transport that carries locus-B findings to the brain.
 - `APP_ISOLATION.md` — # GPU owns the locked install-refusal-on-no-GPU behaviour and the `/dev/dri` + render-group override stanza; this doc owns the `GET /v1/system/gpu` transport that feeds both. The OS-image media stack and the real `/dev/dri` detection are tracked in issue #125.
