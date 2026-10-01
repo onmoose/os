@@ -81,7 +81,18 @@ log "systemd-repart done"
 # there is no fallback to another disk.
 dev=""
 for _ in $(seq 1 100); do
-    matches="$(lsblk -nrpo NAME,TYPE,PARTLABEL "$disk" 2>/dev/null | awk -v l="$STATE_LABEL" '$2=="part" && $3==l {print $1}')"
+    # The disk's partitions from sysfs, and each one's GPT name read from the
+    # disk by blkid's low-level probe. Not lsblk: it takes PARTLABEL from the
+    # udev database, which this chroot's fresh /run does not have (run
+    # 36940136412 found no match that way).
+    matches=""
+    for part_sys in /sys/block/"$(basename "$disk")"/*/partition; do
+        [ -e "$part_sys" ] || continue
+        part="/dev/$(basename "$(dirname "$part_sys")")"
+        name="$(blkid -p -o value -s PART_ENTRY_NAME "$part" 2>/dev/null || true)"
+        [ "$name" = "$STATE_LABEL" ] && matches="$matches $part"
+    done
+    matches="$(echo $matches | tr ' ' '\n')"
     if [ "$(printf '%s\n' "$matches" | grep -c .)" -gt 1 ]; then
         die "more than one partition labelled $STATE_LABEL on $disk: $(echo $matches)"
     fi
