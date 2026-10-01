@@ -56,24 +56,41 @@ var/lib/containerd:var/lib/containerd var/log:var/log
 var/lib/systemd:var/lib/systemd var/lib/rauc:var/lib/rauc
 var/lib/sudo:var/lib/sudo"
 
-# --- 1. partitions. With no device given, systemd-repart works on the disk
-# that backs /, which is the booted slot's disk. Idempotent: on a disk that is
-# already laid out and has not grown, it changes nothing.
-if ! out="$(systemd-repart --dry-run=no --no-pager 2>&1)"; then
+# --- 1. partitions, on the boot disk only. The boot disk is the disk that
+# holds the booted slot: the device behind / (the slot's squashfs), then its
+# parent disk through sysfs. repart and the state lookup below both use this
+# one disk, so another disk that happens to carry a partition labelled
+# moose-state (for example one taken from another box) is never repaired,
+# grown or mounted. Idempotent: on a disk that is already laid out and has not
+# grown, repart changes nothing.
+root_majmin="$(stat -c '%Hd:%Ld' /)" || die "cannot stat /"
+root_sys="$(readlink -f "/sys/dev/block/$root_majmin")" || die "no sysfs entry for / ($root_majmin)"
+[ -e "$root_sys/partition" ] || die "/ ($root_majmin) is not a partition"
+disk="/dev/$(basename "$(dirname "$root_sys")")"
+[ -b "$disk" ] || die "the boot disk $disk is not a block device"
+log "boot disk is $disk (/ is $root_majmin)"
+
+if ! out="$(systemd-repart --dry-run=no --no-pager "$disk" 2>&1)"; then
     while IFS= read -r line; do log "repart: $line"; done <<< "$out"
     die "systemd-repart failed"
 fi
 log "systemd-repart done"
 
-# --- 2. the state partition. A new partition can take a moment to show up.
+# --- 2. the state partition, on the boot disk and nowhere else. A new
+# partition can take a moment to show up. No match on the boot disk is fatal;
+# there is no fallback to another disk.
 dev=""
 for _ in $(seq 1 100); do
-    dev="$(blkid -o device -t PARTLABEL="$STATE_LABEL" 2>/dev/null | head -n1 || true)"
+    matches="$(lsblk -nrpo NAME,TYPE,PARTLABEL "$disk" 2>/dev/null | awk -v l="$STATE_LABEL" '$2=="part" && $3==l {print $1}')"
+    if [ "$(printf '%s\n' "$matches" | grep -c .)" -gt 1 ]; then
+        die "more than one partition labelled $STATE_LABEL on $disk: $(echo $matches)"
+    fi
+    dev="$matches"
     [ -n "$dev" ] && [ -b "$dev" ] && break
     dev=""
     sleep 0.1
 done
-[ -n "$dev" ] || die "no partition labelled $STATE_LABEL"
+[ -n "$dev" ] || die "no partition labelled $STATE_LABEL on the boot disk $disk"
 
 # -p fixes what is safe to fix. 1 means it fixed something, which is fine
 # before a mount; 4 and up means it could not.

@@ -296,6 +296,11 @@ for u in emergency.service rescue.service; do
 done
 dmesg 2>/dev/null | grep -q 'moose-state: bind mounts done' || journalctl -k -b --no-pager 2>/dev/null | grep -q 'moose-state: bind mounts done' \
     || layout_fail "no 'moose-state: bind mounts done' in the kernel log"
+# state-setup looked for the state partition on the boot disk only.
+journalctl -k -b --no-pager 2>/dev/null | grep -q "moose-state: boot disk is $root_disk " \
+    || dmesg 2>/dev/null | grep -q "moose-state: boot disk is $root_disk " \
+    || layout_fail "state-setup did not report $root_disk as the boot disk"
+[ "$(lsblk -no PKNAME "$state_dev")" = "$(basename "$root_disk")" ] || layout_fail "the state partition $state_dev is not on the boot disk $root_disk"
 echo "cloud-assertions: layout: rauc sees slot A booted, grubenv has A_OK=1, emergency and rescue reboot"
 
 # --- 1c. the baked host-agent carries a real build stamp (BUILD.md # Versioning:
