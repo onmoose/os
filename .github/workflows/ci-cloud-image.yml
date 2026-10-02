@@ -194,16 +194,18 @@ on:
         type: string
         default: ""
 
-# contents: write is the minimum grant for `gh release upload`/`gh release
-# create` in the release-asset step below. packages: write is what lets the
-# job's own GITHUB_TOKEN push the control-plane images to ghcr (# 370) — still
-# no long-lived registry credential anywhere in this lane. Neither grant is
-# used on a pull_request run: both steps that need them are gated on
-# SHOULD_PUBLISH, which is false there (and asserted so, below). A PR from a
-# fork gets a read-only token regardless — it still builds and boots.
+# Read only by default. Every job sets its own permissions: `build` and `boot`
+# read only, and `publish` alone gets the two write grants. contents: write is
+# the minimum grant for `gh release upload`/`gh release create` in the
+# release-asset step, and packages: write is what lets the job's own
+# GITHUB_TOKEN push the control-plane images to ghcr (#370), so there is still
+# no long-lived registry credential anywhere in this lane. The publish job does
+# not run on a pull_request run: SHOULD_PUBLISH is false there (and asserted
+# so, in `build`). A PR from a fork gets a read-only token regardless, and it
+# still builds and boots. A caller (release.yml, os-lock-bump.yml) must still
+# grant both, since a called workflow can only narrow what its caller grants.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 # Cancel superseded runs on the same ref. A call with `ref` (the OS lock bump)
 # is grouped by that ref, not by the caller's: the caller's ref is `dev`, and a
@@ -237,8 +239,8 @@ concurrency:
 # without an explicit input is a genuine tag push.
 #
 # MOOSE_BUILD_CACHE comes from the same expression as SHOULD_PUBLISH, inverted.
-# A run that publishes nothing builds the brain, UI and hosted Caddy images
-# with the GitHub Actions layer cache (`gha`). A run where either line
+# A run that publishes nothing builds the hosted Caddy image with the GitHub
+# Actions layer cache (`gha`); the brain and UI always build plain. A run where either line
 # publishes gets `none`: it reads no cache and builds what ships fresh, so no
 # layer another run wrote can reach a release. The Makefile reads it.
 env:
@@ -391,6 +393,8 @@ jobs:
       - name: Upload the QEMU packages
         uses: actions/upload-artifact@v4
         with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
           name: cloud-image-qemu-debs
           path: ${{ runner.temp }}/qemu-debs/*.deb
           compression-level: 0
@@ -407,7 +411,7 @@ jobs:
       - name: Install QEMU + OVMF for the seeded-boot test
         run: |
           sudo DEBIAN_FRONTEND=noninteractive dpkg -i "${RUNNER_TEMP}"/qemu-debs/*.deb
-          echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none — test lane will use TCG')"
+          echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none: test lane will use TCG')"
 
       - name: Versions
         run: |
@@ -557,9 +561,9 @@ jobs:
           echo "matrix: ${matrix}"
           echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
 
-      # Layer cache for the brain, UI and hosted Caddy image builds, on a run
-      # that publishes nothing (MOOSE_BUILD_CACHE, workflow env above). The
-      # Makefile's builds read and write the GitHub Actions cache through
+      # Layer cache for the hosted Caddy image build, on a run that publishes
+      # nothing (MOOSE_BUILD_CACHE, workflow env above). The Makefile's Caddy
+      # build reads and writes the GitHub Actions cache through
       # BuildKit, which needs the runtime token and cache URLs a `run` step
       # does not see; the first step exposes them. The second makes the
       # docker-container builder the Makefile names, under `sudo -E` like the
@@ -590,6 +594,8 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
           name: cloud-packages-lock
           path: |
             .dev/cloud/cloud-packages.lock
@@ -619,6 +625,8 @@ jobs:
       - name: Upload the boot-proof image
         uses: actions/upload-artifact@v4
         with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
           name: cloud-image-boot-qcow2
           path: .dev/cloud-boot/moose-cloud-boot.qcow2
           compression-level: 0
@@ -634,6 +642,8 @@ jobs:
         if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
         uses: actions/upload-artifact@v4
         with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
           name: cloud-image-os-raw
           path: .dev/cloud/moose-cloud.raw
           compression-level: 1
@@ -646,6 +656,8 @@ jobs:
         if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
         uses: actions/upload-artifact@v4
         with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
           name: cloud-image-control-plane
           path: |
             .dev/control-plane/moose-brain.tar
@@ -701,7 +713,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
           fi
-          echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none — test lane will use TCG')"
+          echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none: test lane will use TCG')"
 
       # Absolute path to the runner's go, for the host-side assertion mint
       # (see GO in the gate notes above). Resolved as a step output so a runner
@@ -731,13 +743,15 @@ jobs:
         run: make test-cloud-qemu
 
   # Only when a line publishes, and only after the build and every boot job
-  # passed: `needs` waits for all of them, and an `if` without a status check
-  # also requires that they all succeeded. A red or cancelled boot skips this
-  # job, so nothing is published from an image that did not prove itself.
+  # passed. `needs` waits for all of them. The `if` says it in so many words:
+  # the boot matrix must have succeeded as a whole (one red, skipped or
+  # cancelled boot job makes it fail), and a line must publish. A red boot
+  # skips this job, so nothing is published from an image that did not prove
+  # itself.
   publish:
     name: Publish the hosted cloud image and the control plane
     needs: [build, boot]
-    if: ${{ needs.build.outputs.should_publish == 'true' }}
+    if: ${{ needs.boot.result == 'success' && needs.build.outputs.should_publish == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # The only job with write access: contents for the Release asset, packages

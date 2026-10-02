@@ -214,13 +214,16 @@ include dev/control-plane/images.lock
 CADDY_TAG := $(firstword $(subst @, ,$(CADDY_IMAGE)))
 PROXY_TAG := $(firstword $(subst @, ,$(PROXY_IMAGE)))
 
-# BuildKit layer cache for the three image builds below (#486). The default is
-# a plain `docker build` with no cache. CI sets MOOSE_BUILD_CACHE=gha on a run
-# that publishes nothing (ci-cloud-image.yml): the build then goes through the
-# docker-container builder named by MOOSE_BUILD_CACHE_BUILDER and reads and
-# writes the GitHub Actions cache, one scope per image. A run that publishes
-# sets it to `none`, so what ships is always built fresh, with no cache read.
-# A failed cache write never fails the build (ignore-error).
+# BuildKit layer cache for the hosted Caddy build only (caddy-acmedns-image,
+# #486). Every input of that build is pinned, so its cache hits on every run.
+# The brain and UI copy the whole tree and rebuild on each commit, so a cache
+# cost them more to upload than it saved; they always build plain. The default
+# is a plain `docker build` with no cache. CI sets MOOSE_BUILD_CACHE=gha on a
+# run that publishes nothing (ci-cloud-image.yml): the Caddy build then goes
+# through the docker-container builder named by MOOSE_BUILD_CACHE_BUILDER and
+# reads and writes the GitHub Actions cache. A run that publishes sets it to
+# `none`, so what ships is always built fresh, with no cache read. A failed
+# cache write never fails the build (ignore-error).
 MOOSE_BUILD_CACHE ?= none
 MOOSE_BUILD_CACHE_BUILDER ?= moose-cache
 ifeq ($(MOOSE_BUILD_CACHE),gha)
@@ -231,7 +234,7 @@ docker_build = docker build
 endif
 
 brain-image:
-	$(call docker_build,moose-brain) -f cmd/brain/Dockerfile --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
+	docker build -f cmd/brain/Dockerfile --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
 	  --build-arg CONTROL_PLANE_VERSION=$(CONTROL_PLANE_VERSION) \
 	  --build-arg BRAIN_BUILDER_IMAGE=$(BRAIN_BUILDER_IMAGE) \
 	  --build-arg BRAIN_RUNTIME_IMAGE=$(BRAIN_RUNTIME_IMAGE) \
@@ -240,7 +243,7 @@ brain-image:
 # moose-ui's runtime base is CADDY_IMAGE, the same pin the proxy runs — one Caddy
 # for both, not two pins to keep level.
 ui-image:
-	$(call docker_build,moose-ui) -f web-ui/Dockerfile \
+	docker build -f web-ui/Dockerfile \
 	  --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
 	  --build-arg CONTROL_PLANE_VERSION=$(CONTROL_PLANE_VERSION) \
 	  --build-arg UI_BUILDER_IMAGE=$(UI_BUILDER_IMAGE) \
