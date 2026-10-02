@@ -285,3 +285,23 @@ func TestSlotImageSizeStopsAtThePartition(t *testing.T) {
 		t.Fatalf("size = %d, want %d", n, gib)
 	}
 }
+
+// An image cut short inside the slot fails the extract and leaves no file,
+// rather than writing a short slot image that looks fine.
+func TestExtractSlotFailsOnAShortImage(t *testing.T) {
+	img := hostedImage(t, 10_000_000, squashfsXZ)
+	r, err := check(img, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(img, int64(r.Slot.Start+5_000_000)); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "rootfs.img")
+	if _, err := extractSlot(img, r, dst); err == nil || !strings.Contains(err.Error(), "ends inside") {
+		t.Fatalf("err = %v, want a short-copy error", err)
+	}
+	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a failed extract left %s behind (%v)", dst, err)
+	}
+}

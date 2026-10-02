@@ -19,7 +19,7 @@
 // With -extract FILE it also writes the slot's squashfs to FILE, cut to the
 // squashfs's own size rounded up to 4 KiB (the block size mksquashfs pads
 // to), never past the partition. That is the slot image the OS update bundle
-// carries (dev/cloud/rauc-bundle.sh, BUILD.md # 1b # The bundle, #562): the
+// carries (dev/cloud/build-bundle.sh, BUILD.md # 1b # The bundle, #562): the
 // same bytes as slot A in the disk image. It is written only when the slot
 // is within budget.
 //
@@ -160,8 +160,16 @@ func extractSlot(path string, r report, dst string) (uint64, error) {
 		return 0, err
 	}
 	n := slotImageSize(r)
-	if _, err := io.Copy(out, io.NewSectionReader(src, int64(r.Slot.Start), int64(n))); err != nil {
+	// A section reader stops at the end of the file with no error, so an
+	// image cut short inside the slot would give a short image that still
+	// looks fine. Count the bytes.
+	got, err := io.Copy(out, io.NewSectionReader(src, int64(r.Slot.Start), int64(n)))
+	if err == nil && uint64(got) != n {
+		err = fmt.Errorf("the image ends inside %s: copied %d of %d bytes", slotLabel, got, n)
+	}
+	if err != nil {
 		out.Close()
+		os.Remove(dst)
 		return 0, err
 	}
 	if err := out.Close(); err != nil {
