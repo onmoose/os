@@ -372,6 +372,31 @@ jobs:
           fi
           echo "tag ${{ github.ref_name }} matches VERSION"
 
+      # The QEMU packages, downloaded ONCE here, on a fresh runner before
+      # anything else is installed, so the set is exactly what a fresh boot
+      # runner lacks. Each boot job installs them from the artifact instead of
+      # the Ubuntu mirror: with ten boot jobs at once, one slow mirror would
+      # otherwise hold up the whole run (a boot job once spent 6 min fetching
+      # these 46 MB at 135 kB/s).
+      - name: Download the QEMU packages for the boot jobs
+        run: |
+          set -euo pipefail
+          debs="${RUNNER_TEMP}/qemu-debs"
+          mkdir -p "${debs}/partial"
+          sudo apt-get update
+          sudo apt-get install -y --download-only -o Dir::Cache::Archives="${debs}" qemu-system-x86 qemu-utils ovmf
+          sudo rm -rf "${debs}/partial" "${debs}/lock"
+          sudo chmod -R a+r "${debs}"
+          ls "${debs}" | wc -l
+      - name: Upload the QEMU packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-image-qemu-debs
+          path: ${{ runner.temp }}/qemu-debs/*.deb
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
       # The userns knob (#189), the image-build tools and mkosi v26. Shared with
       # the OS lock bump (os-lock-bump.yml), so both build the same way.
       - uses: ./.github/actions/setup-mkosi
@@ -381,7 +406,7 @@ jobs:
       # and falls back to TCG otherwise (slower, still correct).
       - name: Install QEMU + OVMF for the seeded-boot test
         run: |
-          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+          sudo apt-get install -y "${RUNNER_TEMP}"/qemu-debs/*.deb
           echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none — test lane will use TCG')"
 
       - name: Versions
@@ -656,14 +681,25 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.ref || '' }}
 
-      # QEMU + UEFI firmware for the boot lane (run-cloud-tests.sh). Each
+      # QEMU + UEFI firmware for the boot lane (run-cloud-tests.sh), from the
+      # packages the build job downloaded. `--no-download` makes apt fail
+      # rather than fetch; if the runner image moved since the build job ran
+      # and the local set no longer fits, it falls back to the mirror. Each
       # matrix job is its own ubuntu-24.04 runner, which exposes /dev/kvm the
       # way the single job did; the lane uses KVM when present and falls back
       # to TCG otherwise (slower, still correct). The line below shows which.
+      - name: Download the QEMU packages
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-qemu-debs
+          path: ${{ runner.temp }}/qemu-debs
       - name: Install QEMU + OVMF
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+          if ! sudo apt-get install -y --no-download "${RUNNER_TEMP}"/qemu-debs/*.deb; then
+            echo "::warning::the QEMU packages from the build job did not install; falling back to the mirror"
+            sudo apt-get update
+            sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+          fi
           echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none — test lane will use TCG')"
 
       # Absolute path to the runner's go, for the host-side assertion mint
