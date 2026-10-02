@@ -332,6 +332,10 @@ grub-editenv /efi/grub/grubenv list | grep -qx "${BOOTED}_OK=1" || layout_fail "
 for u in emergency.service rescue.service; do
     systemctl cat "$u" 2>/dev/null | grep -q 'systemctl --no-block reboot' || layout_fail "$u has no reboot drop-in"
 done
+# Only host-agent marks a slot good (#563): RAUC's own mark-good unit would mark
+# a slot good whose host-agent never started.
+[ "$(systemctl is-enabled rauc-mark-good.service 2>&1)" = masked ] \
+    || layout_fail "rauc-mark-good.service is '$(systemctl is-enabled rauc-mark-good.service 2>&1)', want masked: it would mark every booted slot good"
 dmesg 2>/dev/null | grep -q 'moose-state: bind mounts done' || journalctl -k -b --no-pager 2>/dev/null | grep -q 'moose-state: bind mounts done' \
     || layout_fail "no 'moose-state: bind mounts done' in the kernel log"
 # state-setup looked for the state partition on the boot disk only.

@@ -159,6 +159,14 @@ EOF
 # are committed static files under mkosi.extra/ (etc/moose/metadata-firewall.nft).
 enable_unit /etc/systemd/system/moose-metadata-firewall.service moose-metadata-firewall.service
 
+# host-agent alone marks a slot good, and on a trial boot only once the brain
+# answers (UPDATES.md # 1, #563). Debian's rauc-service ships
+# rauc-mark-good.service, which marks every booted slot good at the end of
+# boot; left on, it marked a slot good whose host-agent never started (CI run
+# 37038924785), and the box could never fall back. Masked, not disabled, so a
+# preset can not turn it back on.
+systemctl --root=/ mask rauc-mark-good.service >/dev/null
+
 # The OS update trial's safety net (UPDATES.md # 1, #563): reboots a box whose
 # new slot was never marked good, when host-agent itself cannot. A timer, so
 # it goes under timers.target.
