@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v28"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v29"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 # A change to the OS package lock (#560) must rebuild too, so all three lock
 # files are part of the canary. The resolved list is in it as well: a re-run
 # after only the list changed must not exit early and skip os_lock_check below.
@@ -67,13 +67,14 @@ for tool in mkosi qemu-system-x86_64 qemu-img curl python3 docker; do
 done
 # host-agent-real is a CGO binary (PAM verify is kept in hosted); needs the headers.
 [ -f /usr/include/security/pam_appl.h ] || missing+=("libpam0g-dev (PAM headers for host-agent-real)")
-# OVMF (UEFI firmware) — location varies by distro.
-OVMF_CODE=""
-for cand in /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd \
-            /usr/share/OVMF/OVMF.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
-    [ -r "$cand" ] && { OVMF_CODE="$cand"; break; }
-done
-[ -n "$OVMF_CODE" ] || missing+=("ovmf (UEFI firmware — package: ovmf)")
+# OVMF (UEFI firmware): a CODE image and its VARS template, as a pair, from the
+# list in dev/cloud/ovmf.sh, which run-cloud-tests.sh uses too (#575). Only
+# when UEFI is one of the firmwares the boots run under.
+# shellcheck source=dev/cloud/ovmf.sh
+. "${CLOUD_DIR}/ovmf.sh"
+if ovmf_wanted && ! ovmf_find; then
+    missing+=("ovmf (UEFI firmware with its VARS template, package: ovmf)")
+fi
 if [ ${#missing[@]} -gt 0 ]; then
     cat >&2 <<EOF
 cloud boot-proof preflight: missing tooling
@@ -138,12 +139,15 @@ cp "${TEST_DIR}/moose-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
 # The image that ships keeps 15 min.
 # What GRUB left in the grubenv for this boot, logged before host-agent can
 # mark anything (#563): GRUB sets the booted slot's TRY=1, and the boot lane
-# checks it did, under both firmwares.
+# checks it did, under both firmwares (#575). RequiresMountsFor: the ESP is
+# `nofail` in fstab, so local-fs.target does not wait for it, and a read
+# before the mount found no grubenv (run 37063254219).
 cat > "$EXTRA/etc/systemd/system/moose-test-grubenv.service" <<'EOF'
 [Unit]
 Description=moose test: log the grubenv GRUB left for this boot
 Before=host-agent.service
 After=local-fs.target
+RequiresMountsFor=/efi
 DefaultDependencies=no
 
 [Service]
@@ -153,6 +157,44 @@ ExecStart=/bin/sh -c 'echo "grubenv at boot: $(grub-editenv /efi/grub/grubenv li
 [Install]
 WantedBy=multi-user.target
 EOF
+# A slot that dies before userspace (#575), for the last stage of the
+# os-revert boot. This initramfs hook runs right after moose-state, so the
+# state partition is mounted at ${rootmnt}/state. When the state partition
+# holds moose-test/panic-slot-<slot> for the booted slot, it leaves a note and
+# crashes the kernel: a real kernel panic, before systemd, which panic=10
+# turns into a reboot. GRUB must then skip the slot, because it saved the
+# slot's TRY=1 before it booted it. The hook is in the boot-proof image only,
+# so in the test bundle too (it is this image's slot), never in the image
+# that ships. mkosi copies the extra trees before any postinst runs, and
+# dev/cloud/mkosi.postinst.chroot builds the initramfs, so the hook is in it.
+# If it ever is not, slot B boots in full and stage 4 fails on the slot it
+# booted.
+mkdir -p "$EXTRA/etc/initramfs-tools/scripts/local-bottom"
+cat > "$EXTRA/etc/initramfs-tools/scripts/local-bottom/moose-test-panic" <<'EOF'
+#!/bin/sh
+PREREQ="moose-state"
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+. /scripts/functions
+slot=""
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in rauc.slot=*) slot="${arg#rauc.slot=}" ;; esac
+done
+[ -n "$slot" ] || exit 0
+[ -e "${rootmnt}/state/moose-test/panic-slot-${slot}" ] || exit 0
+echo "moose-test: slot ${slot} panics before userspace, as the os-revert boot asked" > /dev/kmsg
+echo "${slot}" > "${rootmnt}/state/moose-test/panicked-slot-${slot}"
+echo s > /proc/sysrq-trigger
+sleep 2
+echo c > /proc/sysrq-trigger
+# Not reached when the crash works. If it did not, fail the initramfs instead:
+# panic= reboots that too.
+panic "moose-test: slot ${slot}: the kernel crash did not happen"
+EOF
+chmod 0755 "$EXTRA/etc/initramfs-tools/scripts/local-bottom/moose-test-panic"
+
 mkdir -p "$EXTRA/etc/systemd/system/moose-os-trial.timer.d"
 cat > "$EXTRA/etc/systemd/system/moose-os-trial.timer.d/10-cloud-test.conf" <<'EOF'
 [Timer]

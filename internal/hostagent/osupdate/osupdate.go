@@ -249,9 +249,9 @@ type switched struct {
 	// before the switch took effect, not by a failed trial.
 	Activated bool `json:"activated,omitempty"`
 	// TrialReboots counts the reboots a trial made without managing to mark
-	// the slot bad. Without the mark a slot can boot again (GRUB does not save
-	// the try flag under UEFI, #575), so after one the trial stays up and
-	// leaves the decision to the image's timer.
+	// the slot bad. Without the mark only GRUB's try flag keeps the slot from
+	// booting again, and a firmware can lose that flag (#575), so after one
+	// the trial stays up and leaves the decision to the image's timer.
 	TrialReboots int `json:"trial_reboots,omitempty"`
 }
 
@@ -514,7 +514,8 @@ func (a *Applier) trial(slot string) {
 			slog.Error("os update: could not leave the failed-trial note", "err", werr, "slot", slot)
 		}
 		if merr := a.mark("bad", "booted"); merr != nil {
-			// Without the mark this slot can boot again (#575), so reboot
+			// Without the mark only GRUB's try flag keeps this slot from
+			// booting again, and a firmware can lose it (#575), so reboot
 			// once at most; after that stay up and let the image's timer
 			// decide, rather than reboot into the same slot for ever.
 			r, lerr := a.load()
@@ -527,7 +528,7 @@ func (a *Applier) trial(slot string) {
 				slog.Error("os update: could not write the record; staying up, the image's safety net decides", "err", serr, "slot", slot)
 				return
 			}
-			slog.Error("os update: could not mark the slot bad; rebooting once, GRUB skips a slot still on trial under BIOS", "err", merr, "slot", slot)
+			slog.Error("os update: could not mark the slot bad; rebooting once, GRUB skips a slot still on trial", "err", merr, "slot", slot)
 		}
 		if err := a.reboot(); err != nil {
 			slog.Error("os update: the trial cannot reboot; the image's safety net reboots the box", "err", err, "slot", slot)

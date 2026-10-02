@@ -201,7 +201,8 @@ So this doc isn't read as a claim about the finished product:
   started. Only the first boot after a switch is on trial. The brain reports
   `os_version`/`os_slot` and stream A's decision, and raises one admin
   notification per outcome. Proven by the `os-update` and `os-revert` boots
-  under both firmwares. Not built: the OS part of the private control plane's
+  under both firmwares, and `os-revert` also proves that GRUB skips a slot
+  whose kernel panics before userspace (#575). Not built: the OS part of the private control plane's
   answer (described in `docs/progress/host-agent-os-update.md`), so no
   production box moves its OS yet, and the appliance layout (#564). **The OS
   package lock is built (#560)** for the hosted image: `dev/os-lock/` holds a

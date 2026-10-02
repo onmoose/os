@@ -142,7 +142,9 @@ BOX_ID_OS_REVERT=wren-maple
 #     and marks it good, with the owner, an app, the SSH host keys and the data
 #     intact. `os-revert`: the same bundle, but host-agent cannot start on
 #     slot B, so the image's safety-net timer reboots the box and it comes back
-#     on slot A on its own. Each reboots its box inside one QEMU run, so
+#     on slot A on its own; then slot B is made active again and crashes its
+#     kernel in the initramfs, and GRUB must skip it (#575). Each reboots its
+#     box inside one QEMU run, so
 #     neither passes -no-reboot. Both need the test bundle from
 #     dev/cloud/test/build-os-test-bundle.sh (MOOSE_CLOUD_OS_BUNDLE_DIR).
 BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen access update ssh remap os-update os-revert}"
@@ -248,23 +250,32 @@ new_overlay() { # PATH
 }
 
 
-# --- 3. resolve OVMF firmware (varies by distro). One VARS copy, reused across
-# boots so the EFI state persists like a real machine power-cycle.
+# --- 3. resolve OVMF firmware (varies by distro): a CODE image and the VARS
+# template that matches it, as a pair. One VARS copy, reused across boots so
+# the EFI state persists like a real machine power-cycle.
+#
+# The VARS store is required (#575). Without a writable one (the combined
+# /usr/share/ovmf/OVMF.fd attached read-only, which is what this lane used to
+# pick on Ubuntu 24.04), OVMF keeps its variables in memory and saves them to
+# an `NvVars` file on the ESP through its own FAT driver at every boot. GRUB's
+# save of the TRY flag did not survive that: GRUB read its write back, but
+# the initramfs found the grubenv sectors as they were before GRUB ran (runs
+# 37061482623 and 37064755329). With a VARS store there is no NvVars, and the
+# TRY flag stays. A real UEFI keeps
+# its variables in flash and never writes the ESP. layout checks there is no
+# NvVars on the ESP (cloud-assertions.sh), so this cannot come back silently.
+# The pair list is dev/cloud/ovmf.sh, shared with the bootstrap preflight.
+# A BIOS-only run (MOOSE_CLOUD_FIRMWARES=bios) never starts OVMF, so it does
+# not need it.
+# shellcheck source=dev/cloud/ovmf.sh
+. "${REPO_ROOT}/dev/cloud/ovmf.sh"
 OVMF_CODE=""
-for cand in /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd \
-            /usr/share/OVMF/OVMF.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
-    [ -r "$cand" ] && { OVMF_CODE="$cand"; break; }
-done
-[ -n "$OVMF_CODE" ] || { echo "OVMF code firmware not found" >&2; exit 1; }
-OVMF_VARS_TEMPLATE=""
-for cand in /usr/share/OVMF/OVMF_VARS.fd /usr/share/ovmf/OVMF_VARS.fd \
-            /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do
-    [ -r "$cand" ] && { OVMF_VARS_TEMPLATE="$cand"; break; }
-done
 OVMF_VARS=""
-if [ -n "$OVMF_VARS_TEMPLATE" ]; then
+if ovmf_wanted; then
+    ovmf_find || { echo "OVMF firmware not found: need a CODE image and its VARS template (package: ovmf)" >&2; exit 1; }
     OVMF_VARS="${RUN_DIR}/OVMF_VARS.fd"
     cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
+    echo "OVMF: code ${OVMF_CODE}, vars from ${OVMF_VARS_TEMPLATE}"
 fi
 
 ACCEL=tcg
@@ -375,7 +386,7 @@ run_boot() {
     # A boot that reboots its own box (the OS update boots) keeps QEMU up
     # across the reboot; every other boot ends QEMU on a reboot.
     if [ -z "${KEEP_REBOOTS:-}" ]; then qemu_args+=( -no-reboot ); fi
-    if [ "$firmware" = uefi ] && [ -n "$OVMF_VARS" ]; then
+    if [ "$firmware" = uefi ]; then
         qemu_args+=( -drive "if=pflash,format=raw,file=${OVMF_VARS}" )
     fi
 
@@ -759,7 +770,11 @@ if should_run os-update; then
 fi
 if should_run os-revert; then
     os_boot os-revert "$BOX_ID_OS_REVERT"
-    echo "boot os-revert OK: slot B never came up, the safety net rebooted the box and it went back to slot A on its own (box_id=${BOX_ID_OS_REVERT})"
+    # The last stage (#575): slot B crashed in its initramfs. The guest checks
+    # it came back on slot A; the serial log shows the crash itself.
+    grep -aq 'moose-test: slot B panics before userspace' "$QEMU_SERIAL" && grep -aq 'Kernel panic' "$QEMU_SERIAL" \
+        || { echo "cloud os-revert proof: no kernel panic of slot B on the serial console" >&2; exit 1; }
+    echo "boot os-revert OK: slot B never came up, the safety net rebooted the box and it went back to slot A on its own; then slot B panicked before userspace and GRUB skipped it (box_id=${BOX_ID_OS_REVERT})"
 fi
 
 echo "firmware ${FIRMWARE}: every boot OK (${BOOTS})"
