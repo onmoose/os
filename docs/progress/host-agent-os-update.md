@@ -73,7 +73,8 @@ From runs on this branch (the final run is in # How it was verified):
 | 37017805364 | full list of #562 | 12.7 min | 33.0 |
 | 37019713707 | full list of #562, another run | 15.9 min | 37.8 |
 | 37033699687 | full list of this branch, before the review fixes | 14.9 min | 48.2 |
-| **37048902317** | **full list of this branch, final head** | **14.8 min** | **49.8** |
+| 37048902317 | full list of this branch, before the second review | 14.8 min | 49.8 |
+| **37053183525** | **full list of this branch, final head** | **13.6 min** | **47.2** |
 
 The two new boot groups add four jobs: `os-update` 3.0 to 3.5 min and `os-revert` 3.4 to 5.2 min each, about 15 runner minutes, plus the test bundle (about 0.5 min in the build job). The wall time moves by the bundle step and by `os-revert` when it is the longest job: about +2 min against #562's 12.7 min run, inside the +3 to 4 min the maintainer asked for. The build job itself varies more than that between runs (8.2 to 10.7 min).
 
@@ -90,7 +91,9 @@ All in CI, every publish input false. Never built or booted locally.
 | 37035445476 | the full list, after the review fixes | red: `os-revert` under UEFI. The new grubenv check in the safety net never fired |
 | 37038924785, 37043066156, 37045179497 | `os-revert`, then `unseeded os-revert`, with traces | found the cause: under UEFI, GRUB leaves the booted slot's `TRY` at 0 (#575) |
 | 37047235688 | `unseeded os-revert` | green, after the safety net went back to trusting the marker |
-| **37048902317** | **the full list, final head `fe3eaa8`** | **green, all 14 jobs: 7 boot groups under UEFI and under legacy BIOS** |
+| 37048902317 | the full list, head `fe3eaa8` before the second review | green, all 14 jobs |
+| 37051462028 | `os-update os-revert`, after the second review's fixes | green, all four jobs |
+| **37053183525** | **the full list, final head `b638594`** | **green, all 14 jobs: 7 boot groups under UEFI and under legacy BIOS; 13.6 min wall, 47.2 runner minutes** |
 
 - **Tests.** `internal/hostagent/updatetarget/os_test.go` (the checks, every pick rule, the loop: install outside the window and switch inside it, stream B first, a bad OS part refused with stream B still applying, an answer with only an OS part, current, none, unsupported). `internal/hostagent/osupdate/osupdate_test.go` against a fake two-slot RAUC (a normal boot marked good at once, install then switch, a wrong digest never reaching RAUC and not retried the same night, a stale `TRY` stopping the switch and putting the booted slot back, a busy lock, a good trial, a failed trial rebooting and the old slot recording the revert and holding, the floor file, the JSON and grubenv parsers, `Peek`). The report's `os` part, the brain's pass-through, the notification, the store lookup and the brain's outcome check have tests too. `make check` green.
 
