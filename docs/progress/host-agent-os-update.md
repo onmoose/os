@@ -61,15 +61,36 @@ From runs on this branch (the final run is in # How it was verified):
 |---|---|
 | Download per update (a real release) | 438.5 MB, one bundle (`rauc-bundle.md`) |
 | Disk the box needs while it installs | 438.5 MB on the state partition, 1.1% of a 40 GB disk, deleted after the install |
-| Time to apply, measured in the guest | NUMBERS-APPLY |
-| Test bundle in CI | 366.4 MB, built in 27 s (unsquashfs 4 s, mksquashfs gzip 4 s), uploaded in 5 s |
-| CI cost of the two boots | NUMBERS-CI |
+| Time to apply, measured in the guest (run 37048902317) | download and digest 0.5 to 0.7 s, `rauc install` 2.8 to 4.8 s, switch to marked good 16 to 18 s with the reboot. The guest reads the bundle from a local file server, so a real box adds the download: about 4 s at 1 Gbit/s, 35 s at 100 Mbit/s |
+| Time to revert on its own (`os-revert`) | 109 to 117 s from the switch: two reboots and the 90 s test safety net. With the 15 min timer that ships, about 16 min; with a live `host-agent` that finds the brain unhealthy, the 10 min trial |
+| Test bundle in CI | 366.4 MB, built in 26 to 27 s (unsquashfs 4 s, mksquashfs gzip 4 s), uploaded in 5 s |
+
+**CI cost**, before and after (wall time from the first job's start to the last job's end; runner minutes summed over jobs):
+
+| Run | What | Wall | Runner minutes |
+|---|---|---|---|
+| 37001109373 | full list before #562 (`ci-cloud-image-speedup.md`) | 12.2 min | 33.7 |
+| 37017805364 | full list of #562 | 12.7 min | 33.0 |
+| 37019713707 | full list of #562, another run | 15.9 min | 37.8 |
+| 37033699687 | full list of this branch, before the review fixes | 14.9 min | 48.2 |
+| **37048902317** | **full list of this branch, final head** | **14.8 min** | **49.8** |
+
+The two new boot groups add four jobs: `os-update` 3.0 to 3.5 min and `os-revert` 3.4 to 5.2 min each, about 15 runner minutes, plus the test bundle (about 0.5 min in the build job). The wall time moves by the bundle step and by `os-revert` when it is the longest job: about +2 min against #562's 12.7 min run, inside the +3 to 4 min the maintainer asked for. The build job itself varies more than that between runs (8.2 to 10.7 min).
 
 ## How it was verified
 
 All in CI, every publish input false. Never built or booted locally.
 
-NUMBERS-RUNS
+| Run | Boots | Result |
+|---|---|---|
+| 37028201385 | `os-update os-revert` | red: the bundle script looked for `rauc.sh` one directory too high |
+| 37029567427 | `os-update os-revert` | red at the last check, after every step worked under both firmwares: install, switch, trial good, safety-net revert. The in-guest update source had no restart policy, so after the reboot the box could not read its target and `os.state` read `none` |
+| 37031756819 | `os-update os-revert` | green, all four jobs |
+| 37033699687 | the full list | green, all 14 jobs |
+| 37035445476 | the full list, after the review fixes | red: `os-revert` under UEFI. The new grubenv check in the safety net never fired |
+| 37038924785, 37043066156, 37045179497 | `os-revert`, then `unseeded os-revert`, with traces | found the cause: under UEFI, GRUB leaves the booted slot's `TRY` at 0 (#575) |
+| 37047235688 | `unseeded os-revert` | green, after the safety net went back to trusting the marker |
+| **37048902317** | **the full list, final head `fe3eaa8`** | **green, all 14 jobs: 7 boot groups under UEFI and under legacy BIOS** |
 
 - **Tests.** `internal/hostagent/updatetarget/os_test.go` (the checks, every pick rule, the loop: install outside the window and switch inside it, stream B first, a bad OS part refused with stream B still applying, an answer with only an OS part, current, none, unsupported). `internal/hostagent/osupdate/osupdate_test.go` against a fake two-slot RAUC (a normal boot marked good at once, install then switch, a wrong digest never reaching RAUC and not retried the same night, a stale `TRY` stopping the switch and putting the booted slot back, a busy lock, a good trial, a failed trial rebooting and the old slot recording the revert and holding, the floor file, the JSON and grubenv parsers, `Peek`). The report's `os` part, the brain's pass-through, the notification, the store lookup and the brain's outcome check have tests too. `make check` green.
 
