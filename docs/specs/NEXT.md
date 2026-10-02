@@ -560,7 +560,7 @@ Loose ends. Each is parked until it bites or a higher-tier topic pulls it in.
 - Per-region / per-cohort rollouts. `UPDATES.md`.
 - Concrete "stable" promotion criteria. `UPDATES.md`.
 - CI signature-verification check on every `releases` PR (covered in `RELEASE_MANIFEST.md` # Promotion; tracked here so the implementation isn't forgotten when CI is stood up). `RELEASE_MANIFEST.md`.
-- Signing-key custody + rotation runbook (deferred per `RELEASE_MANIFEST.md` # Signing — "until we have a release to sign"). `RELEASE_MANIFEST.md`, `BUILD.md`.
+- Signing-key custody + rotation runbook for the release **manifest** (minisign; deferred per `RELEASE_MANIFEST.md` # Signing — "until we have a release to sign"). The OS bundle's custody and runbook are decided (`DECISIONS.md` 2026-10-02, `docs/dev/rauc-signing.md`); the manifest's should follow the same offline-root shape where it can. `RELEASE_MANIFEST.md`, `BUILD.md`.
 
 **Services**
 - Per-app DB resource quotas. `SERVICE_PROVISIONING.md`.
@@ -574,7 +574,7 @@ Loose ends. Each is parked until it bites or a higher-tier topic pulls it in.
 - Per-session concurrent file-transfer cap for the streaming `GET`/`PUT /api/v1/files/content` endpoints. These are streaming (not jobs, not SSE), so neither the per-session request-rate bucket nor the SSE-stream concurrency cap governs them (`BRAIN_UI_PROTOCOL.md` # Rate limiting & abuse — deliberately left out of the v1 posture). A small concurrency counter (same shape as the ≤16 SSE cap) is the obvious backstop for a buggy uploader; pin it when file-transfer abuse actually bites. `BRAIN_UI_PROTOCOL.md`, `FILES.md`.
 
 **Build & distribution**
-- Signing infrastructure for the OS bundle (the RAUC CA, `BUILD.md` # 1b), registry images, disk images. `BUILD.md`.
+- Signing infrastructure for registry images and disk images. *(The OS bundle part is resolved 2026-10-02, #562: an offline root CA and a CI-only signer, `DECISIONS.md` 2026-10-02, `docs/dev/rauc-signing.md`.)* `BUILD.md`.
 - ISO size budget. `BUILD.md`.
 - Installer shares code with `moose-brain` vs. clean-sheet. `BUILD.md`.
 - Kiosk-installer failure-mode UX ("stuck at 73%"). `BUILD.md`.

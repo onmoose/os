@@ -21,6 +21,28 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-02 — Key custody for the OS bundle: an offline root CA and a CI-only signer (#562)
+
+**Previously:** the OS bundle was to be signed against "an X.509 CA baked into the image", and its key custody was left to release signing as a whole (`BUILD.md` # 1b # The bundle, `NEXT.md` # Build & distribution). Nothing signed a release artifact.
+
+**Now:**
+
+- **The root CA is offline.** The maintainer makes it with `dev/release/rauc-ca.sh` on a machine that is not CI, keeps its key encrypted and backed up, and commits only its public cert as `dev/release/rauc/release-ca.pem`. Every image built to publish bakes that cert as `/etc/rauc/keyring.pem`.
+- **A signer issued by the root lives in CI**, as the secrets `RAUC_SIGNING_CERT` and `RAUC_SIGNING_KEY` of the GitHub Environment `os-release`. Only `main` and `v*` tags may use it, there is no required reviewer, and only the publish job of `CI / Cloud image` enters it. The build job signs with a throwaway key, and the publish job re-signs (`rauc resign`).
+- **Runs that publish no OS image use a throwaway root**, made per checkout and never stored. Neither a test key in the repo nor a placeholder root is committed. An OS publish run fails early while `release-ca.pem` is missing, and the publish job refuses without the secrets or when the image would trust the throwaway signer.
+- **No CRLs.** Rotation replaces the signer (secrets only, no box change). Replacing the root takes two OS releases, with both roots in the keyring in between. The how-to is `docs/dev/rauc-signing.md`.
+
+**Why:**
+
+- **The key that signs must not meet the build that runs third-party code as root.** Splitting signing into the publish job, behind an environment limited to `main` and `v*` tags, keeps a feature branch or a compromised build step from reading it.
+- **An offline root makes the common case cheap.** A leaked or old signer is replaced in minutes and no box has to change. A self-signed key in CI (considered) would need an image release before every rotation.
+- **Fully offline signing (considered) would stop every OS release for a manual step**, and an OS patch release for a security bump has a 7-day deadline (2026-10-01).
+- **A cloud KMS key over PKCS#11 (considered)** removes the long-lived secret, but adds a cloud account and wiring that is easy to get wrong, for a gain that the next point mostly gives already.
+- **The signature is not the only gate.** A box installs only the bundle whose digest its update target names: the authenticated cloud answer on hosted, the minisign-signed manifest on the appliance (`UPDATES.md` # 1; the box side is #563). So a leaked signer on its own cannot push an update to a box.
+- **CRLs were rejected** because an expired CRL makes RAUC refuse every bundle, and a box offline past the CRL's next update could then never update again.
+
+**Affected docs:** `BUILD.md` # 1b # The bundle, # 6; `UPDATES.md` # 1; `NEXT.md` # Build & distribution; `docs/dev/rauc-signing.md` (new); `docs/dev/hosted-boot-proof.md`; `docs/dev/contributing.md` # Release model; `docs/architecture.md`.
+
 ## 2026-10-01 — OS slots are 1 GiB of read-only squashfs-xz, with a 60% budget (#561)
 
 **Previously:** `BUILD.md` # 1b planned two 4 GiB ext4 slots and a 512 MiB ESP: about 8.5 GiB (9.1 GB), or 23% of the smallest hosted box's 40 GB disk. The size came from the spike ("choose generously") and was not put to the maintainer (`../progress/ab-os-update-design.md` # Known gaps).
