@@ -126,7 +126,7 @@ libpam-modules 1.7.0-5 amd64
 libpam-runtime 1.7.0-5 all
 libpam0g 1.7.0-5 amd64
 libpcre2-8-0 10.46-1~deb13u3 amd64
-libpng16-16t64 1.6.48-1+deb13u5 amd64
+libpng16-16t64 1.6.48-1+deb13u6 amd64
 libproc2-0 2:4.0.4-9 amd64
 libpsl5t64 0.21.2-1.1+b1 amd64
 libreadline8t64 8.2-6 amd64
