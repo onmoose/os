@@ -28,13 +28,13 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 **Now:**
 
 - **The root CA is offline.** The maintainer makes it with `dev/release/rauc-ca.sh` on a machine that is not CI, keeps its key encrypted and backed up, and commits only its public cert as `dev/release/rauc/release-ca.pem`. Every image built to publish bakes that cert as `/etc/rauc/keyring.pem`.
-- **A signer issued by the root lives in CI**, as the secrets `RAUC_SIGNING_CERT` and `RAUC_SIGNING_KEY` of the GitHub Environment `os-release`. Only `main` and `v*` tags may use it, there is no required reviewer, and only the publish job of `CI / Cloud image` enters it. The build job signs with a throwaway key, and the publish job re-signs (`rauc resign`).
-- **Runs that publish no OS image use a throwaway root**, made per checkout and never stored. Neither a test key in the repo nor a placeholder root is committed. An OS publish run fails early while `release-ca.pem` is missing, and the publish job refuses without the secrets or when the image would trust the throwaway signer.
+- **A signer issued by the root lives in CI**, as the secrets `RAUC_SIGNING_CERT` and `RAUC_SIGNING_KEY` of the GitHub Environment `os-release`. Only `main` and `v*` tags may use it, there is no required reviewer, and only a `sign` job of `CI / Cloud image`, which does nothing else, enters it. The build job signs with a throwaway key and reports the bundle's sha256, and the `sign` job re-signs (`rauc resign`) only a bundle with that digest.
+- **Runs that publish no OS image use a throwaway root**, made per checkout and never stored. Neither a test key in the repo nor a placeholder root is committed. While `release-ca.pem` is missing, `release.yml` tags nothing for a merge that bumps `VERSION`, on either line; the `sign` job refuses without the secrets or when the image would trust the throwaway signer.
 - **No CRLs.** Rotation replaces the signer (secrets only, no box change). Replacing the root takes two OS releases, with both roots in the keyring in between. The how-to is `docs/dev/rauc-signing.md`.
 
 **Why:**
 
-- **The key that signs must not meet the build that runs third-party code as root.** Splitting signing into the publish job, behind an environment limited to `main` and `v*` tags, keeps a feature branch or a compromised build step from reading it.
+- **The key that signs must not meet the build that runs third-party code as root.** Splitting signing into a job of its own, behind an environment limited to `main` and `v*` tags, keeps a feature branch or a compromised build step from reading it.
 - **An offline root makes the common case cheap.** A leaked or old signer is replaced in minutes and no box has to change. A self-signed key in CI (considered) would need an image release before every rotation.
 - **Fully offline signing (considered) would stop every OS release for a manual step**, and an OS patch release for a security bump has a 7-day deadline (2026-10-01).
 - **A cloud KMS key over PKCS#11 (considered)** removes the long-lived secret, but adds a cloud account and wiring that is easy to get wrong, for a gain that the next point mostly gives already.

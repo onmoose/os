@@ -187,8 +187,8 @@ So this doc isn't read as a claim about the finished product:
   (`/etc/rauc/keyring.pem`). **Every OS release builds a signed RAUC bundle
   (#562):** slot A of the image that ships, in the verity format, built by
   `dev/cloud/build-bundle.sh` and checked against the keyring read back out of
-  the slot, re-signed in the publish job alone by the release signer from the
-  `os-release` environment (`dev/release/sign-bundle.sh`; an offline root CA,
+  the slot, re-signed in a `sign` job of its own (the only job that enters the
+  `os-release` environment, `dev/release/sign-bundle.sh`; an offline root CA,
   `docs/dev/rauc-signing.md`) and attached beside the image. host-agent's
   hosted build reports the state partition as its "System" volume
   (`diskusage.NewHosted`). Not built: the update itself
