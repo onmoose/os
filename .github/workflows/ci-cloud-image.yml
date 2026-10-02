@@ -218,12 +218,16 @@ permissions:
 # is grouped by that ref, not by the caller's: the caller's ref is `dev`, and a
 # shared group would let a bump cancel an unrelated run on `dev`, or the reverse.
 #
-# A run that publishes is never cancelled by a later one (#562): a cancelled
-# Release upload or ghcr push leaves a half-published set that the next run
-# then refuses. It waits in the queue instead. Same expression as
+# A run that publishes has a group of its own (#562), with a `-publish`
+# suffix, and is never cancelled: a cancelled Release upload or ghcr push
+# leaves a half-published set that the next run then refuses. GitHub reads
+# `cancel-in-progress` from the NEW run, so one shared group would let a
+# build-only run on the same ref cancel a release in flight. With two groups a
+# build-only run can never cancel a release or wait behind one, and two
+# releases on one ref queue one after the other. Same expression as
 # SHOULD_PUBLISH below; the workflow `env` is not readable here.
 concurrency:
-  group: ci-cloud-image-${{ inputs.ref || github.ref }}
+  group: ci-cloud-image-${{ inputs.ref || github.ref }}${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && '-publish' || '' }}
   cancel-in-progress: ${{ !((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) }}
 
 # Single source of truth for "should this run publish", one per line, computed
