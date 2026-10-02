@@ -25,8 +25,8 @@
 #     the path a release actually takes now — read on for why it isn't the
 #     `push: tags` trigger below.
 #   - `push: tags: v*` — the MANUAL escape hatch for the OS line: a human
-#     pushing a `vX.Y.Z` tag by hand. It publishes the disk image only, never the
-#     control-plane images (a `v*` tag is an OS release now). A
+#     pushing a `vX.Y.Z` tag by hand. It publishes the OS release files only
+#     (the disk image and the signed bundle, #562), never the control-plane images (a `v*` tag is an OS release now). A
 #     `control-plane-v*` tag does not match `v*` and triggers nothing; re-publish
 #     the control plane with workflow_dispatch instead (`publish=false
 #     publish_control_plane=true`) (e.g. re-cutting an image for an already-tagged release
@@ -42,7 +42,10 @@
 #     triggers can never fire for the same tag-creation event, so there is no
 #     double-build risk from keeping both — `push: tags` only ever fires for a
 #     human-originated tag push (a PAT or a person's own `git push --tags`),
-#     never for the auto-tag `release.yml` creates.
+#     never for the auto-tag `release.yml` creates. Since #562 that OS
+#     release is the whole OS set: the disk image AND the signed bundle, so it
+#     needs the release root CA committed and the `os-release` signer, like
+#     any OS release (docs/dev/rauc-signing.md).
 #   - `workflow_dispatch` — manual, on-demand, ad hoc ref. The `publish` input
 #     governs whether the run publishes BOTH lines (default true);
 #     `publish=false` gives a build-only smoke run. To re-publish one line only,
@@ -68,14 +71,18 @@
 #
 # A publish is a deliberate act, not a per-push one.
 #
-# Shape (the CI speed-up, docs/progress/ci-cloud-image-speedup.md). Three jobs:
+# Shape (the CI speed-up, docs/progress/ci-cloud-image-speedup.md; `sign` from
+# #562). Four jobs:
 #   - `build` runs every assert, builds the production image and the boot-proof
 #     image once, and uploads them as artifacts. It also picks the boots.
 #   - `boot` is a matrix with one job per boot group and firmware, all at once,
 #     each booting the downloaded boot-proof image. `unseeded seeded` (and
 #     `frozen`, when it is asked for) stay one group: they share one disk.
+#   - `sign` runs only when the OS line publishes, after every `boot` job
+#     passed. It alone enters the `os-release` environment and re-signs the OS
+#     update bundle with the release signer; it does nothing else.
 #   - `publish` runs only when a line publishes, and only after `build` and
-#     every `boot` job passed. It publishes the image and the control-plane
+#     every `boot` job passed (and `sign`, when the OS line publishes). It publishes the image and the control-plane
 #     images that `build` made, the same bytes the boots proved.
 # A full run takes about 12 min instead of about 27, and uses more runner
 # minutes in total (about 34 instead of about 27). The repo is public, so
@@ -210,9 +217,14 @@ permissions:
 # Cancel superseded runs on the same ref. A call with `ref` (the OS lock bump)
 # is grouped by that ref, not by the caller's: the caller's ref is `dev`, and a
 # shared group would let a bump cancel an unrelated run on `dev`, or the reverse.
+#
+# A run that publishes is never cancelled by a later one (#562): a cancelled
+# Release upload or ghcr push leaves a half-published set that the next run
+# then refuses. It waits in the queue instead. Same expression as
+# SHOULD_PUBLISH below; the workflow `env` is not readable here.
 concurrency:
   group: ci-cloud-image-${{ inputs.ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) }}
 
 # Single source of truth for "should this run publish", one per line, computed
 # once for the whole workflow and read by every job. SHOULD_PUBLISH is "either
@@ -273,6 +285,9 @@ jobs:
       matrix: ${{ steps.boots.outputs.matrix }}
       should_publish: ${{ env.SHOULD_PUBLISH }}
       should_publish_os: ${{ env.SHOULD_PUBLISH_OS }}
+      # The sha256 of the bundle this job built (#562). The `sign` job signs
+      # only a bundle with this digest.
+      bundle_sha256: ${{ steps.bundle.outputs.sha256 }}
     # Pin 24.04 explicitly: this is the exact environment that reproduces the
     # mkosi-sandbox EPERM (#189), so the fix has to be proven here, not on a
     # floating ubuntu-latest.
@@ -354,17 +369,11 @@ jobs:
       # An OS release bakes the release root CA into the image and has its
       # bundle signed by the release signer (#562, docs/dev/rauc-signing.md).
       # Without the committed root there is nothing to bake, so fail before the
-      # ~10 min build. The signer secrets are checked in the publish job, the
+      # ~10 min build. The signer secrets are checked in the `sign` job, the
       # only job that may read them.
       - name: Assert an OS release has the release root CA
         if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
-        run: |
-          set -euo pipefail
-          if [ ! -f dev/release/rauc/release-ca.pem ]; then
-            echo "::error::this run publishes the OS line, but dev/release/rauc/release-ca.pem is not committed yet. The maintainer makes the root CA offline and commits its public cert first: see docs/dev/rauc-signing.md."
-            exit 1
-          fi
-          openssl x509 -in dev/release/rauc/release-ca.pem -noout -subject -enddate
+        run: ./dev/release/require-release-ca.sh
 
       # Fail FAST on a mistagged release, before the ~10min build below runs.
       # VERSION (repo root) is the source of truth for the moose (OS) release
@@ -611,12 +620,18 @@ jobs:
       # The OS update bundle (#562, BUILD.md # 1b # The bundle): slot A of the
       # image just built, as a verity RAUC bundle signed with the throwaway key,
       # checked against the keyring and config read back out of the slot, with
-      # a wrong-key check and a rehearsal of the publish job's re-signing. It
+      # a wrong-key check and a rehearsal of the sign job's re-signing. It
       # writes the bundle size to the job summary. About 1 min.
       - name: Build the OS update bundle (+ keyring and signature checks)
+        id: bundle
         env:
           GO: ${{ steps.go.outputs.go-bin }}
-        run: sudo -E ./dev/cloud/build-bundle.sh .dev/cloud/moose-cloud.raw .dev/cloud/bundle
+        run: |
+          set -euo pipefail
+          sudo -E ./dev/cloud/build-bundle.sh .dev/cloud/moose-cloud.raw .dev/cloud/bundle
+          sum="$(sha256sum .dev/cloud/bundle/moose-cloud.raucb | cut -d' ' -f1)"
+          echo "bundle sha256: ${sum}"
+          echo "sha256=${sum}" >> "$GITHUB_OUTPUT"
 
       # The package list this build resolved to (#560). When the lock check
       # fails, this is the file to compare with dev/os-lock/cloud-packages.lock,
@@ -681,9 +696,9 @@ jobs:
           compression-level: 1
           retention-days: 3
           if-no-files-found: error
-      # The bundle and the slot's own RAUC config and keyring, for the publish
+      # The bundle and the slot's own RAUC config and keyring, for the `sign`
       # job to re-sign and check. Already squashfs-xz inside, so no zip.
-      - name: Upload the OS update bundle for the publish job
+      - name: Upload the OS update bundle for the sign job
         if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
         uses: actions/upload-artifact@v4
         with:
@@ -790,26 +805,96 @@ jobs:
           GO: ${{ steps.go.outputs.go-bin }}
         run: make test-cloud-qemu
 
+  # Re-sign the OS update bundle with the release signer (#562, DECISIONS.md
+  # 2026-10-02 key custody). Only when the OS line publishes, and only after
+  # the build and every boot job passed. This job does nothing else: it is the
+  # only job that enters the `os-release` environment, whose secrets
+  # RAUC_SIGNING_CERT and RAUC_SIGNING_KEY only `main` and `v*` tags may use, so
+  # a dispatch from any other branch with publish_os set fails here and never
+  # reads the key. It writes nothing anywhere but its own artifact: the
+  # publish job attaches what it signed.
+  sign:
+    name: Sign the OS update bundle
+    needs: [build, boot]
+    if: ${{ needs.boot.result == 'success' && needs.build.outputs.should_publish_os == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: os-release
+    permissions:
+      contents: read
+    outputs:
+      signed_sha256: ${{ steps.sign.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Download the OS update bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-os-bundle
+          path: .dev/cloud/bundle
+
+      # The signature vouches for what the build job produced, so sign only
+      # the bundle whose digest the build job reported. The build job itself
+      # could still produce a bad bundle; the box's check of the bundle digest
+      # its update target names (#563) is the control that covers that.
+      - name: Check the bundle is the one the build job made
+        env:
+          WANT: ${{ needs.build.outputs.bundle_sha256 }}
+        run: |
+          set -euo pipefail
+          got="$(sha256sum .dev/cloud/bundle/moose-cloud.raucb | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$got" != "$WANT" ]; then
+            echo "::error::the downloaded bundle has sha256 ${got}, but the build job reported '${WANT}'; refusing to sign"
+            exit 1
+          fi
+          echo "bundle sha256 ${got} matches the build job"
+
+      # dev/release/sign-bundle.sh refuses when a secret is empty, when the
+      # image keyring is not the committed release root, or when that keyring
+      # accepts the throwaway-signed bundle; it writes the bundle only when the
+      # result verifies against the image's own config and keyring.
+      - name: Sign it with the release signer
+        id: sign
+        env:
+          RAUC_SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
+          RAUC_SIGNING_KEY: ${{ secrets.RAUC_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          ./dev/release/sign-bundle.sh .dev/cloud/bundle/moose-cloud.raucb .dev/cloud/bundle/image-etc .dev/cloud/bundle/moose-signed.raucb
+          sum="$(sha256sum .dev/cloud/bundle/moose-signed.raucb | cut -d' ' -f1)"
+          echo "signed bundle sha256: ${sum}"
+          echo "sha256=${sum}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the signed bundle for the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-image-os-bundle-signed
+          path: .dev/cloud/bundle/moose-signed.raucb
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
   # Only when a line publishes, and only after the build and every boot job
   # passed. `needs` waits for all of them. The `if` says it in so many words:
   # the boot matrix must have succeeded as a whole (one red, skipped or
   # cancelled boot job makes it fail), and a line must publish. A red boot
   # skips this job, so nothing is published from an image that did not prove
   # itself.
+  #
+  # When the OS line publishes it also waits for `sign` and needs it green.
+  # `!cancelled()` lets this job run when `sign` was skipped (a
+  # control-plane-only publish), which `needs` alone would not.
   publish:
     name: Publish the hosted cloud image and the control plane
-    needs: [build, boot]
-    if: ${{ needs.boot.result == 'success' && needs.build.outputs.should_publish == 'true' }}
+    needs: [build, boot, sign]
+    if: ${{ !cancelled() && needs.boot.result == 'success' && needs.build.outputs.should_publish == 'true' && (needs.sign.result == 'success' || (needs.sign.result == 'skipped' && needs.build.outputs.should_publish_os != 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # The release signer for the OS bundle lives in the `os-release` GitHub
-    # Environment (#562, DECISIONS.md 2026-10-02 key custody): RAUC_SIGNING_CERT
-    # and RAUC_SIGNING_KEY, which only `main` and `v*` tags may use. This job
-    # enters it only when the OS line publishes; a control-plane-only publish
-    # needs no signer and takes no environment (an empty name is none). A
-    # dispatch from any other branch with publish_os set is refused by the
-    # environment's branch rule, so a feature branch never reads the key.
-    environment: ${{ needs.build.outputs.should_publish_os == 'true' && 'os-release' || '' }}
     # The only job with write access: contents for the Release asset, packages
     # for the ghcr push.
     permissions:
@@ -828,24 +913,26 @@ jobs:
           name: cloud-image-os-raw
           path: .dev/cloud
 
-      - name: Download the OS update bundle
+      # The bundle the `sign` job signed, checked against the digest it
+      # reported.
+      - name: Download the signed OS update bundle
         if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
         uses: actions/download-artifact@v4
         with:
-          name: cloud-image-os-bundle
+          name: cloud-image-os-bundle-signed
           path: .dev/cloud/bundle
-
-      # Re-sign the bundle with the release signer, the only step that reads
-      # it. dev/release/sign-bundle.sh refuses when a secret is empty, when the
-      # image keyring is not the committed release root, or when that keyring
-      # accepts the throwaway-signed bundle; it writes the bundle only when the
-      # result verifies against the image's own config and keyring.
-      - name: Sign the OS update bundle with the release signer
+      - name: Check the signed bundle is the one the sign job made
         if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
         env:
-          RAUC_SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
-          RAUC_SIGNING_KEY: ${{ secrets.RAUC_SIGNING_KEY }}
-        run: ./dev/release/sign-bundle.sh .dev/cloud/bundle/moose-cloud.raucb .dev/cloud/bundle/image-etc .dev/cloud/bundle/moose-signed.raucb
+          WANT: ${{ needs.sign.outputs.signed_sha256 }}
+        run: |
+          set -euo pipefail
+          got="$(sha256sum .dev/cloud/bundle/moose-signed.raucb | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$got" != "$WANT" ]; then
+            echo "::error::the signed bundle has sha256 ${got}, but the sign job reported '${WANT}'; refusing to attach it"
+            exit 1
+          fi
+          echo "signed bundle sha256 ${got} matches the sign job"
 
       # The brain and UI tarballs the build job baked into both images. Loading
       # them gives back moose-brain:dev and moose-ui:dev with the same image IDs
@@ -912,7 +999,7 @@ jobs:
           cat "$checksum"
 
           # The OS update bundle (#562), signed by the release signer in the
-          # step above, beside the image it was cut from.
+          # `sign` job, beside the image it was cut from.
           bundle="moose-${tag}-amd64.raucb"
           bundle_sum="${bundle}.sha256"
           cp -- .dev/cloud/bundle/moose-signed.raucb "$bundle"
@@ -960,8 +1047,9 @@ jobs:
           esac
 
           # The image, the bundle and their checksums are ONE set (#562), and
-          # a published asset is never overwritten: all present is left, none
-          # is uploaded in one call, and any other mix (an upload that stopped
+          # a published asset is never overwritten. The script detects and
+          # refuses a mixed set: all present is left, none is uploaded in one
+          # call, and any other mix (an upload that stopped
           # halfway, or a Release cut before the bundle existed) refuses with
           # the `gh release delete-asset` lines a person runs before
           # re-running. The rules and why live in the script, which

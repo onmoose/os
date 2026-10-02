@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the OS update bundle from the image that ships (#562, BUILD.md # 1b
-# # The bundle), check it, and rehearse the publish job's signing.
+# # The bundle), check it, and rehearse the sign job's signing.
 #
 #   sudo -E dev/cloud/build-bundle.sh IMAGE.raw OUTDIR
 #
@@ -12,7 +12,7 @@
 # git commit.
 #
 # It is always signed here with the throwaway signer (dev/cloud/rauc.sh). A run
-# that publishes the OS re-signs it with the release signer in the publish job
+# that publishes the OS re-signs it with the release signer in the sign job
 # (dev/release/sign-bundle.sh), so the release key never meets this build,
 # which runs mkosi as root with a lot of third-party code.
 #
@@ -26,7 +26,7 @@
 #      never trust the throwaway signer;
 #   4. a wrong key: a bundle-shaped check against an unrelated CA is refused;
 #   5. a rehearsal of dev/release/sign-bundle.sh with a throwaway "release" CA,
-#      so the publish job's script runs on every build, not only on a release.
+#      so the sign job's script runs on every build, not only on a release.
 #
 # Writes to OUTDIR: moose-cloud.raucb, image-etc/{system.conf,keyring.pem} and
 # bundle-info.txt, and a size table to $GITHUB_STEP_SUMMARY when set.
@@ -145,7 +145,7 @@ echo "check 1: the slot carries the keyring this build staged (${mode})"
 cmp -s "$out/image-etc/keyring.pem" "$staged" || { echo "the slot's /etc/rauc/keyring.pem is not the ${mode} keyring this build staged" >&2; exit 1; }
 echo "ok: $(openssl x509 -in "$out/image-etc/keyring.pem" -noout -subject)"
 
-echo "check 5: rehearse the publish job's signing with a throwaway release CA"
+echo "check 5: rehearse the sign job's signing with a throwaway release CA"
 mkdir -p "$out/rehearsal/image-etc"
 sed 's/^path=.*/path=keyring.pem/' "$out/image-etc/system.conf" > "$out/rehearsal/image-etc/system.conf"
 cp "$out/rehearsal/root-ca.pem" "$out/rehearsal/image-etc/keyring.pem"
@@ -171,7 +171,7 @@ mb() { awk -v a="$1" 'BEGIN { printf "%.1f MB", a / 1e6 }'; }
     echo "| Slot image in the bundle | ${img_bytes} | $(mb "$img_bytes") | $(pct "$img_bytes" "$slot") |"
     echo "| Bundle (\`.raucb\`, verity, signed) | ${b_bytes} | $(mb "$b_bytes") | $(pct "$b_bytes" "$slot") |"
     echo ""
-    echo "Keyring in the image: \`${mode}\`. Signed here with the throwaway key; a release re-signs it in the publish job."
+    echo "Keyring in the image: \`${mode}\`. Signed here with the throwaway key; a release re-signs it in the sign job."
 } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 [ -n "$CALLER" ] && chown -R "$CALLER":"$(id -gn "$CALLER")" "$out" 2>/dev/null || true
 echo "bundle: $out/moose-cloud.raucb"

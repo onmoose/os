@@ -4,7 +4,7 @@
 #
 #   sign-bundle.sh IN.raucb IMAGE_ETC OUT.raucb
 #
-# Run by the publish job of ci-cloud-image.yml, the only job that sees the
+# Run by the `sign` job of ci-cloud-image.yml, the only job that sees the
 # release signer: RAUC_SIGNING_CERT and RAUC_SIGNING_KEY, secrets of the
 # `os-release` GitHub Environment, passed in as environment variables (PEM
 # text). IN.raucb is the bundle the build job made and signed with its
