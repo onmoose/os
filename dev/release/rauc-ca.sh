@@ -32,6 +32,19 @@ root_days="${RAUC_CA_ROOT_DAYS:-7300}"
 signer_days="${RAUC_CA_SIGNER_DAYS:-1095}"
 umask 077
 
+# A failed run removes what it made, so the next run can start again (a root
+# key left behind without its cert would make `root` refuse the directory).
+created=()
+cleanup() {
+    local rc=$?
+    if [ "$rc" -ne 0 ] && [ "${#created[@]}" -gt 0 ]; then
+        rm -f -- "${created[@]}"
+        echo "rauc-ca: failed; removed the partial files: ${created[*]}" >&2
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT
+
 ext() { # the x509v3 extensions both certificates use
     cat <<'EOF'
 [root]
@@ -58,6 +71,7 @@ root)
     fi
     enc=(-aes256)
     if [ "${RAUC_CA_NO_PASSPHRASE:-}" = "1" ]; then enc=(); fi
+    created=("$dir/root-ca.key" "$dir/root-ca.pem")
     openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 "${enc[@]}" -out "$dir/root-ca.key"
     openssl req -x509 -new -key "$dir/root-ca.key" -sha256 -days "$root_days" \
         -subj "/CN=${name} root CA $(date -u +%Y)" \
@@ -76,14 +90,15 @@ signer)
         echo "rauc-ca: $dir already holds a signer called $sname; pick a new name" >&2
         exit 1
     fi
-    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$dir/$sname.key"
     csr="$(mktemp)"
-    trap 'rm -f "$csr"' EXIT
+    created=("$dir/$sname.key" "$dir/$sname.pem" "$csr")
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$dir/$sname.key"
     openssl req -new -key "$dir/$sname.key" -subj "/CN=${name} signer ${sname}" -out "$csr"
     openssl x509 -req -in "$csr" -CA "$dir/root-ca.pem" -CAkey "$dir/root-ca.key" -sha256 \
         -set_serial "0x$(openssl rand -hex 16)" -days "$signer_days" \
         -extfile <(ext) -extensions signer -out "$dir/$sname.pem"
     chmod 0644 "$dir/$sname.pem"
+    rm -f "$csr"
     # openssl 3.2 and later know the codesign purpose; older ones check the
     # chain, and the purpose is then read from the cert itself.
     if ! openssl verify -purpose codesign -x509_strict -CAfile "$dir/root-ca.pem" "$dir/$sname.pem" 2>/dev/null; then

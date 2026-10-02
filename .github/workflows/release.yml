@@ -123,6 +123,18 @@ jobs:
             ./dev/release/decide.sh CONTROL_PLANE_VERSION control-plane-v "$BEFORE" | sed 's/^/cp_/' > /tmp/cp.out
           cat /tmp/os.out /tmp/cp.out | tee -a "$GITHUB_OUTPUT"
 
+      # An OS release ships a bundle signed by the release signer, which needs
+      # the offline root CA committed (#562, docs/dev/rauc-signing.md). Without
+      # it the cloud-image build fails at its first step, so stop HERE, before
+      # anything is tagged: otherwise a merge that bumps both lines would tag
+      # and create both Releases and then push no control-plane images either,
+      # because both lines publish from the one cloud-image run. The OS line is
+      # never dropped quietly: the merge must wait for the key setup, or bump
+      # only CONTROL_PLANE_VERSION.
+      - name: Refuse an OS release without the release root CA
+        if: steps.decide.outputs.os_created == 'true'
+        run: ./dev/release/require-release-ca.sh
+
       # Tag the merge commit and open a GitHub Release, once per line that this
       # merge releases. This uses the default GITHUB_TOKEN, which is exactly why
       # ci-cloud-image.yml cannot rely on its `push: tags` trigger to notice the

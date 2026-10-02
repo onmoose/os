@@ -108,3 +108,63 @@ func TestSignBundleRefusesWithoutTheReleaseSetup(t *testing.T) {
 		t.Error("a refusal wrote a bundle")
 	}
 }
+
+// A root run that fails part way removes the key it wrote, so a second run is
+// not refused by a half-made root.
+func TestRaucCAFailedRunLeavesNothing(t *testing.T) {
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skip("openssl not installed")
+	}
+	dir := filepath.Join(t.TempDir(), "ca")
+	if rc, out := runScript(t, []string{"RAUC_CA_NO_PASSPHRASE=1", "RAUC_CA_ROOT_DAYS=not-a-number"}, "rauc-ca.sh", "root", dir); rc == 0 || !strings.Contains(out, "removed the partial files") {
+		t.Fatalf("bad lifetime: exit %d, want a failure that cleans up\n%s", rc, out)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*")); len(left) != 0 {
+		t.Fatalf("a failed root left %v", left)
+	}
+	if rc, out := runScript(t, []string{"RAUC_CA_NO_PASSPHRASE=1"}, "rauc-ca.sh", "root", dir); rc != 0 {
+		t.Fatalf("retry: exit %d\n%s", rc, out)
+	}
+}
+
+// release.yml refuses to tag an OS release unless the committed release root
+// is a real one: present, a CA, not a throwaway or check CA (#562).
+func TestRequireReleaseCA(t *testing.T) {
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skip("openssl not installed")
+	}
+	tmp := t.TempDir()
+	mk := func(name, cn string) string {
+		dir := filepath.Join(tmp, name)
+		if rc, out := runScript(t, []string{"RAUC_CA_NO_PASSPHRASE=1", "RAUC_CA_NAME=" + cn}, "rauc-ca.sh", "root", dir); rc != 0 {
+			t.Fatalf("make %s: exit %d\n%s", name, rc, out)
+		}
+		return filepath.Join(dir, "root-ca.pem")
+	}
+	good := mk("real", "moose OS release")
+	throwaway := mk("throwaway", "moose THROWAWAY (not for release)")
+	cases := []struct {
+		name, file string
+		wantRC     int
+		want       string
+	}{
+		{"missing", filepath.Join(tmp, "none.pem"), 1, "docs/dev/rauc-signing.md"},
+		{"throwaway", throwaway, 1, "throwaway or check CA"},
+		{"real", good, 0, "release root CA: subject=CN"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rc, out := runScript(t, []string{"MOOSE_RAUC_RELEASE_CA_FILE=" + c.file}, "require-release-ca.sh")
+			if rc != c.wantRC || !strings.Contains(out, c.want) {
+				t.Errorf("exit %d, want %d with %q\n%s", rc, c.wantRC, c.want, out)
+			}
+		})
+	}
+	// A signer is not a CA.
+	if rc, out := runScript(t, []string{"RAUC_CA_NO_PASSPHRASE=1"}, "rauc-ca.sh", "signer", filepath.Join(tmp, "real"), "s"); rc != 0 {
+		t.Fatalf("signer: %d\n%s", rc, out)
+	}
+	if rc, out := runScript(t, []string{"MOOSE_RAUC_RELEASE_CA_FILE=" + filepath.Join(tmp, "real", "s.pem")}, "require-release-ca.sh"); rc != 1 || !strings.Contains(out, "not a CA certificate") {
+		t.Errorf("signer as root: exit %d\n%s", rc, out)
+	}
+}

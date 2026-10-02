@@ -3,7 +3,7 @@
 # bundle, docs/dev/rauc-signing.md). Sourced, not run, by
 # dev/cloud/stage-control-plane.sh (the keyring both images bake),
 # dev/cloud/build-bundle.sh (the build job) and dev/release/sign-bundle.sh (the
-# publish job).
+# sign job).
 #
 # Expects REPO_ROOT set by the sourcing script.
 #
@@ -17,7 +17,9 @@
 #             root CA. ci-cloud-image.yml sets it on every run that publishes
 #             the OS line. It fails when the file is not committed yet.
 
-RAUC_RELEASE_CA="${REPO_ROOT}/dev/release/rauc/release-ca.pem"
+# MOOSE_RAUC_RELEASE_CA_FILE points the checks at another file: for the tests
+# in dev/release/rauc_test.go only.
+RAUC_RELEASE_CA="${MOOSE_RAUC_RELEASE_CA_FILE:-${REPO_ROOT}/dev/release/rauc/release-ca.pem}"
 RAUC_THROWAWAY_DIR="${REPO_ROOT}/.dev/rauc/throwaway"
 RAUC_HOWTO="docs/dev/rauc-signing.md"
 
@@ -30,14 +32,25 @@ rauc_keyring_mode() {
 }
 
 # rauc_require_release_ca fails, naming the how-to, when the release root CA is
-# not committed or is not a CA certificate.
+# not committed, is not a CA certificate, has expired, or is one of the
+# throwaway or check CAs this repo's scripts make (its subject says so).
+# release.yml runs it (dev/release/require-release-ca.sh) before it tags an OS
+# release, and every OS publish run before it builds.
 rauc_require_release_ca() {
     if [ ! -f "$RAUC_RELEASE_CA" ]; then
-        echo "no release root CA: dev/release/rauc/release-ca.pem is not committed yet, so this run cannot build an OS image to publish. The maintainer makes the root offline and commits its public cert; see ${RAUC_HOWTO}." >&2
+        echo "no release root CA: dev/release/rauc/release-ca.pem is not committed yet, so no OS release can be built or published. The maintainer makes the root offline and commits its public cert; see ${RAUC_HOWTO}." >&2
         return 1
     fi
     if ! openssl x509 -in "$RAUC_RELEASE_CA" -noout -ext basicConstraints 2>/dev/null | grep -q 'CA:TRUE'; then
         echo "dev/release/rauc/release-ca.pem is not a CA certificate; see ${RAUC_HOWTO}." >&2
+        return 1
+    fi
+    if openssl x509 -in "$RAUC_RELEASE_CA" -noout -subject | grep -Eqi 'THROWAWAY|REHEARSAL|WRONG KEY'; then
+        echo "dev/release/rauc/release-ca.pem is a throwaway or check CA ($(openssl x509 -in "$RAUC_RELEASE_CA" -noout -subject)), not the offline release root; see ${RAUC_HOWTO}." >&2
+        return 1
+    fi
+    if ! openssl x509 -in "$RAUC_RELEASE_CA" -noout -checkend 0 >/dev/null; then
+        echo "dev/release/rauc/release-ca.pem has expired ($(openssl x509 -in "$RAUC_RELEASE_CA" -noout -enddate)); replace the root, see ${RAUC_HOWTO}." >&2
         return 1
     fi
 }
