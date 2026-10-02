@@ -63,10 +63,38 @@ const DefaultDir = "/var/lib/moose/os-update"
 // a live host-agent always decides first.
 const DefaultTrialTimeout = 10 * time.Minute
 
-// MaxTrialTimeout is the longest trial allowed. It stays under the image's
-// moose-os-trial.timer (15 min), so a live host-agent always decides first
-// and the timer never reverts a slot that is slow but healthy.
+// MaxTrialTimeout is the longest trial allowed.
 const MaxTrialTimeout = 14 * time.Minute
+
+// TrialEndSinceBoot is when a trial must have decided, counted from boot like
+// moose-os-trial.timer (OnBootSec=15min). The 2 min between them are for the
+// final RAUC mark and its retries, so a live host-agent always decides before
+// the timer and the timer never reverts a slot that is slow but healthy.
+const TrialEndSinceBoot = 13 * time.Minute
+
+// minTrialWait is the shortest health wait a trial gets, even when the box
+// took long to reach it.
+const minTrialWait = 10 * time.Second
+
+// bootUptime reads the time since boot from /proc/uptime.
+func bootUptime() (time.Duration, error) {
+	b, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+	var secs float64
+	if _, err := fmt.Sscanf(string(b), "%f", &secs); err != nil {
+		return 0, fmt.Errorf("read /proc/uptime: %w", err)
+	}
+	return time.Duration(secs * float64(time.Second)), nil
+}
+
+// FailedNote is the file a trial writes before it gives its slot up, so the
+// old slot can tell a tried slot from one whose switch never took effect.
+func FailedNote(dir, slot string) string { return filepath.Join(dir, "trial-failed-"+slot) }
+
+// SafetyNetNote is the file moose-os-trial.timer leaves when it reboots a slot.
+func SafetyNetNote(dir, slot string) string { return filepath.Join(dir, "safety-net-"+slot) }
 
 // markerRetries and markerRetry bound removeMarker. Vars for tests.
 var (
@@ -165,8 +193,11 @@ type Applier struct {
 	Reboot func() error
 	// HTTP downloads the bundle. Nil means a plain client.
 	HTTP Doer
-	// TrialTimeout bounds the trial; zero means DefaultTrialTimeout.
+	// TrialTimeout bounds the trial; zero means DefaultTrialTimeout. The
+	// trial also ends TrialEndSinceBoot after boot, whichever comes first.
 	TrialTimeout time.Duration
+	// Uptime is the time since boot; nil means /proc/uptime.
+	Uptime func() (time.Duration, error)
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
@@ -394,7 +425,14 @@ func (a *Applier) Boot(ctx context.Context) {
 	if _, err := os.Stat(TrialMarker(a.dir(), oth)); err != nil {
 		return
 	}
-	if s := r.Switch; rerr == nil && (s == nil || !s.Activated || s.To != oth) {
+	// Tried means the switch took effect: the record says so, or the new
+	// slot left a note when it gave up (its host-agent, or the image's
+	// timer). The notes cover a power cut between mark-active and the
+	// record's activated flag.
+	_, ferr := os.Stat(FailedNote(a.dir(), oth))
+	_, serr := os.Stat(SafetyNetNote(a.dir(), oth))
+	tried := ferr == nil || serr == nil
+	if s := r.Switch; rerr == nil && !tried && (s == nil || !s.Activated || s.To != oth) {
 		// The marker was written but the switch never took effect (a power
 		// cut before mark-active): nothing was tried, nothing reverted. The
 		// slot keeps what was installed into it.
@@ -425,7 +463,10 @@ func (a *Applier) Boot(ctx context.Context) {
 	// Which path made the revert: the new slot's host-agent (its trial timed
 	// out), or the image's timer, which leaves this note because the new
 	// slot's host-agent never got that far.
-	note := filepath.Join(a.dir(), "safety-net-"+oth)
+	if err := os.Remove(FailedNote(a.dir(), oth)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Error("os update: could not remove the failed-trial note", "err", err, "slot", oth)
+	}
+	note := SafetyNetNote(a.dir(), oth)
 	if _, err := os.Stat(note); err == nil {
 		slog.Warn("os update: the image's safety net rebooted the new slot; its host-agent never marked it", "os", out.Version, "slot", oth)
 		if err := os.Remove(note); err != nil {
@@ -447,12 +488,31 @@ func (a *Applier) trial(slot string) {
 	if timeout > MaxTrialTimeout {
 		timeout = MaxTrialTimeout
 	}
+	// Counted from boot, as the image's timer is.
+	up := a.Uptime
+	if up == nil {
+		up = bootUptime
+	}
+	if since, err := up(); err == nil {
+		if left := TrialEndSinceBoot - since; left < timeout {
+			timeout = left
+		}
+	} else {
+		slog.Error("os update: cannot read the time since boot; the trial uses its own bound", "err", err)
+	}
+	if timeout < minTrialWait {
+		timeout = minTrialWait
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	err := a.Healthy(ctx)
 	cancel()
 	if err != nil {
 		slog.Error("os update: the new slot is not healthy; marking it bad and rebooting to the old slot",
 			"err", err, "os", a.Version, "slot", slot)
+		// Left for the old slot: this slot was tried and failed.
+		if werr := writeSynced(FailedNote(a.dir(), slot), []byte(a.Version+"\n")); werr != nil {
+			slog.Error("os update: could not leave the failed-trial note", "err", werr, "slot", slot)
+		}
 		if merr := a.mark("bad", "booted"); merr != nil {
 			// Without the mark this slot can boot again (#575), so reboot
 			// once at most; after that stay up and let the image's timer
@@ -718,6 +778,14 @@ func (a *Applier) doSwitch(ctx context.Context, rel updatetarget.OSRelease, nigh
 		}
 		os.Remove(TrialMarker(a.dir(), target))
 		return cause
+	}
+	// A new trial of this slot starts clean: the notes of an earlier trial
+	// would make the image's timer skip it (its once-per-trial guard) or
+	// make the old slot read it as tried.
+	for _, n := range []string{SafetyNetNote(a.dir(), target), FailedNote(a.dir(), target)} {
+		if err := os.Remove(n); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("clear %s: %w", n, err)
+		}
 	}
 	if err := writeSynced(TrialMarker(a.dir(), target), []byte(rel.Version+"\n")); err != nil {
 		return err

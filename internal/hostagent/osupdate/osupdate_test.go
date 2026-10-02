@@ -134,7 +134,8 @@ func newHarness(t *testing.T, booted string) *harness {
 	h := &harness{rauc: newFakeRAUC(booted), jobs: &syncJobs{}, night: time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)}
 	h.rel = updatetarget.OSRelease{Version: "0.15.1", BundleURL: srv.URL + "/b.raucb", BundleSHA256: hex.EncodeToString(sum[:])}
 	h.a = &Applier{
-		RAUC: h.rauc, Jobs: h.jobs, Version: "0.15.0", Dir: t.TempDir(),
+		Uptime: func() (time.Duration, error) { return time.Minute, nil },
+		RAUC:   h.rauc, Jobs: h.jobs, Version: "0.15.0", Dir: t.TempDir(),
 		Healthy: func(context.Context) error { return h.healthy },
 		Reboot:  func() error { h.reboots.Add(1); return nil },
 	}
@@ -235,7 +236,7 @@ func (h *harness) reboot(t *testing.T, booted, version string) *Applier {
 	h.rauc.booted = booted
 	h.rauc.marks = nil
 	h.rauc.mu.Unlock()
-	a := &Applier{RAUC: h.rauc, Jobs: h.jobs, Version: version, Dir: h.a.dir(),
+	a := &Applier{Uptime: func() (time.Duration, error) { return time.Minute, nil }, RAUC: h.rauc, Jobs: h.jobs, Version: version, Dir: h.a.dir(),
 		Healthy: func(context.Context) error { return h.healthy },
 		Reboot:  func() error { h.reboots.Add(1); return nil }}
 	return a
@@ -376,7 +377,11 @@ func TestNothingMovesDuringATrial(t *testing.T) {
 	h.healthy = errors.New("not yet")
 	b := h.reboot(t, "B", "0.15.1")
 	b.TrialTimeout = time.Hour // the trial stays open for the test
+	before := h.reboots.Load()
 	b.Boot(context.Background())
+	// The failing trial reboots; wait for it, so it does not write into the
+	// test's directory after the test ends.
+	defer waitFor(t, func() bool { return h.reboots.Load() > before })
 	next := updatetarget.OSRelease{Version: "0.16.0", BundleURL: h.rel.BundleURL, BundleSHA256: h.rel.BundleSHA256}
 	jobs := len(h.jobs.errs)
 	if d := b.Apply(next, true, h.night); d.State != protocol.OSUpdateWaiting {
@@ -596,6 +601,75 @@ func TestBootRemovesLeftovers(t *testing.T) {
 	for _, f := range []string{"bundle.raucb", "bundle.raucb.part"} {
 		if _, err := os.Stat(h.a.dir() + "/" + f); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s was left", f)
+		}
+	}
+}
+
+// The trial ends TrialEndSinceBoot after boot, like the image's timer, not
+// TrialTimeout after the trial starts (Greptile, #574).
+func TestTrialDeadlineCountsFromBoot(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	b := h.reboot(t, "B", "0.15.1")
+	b.Uptime = func() (time.Duration, error) { return TrialEndSinceBoot - time.Second, nil }
+	var left time.Duration
+	done := make(chan struct{})
+	b.Healthy = func(ctx context.Context) error {
+		d, _ := ctx.Deadline()
+		left = time.Until(d)
+		close(done)
+		return nil
+	}
+	b.Boot(context.Background())
+	<-done
+	waitFor(t, func() bool {
+		_, err := os.Stat(TrialMarker(b.dir(), "B"))
+		return b.Last() != nil && errors.Is(err, os.ErrNotExist)
+	})
+	if left > minTrialWait+time.Second || left < minTrialWait-time.Second {
+		t.Fatalf("a trial 1 s before the end got %s, want about %s", left, minTrialWait)
+	}
+}
+
+// A power cut between mark-active and the activated flag: the new slot was
+// tried and failed, and left its note; the old slot records the revert.
+func TestRevertWithoutActivatedFlag(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	r, _ := h.a.load()
+	r.Switch.Activated = false
+	if err := h.a.save(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(FailedNote(h.a.dir(), "B"), []byte("0.15.1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := h.reboot(t, "A", "0.15.0")
+	a.Boot(context.Background())
+	if a.Last() == nil || a.Last().Outcome != protocol.OSOutcomeReverted {
+		t.Fatalf("outcome %+v", a.Last())
+	}
+	if _, err := os.Stat(FailedNote(a.dir(), "B")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the failed-trial note was left")
+	}
+}
+
+// A new trial of a slot starts without the notes of an earlier one, so the
+// image's once-per-trial guard does not skip it.
+func TestSwitchClearsOldNotes(t *testing.T) {
+	h := newHarness(t, "A")
+	for _, n := range []string{SafetyNetNote(h.a.dir(), "B"), FailedNote(h.a.dir(), "B")} {
+		if err := os.WriteFile(n, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	for _, n := range []string{SafetyNetNote(h.a.dir(), "B"), FailedNote(h.a.dir(), "B")} {
+		if _, err := os.Stat(n); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s survived the new switch", n)
 		}
 	}
 }
