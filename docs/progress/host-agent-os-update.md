@@ -87,6 +87,8 @@ NUMBERS-RUNS
 
 ## Known gaps & deviations
 
+- **Under UEFI, GRUB does not save the try flag (#575).** Found by this slice's `os-revert` boot. The boot-proof image now logs the grubenv before `host-agent` starts (`moose-test-grubenv.service`), and every boot prints it (`layout: grubenv at boot:`). Under BIOS the booted slot has `TRY=1`; under UEFI it has `TRY=0`, on every boot, with no GRUB error (run 37047235688). This slice does not depend on it: `host-agent` and the trial timer both mark a failed slot bad (`OK=0`), so the revert works on both firmwares, which the boots prove. What it leaves open is a new slot that panics before userspace (a bad kernel or initramfs): under UEFI, `panic=10` reboots it into the same slot again. #575 tracks it; Hetzner CPX and every UEFI provider boot that way.
+
 - **No production box moves its OS yet.** The private side has to send the `os` part (above).
 - **QEMU only**, as the rest of #486. #486's "Done when" still needs the same proof on a provisioned box.
 - **The test bundle is not a release bundle.** It is the boot-proof slot with one binary changed, gzip-compressed, signed with the throwaway key. The release bundle (xz, release signer) is checked by #562's build checks, not installed here. A release run installs nothing.
