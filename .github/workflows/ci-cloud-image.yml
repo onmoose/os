@@ -77,8 +77,8 @@
 #   - `publish` runs only when a line publishes, and only after `build` and
 #     every `boot` job passed. It publishes the image and the control-plane
 #     images that `build` made, the same bytes the boots proved.
-# A full run takes about 11 min instead of about 27, and uses more runner
-# minutes in total (about 32 instead of about 27). The repo is public, so
+# A full run takes about 12 min instead of about 27, and uses more runner
+# minutes in total (about 34 instead of about 27). The repo is public, so
 # standard runners cost nothing.
 #
 # Closes the gap #189/#238 carried: until now the cloud image had NO automated
@@ -272,7 +272,7 @@ jobs:
     # floating ubuntu-latest.
     runs-on: ubuntu-24.04
     # Two mkosi builds (production image + QEMU test image) and the uploads;
-    # a full build is about 7 min, and the cap is a generous ceiling so a
+    # a full build is about 8 min, and the cap is a generous ceiling so a
     # one-off slow runner is never killed mid-build.
     timeout-minutes: 60
     steps:
@@ -669,7 +669,7 @@ jobs:
   # Every boot group under each firmware, all at once, on its own runner. The
   # longest boot (`update`, about 2.7 min) sets the wall time, so this is the
   # split that gives the shortest run: one job per firmware would take about
-  # 17 min, one job per boot running both firmwares about 13, this about 11. It
+  # 18 min, one job per boot running both firmwares about 15, this about 12. It
   # costs each job about a minute of setup and one image download, which is
   # free on a public repo. fail-fast is off, so a red run shows every failing
   # boot at once instead of the first one.
