@@ -240,7 +240,7 @@ What `handover` does next depends on one secret:
 
 ### OS patch releases from a lock bump
 
-Merging a lock bump puts the change on `dev`, not on any box. It ships with an OS release (`VERSION`). **Until the A/B applier lands (#561 to #564), an OS release reaches only new boxes**; a running box keeps the OS it was built with.
+Merging a lock bump puts the change on `dev`, not on any box. It ships with an OS release (`VERSION`). **A hosted box installs an OS release once its update target names it** (#563, `../specs/UPDATES.md` # 1). Until the control plane sends the OS part of that answer, and on the appliance until #564, an OS release reaches only new boxes; a running box keeps the OS it was built with.
 
 - **A bump that changes any package from `trixie-security` is released within 7 days.** The bump PR's body says so when it applies.
 - **Any other bump ships with the next normal release.**

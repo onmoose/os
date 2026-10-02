@@ -955,7 +955,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** What this box is running: brain version and commit, host-agent version, UI image */
+        /** What this box is running: brain version and commit, host-agent version, UI image, OS version and slot */
         get: operations["get-system-version"];
         put?: never;
         post?: never;
@@ -1920,6 +1920,28 @@ export interface components {
             /** Format: int64 */
             ts: number;
         };
+        OSOutcomeDTO: {
+            at: string;
+            from?: string;
+            id: string;
+            /** @enum {string} */
+            outcome: "good" | "reverted";
+            version: string;
+        };
+        OSReleaseDTO: {
+            bundle_sha256: string;
+            bundle_url: string;
+            version: string;
+        };
+        OSUpdateDTO: {
+            detail?: string;
+            last?: components["schemas"]["OSOutcomeDTO"];
+            running?: string;
+            slot?: string;
+            /** @enum {string} */
+            state: "unsupported" | "none" | "refused" | "current" | "installing" | "installed" | "waiting" | "rebooting" | "held" | "failed";
+            target?: components["schemas"]["OSReleaseDTO"];
+        };
         "Parse-custom-overlayRequest": {
             /**
              * Format: uri
@@ -2168,6 +2190,8 @@ export interface components {
             readonly $schema?: string;
             commit: string;
             host_agent_version?: string;
+            os_slot?: string;
+            os_version?: string;
             ui_image?: string;
             version: string;
         };
@@ -2210,6 +2234,7 @@ export interface components {
             checked_at?: string;
             detail?: string;
             from?: string;
+            os?: components["schemas"]["OSUpdateDTO"];
             profile?: string;
             running: components["schemas"]["ControlPlanePairDTO"];
             /** @enum {string} */

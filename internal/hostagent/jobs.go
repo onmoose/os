@@ -241,3 +241,57 @@ func (a *Agent) jobStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, job)
 }
+
+// IsJobRunning reports whether err is the job lock's refusal: another job is
+// already in flight. Callers outside this package (the OS update applier, via
+// cmd/host-agent-real) treat it as "wait", not as a failure.
+func IsJobRunning(err error) bool { return errors.Is(err, errJobRunning) }
+
+// StartJob runs fn as a job of the given kind under the one global job lock
+// (the same lock system-update takes), bounded by maxDuration. It is how the
+// OS update's install and switch run (#563): they are dangerous in the same way
+// a control-plane update is, so they must never overlap one, or each other.
+//
+// The record has no Result: that field is the control-plane update's. A
+// failure ends the job `failed` with the error text, and a run past
+// maxDuration with the `job-timeout` code.
+func (a *Agent) StartJob(kind string, maxDuration time.Duration, fn func(ctx context.Context) error) (protocol.Job, error) {
+	job, err := a.jobs.start(kind)
+	if err != nil {
+		return protocol.Job{}, err
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), maxDuration)
+		defer cancel()
+		err := fn(ctx)
+		code, msg := "", ""
+		if err != nil {
+			code, msg = protocol.JobErrorFailed, err.Error()
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				code = protocol.JobErrorTimeout
+			}
+		}
+		a.jobs.finishPlain(job.ID, code, msg)
+	}()
+	return job, nil
+}
+
+// finishPlain closes a job that carries no Result and releases the lock.
+func (r *jobRegistry) finishPlain(id, code, message string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.jobs[id]
+	if !ok {
+		return
+	}
+	job.FinishedAt = r.now().UTC().Format(time.RFC3339)
+	if code == "" {
+		job.Status = protocol.JobStatusCompleted
+	} else {
+		job.Status = protocol.JobStatusFailed
+		job.Error = &protocol.Error{Code: code, Message: message}
+	}
+	if r.running == id {
+		r.running = ""
+	}
+}

@@ -111,6 +111,55 @@ type UpdateTargetDTO struct {
 	WindowFrom string                `json:"window_from,omitempty"`
 	AutoApply  bool                  `json:"auto_apply"`
 	Profile    string                `json:"profile,omitempty"`
+	// OS is stream A's last decision, beside stream B's above (UPDATES.md #
+	// 1, #563). Absent when host-agent reports nothing about the OS.
+	OS *OSUpdateDTO `json:"os,omitempty"`
+}
+
+// OSUpdateDTO is stream A on the update-target read: the OS this box runs,
+// the release its update target names, and what the box last did about it.
+// State is the word the dashboard writes its sentence from; Detail is a
+// diagnostic underneath it, never UI copy.
+type OSUpdateDTO struct {
+	State   string        `json:"state" enum:"unsupported,none,refused,current,installing,installed,waiting,rebooting,held,failed"`
+	Running string        `json:"running,omitempty"`
+	Slot    string        `json:"slot,omitempty"`
+	Target  *OSReleaseDTO `json:"target,omitempty"`
+	Detail  string        `json:"detail,omitempty"`
+	Last    *OSOutcomeDTO `json:"last,omitempty"`
+}
+
+// OSReleaseDTO is one OS release: the version and its bundle, pinned by
+// sha256.
+type OSReleaseDTO struct {
+	Version      string `json:"version"`
+	BundleURL    string `json:"bundle_url"`
+	BundleSHA256 string `json:"bundle_sha256"`
+}
+
+// OSOutcomeDTO is the outcome of the last OS switch: "good" (the new slot came
+// up healthy) or "reverted" (it did not, and the box went back).
+type OSOutcomeDTO struct {
+	ID      string `json:"id"`
+	Outcome string `json:"outcome" enum:"good,reverted"`
+	Version string `json:"version"`
+	From    string `json:"from,omitempty"`
+	At      string `json:"at"`
+}
+
+// osUpdateDTO converts host-agent's stream A report.
+func osUpdateDTO(o *protocol.OSUpdate) *OSUpdateDTO {
+	if o == nil {
+		return nil
+	}
+	out := &OSUpdateDTO{State: o.State, Running: o.Running, Slot: o.Slot, Detail: o.Detail}
+	if o.Target != nil {
+		out.Target = &OSReleaseDTO{Version: o.Target.Version, BundleURL: o.Target.BundleURL, BundleSHA256: o.Target.BundleSHA256}
+	}
+	if o.Last != nil {
+		out.Last = &OSOutcomeDTO{ID: o.Last.ID, Outcome: o.Last.Outcome, Version: o.Last.Version, From: o.Last.From, At: o.Last.At}
+	}
+	return out
 }
 
 // getSystemUpdateTarget reports what the box could be running. A pure read, so
@@ -143,6 +192,7 @@ func (s *Server) getSystemUpdateTarget(ctx context.Context, _ *struct{}) (*struc
 		WindowFrom: t.WindowFrom,
 		AutoApply:  t.AutoApply,
 		Profile:    t.Profile,
+		OS:         osUpdateDTO(t.OS),
 	}
 	if t.Target != nil {
 		out.Target = &UpdateTargetOfferDTO{

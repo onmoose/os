@@ -437,11 +437,22 @@ type Agent struct {
 	// the endpoint reports state "unknown".
 	UpdateTarget UpdateTargetReporter
 
+	// OS, when non-nil, backs os_version and os_slot of GET /v1/system/status:
+	// the OS release this box runs and the slot it booted (#563). Wired only
+	// on a box in the A/B layout (the hosted build); nil leaves both empty.
+	OS OSReporter
+
 	// Net, when non-nil, backs the interfaces field of GET /v1/discovery/state
 	// with the LAN set. Swapped per binary: netstate.NMProvider (NetworkManager
 	// over DBus) vs FakeNetState. When nil, interfaces reports empty — "not
 	// measured", matching the other nil-able reporters.
 	Net NetState
+}
+
+// OSReporter is a consumer-side interface for the running OS release and
+// booted slot. Provider: osupdate.Applier.
+type OSReporter interface {
+	Running() (version, slot string)
 }
 
 // SystemSampler is a consumer-side interface for the raw system-resources
@@ -582,7 +593,13 @@ func (a *Agent) systemStatus(w http.ResponseWriter, r *http.Request) {
 	if a.DiskSpace != nil {
 		disks = a.DiskSpace.Disks()
 	}
+	var osVersion, osSlot string
+	if a.OS != nil {
+		osVersion, osSlot = a.OS.Running()
+	}
 	writeJSON(w, http.StatusOK, protocol.SystemStatus{
+		OSVersion:          osVersion,
+		OSSlot:             osSlot,
 		Hostname:           "moose-dev",
 		UptimeS:            int64(time.Since(a.startedAt).Seconds()),
 		DiskPressure:       false,

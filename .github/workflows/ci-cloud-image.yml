@@ -560,7 +560,7 @@ jobs:
           BOOTS_INPUT: ${{ inputs.boots }}
         run: |
           set -euo pipefail
-          full="unseeded seeded access update ssh remap"
+          full="unseeded seeded access update ssh remap os-update os-revert"
           if [ "$EVENT" = "pull_request" ]; then
             # The compare API needs only `contents: read`, which this job has. The
             # PR files API would need `pull-requests: read`, and asking for it
@@ -587,11 +587,24 @@ jobs:
           for b in $list; do
             case "$b" in
               unseeded|seeded|frozen) case " $chain " in *" $b "*) ;; *) chain="${chain:+$chain }$b" ;; esac ;;
-              access|update|ssh|remap) case " ${groups[*]-} " in *" $b "*) ;; *) groups+=("$b") ;; esac ;;
+              access|update|ssh|remap|os-update|os-revert) case " ${groups[*]-} " in *" $b "*) ;; *) groups+=("$b") ;; esac ;;
               bios) echo "::error::'bios' is no longer a boot: every boot runs under both firmwares"; exit 1 ;;
-              *) echo "::error::unknown boot '$b' (known: unseeded seeded frozen access update ssh remap)"; exit 1 ;;
+              *) echo "::error::unknown boot '$b' (known: unseeded seeded frozen access update ssh remap os-update os-revert)"; exit 1 ;;
             esac
           done
+          # A run that publishes the OS bakes only the release root into the
+          # boot-proof image, so the throwaway-signed test bundle cannot install
+          # (#563). os-update then runs its refusal half only, and os-revert,
+          # which needs an install, is left out.
+          if [ "$SHOULD_PUBLISH_OS" = true ]; then
+            kept=(); for g in "${groups[@]}"; do [ "$g" = os-revert ] || kept+=("$g"); done; groups=("${kept[@]}")
+            echo "an OS release run: os-update runs its refusal half only, os-revert is left out"
+          fi
+          # The OS update boots need the test bundle; the build makes it only
+          # when one of them runs (about 1.5 min).
+          os_test=false
+          case " ${groups[*]} " in *" os-update "*|*" os-revert "*) os_test=true ;; esac
+          echo "os_test=${os_test}" >> "$GITHUB_OUTPUT"
           if [ -n "$chain" ]; then groups=("$chain" "${groups[@]}"); fi
           [ "${#groups[@]}" -gt 0 ] || { echo "::error::the boot list '${list}' names no boot"; exit 1; }
           matrix="$(printf '%s\n' "${groups[@]}" | jq -Rnc '[inputs] as $g | {include: [$g[] as $b | ("uefi", "bios") as $f | {boots: $b, firmware: $f}]}')"
@@ -672,6 +685,26 @@ jobs:
           sudo -E ./dev/cloud/test/bootstrap.sh
           qemu-img convert -f raw -O qcow2 .dev/cloud-boot/moose-cloud.raw .dev/cloud-boot/moose-cloud-boot.qcow2
           ls -l .dev/cloud-boot/moose-cloud-boot.qcow2
+
+      # The test-only OS bundle the os-update and os-revert boots install
+      # (#563): the boot-proof slot repacked fast (gzip level 1) with a
+      # host-agent one patch release up, signed with the throwaway key. Only
+      # when one of those boots runs.
+      - name: Build the OS test bundle
+        if: ${{ steps.boots.outputs.os_test == 'true' }}
+        env:
+          GO: ${{ steps.go.outputs.go-bin }}
+        run: sudo -E ./dev/cloud/test/build-os-test-bundle.sh .dev/cloud-boot/moose-cloud.raw .dev/cloud-boot/os-test
+      - name: Upload the OS test bundle
+        if: ${{ steps.boots.outputs.os_test == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          overwrite: true
+          name: cloud-image-os-test-bundle
+          path: .dev/cloud-boot/os-test
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
 
       # The squashfs inside is already xz, so zipping it again only costs time.
       # Three days is enough to re-run a failed boot or publish job.
@@ -799,6 +832,12 @@ jobs:
         with:
           name: cloud-image-boot-qcow2
           path: .dev/cloud-boot
+      - name: Download the OS test bundle
+        if: ${{ matrix.boots == 'os-update' || matrix.boots == 'os-revert' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-os-test-bundle
+          path: .dev/cloud-boot/os-test
 
       # MOOSE_CLOUD_QCOW2 makes the lane boot the downloaded image and build
       # nothing. The boot list reaches the script through an env var, never
@@ -808,6 +847,8 @@ jobs:
           MOOSE_CLOUD_QCOW2: ${{ github.workspace }}/.dev/cloud-boot/moose-cloud-boot.qcow2
           MOOSE_CLOUD_BOOTS: ${{ matrix.boots }}
           MOOSE_CLOUD_FIRMWARES: ${{ matrix.firmware }}
+          MOOSE_CLOUD_OS_BUNDLE_DIR: ${{ github.workspace }}/.dev/cloud-boot/os-test
+          MOOSE_CLOUD_OS_REFUSE_ONLY: ${{ env.SHOULD_PUBLISH_OS }}
           GO: ${{ steps.go.outputs.go-bin }}
         run: make test-cloud-qemu
 

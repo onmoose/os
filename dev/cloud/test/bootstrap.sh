@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v27"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v28"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 # A change to the OS package lock (#560) must rebuild too, so all three lock
 # files are part of the canary. The resolved list is in it as well: a re-run
 # after only the list changed must not exit early and skip os_lock_check below.
@@ -130,6 +130,35 @@ mkdir -p "$EXTRA/usr/local/bin" "$EXTRA/etc/systemd/system"
 cp "${CLOUD_DIR}/cloud-assertions.sh" "$EXTRA/usr/local/bin/cloud-assertions.sh"
 chmod 0755 "$EXTRA/usr/local/bin/cloud-assertions.sh"
 cp "${TEST_DIR}/moose-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
+
+# The OS update trial's safety net fires after 90 s here instead of 15 min
+# (#563), so the os-revert boot does not sit out a quarter of an hour. A
+# healthy trial boot marks its slot good about 17 s after the switch in CI
+# (run 37031756819), which the os-update boot proves under the same setting.
+# The image that ships keeps 15 min.
+# What GRUB left in the grubenv for this boot, logged before host-agent can
+# mark anything (#563): GRUB sets the booted slot's TRY=1, and the boot lane
+# checks it did, under both firmwares.
+cat > "$EXTRA/etc/systemd/system/moose-test-grubenv.service" <<'EOF'
+[Unit]
+Description=moose test: log the grubenv GRUB left for this boot
+Before=host-agent.service
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo "grubenv at boot: $(grub-editenv /efi/grub/grubenv list | tr "\n" " ")"'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+mkdir -p "$EXTRA/etc/systemd/system/moose-os-trial.timer.d"
+cat > "$EXTRA/etc/systemd/system/moose-os-trial.timer.d/10-cloud-test.conf" <<'EOF'
+[Timer]
+OnBootSec=
+OnBootSec=90s
+EOF
 
 # --- 3b. app-install fixtures for the access-mode e2e (#308) — TEST-LANE ONLY. The
 # access boot installs whoami air-gapped and drives the per-app forward-auth access

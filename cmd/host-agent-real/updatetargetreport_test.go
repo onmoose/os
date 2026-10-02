@@ -287,3 +287,55 @@ func TestReport_RefusedTargetIsNotApplicable(t *testing.T) {
 		t.Fatalf("target = %+v, want the refused answer verbatim", got.Target)
 	}
 }
+
+// stubOS is stream A's facts for the report.
+type stubOS struct {
+	peekState string
+}
+
+func (s stubOS) Running() (string, string) { return "0.15.0", "A" }
+func (s stubOS) Last() *protocol.OSOutcome {
+	return &protocol.OSOutcome{ID: "os-0.15.0-1", Outcome: protocol.OSOutcomeGood, Version: "0.15.0", At: "2026-10-01T03:10:00Z"}
+}
+func (s stubOS) Peek(updatetarget.OSRelease) (string, string, bool) {
+	return s.peekState, "", s.peekState != ""
+}
+
+type stubOSApplier struct{ state string }
+
+func (stubOSApplier) Running() (string, string) { return "0.15.0", "A" }
+func (stubOSApplier) Floor() string             { return "" }
+func (a stubOSApplier) Apply(updatetarget.OSRelease, bool, time.Time) updatetarget.OSDecision {
+	return updatetarget.OSDecision{State: a.state}
+}
+
+func TestReportOS(t *testing.T) {
+	// No applier: stream A is reported, as unsupported.
+	r := updateTargetReport{loop: tickedLoop(t, stubSource{target: goodOffer()}, stubRunning{brain: runningBrain, ui: runningUI})}
+	if got := r.Read().OS; got == nil || got.State != protocol.OSUpdateUnsupported {
+		t.Fatalf("no applier: %+v", got)
+	}
+
+	tgt := goodOffer()
+	tgt.OS = []updatetarget.OSRelease{{Version: "0.15.1", BundleURL: updatetarget.DefaultOSURLPrefix + "v0.15.1/b.raucb", BundleSHA256: strings.Repeat("e", 64)}}
+	l := &updatetarget.Loop{Source: stubSource{target: tgt}, Current: stubRunning{brain: runningBrain, ui: runningUI},
+		Profile: "hosted", OS: stubOSApplier{state: protocol.OSUpdateInstalling}}
+	l.Tick(context.Background())
+
+	// The tick said installing; the job has finished since, and Peek says so.
+	r = updateTargetReport{loop: l, running: stubRunning{brain: runningBrain, ui: runningUI}, os: stubOS{peekState: protocol.OSUpdateInstalled}}
+	got := r.Read().OS
+	if got.State != protocol.OSUpdateInstalled || got.Running != "0.15.0" || got.Slot != "A" || got.Target == nil || got.Target.Version != "0.15.1" || got.Last == nil {
+		t.Fatalf("report: %+v", got)
+	}
+	// Peek with nothing newer leaves the loop's word.
+	r.os = stubOS{}
+	if got := r.Read().OS; got.State != protocol.OSUpdateInstalling {
+		t.Fatalf("without a newer state: %+v", got)
+	}
+	// A box with no loop still says what it runs.
+	r = updateTargetReport{disabledErr: "bad seed", os: stubOS{}}
+	if got := r.Read().OS; got.State != protocol.OSUpdateNone || got.Running != "0.15.0" || got.Detail == "" {
+		t.Fatalf("disabled: %+v", got)
+	}
+}

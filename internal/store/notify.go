@@ -400,3 +400,16 @@ func (s *Store) MarkAllNotificationsRead(userID string, isAdmin bool, at time.Ti
 		userID, at.UnixMilli(), userID, userID, userID)
 	return err
 }
+
+// HasNotification reports whether any notification row, in any state, carries
+// dedupKey. A source that must raise one notification per event for good (an
+// OS update outcome, #563) uses it, because RaiseNotification coalesces into a
+// row that is not dismissed and resets its read state: re-raising an outcome
+// the admin already read would make it unread again.
+func (s *Store) HasNotification(dedupKey string) (bool, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE dedup_key = ?`, dedupKey).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
