@@ -96,22 +96,45 @@ PY
 }
 
 report_packages() {
-    local manifest
-    manifest="$(ls -1 "$WORK"/*.manifest | head -n1)"
-    python3 - "$manifest" "$SUMMARY" <<'PY'
-import json, sys
-m, summary = sys.argv[1], sys.argv[2]
-pk = json.load(open(m)).get("packages", [])
-tot = sum(p.get("size", 0) for p in pk)
-rows = sorted(pk, key=lambda p: -p.get("size", 0))
-with open(summary, "a") as f:
-    f.write(f"\n### Packages: {len(pk)}, installed size {tot/1e6:.1f} MB\n\n| Package | Installed MB |\n|---|---|\n")
-    for p in rows[:30]:
-        f.write(f"| {p['name']} {p.get('version','')} | {p.get('size',0)/1e6:.1f} |\n")
-    fw = sum(p.get("size", 0) for p in pk if p["name"].startswith("firmware-"))
-    f.write(f"\nfirmware-* packages: {fw/1e6:.1f} MB installed\n")
-print(open(summary).read() if summary != "/dev/null" else "")
-PY
+    # Installed sizes from the slot's own dpkg status, and what parts of the
+    # tree cost once compressed with xz (each part made into its own squashfs).
+    local img="$WORK/moose-probe.raw" tree="$WORK/tree" off
+    off="$(sfdisk -J "$img" | python3 -c 'import json,sys; p=[x for x in json.load(sys.stdin)["partitiontable"]["partitions"] if x.get("name")=="moose-slot-a"][0]; print(p["start"]*512)')"
+    rm -rf "$tree"
+    sudo unsquashfs -q -n -d "$tree" -o "$off" "$img" >/dev/null
+    python3 - "$tree/var/lib/dpkg/status" "$SUMMARY" <<'PY2'
+import sys
+status, summary = sys.argv[1], sys.argv[2]
+pk = []
+for para in open(status).read().split("\n\n"):
+    f = dict(l.split(": ", 1) for l in para.splitlines() if ": " in l and not l.startswith(" "))
+    if f.get("Package"): pk.append((f["Package"], int(f.get("Installed-Size", "0")) * 1024))
+tot = sum(s for _, s in pk)
+with open(summary, "a") as out:
+    out.write(f"\n### Packages: {len(pk)}, installed size {tot/1e6:.1f} MB\n\n| Package | Installed MB |\n|---|---|\n")
+    for n, s in sorted(pk, key=lambda x: -x[1])[:25]:
+        out.write(f"| {n} | {s/1e6:.1f} |\n")
+    fw = sum(s for n, s in pk if n.startswith("firmware-"))
+    out.write(f"\nfirmware-* packages: {fw/1e6:.1f} MB installed\n")
+PY2
+    {
+        echo ""
+        echo "### Compressed (squashfs xz) cost of parts of the slot"
+        echo ""
+        echo "| Part | Uncompressed MB | squashfs xz MB |"
+        echo "|---|---|---|"
+        local d u c
+        for d in usr/lib/firmware usr/lib/modules usr/lib/moose/boot usr/bin usr/libexec usr/lib/x86_64-linux-gnu usr/share usr/lib/python3; do
+            [ -d "$tree/$d" ] || continue
+            u="$(sudo du -sb "$tree/$d" | cut -f1)"
+            sudo mksquashfs "$tree/$d" "$WORK/part.sqfs" -comp xz -noappend -quiet >/dev/null
+            c="$(stat -c %s "$WORK/part.sqfs")"
+            echo "| /$d | $(python3 -c "print(f'{$u/1e6:.1f}')") | $(python3 -c "print(f'{$c/1e6:.1f}')") |"
+        done
+        echo ""
+        echo "firmware files: $(sudo find "$tree/usr/lib/firmware" -type f | wc -l), of which already compressed (.xz/.zst): $(sudo find "$tree/usr/lib/firmware" -type f \( -name '*.xz' -o -name '*.zst' \) | wc -l)"
+    } | tee -a "$SUMMARY"
+    sudo rm -rf "$tree" "$WORK/part.sqfs"
 }
 
 boot() {
