@@ -336,6 +336,16 @@ func (a *Applier) Boot(ctx context.Context) {
 	}
 	slog.Warn("os update: the new slot did not come up healthy; the box went back to the old slot",
 		"os", out.Version, "slot", booted)
+	// Which path made the revert: the new slot's host-agent (its trial timed
+	// out), or the image's timer, which leaves this note because the new
+	// slot's host-agent never got that far.
+	note := filepath.Join(a.dir(), "safety-net-"+oth)
+	if _, err := os.Stat(note); err == nil {
+		slog.Warn("os update: the image's safety net rebooted the new slot; its host-agent never marked it", "os", out.Version, "slot", oth)
+		if err := os.Remove(note); err != nil {
+			slog.Error("os update: could not remove the safety-net note", "err", err, "slot", oth)
+		}
+	}
 }
 
 func outcomeID(s *switched) string {

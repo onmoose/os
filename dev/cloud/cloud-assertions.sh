@@ -186,7 +186,7 @@ esac
 # on it (a drop-in the first stage planted), which is the case where nothing but
 # the image's own safety net can take the box back. So this stage checks only
 # that, and waits: every other check of this script would fail on a box with no
-# host-agent, which is the point of the scenario. moose-os-trial.timer (3 min in
+# host-agent, which is the point of the scenario. moose-os-trial.timer (90 s in
 # this image) must reboot the box; the next stage runs on slot A.
 if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
     [ "$BOOTED" = B ] || fail "os-revert: stage 2 should boot slot B, booted '$BOOTED' (did GRUB skip the new slot?)"
@@ -2513,6 +2513,8 @@ UNIT
     else
         [ "$stage" = 3 ] && [ "$BOOTED" = A ] || fail "os-revert: stage $stage booted slot '$BOOTED', want stage 3 back on slot A"
         wait_ha "the box went back to the old slot" 120 "host-agent did not record the revert"
+        # And it was the image's safety net that did it, the case under test.
+        wait_ha "the image's safety net rebooted the new slot" 10 "the revert was not made by moose-os-trial.timer"
         [ ! -e /var/lib/moose/os-update/trial-B ] || fail "os-revert: the trial marker for slot B is still there"
         [ "$(grubvar B_OK)" = 0 ] && [ "$(grubvar A_OK)" = 1 ] || fail "os-revert: grubenv after the revert: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
         [ "$(/usr/lib/moose/host-agent-real --version | awk '{print $2}')" = "$base_ver" ] || fail "os-revert: back on slot A, host-agent is not $base_ver"

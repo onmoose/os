@@ -16,5 +16,7 @@ slot="$(sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline)"
 [ -n "$slot" ] || exit 0
 [ -e "/var/lib/moose/os-update/trial-${slot}" ] || exit 0
 echo "moose-os-trial: slot ${slot} was not marked good in time; rebooting so the box goes back to the other slot"
+# A note for the old slot's host-agent, so the revert says which path made it.
+date -u +%Y-%m-%dT%H:%M:%SZ > "/var/lib/moose/os-update/safety-net-${slot}" && sync
 rauc status mark-bad booted || echo "moose-os-trial: mark-bad failed; rebooting anyway, GRUB skips a slot still on trial"
 systemctl reboot

@@ -131,15 +131,16 @@ cp "${CLOUD_DIR}/cloud-assertions.sh" "$EXTRA/usr/local/bin/cloud-assertions.sh"
 chmod 0755 "$EXTRA/usr/local/bin/cloud-assertions.sh"
 cp "${TEST_DIR}/moose-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
 
-# The OS update trial's safety net fires after 3 minutes here instead of 15
-# (#563), so the os-revert boot does not sit out a quarter of an hour. Still
-# longer than a healthy trial boot takes to mark its slot good, which the
-# os-update boot proves under the same setting. The image that ships keeps 15.
+# The OS update trial's safety net fires after 90 s here instead of 15 min
+# (#563), so the os-revert boot does not sit out a quarter of an hour. A
+# healthy trial boot marks its slot good about 17 s after the switch in CI
+# (run 37031756819), which the os-update boot proves under the same setting.
+# The image that ships keeps 15 min.
 mkdir -p "$EXTRA/etc/systemd/system/moose-os-trial.timer.d"
 cat > "$EXTRA/etc/systemd/system/moose-os-trial.timer.d/10-cloud-test.conf" <<'EOF'
 [Timer]
 OnBootSec=
-OnBootSec=180s
+OnBootSec=90s
 EOF
 
 # --- 3b. app-install fixtures for the access-mode e2e (#308) — TEST-LANE ONLY. The

@@ -349,3 +349,22 @@ func TestPeek(t *testing.T) {
 		t.Fatalf("after the install: %s %v", st, ok)
 	}
 }
+
+func TestRevertNotesTheSafetyNet(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	// The image's timer on slot B left its note and rebooted.
+	note := h.a.dir() + "/safety-net-B"
+	if err := os.WriteFile(note, []byte("2026-10-03T03:20:00Z\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := h.reboot(t, "A", "0.15.0")
+	a.Boot(context.Background())
+	if a.Last() == nil || a.Last().Outcome != protocol.OSOutcomeReverted {
+		t.Fatalf("outcome %+v", a.Last())
+	}
+	if _, err := os.Stat(note); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the safety-net note was not removed")
+	}
+}
