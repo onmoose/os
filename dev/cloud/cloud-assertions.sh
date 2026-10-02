@@ -352,6 +352,7 @@ echo "cloud-assertions: layout: $boot_env"
 grep -qw "${BOOTED}_TRY=1" <<<"$boot_env" || layout_fail "GRUB did not save ${BOOTED}_TRY=1 for the slot it booted (${boot_env:-no grubenv at boot line})"
 # No firmware wrote the ESP (#575). OVMF without a writable VARS store saves
 # its variables to an NvVars file there, and that write undid GRUB's.
+mountpoint -q /efi || layout_fail "ESP not mounted at /efi, so the NvVars check would prove nothing"
 [ ! -e /efi/NvVars ] || layout_fail "the firmware wrote /efi/NvVars: the harness gave OVMF no writable VARS store, and that write undoes GRUB's grubenv save"
 echo "cloud-assertions: layout: GRUB saved ${BOOTED}_TRY=1 before booting slot $BOOTED; no NvVars on the ESP"
 
