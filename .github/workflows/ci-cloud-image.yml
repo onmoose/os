@@ -66,8 +66,20 @@
 # line; the call has one per line. An input a trigger does not declare reads as null, which is
 # falsy, so each SHOULD_PUBLISH_* below simply ORs the inputs that may set it.
 #
-# Either way the full build takes ~10 min and a publish is a deliberate act,
-# not a per-push one.
+# A publish is a deliberate act, not a per-push one.
+#
+# Shape (the CI speed-up, docs/progress/ci-cloud-image-speedup.md). Three jobs:
+#   - `build` runs every assert, builds the production image and the boot-proof
+#     image once, and uploads them as artifacts. It also picks the boots.
+#   - `boot` is a matrix with one job per boot group and firmware, all at once,
+#     each booting the downloaded boot-proof image. `unseeded seeded` (and
+#     `frozen`, when it is asked for) stay one group: they share one disk.
+#   - `publish` runs only when a line publishes, and only after `build` and
+#     every `boot` job passed. It publishes the image and the control-plane
+#     images that `build` made, the same bytes the boots proved.
+# A full run takes about 13 min instead of about 27, and uses more runner
+# minutes in total (about 35 instead of about 27). The repo is public, so
+# standard runners cost nothing.
 #
 # Closes the gap #189/#238 carried: until now the cloud image had NO automated
 # build — `make build-cloud-image` ran only by hand, and on an Ubuntu 24.04 box
@@ -200,52 +212,67 @@ concurrency:
   group: ci-cloud-image-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
+# Single source of truth for "should this run publish", one per line, computed
+# once for the whole workflow and read by every job. SHOULD_PUBLISH is "either
+# line", for the asserts that must hold whatever is published.
+#
+# OS: a real `v*` tag push always publishes the disk image (that's the
+# point of tagging an OS release); otherwise `publish` (dispatch) or
+# `publish_os` (dispatch or call). On a `push` event no input is defined, which is why
+# the tag-push half of the OR is needed.
+# Control plane: only `publish` (dispatch) or `publish_control_plane`
+# (dispatch or call). A `v*` tag push is an OS release and never
+# pushes the control-plane images.
+# Each expression ends in `&& 'true' || 'false'` so the env value is always
+# the string true or false, never an empty string from a null input.
+#
+# `startsWith(github.ref, 'refs/tags/')` is LOAD-BEARING, not
+# belt-and-braces. In a reusable workflow the `github` context is the
+# CALLER's, not this workflow's: when release.yml (triggered by
+# `push: branches: [main]`) calls us, github.event_name here is `push` and
+# github.ref is `refs/heads/main`. Keyed on event_name alone this would
+# collapse to "any call from a push-triggered workflow publishes",
+# ignoring `publish` entirely — a future caller passing publish=false
+# would publish anyway. Keyed on the ref, the only path that publishes
+# without an explicit input is a genuine tag push.
+#
+# MOOSE_BUILD_CACHE comes from the same expression as SHOULD_PUBLISH, inverted.
+# A run that publishes nothing builds the brain, UI and hosted Caddy images
+# with the GitHub Actions layer cache (`gha`). A run where either line
+# publishes gets `none`: it reads no cache and builds what ships fresh, so no
+# layer another run wrote can reach a release. The Makefile reads it.
+env:
+  SHOULD_PUBLISH_OS: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os) && 'true' || 'false' }}
+  SHOULD_PUBLISH_CP: ${{ (inputs.publish || inputs.publish_control_plane) && 'true' || 'false' }}
+  SHOULD_PUBLISH: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'true' || 'false' }}
+  MOOSE_BUILD_CACHE: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'none' || 'gha' }}
+
 jobs:
-  cloud-image:
-    name: Build + seeded-boot test + publish hosted cloud image
+  build:
+    name: Build the hosted cloud image and the boot-proof image
     # Skip draft PRs. This job builds a whole OS image, so every push to a draft
-    # would spend ~12-15 min of runner on work nobody is reading yet. Marking the
+    # would spend runner time on work nobody is reading yet. Marking the
     # PR ready fires `ready_for_review` and the run starts then. Only affects
     # pull_request runs — a tag push, a dispatch or the release call has no draft
-    # field and passes the first half of the condition.
+    # field and passes the first half of the condition. The boot and publish
+    # jobs need this one, so they skip with it.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    # Single source of truth for "should this run publish", one per line,
-    # computed once and read by the two publish steps below. SHOULD_PUBLISH is
-    # "either line", for the asserts that must hold whatever is published.
-    #
-    # OS: a real `v*` tag push always publishes the disk image (that's the
-    # point of tagging an OS release); otherwise `publish` (dispatch) or
-    # `publish_os` (dispatch or call). On a `push` event no input is defined, which is why
-    # the tag-push half of the OR is needed.
-    # Control plane: only `publish` (dispatch) or `publish_control_plane`
-    # (dispatch or call). A `v*` tag push is an OS release and never
-    # pushes the control-plane images.
-    # Each expression ends in `&& 'true' || 'false'` so the env value is always
-    # the string true or false, never an empty string from a null input.
-    #
-    # `startsWith(github.ref, 'refs/tags/')` is LOAD-BEARING, not
-    # belt-and-braces. In a reusable workflow the `github` context is the
-    # CALLER's, not this workflow's: when release.yml (triggered by
-    # `push: branches: [main]`) calls us, github.event_name here is `push` and
-    # github.ref is `refs/heads/main`. Keyed on event_name alone this would
-    # collapse to "any call from a push-triggered workflow publishes",
-    # ignoring `publish` entirely — a future caller passing publish=false
-    # would publish anyway. Keyed on the ref, the only path that publishes
-    # without an explicit input is a genuine tag push.
-    env:
-      SHOULD_PUBLISH_OS: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os) && 'true' || 'false' }}
-      SHOULD_PUBLISH_CP: ${{ (inputs.publish || inputs.publish_control_plane) && 'true' || 'false' }}
-      SHOULD_PUBLISH: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'true' || 'false' }}
+    # This job runs mkosi as root with a lot of third-party code, and it
+    # publishes nothing, so it gets read access only. The write grants are on
+    # the publish job alone.
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.boots.outputs.matrix }}
+      should_publish: ${{ env.SHOULD_PUBLISH }}
     # Pin 24.04 explicitly: this is the exact environment that reproduces the
     # mkosi-sandbox EPERM (#189), so the fix has to be proven here, not on a
     # floating ubuntu-latest.
     runs-on: ubuntu-24.04
-    # Two mkosi builds (production image + QEMU test image), the QEMU boots (seven
-    # on a push/dispatch, just `update` on a PR, each under UEFI and again under
-    # legacy BIOS since #561; see MOOSE_CLOUD_BOOTS below), and the compress-and-
-    # attach publish; the 120 cap is a
-    # generous ceiling so a one-off slow runner is never killed mid-build.
-    timeout-minutes: 120
+    # Two mkosi builds (production image + QEMU test image) and the uploads;
+    # a full build is about 10 min, and the cap is a generous ceiling so a
+    # one-off slow runner is never killed mid-build.
+    timeout-minutes: 60
     steps:
       # persist-credentials: false matters more now that a PR can start this job.
       # The job holds `packages: write` (the ghcr push below needs it), and by
@@ -313,6 +340,7 @@ jobs:
         run: |
           echo "OS (disk image on the v$(tr -d '[:space:]' < VERSION) Release): ${SHOULD_PUBLISH_OS}"
           echo "Control plane (ghcr brain + ui as v$(tr -d '[:space:]' < CONTROL_PLANE_VERSION)): ${SHOULD_PUBLISH_CP}"
+          echo "Image build layer cache: ${MOOSE_BUILD_CACHE} (none on any run that publishes)"
 
       # Fail FAST on a mistagged release, before the ~10min build below runs.
       # VERSION (repo root) is the source of truth for the moose (OS) release
@@ -378,35 +406,18 @@ jobs:
           echo "go-bin=${go_bin}" >> "$GITHUB_OUTPUT"
           echo "go: ${go_bin} ($("$go_bin" version))"
 
-      # 1. Build the production image that will be published. A fresh checkout has
-      #    no .dev/ cache, so make rebuilds the control-plane images (brain/ui)
-      #    from source — this is what removes the stale-cached-brain failure mode.
-      - name: Build the hosted cloud image (+ lean check + OS package lock check)
-        run: make build-cloud-image
-
-      # The package list this build resolved to (#560). When the lock check
-      # fails, this is the file to compare with dev/os-lock/cloud-packages.lock,
-      # or to commit when the change was on purpose. Uploaded on failure too,
-      # which is when it matters.
-      - name: Upload the resolved package list
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-packages-lock
-          path: |
-            .dev/cloud/cloud-packages.lock
-            .dev/cloud/lean-check.txt
-          if-no-files-found: ignore
-
-      # 2. SEEDED-BOOT GATE. Boot the image under QEMU with a current-schema seed
+      # The boots are chosen BEFORE the build, so a typo in the `boots` input
+      # fails at once, not after the ~10 min build.
+      #
+      # SEEDED-BOOT GATE. Boot the image under QEMU with a current-schema seed
       #    and assert the brain ingests it (cloud-assertions.sh 'seeded' boot). A
       #    brain that rejects the live seed fails here -> nothing is published. The
       #    test image reuses the control-plane bundle built in step 1, so it
       #    exercises the same brain that ships.
       # Scope to unseeded + seeded + access + update + ssh + remap, each
-      # guarding a regression that must never reach publish. Since #561 the
-      # harness runs every one of them twice, under UEFI and again under legacy
-      # BIOS, each firmware on its own overlays (MOOSE_CLOUD_FIRMWARES, default
+      # guarding a regression that must never reach publish. Since #561 every
+      # one of them runs twice, under UEFI and again under legacy BIOS, each
+      # firmware in its own boot job here (MOOSE_CLOUD_FIRMWARES, the lane's default
       # "uefi bios"). A box landed on a Hetzner CX (Intel) type boots under
       # legacy BIOS (#277), and the A/B slot switch must work the same there.
       # Every boot also checks the A/B layout (cloud-assertions.sh 1b).
@@ -455,8 +466,8 @@ jobs:
       # ON A PULL REQUEST the list narrows to `update` alone (#389). That boot is
       # standalone — its own fresh overlay and its own box-id — so it needs none
       # of the others, and the ones it drops each guard a publish-time regression
-      # that a PR cannot ship. One boot keeps the PR cost close to the build cost
-      # (the build dominates), while still failing a PR that breaks the updater.
+      # that a PR cannot ship. One boot (two jobs, one per firmware) keeps the PR
+      # cost close to the build cost, while still failing a PR that breaks the updater.
       # A PR that wants the whole list can still get it: `gh workflow run
       # "CI / Cloud image" --ref <branch> -f publish=false`. A manual run can
       # also pick its own list with the `boots` input, for example
@@ -498,13 +509,234 @@ jobs:
             list="${BOOTS_INPUT:-$full}"; why="full gate list or the boots input"
           fi
           echo "boots: ${list} (${why})"
-          echo "list=${list}" >> "$GITHUB_OUTPUT"
 
-      - name: Boot test (${{ steps.boots.outputs.list }})
+          # One boot job per group and firmware. unseeded, seeded and frozen
+          # share one disk overlay (frozen reboots the disk seeded provisioned),
+          # so they stay one group; every other boot takes its own overlay and
+          # gets its own job. The names are checked here, before any boot job
+          # starts; run-cloud-tests.sh checks them again.
+          # set -f: the list is split on spaces, never expanded as a glob.
+          set -f
+          chain=""; groups=()
+          for b in $list; do
+            case "$b" in
+              unseeded|seeded|frozen) case " $chain " in *" $b "*) ;; *) chain="${chain:+$chain }$b" ;; esac ;;
+              access|update|ssh|remap) case " ${groups[*]-} " in *" $b "*) ;; *) groups+=("$b") ;; esac ;;
+              bios) echo "::error::'bios' is no longer a boot: every boot runs under both firmwares"; exit 1 ;;
+              *) echo "::error::unknown boot '$b' (known: unseeded seeded frozen access update ssh remap)"; exit 1 ;;
+            esac
+          done
+          if [ -n "$chain" ]; then groups=("$chain" "${groups[@]}"); fi
+          [ "${#groups[@]}" -gt 0 ] || { echo "::error::the boot list '${list}' names no boot"; exit 1; }
+          matrix="$(printf '%s\n' "${groups[@]}" | jq -Rnc '[inputs] as $g | {include: [$g[] as $b | ("uefi", "bios") as $f | {boots: $b, firmware: $f}]}')"
+          echo "matrix: ${matrix}"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+      # Layer cache for the brain, UI and hosted Caddy image builds, on a run
+      # that publishes nothing (MOOSE_BUILD_CACHE, workflow env above). The
+      # Makefile's builds read and write the GitHub Actions cache through
+      # BuildKit, which needs the runtime token and cache URLs a `run` step
+      # does not see; the first step exposes them. The second makes the
+      # docker-container builder the Makefile names, under `sudo -E` like the
+      # build itself, so both find the same builder config. A cache is scoped
+      # to a branch: a run reads its own branch's entries and those of `dev`.
+      # Pinned by commit: this third-party action runs in a job that builds
+      # what CI boots.
+      - name: Expose the Actions cache to the image builds
+        if: ${{ env.MOOSE_BUILD_CACHE == 'gha' }}
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+      - name: Create the builder for the layer cache
+        if: ${{ env.MOOSE_BUILD_CACHE == 'gha' }}
+        run: sudo -E docker buildx create --name moose-cache --driver docker-container --bootstrap
+
+      # 1. Build the production image that will be published. A fresh checkout has
+      #    no .dev/ cache, so make rebuilds the control-plane images (brain/ui)
+      #    from source — this is what removes the stale-cached-brain failure mode.
+      - name: Build the hosted cloud image (+ lean check + OS package lock check)
         env:
-          MOOSE_CLOUD_BOOTS: ${{ steps.boots.outputs.list }}
+          GO: ${{ steps.go.outputs.go-bin }}
+        run: make build-cloud-image
+
+      # The package list this build resolved to (#560). When the lock check
+      # fails, this is the file to compare with dev/os-lock/cloud-packages.lock,
+      # or to commit when the change was on purpose. Uploaded on failure too,
+      # which is when it matters.
+      - name: Upload the resolved package list
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-packages-lock
+          path: |
+            .dev/cloud/cloud-packages.lock
+            .dev/cloud/lean-check.txt
+          if-no-files-found: ignore
+
+
+      # 1b. The boot-proof image: the production image plus the test harness
+      #     (dev/cloud/test/). It reuses the control-plane bundle built in step 1,
+      #    so the boots exercise the same brain that ships. It also reuses the
+      #    tools tree step 1 just made from the same settings
+      #    (MOOSE_MKOSI_TOOLS_TREE), which saves about 40 s. Then it converts the
+      #    image to qcow2 once, for every boot job to download: the qcow2 skips
+      #    the empty space, so it is about half the size of the raw.
+      - name: Build the boot-proof image
+        env:
+          GO: ${{ steps.go.outputs.go-bin }}
+          MOOSE_MKOSI_TOOLS_TREE: ${{ github.workspace }}/dev/cloud/mkosi.tools
+        run: |
+          set -euo pipefail
+          sudo -E ./dev/cloud/test/bootstrap.sh
+          qemu-img convert -f raw -O qcow2 .dev/cloud-boot/moose-cloud.raw .dev/cloud-boot/moose-cloud-boot.qcow2
+          ls -l .dev/cloud-boot/moose-cloud-boot.qcow2
+
+      # The squashfs inside is already xz, so zipping it again only costs time.
+      # Three days is enough to re-run a failed boot or publish job.
+      - name: Upload the boot-proof image
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-image-boot-qcow2
+          path: .dev/cloud-boot/moose-cloud-boot.qcow2
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+      # What the publish job publishes, uploaded only when that line publishes:
+      # the production raw this job built, and the brain and UI tarballs that
+      # step 1 baked into both images. The publish job loads those tarballs, so
+      # it pushes the very images the boots ran, not a rebuild. The raw is
+      # mostly empty space, so the fastest zip level still shrinks it a lot.
+      - name: Upload the production image for the publish job
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-image-os-raw
+          path: .dev/cloud/moose-cloud.raw
+          compression-level: 1
+          retention-days: 3
+          if-no-files-found: error
+      - name: Make the control-plane tarballs readable for the upload
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
+        run: sudo chmod a+r .dev/control-plane/moose-brain.tar .dev/control-plane/moose-ui.tar
+      - name: Upload the control-plane images for the publish job
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-image-control-plane
+          path: |
+            .dev/control-plane/moose-brain.tar
+            .dev/control-plane/moose-ui.tar
+          compression-level: 1
+          retention-days: 3
+          if-no-files-found: error
+
+  # Every boot group under each firmware, all at once, on its own runner. The
+  # longest boot (`update`, about 2.6 min) sets the wall time, so this is the
+  # split that gives the shortest run: one job per firmware would take about
+  # 19 min, one job per boot running both firmwares about 16, this about 13. It
+  # costs each job about a minute of setup and one image download, which is
+  # free on a public repo. fail-fast is off, so a red run shows every failing
+  # boot at once instead of the first one.
+  boot:
+    name: Boot ${{ matrix.boots }} (${{ matrix.firmware }})
+    needs: build
+    # The boots publish nothing and need no write access.
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    # The update and remap boots allow themselves up to 25 min of verdict
+    # wait each (run-cloud-tests.sh VERDICT_TIMEOUT); remap is two boots.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
+    steps:
+      # Same reasoning as the build job: no git credentials on disk.
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      # QEMU + UEFI firmware for the boot lane (run-cloud-tests.sh). Each
+      # matrix job is its own ubuntu-24.04 runner, which exposes /dev/kvm the
+      # way the single job did; the lane uses KVM when present and falls back
+      # to TCG otherwise (slower, still correct). The line below shows which.
+      - name: Install QEMU + OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+          echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none — test lane will use TCG')"
+
+      # Absolute path to the runner's go, for the host-side assertion mint
+      # (see GO in the gate notes above). Resolved as a step output so a runner
+      # image that moves go doesn't silently fall back to the script's guesses.
+      - name: Resolve go (for the assertion mint)
+        id: go
+        run: |
+          go_bin="$(command -v go)"
+          echo "go-bin=${go_bin}" >> "$GITHUB_OUTPUT"
+          echo "go: ${go_bin} ($("$go_bin" version))"
+
+      - name: Download the boot-proof image
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-boot-qcow2
+          path: .dev/cloud-boot
+
+      # MOOSE_CLOUD_QCOW2 makes the lane boot the downloaded image and build
+      # nothing. The boot list reaches the script through an env var, never
+      # the shell text, so the `boots` input cannot inject a command.
+      - name: Boot test (${{ matrix.boots }}, ${{ matrix.firmware }})
+        env:
+          MOOSE_CLOUD_QCOW2: ${{ github.workspace }}/.dev/cloud-boot/moose-cloud-boot.qcow2
+          MOOSE_CLOUD_BOOTS: ${{ matrix.boots }}
+          MOOSE_CLOUD_FIRMWARES: ${{ matrix.firmware }}
           GO: ${{ steps.go.outputs.go-bin }}
         run: make test-cloud-qemu
+
+  # Only when a line publishes, and only after the build and every boot job
+  # passed: `needs` waits for all of them, and an `if` without a status check
+  # also requires that they all succeeded. A red or cancelled boot skips this
+  # job, so nothing is published from an image that did not prove itself.
+  publish:
+    name: Publish the hosted cloud image and the control plane
+    needs: [build, boot]
+    if: ${{ needs.build.outputs.should_publish == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The only job with write access: contents for the Release asset, packages
+    # for the ghcr push.
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Download the production image
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-os-raw
+          path: .dev/cloud
+
+      # The brain and UI tarballs the build job baked into both images. Loading
+      # them gives back moose-brain:dev and moose-ui:dev with the same image IDs
+      # the boots ran, so the push below publishes the proven images.
+      - name: Download the control-plane images the boots ran
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-control-plane
+          path: .dev/control-plane
+      - name: Load them into Docker
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
+        run: |
+          set -euo pipefail
+          docker load -i .dev/control-plane/moose-brain.tar
+          docker load -i .dev/control-plane/moose-ui.tar
+          docker image inspect --format '{{.RepoTags}} {{.Id}}' moose-brain:dev moose-ui:dev
 
       # ---- attach the image to the tagged GitHub Release (only when requested) ----
 
@@ -599,14 +831,15 @@ jobs:
       # reprovisioning from a fresh image.
       #
       # Why this lane and not a separate, faster workflow: the images pushed
-      # here are the SAME local images `make build-cloud-image` already built
-      # and baked into the disk image that the seeded-boot proof just booted.
+      # here are the SAME images `make build-cloud-image` built in the build
+      # job and baked into the disk image the boot jobs just booted (loaded
+      # above from the tarballs that were baked).
       # Re-building them in a standalone job would publish artifacts that are
       # merely equivalent, not identical, and would let a red boot proof
       # coexist with a green publish. Gating on SHOULD_PUBLISH *after* the boot
       # steps means we can only ever publish a control plane that was proven to
-      # boot. The cost — publish waits on a ~10 min build plus three QEMU boots
-      # — is accepted deliberately.
+      # boot. The cost, publish waiting on the build and every boot job, is
+      # accepted deliberately.
       #
       # ORDERING: this step runs LAST, after the Release-asset attach above.
       # Every step in this job is a hard sequential gate (nothing here sets

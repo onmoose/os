@@ -214,8 +214,24 @@ include dev/control-plane/images.lock
 CADDY_TAG := $(firstword $(subst @, ,$(CADDY_IMAGE)))
 PROXY_TAG := $(firstword $(subst @, ,$(PROXY_IMAGE)))
 
+# BuildKit layer cache for the three image builds below (#486). The default is
+# a plain `docker build` with no cache. CI sets MOOSE_BUILD_CACHE=gha on a run
+# that publishes nothing (ci-cloud-image.yml): the build then goes through the
+# docker-container builder named by MOOSE_BUILD_CACHE_BUILDER and reads and
+# writes the GitHub Actions cache, one scope per image. A run that publishes
+# sets it to `none`, so what ships is always built fresh, with no cache read.
+# A failed cache write never fails the build (ignore-error).
+MOOSE_BUILD_CACHE ?= none
+MOOSE_BUILD_CACHE_BUILDER ?= moose-cache
+ifeq ($(MOOSE_BUILD_CACHE),gha)
+docker_build = docker buildx build --builder $(MOOSE_BUILD_CACHE_BUILDER) --load \
+	  --cache-from type=gha,scope=$(1) --cache-to type=gha,mode=max,scope=$(1),ignore-error=true
+else
+docker_build = docker build
+endif
+
 brain-image:
-	docker build -f cmd/brain/Dockerfile --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
+	$(call docker_build,moose-brain) -f cmd/brain/Dockerfile --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
 	  --build-arg CONTROL_PLANE_VERSION=$(CONTROL_PLANE_VERSION) \
 	  --build-arg BRAIN_BUILDER_IMAGE=$(BRAIN_BUILDER_IMAGE) \
 	  --build-arg BRAIN_RUNTIME_IMAGE=$(BRAIN_RUNTIME_IMAGE) \
@@ -224,7 +240,7 @@ brain-image:
 # moose-ui's runtime base is CADDY_IMAGE, the same pin the proxy runs — one Caddy
 # for both, not two pins to keep level.
 ui-image:
-	docker build -f web-ui/Dockerfile \
+	$(call docker_build,moose-ui) -f web-ui/Dockerfile \
 	  --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
 	  --build-arg CONTROL_PLANE_VERSION=$(CONTROL_PLANE_VERSION) \
 	  --build-arg UI_BUILDER_IMAGE=$(UI_BUILDER_IMAGE) \
@@ -249,7 +265,7 @@ control-plane-images: brain-image ui-image
 # Dockerfile carries no unpinned default — build it through this target, not `docker build` by hand.
 # dev/cloud/stage-control-plane.sh calls it, then docker-saves the result.
 caddy-acmedns-image:
-	docker build \
+	$(call docker_build,moose-caddy-acmedns) \
 	  --build-arg CADDY_ACMEDNS_BUILDER_IMAGE=$(CADDY_ACMEDNS_BUILDER_IMAGE) \
 	  --build-arg CADDY_ACMEDNS_BASE_IMAGE=$(CADDY_ACMEDNS_BASE_IMAGE) \
 	  --build-arg CADDY_ACMEDNS_MODULE=$(CADDY_ACMEDNS_MODULE) \

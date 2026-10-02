@@ -199,6 +199,16 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
     exit 1
 fi
 
+# --- 1 + 2. The image to boot. MOOSE_CLOUD_QCOW2 names a qcow2 that is already
+# built, and then this script builds nothing. CI uses it: one job builds the
+# boot-proof image once, and each boot job downloads it (ci-cloud-image.yml).
+# Without it, this script builds the image and converts it, as below.
+if [ -n "${MOOSE_CLOUD_QCOW2:-}" ]; then
+    [ -f "$MOOSE_CLOUD_QCOW2" ] || { echo "MOOSE_CLOUD_QCOW2='${MOOSE_CLOUD_QCOW2}' is not a file" >&2; exit 1; }
+    QCOW2="$(cd "$(dirname "$MOOSE_CLOUD_QCOW2")" && pwd)/$(basename "$MOOSE_CLOUD_QCOW2")"
+    mkdir -p "$WORK"
+    echo "booting the prebuilt image ${QCOW2} (MOOSE_CLOUD_QCOW2); not building"
+else
 # --- 1. build (own canary gate; fast when current).
 "${REPO_ROOT}/dev/cloud/test/bootstrap.sh"
 
@@ -207,6 +217,7 @@ fi
 echo "converting raw -> qcow2 cloud artifact: $(basename "$QCOW2")"
 qemu-img convert -f raw -O qcow2 "$IMAGE_OUT" "$QCOW2"
 [ -n "$CALLER" ] && chown "$CALLER":"$(id -gn "$CALLER" 2>/dev/null || echo "$CALLER")" "$QCOW2" 2>/dev/null || true
+fi
 
 # Writable overlays backed by the pristine artifact; the base is never written.
 # Each is DISK_SIZE, far bigger than the image (about 1.13 GiB: the 128 MiB ESP,
