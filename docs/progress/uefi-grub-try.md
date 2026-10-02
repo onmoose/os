@@ -54,7 +54,7 @@ All in `CI / Cloud image` with `publish=false`; nothing was built or booted loca
 | 37064755329 | `unseeded`, initramfs trace | the initramfs, before anything else touches the disk, reads `A_TRY=0` under UEFI and `A_TRY=1` under BIOS |
 | 37066652030 | `unseeded os-revert` | red in the build: the test postinst runs before the initramfs exists, so a check placed there could not work; dropped |
 | 37067400755 | `unseeded os-revert` | green, all four jobs: `A_TRY=1` at boot under UEFI and BIOS, no `NvVars`, `B_TRY=1` on the trial boot, `PANIC SKIP OK` under both firmwares |
-| FULL_RUN_ID | the full list, final head | FULL_RUN_RESULT |
+| **37068901867** | **the full list, head `a4aa774` (later commits change only docs)** | **green, all 14 jobs: 7 boot groups under UEFI and under legacy BIOS, 15.8 min wall. Every boot that passed printed `GRUB saved <slot>_TRY=1 ... no NvVars on the ESP`, and `os-revert` printed `PANIC SKIP OK` under both firmwares** |
 
 `make check` is green (the Go change is comments and one log line).
 
