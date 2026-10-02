@@ -163,4 +163,12 @@ EOF
     cp "${REPO_ROOT}/dev/cloud/moose-seed-materialize.sh" "$WIRING/usr/local/bin/moose-seed-materialize.sh"
     chmod 0755 "$WIRING/usr/local/bin/moose-seed-materialize.sh"
     cp "${REPO_ROOT}/dev/cloud/moose-seed.service" "$WIRING/etc/systemd/system/"
+
+    # The RAUC keyring, /etc/rauc/keyring.pem (#562): the release root on a
+    # build that publishes the OS, a throwaway root otherwise
+    # (MOOSE_RAUC_KEYRING, dev/cloud/rauc.sh). A release build without the
+    # committed release root fails here, before mkosi runs.
+    # shellcheck source=dev/cloud/rauc.sh
+    . "${REPO_ROOT}/dev/cloud/rauc.sh"
+    rauc_stage_keyring "$WIRING"
 }

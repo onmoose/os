@@ -61,8 +61,8 @@ echo "unexpected gh call: $*" >&2; exit 3
 	}{
 		{"neither: upload both together", "", 0, img + " " + sum, "attached"},
 		{"both: leave them", img + "," + sum, 0, "", "already has"},
-		{"only the image: refuse, name it", img, 1, "", "gh release delete-asset v0.16.0 " + img},
-		{"only the checksum: refuse, name it", sum, 1, "", "gh release delete-asset v0.16.0 " + sum},
+		{"only the image: refuse, name it", img, 1, "", "gh release delete-asset v0.16.0 " + img + " -y"},
+		{"only the checksum: refuse, name it", sum, 1, "", "gh release delete-asset v0.16.0 " + sum + " -y"},
 		{"other assets only: upload both", "notes.txt", 0, img + " " + sum, "attached"},
 	}
 	for _, c := range cases {
@@ -81,6 +81,63 @@ echo "unexpected gh call: $*" >&2; exit 3
 				t.Errorf("uploads = %q, want %q", strings.TrimSpace(string(got)), c.wantUpload)
 			}
 		})
+	}
+}
+
+// An OS release attaches four files as one set (#562): the image, the bundle
+// and their checksums. All present is left, none is uploaded in one call, and
+// any other mix refuses and names every published one to delete, including a
+// Release cut before the bundle existed (the image pair only).
+func TestAttachImageTreatsTheOSReleaseAsOneSet(t *testing.T) {
+	gh := `#!/usr/bin/env bash
+case "$1 $2" in
+  "release view") printf '%s' "$FAKE_ASSETS" | tr ',' '\n'; exit 0 ;;
+  "release upload") shift 3; echo "$*" >> "$FAKE_LOG"; exit 0 ;;
+esac
+echo "unexpected gh call: $*" >&2; exit 3
+`
+	bin := stubBin(t, "gh", gh)
+	const (
+		img  = "moose-v0.16.0-amd64.raw.xz"
+		isum = img + ".sha256"
+		bnd  = "moose-v0.16.0-amd64.raucb"
+		bsum = bnd + ".sha256"
+	)
+	all := []string{img, isum, bnd, bsum}
+	cases := []struct {
+		name       string
+		assets     string
+		wantRC     int
+		wantUpload string
+		wantInOut  []string
+	}{
+		{"none: upload all four together", "", 0, strings.Join(all, " "), []string{"attached"}},
+		{"all four: leave them", strings.Join(all, ","), 0, "", []string{"already has"}},
+		{"image pair only (cut before #562): refuse", img + "," + isum, 1, "", []string{"delete-asset v0.16.0 " + img + " -y", "delete-asset v0.16.0 " + isum + " -y", "not " + bnd + " " + bsum}},
+		{"bundle only: refuse", bnd, 1, "", []string{"delete-asset v0.16.0 " + bnd + " -y"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "uploads")
+			rc, out := runScript(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_ASSETS=" + c.assets, "FAKE_LOG=" + log},
+				"attach-image.sh", append([]string{"v0.16.0"}, all...)...)
+			if rc != c.wantRC {
+				t.Fatalf("exit = %d, want %d\n%s", rc, c.wantRC, out)
+			}
+			for _, w := range c.wantInOut {
+				if !strings.Contains(out, w) {
+					t.Errorf("output should contain %q:\n%s", w, out)
+				}
+			}
+			got, _ := os.ReadFile(log)
+			if strings.TrimSpace(string(got)) != c.wantUpload {
+				t.Errorf("uploads = %q, want %q", strings.TrimSpace(string(got)), c.wantUpload)
+			}
+		})
+	}
+	// One file is not a set.
+	if rc, _ := runScript(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH")}, "attach-image.sh", "v0.16.0", img); rc != 2 {
+		t.Errorf("one file: exit = %d, want 2", rc)
 	}
 }
 

@@ -183,9 +183,15 @@ So this doc isn't read as a claim about the finished product:
   slot (`dev/cloud/slotbudget`). GRUB on both firmwares from one `grub.cfg`
   and `grubenv`; the `/etc` overlay, the four pinned files and the bind mounts
   set up by an initramfs-tools hook (`dev/cloud/mkosi.extra/usr/lib/moose/state-setup`);
-  `rauc` and `rauc-service` with the slot config, no keyring yet. host-agent's
+  `rauc` and `rauc-service` with the slot config and a keyring
+  (`/etc/rauc/keyring.pem`). **Every OS release builds a signed RAUC bundle
+  (#562):** slot A of the image that ships, in the verity format, built by
+  `dev/cloud/build-bundle.sh` and checked against the keyring read back out of
+  the slot, re-signed in a `sign` job of its own (the only job that enters the
+  `os-release` environment, `dev/release/sign-bundle.sh`; an offline root CA,
+  `docs/dev/rauc-signing.md`) and attached beside the image. host-agent's
   hosted build reports the state partition as its "System" volume
-  (`diskusage.NewHosted`). Not built: the bundle (#562), the update itself
+  (`diskusage.NewHosted`). Not built: the update itself
   (#563) and the appliance layout (#564), so a box never updates its OS today. **The OS
   package lock is built (#560)** for the hosted image: `dev/os-lock/` holds a
   snapshot.debian.org timestamp, exact Docker pins and the resolved package

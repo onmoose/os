@@ -37,6 +37,9 @@ CANARY_VERSION="v27"  # bump when staging/mkosi.conf/repart changes require a cl
 # A change to the OS package lock (#560) must rebuild too, so all three lock
 # files are part of the canary. The resolved list is in it as well: a re-run
 # after only the list changed must not exit early and skip os_lock_check below.
+# The keyring mode is in it too (#562): a build for release bakes another
+# /etc/rauc/keyring.pem.
+CANARY_VERSION="${CANARY_VERSION}-rauc-${MOOSE_RAUC_KEYRING:-throwaway}"
 CANARY_VERSION="${CANARY_VERSION}-lock-$(cat "${REPO_ROOT}/dev/os-lock/debian-snapshot" "${REPO_ROOT}/dev/os-lock/third-party.lock" "${REPO_ROOT}/dev/os-lock/cloud-packages.lock" | sha256sum | cut -c1-12)"
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 

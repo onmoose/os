@@ -290,6 +290,13 @@ echo "cloud-assertions: layout: pinned daemon.json/subuid/subgid/login.defs, SSH
 # box reboots rather than waits in emergency or rescue mode.
 rauc_out="$(rauc status 2>&1)" || layout_fail "rauc status failed: $(tail -n3 <<<"$rauc_out" | tr '\n' ' ')"
 grep -qi 'booted from: *rootfs.0 (A)' <<<"$rauc_out" || layout_fail "rauc does not see slot A as booted: $(tr '\n' ' ' <<<"$rauc_out")"
+# The keyring a bundle must chain to (#562) comes from the slot, never from the
+# state partition: a new image's keyring must reach the box, so the box never
+# writes it into the /etc upper layer.
+[ -s /etc/rauc/keyring.pem ] || layout_fail "no /etc/rauc/keyring.pem: rauc install would refuse every bundle"
+[ ! -e "$up/rauc/keyring.pem" ] || layout_fail "/etc/rauc/keyring.pem is in the /etc upper layer, so it no longer follows the image"
+grep -qx 'check-purpose=codesign' /etc/rauc/system.conf || layout_fail "/etc/rauc/system.conf does not ask for check-purpose=codesign"
+echo "cloud-assertions: layout: rauc keyring from the slot: $(openssl x509 -in /etc/rauc/keyring.pem -noout -subject 2>/dev/null || head -c 40 /etc/rauc/keyring.pem)"
 grub-editenv /efi/grub/grubenv list | grep -qx 'A_OK=1' || layout_fail "grubenv does not mark slot A good: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ')"
 for u in emergency.service rescue.service; do
     systemctl cat "$u" 2>/dev/null | grep -q 'systemctl --no-block reboot' || layout_fail "$u has no reboot drop-in"

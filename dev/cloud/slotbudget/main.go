@@ -7,7 +7,7 @@
 // the squashfs in slot A fills more than 60% of the partition, the build stops
 // and someone has to make room or change the budget on purpose.
 //
-//	slotbudget [-max-percent 60] [-summary FILE] [-title TEXT] IMAGE.raw
+//	slotbudget [-max-percent 60] [-summary FILE] [-title TEXT] [-extract FILE] IMAGE.raw
 //
 // It reads the raw disk image directly: the GPT, then the squashfs superblock
 // at the start of the partition labelled moose-slot-a. It needs no loop
@@ -15,6 +15,13 @@
 // share of the smallest hosted disk (40 GB, a Hetzner CX23) and the slot's
 // measured content, and appends the same table to FILE when -summary is given
 // (CI passes $GITHUB_STEP_SUMMARY).
+//
+// With -extract FILE it also writes the slot's squashfs to FILE, cut to the
+// squashfs's own size rounded up to 4 KiB (the block size mksquashfs pads
+// to), never past the partition. That is the slot image the OS update bundle
+// carries (dev/cloud/build-bundle.sh, BUILD.md # 1b # The bundle, #562): the
+// same bytes as slot A in the disk image. It is written only when the slot
+// is within budget.
 //
 // Exit status: 0 within budget, 1 over budget or not the slot GRUB can read,
 // 2 when the image cannot be read.
@@ -81,8 +88,9 @@ func main() {
 	maxPercent := flag.Int("max-percent", 60, "fail when the squashfs fills more than this share of the slot")
 	summary := flag.String("summary", "", "append the Markdown table to this file (for $GITHUB_STEP_SUMMARY)")
 	title := flag.String("title", "OS slot budget", "the heading of the table in -summary")
+	extract := flag.String("extract", "", "write the slot's squashfs to this file (the OS update bundle's image)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: slotbudget [-max-percent N] [-summary FILE] [-title TEXT] IMAGE.raw")
+		fmt.Fprintln(os.Stderr, "usage: slotbudget [-max-percent N] [-summary FILE] [-title TEXT] [-extract FILE] IMAGE.raw")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -116,6 +124,58 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("slot budget ok: the squashfs is %.1f%% of the slot (budget %d%%)\n", r.percent(), r.MaxPercent)
+	if *extract != "" {
+		n, err := extractSlot(flag.Arg(0), r, *extract)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "slotbudget: extract:", err)
+			os.Exit(2)
+		}
+		fmt.Printf("slot image written: %s, %s\n", *extract, human(n))
+	}
+}
+
+// slotImageAlign is the block size mksquashfs pads a squashfs to by default.
+const slotImageAlign = 4096
+
+// slotImageSize is how many bytes of the slot make its image: the squashfs's
+// bytes_used rounded up to 4 KiB, never past the end of the partition.
+func slotImageSize(r report) uint64 {
+	n := (r.Content.BytesUsed + slotImageAlign - 1) / slotImageAlign * slotImageAlign
+	if n > r.Slot.Size {
+		n = r.Slot.Size
+	}
+	return n
+}
+
+// extractSlot copies slot A's image out of the disk image at path into dst,
+// and returns how many bytes it wrote.
+func extractSlot(path string, r report, dst string) (uint64, error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer src.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return 0, err
+	}
+	n := slotImageSize(r)
+	// A section reader stops at the end of the file with no error, so an
+	// image cut short inside the slot would give a short image that still
+	// looks fine. Count the bytes.
+	got, err := io.Copy(out, io.NewSectionReader(src, int64(r.Slot.Start), int64(n)))
+	if err == nil && uint64(got) != n {
+		err = fmt.Errorf("the image ends inside %s: copied %d of %d bytes", slotLabel, got, n)
+	}
+	if err != nil {
+		out.Close()
+		os.Remove(dst)
+		return 0, err
+	}
+	if err := out.Close(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // badSlotError marks an image that was read fine but whose slot is wrong:
