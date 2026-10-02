@@ -1,0 +1,11 @@
+[Unit]
+Description=moose #564 probe
+After=local-fs.target sysinit.target
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/probe/probe.sh
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=10min
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,43 @@
+#!/bin/sh
+# PROBE #564. Open the booted slot through dm-verity before initramfs-tools
+# mounts root=/dev/mapper/moose-root. The slot partition holds the squashfs
+# from offset 0 (GRUB reads the kernel from it) and the verity hash tree right
+# after it, at the squashfs size rounded up to 4 KiB, so the only thing passed
+# in is the root hash (moose.roothash=, from the grubenv).
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+. /scripts/functions
+
+slotuuid=""
+roothash=""
+for x in $(cat /proc/cmdline); do
+    case "$x" in
+        moose.slotuuid=*) slotuuid="${x#moose.slotuuid=}" ;;
+        moose.roothash=*) roothash="${x#moose.roothash=}" ;;
+    esac
+done
+[ -n "$slotuuid" ] || panic "moose-verity: no moose.slotuuid= on the command line"
+[ -n "$roothash" ] || panic "moose-verity: no moose.roothash= on the command line"
+
+dev="/dev/disk/by-partuuid/$slotuuid"
+i=0
+while [ ! -b "$dev" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+[ -b "$dev" ] || panic "moose-verity: $dev never appeared"
+
+# squashfs superblock: bytes_used is the 8-byte little-endian value at offset 40.
+# (klibc has no tr: let the shell drop the spaces.)
+set -- $(od -An -t u8 -j 40 -N 8 "$dev")
+bytes="${1:-}"
+[ -n "$bytes" ] || panic "moose-verity: cannot read the squashfs size from $dev"
+hoff=$(( (bytes + 4095) / 4096 * 4096 ))
+echo "moose-verity: $dev squashfs $bytes bytes, hash tree at $hoff" > /dev/kmsg
+
+modprobe dm_verity || panic "moose-verity: modprobe dm_verity failed"
+# No udev rules for device-mapper in this initramfs: let libdevmapper make the
+# node itself instead of waiting on a udev cookie.
+if ! DM_DISABLE_UDEV=1 veritysetup open "$dev" moose-root "$dev" "$roothash" \
+        --hash-offset="$hoff" --panic-on-corruption; then
+    panic "moose-verity: veritysetup open failed for $dev"
+fi
+echo "moose-verity: opened $dev as /dev/mapper/moose-root (panic on corruption)" > /dev/kmsg

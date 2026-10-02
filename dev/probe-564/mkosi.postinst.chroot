@@ -1,0 +1,48 @@
+#!/bin/bash
+# PROBE #564, in the image.
+set -euo pipefail
+
+# Kernel and initramfs inside the slot, as on hosted (dev/cloud/mkosi.postinst.chroot).
+kver="$(ls /usr/lib/modules | sort -V | tail -n1)"
+mkdir -p /usr/lib/moose/boot
+if [ -e "/usr/lib/modules/$kver/vmlinuz" ]; then
+    mv "/usr/lib/modules/$kver/vmlinuz" /usr/lib/moose/boot/vmlinuz
+else
+    mv "/boot/vmlinuz-$kver" /usr/lib/moose/boot/vmlinuz
+fi
+rm -f /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz
+for m in squashfs dm_verity; do
+    grep -qx "$m" /etc/initramfs-tools/modules || echo "$m" >> /etc/initramfs-tools/modules
+done
+mkinitramfs -o /usr/lib/moose/boot/initrd.img "$kver"
+rm -f /boot/initrd.img-*
+ls -l /usr/lib/moose/boot/
+echo "initramfs: $(lsinitramfs /usr/lib/moose/boot/initrd.img | wc -l) files; firmware in it: $(lsinitramfs /usr/lib/moose/boot/initrd.img | grep -c '^usr/lib/firmware/' || true)"
+lsinitramfs /usr/lib/moose/boot/initrd.img | grep -E 'veritysetup|dm-verity|bin/od' || true
+
+
+# The Secure Boot chain on the ESP, at the removable-media path, so the
+# firmware needs no boot entry: shim as BOOTX64.EFI, then grubx64.efi and
+# MokManager beside it. No fbx64.efi, so shim goes straight to GRUB.
+mkdir -p /efi/EFI/BOOT /efi/EFI/debian
+cp /usr/lib/shim/shimx64.efi.signed /efi/EFI/BOOT/BOOTX64.EFI
+cp /usr/lib/shim/mmx64.efi.signed /efi/EFI/BOOT/mmx64.efi
+cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /efi/EFI/BOOT/grubx64.efi
+grub-editenv /efi/EFI/debian/grubenv create
+grub-editenv /efi/EFI/debian/grubenv set ORDER="A B" A_OK=1 A_TRY=0 B_OK=0 B_TRY=0
+ls -lR /efi
+
+# The canary: 4 MiB that squashfs cannot compress, starting with a marker the
+# guest finds in slot B to corrupt one block of it.
+mkdir -p /usr/lib/probe
+{ printf 'MOOSE-PROBE-CANARY-7f3a9c'; head -c 4194304 /dev/urandom; } > /usr/lib/probe/canary
+
+mkdir -p /efi
+: > /etc/machine-id
+systemctl --root=/ mask systemd-firstboot.service systemd-repart.service ldconfig.service \
+    systemd-update-done.service docker.service docker.socket containerd.service \
+    NetworkManager.service NetworkManager-wait-online.service wpa_supplicant.service \
+    avahi-daemon.service avahi-daemon.socket smbd.service nmbd.service samba-ad-dc.service \
+    ssh.service rauc.service serial-getty@ttyS0.service >/dev/null
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sf /etc/systemd/system/probe.service /etc/systemd/system/multi-user.target.wants/probe.service

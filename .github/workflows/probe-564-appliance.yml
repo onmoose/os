@@ -1,0 +1,53 @@
+# PROBE for #564 (dropped before the PR). Builds the appliance package set in
+# the A/B slot shape and boots it with Secure Boot on (shim + Debian's signed
+# GRUB) and a dm-verity root. It publishes nothing, holds no secrets and has
+# read-only permissions. Runs on pushes to the #564 branch that touch it.
+name: Probe 564 appliance
+
+on:
+  push:
+    branches: [feat/564-appliance-ab]
+    paths:
+      - "dev/probe-564/**"
+      - ".github/workflows/probe-564-appliance.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-564-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Build and boot (Secure Boot, verity)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-mkosi
+      - name: Install QEMU, OVMF, swtpm and the host tools
+        run: |
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools cryptsetup-bin grub-common mtools
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm /usr/share/OVMF/
+      - name: Build the probe image
+        run: ./dev/probe-564/run.sh build
+      - name: Append the verity tree and write the root hashes
+        run: ./dev/probe-564/run.sh verity
+      - name: Package sizes
+        run: ./dev/probe-564/run.sh packages
+      - name: Boot with Secure Boot on
+        run: ./dev/probe-564/run.sh boot
+      - name: Upload the serial log and manifest
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-564
+          path: |
+            .dev/probe-564/run/serial.log
+            .dev/probe-564/*.manifest
+          if-no-files-found: ignore
+          retention-days: 7

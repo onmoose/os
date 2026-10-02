@@ -1,0 +1,10 @@
+#!/bin/sh
+# PROBE #564. Put veritysetup, od and dm-verity into the initramfs.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+. /usr/share/initramfs-tools/hook-functions
+copy_exec /usr/sbin/veritysetup /sbin
+copy_exec /usr/bin/od /bin
+manual_add_modules dm_verity
+manual_add_modules squashfs
