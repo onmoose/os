@@ -21,6 +21,7 @@ enable_unit() {
 # polls it, and writes its verdict to /dev/console for the QEMU harness to grep.
 # Test-lane only — the production image ships no assertions oneshot.
 enable_unit /etc/systemd/system/moose-cloud-assertions.service moose-cloud-assertions.service
+enable_unit /etc/systemd/system/moose-test-grubenv.service moose-test-grubenv.service
 
 # Make the staged self-check executable (ExtraTrees preserves mode, but be
 # defensive — a clobbered mode would otherwise fail silently at boot).

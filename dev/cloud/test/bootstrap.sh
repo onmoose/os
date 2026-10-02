@@ -136,6 +136,23 @@ cp "${TEST_DIR}/moose-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
 # healthy trial boot marks its slot good about 17 s after the switch in CI
 # (run 37031756819), which the os-update boot proves under the same setting.
 # The image that ships keeps 15 min.
+# What GRUB left in the grubenv for this boot, logged before host-agent can
+# mark anything (#563): GRUB sets the booted slot's TRY=1, and the boot lane
+# checks it did, under both firmwares.
+cat > "$EXTRA/etc/systemd/system/moose-test-grubenv.service" <<'EOF'
+[Unit]
+Description=moose test: log the grubenv GRUB left for this boot
+Before=host-agent.service
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo "grubenv at boot: $(grub-editenv /efi/grub/grubenv list | tr "\n" " ")"'
+
+[Install]
+WantedBy=multi-user.target
+EOF
 mkdir -p "$EXTRA/etc/systemd/system/moose-os-trial.timer.d"
 cat > "$EXTRA/etc/systemd/system/moose-os-trial.timer.d/10-cloud-test.conf" <<'EOF'
 [Timer]

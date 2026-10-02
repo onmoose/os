@@ -190,6 +190,7 @@ esac
 # this image) must reboot the box; the next stage runs on slot A.
 if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
     [ "$BOOTED" = B ] || fail "os-revert: stage 2 should boot slot B, booted '$BOOTED' (did GRUB skip the new slot?)"
+    boot_env="$(journalctl -u moose-test-grubenv.service -b --no-pager -o cat 2>/dev/null | grep 'grubenv at boot' | tail -1)"
     [ -e /var/lib/moose/os-update/trial-B ] || fail "os-revert: no trial marker for slot B on its trial boot"
     for _ in $(seq 1 20); do systemctl is-active -q host-agent.service && break; sleep 1; done
     systemctl is-active -q host-agent.service && fail "os-revert: host-agent runs on the slot it was meant to be kept off"
@@ -206,7 +207,7 @@ if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
         fi
         sleep 2
     done
-    fail "os-revert: the safety net never rebooted the box off the broken slot. grubenv: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ') timer: $(systemctl list-timers --all --no-pager 2>&1 | grep moose-os-trial) service: $(journalctl -u moose-os-trial.service -b --no-pager 2>&1 | tail -5 | tr '\n' ' ')"
+    fail "os-revert: the safety net never rebooted the box off the broken slot. $boot_env. grubenv now: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ') timer: $(systemctl list-timers --all --no-pager 2>&1 | grep moose-os-trial) service: $(journalctl -u moose-os-trial.service -b --no-pager 2>&1 | tail -5 | tr '\n' ' ')"
 fi
 
 # --- 1. no control-plane unit has failed.
@@ -353,6 +354,8 @@ journalctl -k -b --no-pager 2>/dev/null | grep -q "moose-state: boot disk is $ro
     || layout_fail "state-setup did not report $root_disk as the boot disk"
 [ "$(lsblk -no PKNAME "$state_dev")" = "$(basename "$root_disk")" ] || layout_fail "the state partition $state_dev is not on the boot disk $root_disk"
 echo "cloud-assertions: layout: rauc sees slot $BOOTED booted, grubenv has ${BOOTED}_OK=1, emergency and rescue reboot"
+boot_env="$(journalctl -u moose-test-grubenv.service -b --no-pager -o cat 2>/dev/null | grep 'grubenv at boot' | tail -1)"
+echo "cloud-assertions: layout: $boot_env"
 
 # --- 1c. the baked host-agent carries a real build stamp (BUILD.md # Versioning:
 # "every build stamps two fields"). An unstamped build reports internal/version's
