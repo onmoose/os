@@ -183,6 +183,9 @@ dump_serial() {
     grep -niE 'cloud-assertions|moose|docker|caddy|brain|host-agent|networkd|fail' "$QEMU_SERIAL" 2>/dev/null | tail -40 >&2 || true
     # The whole diag block too. The tail above keeps only 40 lines, and a red
     # boot with many steps (the remap boots, #531) cuts the brain log out of it.
+    # GRUB's own messages (OVMF mirrors the EFI console to the serial port).
+    echo "--- serial: GRUB errors ---" >&2
+    grep -aE '^error:|grub.*error|save_env|grubenv' "$QEMU_SERIAL" 2>/dev/null | head -20 >&2 || true
     echo "--- serial: diag block ---" >&2
     sed -n '/=== MOOSE_CLOUD_DIAG ===/,/=== END MOOSE_CLOUD_DIAG ===/p' "$QEMU_SERIAL" 2>/dev/null | grep -v '^-A \|^:\|^\*' | cut -c1-2000 >&2 || true
     echo "--- serial: tail 30 ---" >&2
@@ -429,6 +432,9 @@ run_boot() {
             # skipped, a proof that never ran — was indistinguishable from one that
             # held. These lines are the evidence, and they belong in the CI log.
             grep -o 'cloud-assertions:.*' "$QEMU_SERIAL" 2>/dev/null | tr -d '\r' | sed 's/^/  /' || true
+            # GRUB's own error lines, if any (#563: under UEFI GRUB does not
+            # save the try flag; this is where it would say why).
+            grep -aE '^error:|save_env|grubenv' "$QEMU_SERIAL" 2>/dev/null | tr -d '\r' | head -10 | sed 's/^/  grub: /' || true
             # On PASS the guest powers itself off (cloud-assertions.sh ok()); wait
             # for QEMU to exit so the overlay write (box-id + admin) flushes before
             # the next boot reads it. Bounded — kill if the clean shutdown hangs.

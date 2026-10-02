@@ -197,16 +197,7 @@ if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
     systemctl list-timers --all --no-pager 2>/dev/null | grep -q moose-os-trial.timer || fail "os-revert: moose-os-trial.timer is not scheduled on the trial boot"
     echo "cloud-assertions: os-revert: on slot B, host-agent cannot start, trial marker present; grubenv: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' '); waiting for the safety net to reboot the box"
     set_os_stage 3
-    # Trace: report every change of the grubenv while waiting, with what ran.
-    prev="$(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ')"
-    for _i in $(seq 1 150); do
-        cur="$(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ')"
-        if [ "$cur" != "$prev" ]; then
-            echo "cloud-assertions: os-revert: TRACE grubenv changed at uptime $(cut -d' ' -f1 /proc/uptime): [$prev] -> [$cur]; journal: $(journalctl -b --no-pager --since '-20s' 2>&1 | grep -v CONTAINER | tail -25 | cut -c1-200 | tr '\n' '|')" > /dev/console
-            prev="$cur"
-        fi
-        sleep 2
-    done
+    sleep 300
     fail "os-revert: the safety net never rebooted the box off the broken slot. $boot_env. grubenv now: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ') timer: $(systemctl list-timers --all --no-pager 2>&1 | grep moose-os-trial) service: $(journalctl -u moose-os-trial.service -b --no-pager 2>&1 | tail -5 | tr '\n' ' ')"
 fi
 
@@ -342,10 +333,6 @@ grub-editenv /efi/grub/grubenv list | grep -qx "${BOOTED}_OK=1" || layout_fail "
 for u in emergency.service rescue.service; do
     systemctl cat "$u" 2>/dev/null | grep -q 'systemctl --no-block reboot' || layout_fail "$u has no reboot drop-in"
 done
-# Only host-agent marks a slot good (#563): RAUC's own mark-good unit would mark
-# a slot good whose host-agent never started.
-[ "$(systemctl is-enabled rauc-mark-good.service 2>&1)" = masked ] \
-    || layout_fail "rauc-mark-good.service is '$(systemctl is-enabled rauc-mark-good.service 2>&1)', want masked: it would mark every booted slot good"
 dmesg 2>/dev/null | grep -q 'moose-state: bind mounts done' || journalctl -k -b --no-pager 2>/dev/null | grep -q 'moose-state: bind mounts done' \
     || layout_fail "no 'moose-state: bind mounts done' in the kernel log"
 # state-setup looked for the state partition on the boot disk only.

@@ -409,10 +409,10 @@ func (a *Applier) trial(slot string) {
 		return
 	}
 	// The marker goes first: once the slot is good, nothing may reboot it
-	// away, and the image's timer reboots any slot that still has one.
-	if err := os.Remove(TrialMarker(a.dir(), slot)); err != nil {
-		slog.Error("os update: could not remove the trial marker", "err", err, "slot", slot)
-	}
+	// away, and the image's timer reboots any slot that still has one. Tried
+	// a few times, because a marker left behind turns a good slot into a
+	// revert.
+	removeMarker(TrialMarker(a.dir(), slot), slot)
 	r, err := a.load()
 	if err != nil {
 		slog.Error("os update: cannot read the record", "err", err)
@@ -702,4 +702,16 @@ func (a *Applier) Peek(rel updatetarget.OSRelease) (state, detail string, ok boo
 		return protocol.OSUpdateFailed, at.Error, true
 	}
 	return "", "", false
+}
+
+// removeMarker removes a trial marker, retrying for a few seconds.
+func removeMarker(path, slot string) {
+	var err error
+	for i := 0; i < 5; i++ {
+		if err = os.Remove(path); err == nil || errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	slog.Error("os update: could not remove the trial marker; the image's safety net will revert this good slot", "err", err, "slot", slot)
 }
