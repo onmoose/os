@@ -1,0 +1,20 @@
+#!/bin/sh
+# The safety net for an OS update trial (UPDATES.md # 1, #563), run by
+# moose-os-trial.timer some minutes after boot.
+#
+# host-agent writes /var/lib/moose/os-update/trial-<slot> before it switches to
+# a new slot, and removes it once the new slot is healthy and marked good
+# (internal/hostagent/osupdate). If the marker for the slot this box booted is
+# still there now, the new slot never got that far: host-agent did not start,
+# or it hung. host-agent cannot reboot the box then, so this does. GRUB skips a
+# slot still on trial (TRY=1), so the next boot is the old slot.
+#
+# Nothing else: a boot that is not on trial has no marker, so this does nothing
+# on every normal boot, and on a box that never updated its OS.
+set -u
+slot="$(sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline)"
+[ -n "$slot" ] || exit 0
+[ -e "/var/lib/moose/os-update/trial-${slot}" ] || exit 0
+echo "moose-os-trial: slot ${slot} was not marked good in time; rebooting so the box goes back to the other slot"
+rauc status mark-bad booted || echo "moose-os-trial: mark-bad failed; rebooting anyway, GRUB skips a slot still on trial"
+systemctl reboot

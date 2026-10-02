@@ -138,7 +138,15 @@ func main() {
 	// prompt differ, and both come from the build-tagged updateTargetSource.
 	// Started last for the same reason the poll is: nothing about booting waits
 	// on it.
-	stopTarget := startUpdateTarget(brainCfg, a, poller)
+	// Stream A (#563). Boot decides first whether this boot is an OS trial,
+	// whatever the update loop does below: a trial has to be decided even on
+	// a box whose update target is unusable.
+	osApp := osUpdateApplier(osUpdateDeps{agent: a, brainCfg: brainCfg})
+	if osApp != nil {
+		osApp.Boot(context.Background())
+		a.OS = osApp
+	}
+	stopTarget := startUpdateTarget(brainCfg, a, poller, osApp)
 	defer stopTarget()
 
 	slog.Info("host-agent-real listening", "sock", sockPath)

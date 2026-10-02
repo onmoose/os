@@ -94,6 +94,11 @@ BOX_ID_SSH=heron-birch
 # The remap boots (#531) share ONE overlay of their own and one box-id: the
 # second boot is a reboot of the disk the first one installed apps on.
 BOX_ID_REMAP=moss-lynx
+# The OS update boots (#563) each provision their OWN box on a fresh overlay:
+# they write slot B and reboot the box between slots, so no other boot may see
+# that disk.
+BOX_ID_OS_UPDATE=fern-stoat
+BOX_ID_OS_REVERT=wren-maple
 
 # Which boots to run, space-separated (unseeded seeded frozen access update ssh remap).
 # Default: all.
@@ -131,7 +136,16 @@ BOX_ID_REMAP=moss-lynx
 #     checks them all again. One name runs both, because the second needs what
 #     the first left on the disk.
 # All of these are in the gate: see ci-cloud-image.yml.
-BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen access update ssh remap}"
+#   - `os-update` and `os-revert` (#563) prove the A/B OS update on the booted
+#     image. `os-update`: a wrong digest is refused, the bundle installs into
+#     slot B ahead of the window, the box switches in the window, boots slot B
+#     and marks it good, with the owner, an app, the SSH host keys and the data
+#     intact. `os-revert`: the same bundle, but host-agent cannot start on
+#     slot B, so the image's safety-net timer reboots the box and it comes back
+#     on slot A on its own. Each reboots its box inside one QEMU run, so
+#     neither passes -no-reboot. Both need the test bundle from
+#     dev/cloud/test/build-os-test-bundle.sh (MOOSE_CLOUD_OS_BUNDLE_DIR).
+BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen access update ssh remap os-update os-revert}"
 # Which firmwares run the boots (#561): by default every boot runs under UEFI and
 # again under legacy BIOS. `bios` used to be a boot of its own (one un-seeded
 # boot under SeaBIOS); it is a firmware now.
@@ -147,9 +161,9 @@ boot_count=0
 for b in $BOOTS; do
     boot_count=$((boot_count + 1))
     case "$b" in
-        unseeded|seeded|frozen|access|update|ssh|remap) ;;
+        unseeded|seeded|frozen|access|update|ssh|remap|os-update|os-revert) ;;
         bios) echo "'bios' is no longer a boot: every boot runs under both firmwares (MOOSE_CLOUD_FIRMWARES, default 'uefi bios')" >&2; exit 1 ;;
-        *) echo "unknown boot '$b' in MOOSE_CLOUD_BOOTS='$BOOTS' (known: unseeded seeded frozen access update ssh remap)" >&2; exit 1 ;;
+        *) echo "unknown boot '$b' in MOOSE_CLOUD_BOOTS='$BOOTS' (known: unseeded seeded frozen access update ssh remap os-update os-revert)" >&2; exit 1 ;;
     esac
 done
 [ "$boot_count" -gt 0 ] || { echo "MOOSE_CLOUD_BOOTS='$BOOTS' names no boot" >&2; exit 1; }
@@ -354,8 +368,10 @@ run_boot() {
         -device "virtio-net-pci,netdev=n0,mac=52:54:00:c1:0d:01"
         -smbios "type=11,value=io.systemd.credential:moose.assert=${mode}"
         "$@"
-        -no-reboot
     )
+    # A boot that reboots its own box (the OS update boots) keeps QEMU up
+    # across the reboot; every other boot ends QEMU on a reboot.
+    if [ -z "${KEEP_REBOOTS:-}" ]; then qemu_args+=( -no-reboot ); fi
     if [ "$firmware" = uefi ] && [ -n "$OVMF_VARS" ]; then
         qemu_args+=( -drive "if=pflash,format=raw,file=${OVMF_VARS}" )
     fi
@@ -678,6 +694,60 @@ if should_run remap; then
         exit 1
     fi
     echo "boot remap-reboot OK: every tier checked again after a real reboot of the same disk (box_id=${BOX_ID_REMAP})"
+fi
+
+# --- 12. the OS update boots (#563). Each takes its own fresh overlay and
+# box-id, a test-portal key and one owner assertion (the update-target read is
+# admin-only), and a second, read-only disk holding the test bundle: the box is
+# air-gapped, so the bundle reaches it as an ext4 image that the guest mounts
+# and serves to host-agent from a file server inside the guest. The disk is
+# made here, from MOOSE_CLOUD_OS_BUNDLE_DIR, with mke2fs -d (no root needed for
+# that part). The guest reboots between slots inside one QEMU run.
+#
+# MOOSE_CLOUD_OS_REFUSE_ONLY=true runs only the refusal half of os-update: on
+# a run that publishes the OS, the boot-proof image trusts only the release
+# root, so the throwaway-signed test bundle must be refused (the maintainer's
+# call for #563).
+os_boot() { # NAME BOX_ID
+    local name="$1" box="$2" dir="${MOOSE_CLOUD_OS_BUNDLE_DIR:-}" mint key token disk sum ver mode
+    [ -n "$GO" ] && [ -x "$GO" ] || { echo "$name boot needs go to mint the owner assertion; none found (\$GO='${GO:-}')" >&2; exit 1; }
+    [ -n "$dir" ] && [ -f "$dir/os-test.raucb" ] && [ -f "$dir/os-test.sha256" ] && [ -f "$dir/os-test.version" ] || {
+        echo "$name boot needs the test bundle: set MOOSE_CLOUD_OS_BUNDLE_DIR to the output of dev/cloud/test/build-os-test-bundle.sh" >&2
+        exit 1
+    }
+    mapfile -t mint < <(mint_owner_assertion "$box") || true
+    key="${mint[0]:-}"; token="${mint[1]:-}"
+    [ -n "$key" ] && [ -n "$token" ] || { echo "$name boot: failed to mint the owner assertion" >&2; exit 1; }
+    disk="${RUN_DIR}/os-bundle-${FIRMWARE}-${name}.img"
+    local bytes; bytes="$(stat -c %s "$dir/os-test.raucb")"
+    mke2fs -q -t ext4 -L moose-os-test -d "$dir" "$disk" "$(( bytes / 1048576 + 64 ))M"
+    sum="$(tr -d '[:space:]' < "$dir/os-test.sha256")"
+    ver="$(tr -d '[:space:]' < "$dir/os-test.version")"
+    mode=full
+    [ "${MOOSE_CLOUD_OS_REFUSE_ONLY:-false}" = true ] && mode=refuse
+
+    OVERLAY="${RUN_DIR}/overlay-${FIRMWARE}-${name}.qcow2"
+    new_overlay "$OVERLAY"
+    VERDICT_TIMEOUT=1500
+    KEEP_REBOOTS=1
+    if ! run_boot "${FIRMWARE}-${name}" "$name" \
+        -drive "file=${disk},if=virtio,format=raw,readonly=on" \
+        -smbios "type=11,value=$(seed_cred_keyed "$box" "$key" "http://127.0.0.1:5001/target.json")" \
+        -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$token" | base64 -w0)" \
+        -smbios "type=11,value=io.systemd.credential:moose.os_test=${mode}:${ver}:${sum}"; then
+        KEEP_REBOOTS=""
+        echo "cloud ${name} proof: ${VERDICT}" >&2
+        exit 1
+    fi
+    KEEP_REBOOTS=""
+}
+if should_run os-update; then
+    os_boot os-update "$BOX_ID_OS_UPDATE"
+    echo "boot os-update OK: the OS update installed into slot B, the box switched, booted slot B and marked it good, with its owner, app, host keys and data intact (box_id=${BOX_ID_OS_UPDATE})"
+fi
+if should_run os-revert; then
+    os_boot os-revert "$BOX_ID_OS_REVERT"
+    echo "boot os-revert OK: slot B never came up, the safety net rebooted the box and it went back to slot A on its own (box_id=${BOX_ID_OS_REVERT})"
 fi
 
 echo "firmware ${FIRMWARE}: every boot OK (${BOOTS})"

@@ -81,6 +81,7 @@ func main() {
 	if err := os.MkdirAll(cfg.stateDir, 0o755); err != nil {
 		fatal("create state dir", "err", err)
 	}
+	writeFloorFile(cfg.stateDir)
 
 	st, err := store.Open(filepath.Join(cfg.stateDir, "moose.db"))
 	if err != nil {
@@ -294,6 +295,10 @@ func main() {
 	// startup (the first handshake) then on the same loose poll cadence.
 	checkAgentVersion(pollCtx, host, healthMgr, auditor, notifier, bus)
 	go versionCheckPollLoop(pollCtx, host, healthMgr, auditor, notifier, bus, cfg.healthPollPeriod)
+
+	// Stream A outcomes (#563): one admin notification per OS update, read
+	// off host-agent's update-target report on the same cadence.
+	go osOutcomeLoop(pollCtx, host, st, notifier, cfg.healthPollPeriod)
 
 	// Locus-C brain-DB integrity check (HEALTH.md # Detector catalog): PRAGMA
 	// integrity_check at boot + every 6h, reconciling brain-db-corrupt. Runs

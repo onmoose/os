@@ -74,10 +74,15 @@ type UnpublishRequest struct {
 // for the install-plan footprint (DECISIONS.md 2026-06-13). Same Bavail/Blocks
 // statfs semantics per entry; absent volumes are omitted, never zero-filled.
 type SystemStatus struct {
-	Hostname           string      `json:"hostname"`
-	UptimeS            int64       `json:"uptime_s"`
-	DiskPressure       bool        `json:"disk_pressure"`
-	AgentVersion       string      `json:"agent_version"`
+	Hostname     string `json:"hostname"`
+	UptimeS      int64  `json:"uptime_s"`
+	DiskPressure bool   `json:"disk_pressure"`
+	AgentVersion string `json:"agent_version"`
+	// OSVersion and OSSlot are the OS release this box runs and the slot it
+	// booted ("A" or "B"). Empty when this host-agent cannot tell (the
+	// appliance until #564, the fake).
+	OSVersion          string      `json:"os_version,omitempty"`
+	OSSlot             string      `json:"os_slot,omitempty"`
 	DataDiskFreeBytes  int64       `json:"data_disk_free_bytes"`
 	DataDiskTotalBytes int64       `json:"data_disk_total_bytes"`
 	Disks              []DiskSpace `json:"disks"`
@@ -482,6 +487,14 @@ type Error struct {
 // JobKindSystemUpdate is the kind name of the control-plane update job.
 const JobKindSystemUpdate = "system-update"
 
+// JobKindOSInstall and JobKindOSSwitch are the two OS update jobs (#563): the
+// download and install into the other slot, and the switch and reboot. They
+// take the same lock as system-update, so no two of them ever run at once.
+const (
+	JobKindOSInstall = "os-install"
+	JobKindOSSwitch  = "os-switch"
+)
+
 // Job status values. `cancelled`, `cancelling`, and `stalled` from the spec are
 // not produced by this host-agent: there is no cancel route, and a run that
 // passes its MaxDuration is cancelled and rolled back, so it lands on a known
@@ -599,7 +612,91 @@ type UpdateTarget struct {
 	// Profile is the environment profile that made the decision, "appliance" or
 	// "hosted" (ENVIRONMENT.md).
 	Profile string `json:"profile,omitempty"`
+	// OS is stream A's last decision, beside stream B's above (UPDATES.md # 1,
+	// #563). Nil when this host-agent reports nothing about the OS.
+	OS *OSUpdate `json:"os,omitempty"`
 }
+
+// OSUpdate is stream A on GET /v1/system/update-target: the OS image this box
+// runs, what its update target names, and what the box last did about it.
+type OSUpdate struct {
+	// State is one of the OSUpdate* constants.
+	State string `json:"state"`
+	// Running is the OS release this box runs: host-agent's own version, which
+	// is the version of the slot it ships in. Slot is "A" or "B", empty when
+	// the box could not read it.
+	Running string `json:"running,omitempty"`
+	Slot    string `json:"slot,omitempty"`
+	// Target is the OS release the box picked from the answer: the next step
+	// on the way to the answer's target, or the target itself (UPDATES.md # 1).
+	Target *OSRelease `json:"target,omitempty"`
+	// Detail is a diagnostic for refused, failed, held and unsupported. Not UI
+	// copy, like UpdateTarget.Detail.
+	Detail string `json:"detail,omitempty"`
+	// Last is the outcome of the last OS switch, kept across reboots.
+	Last *OSOutcome `json:"last,omitempty"`
+}
+
+// OSRelease is one OS release an update target names: the version and the
+// bundle the box downloads, pinned by its sha256.
+type OSRelease struct {
+	Version      string `json:"version"`
+	BundleURL    string `json:"bundle_url"`
+	BundleSHA256 string `json:"bundle_sha256"`
+}
+
+// OSOutcome is what happened the last time the box switched to a new OS slot.
+type OSOutcome struct {
+	// ID names this outcome once, so the brain sends one notification for it
+	// and not one per read.
+	ID string `json:"id"`
+	// Outcome is "good" (the new slot came up healthy and was marked good) or
+	// "reverted" (it did not, and the box went back to the old slot).
+	Outcome string `json:"outcome"`
+	// Version is the release the box switched to; From the one it came from.
+	Version string `json:"version"`
+	From    string `json:"from,omitempty"`
+	// At is when the outcome was recorded, RFC3339.
+	At string `json:"at"`
+}
+
+// The OSUpdate states.
+const (
+	// OSUpdateUnsupported: this box cannot update its OS (the appliance until
+	// #564, the fake host-agent, a box not in the A/B layout).
+	OSUpdateUnsupported = "unsupported"
+	// OSUpdateNone: the answer names no OS release. The box stays on its OS.
+	OSUpdateNone = "none"
+	// OSUpdateRefused: the answer's OS part was refused (no digest, a URL
+	// outside the expected prefix, a step the box may not take). Nothing was
+	// downloaded.
+	OSUpdateRefused = "refused"
+	// OSUpdateCurrent: the box runs the target.
+	OSUpdateCurrent = "current"
+	// OSUpdateInstalling: the bundle is being downloaded and written into the
+	// other slot.
+	OSUpdateInstalling = "installing"
+	// OSUpdateInstalled: the target is in the other slot and waits for the
+	// update window.
+	OSUpdateInstalled = "installed"
+	// OSUpdateRebooting: the box switched slots and is rebooting.
+	OSUpdateRebooting = "rebooting"
+	// OSUpdateWaiting: the box would act now, but another job holds the job
+	// lock. The next check tries again.
+	OSUpdateWaiting = "waiting"
+	// OSUpdateHeld: the box already tried this target tonight. It tries again
+	// in the next window.
+	OSUpdateHeld = "held"
+	// OSUpdateFailed: the last download or install failed. Detail says why. It
+	// is tried again the next night.
+	OSUpdateFailed = "failed"
+)
+
+// The OSOutcome values.
+const (
+	OSOutcomeGood     = "good"
+	OSOutcomeReverted = "reverted"
+)
 
 // ControlPlanePair is a brain + UI image reference pair. Empty fields mean the
 // box could not read that half of its own declaration.

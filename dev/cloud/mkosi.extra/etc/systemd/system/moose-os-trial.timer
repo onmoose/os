@@ -1,0 +1,13 @@
+[Unit]
+Description=moose: check that a new OS slot was marked good (UPDATES.md # 1)
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/UPDATES.md
+
+[Timer]
+# Later than host-agent's own trial deadline (MOOSE_OS_TRIAL_TIMEOUT, 10 min),
+# so a host-agent that is alive always decides first. This only catches a
+# host-agent that never started or hung.
+OnBootSec=15min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

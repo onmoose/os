@@ -1,0 +1,10 @@
+[Unit]
+Description=moose: reboot to the other slot if a new OS slot was never marked good
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/UPDATES.md
+# Only on a slot under trial. The script checks the marker itself too.
+ConditionPathExistsGlob=/var/lib/moose/os-update/trial-*
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/moose/os-trial-check
+StandardOutput=journal+console

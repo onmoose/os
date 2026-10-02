@@ -2888,6 +2888,96 @@
         ],
         "type": "object"
       },
+      "OSOutcomeDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "good",
+              "reverted"
+            ],
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "outcome",
+          "version",
+          "at"
+        ],
+        "type": "object"
+      },
+      "OSReleaseDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_sha256": {
+            "type": "string"
+          },
+          "bundle_url": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "bundle_url",
+          "bundle_sha256"
+        ],
+        "type": "object"
+      },
+      "OSUpdateDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "last": {
+            "$ref": "#/components/schemas/OSOutcomeDTO"
+          },
+          "running": {
+            "type": "string"
+          },
+          "slot": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "unsupported",
+              "none",
+              "refused",
+              "current",
+              "installing",
+              "installed",
+              "waiting",
+              "rebooting",
+              "held",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/OSReleaseDTO"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
       "Parse-custom-overlayRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3555,6 +3645,12 @@
           "host_agent_version": {
             "type": "string"
           },
+          "os_slot": {
+            "type": "string"
+          },
+          "os_version": {
+            "type": "string"
+          },
           "ui_image": {
             "type": "string"
           },
@@ -3655,6 +3751,9 @@
           },
           "from": {
             "type": "string"
+          },
+          "os": {
+            "$ref": "#/components/schemas/OSUpdateDTO"
           },
           "profile": {
             "type": "string"
@@ -6125,7 +6224,7 @@
             "description": "Error"
           }
         },
-        "summary": "What this box is running: brain version and commit, host-agent version, UI image"
+        "summary": "What this box is running: brain version and commit, host-agent version, UI image, OS version and slot"
       }
     },
     "/api/v1/users": {

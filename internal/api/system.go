@@ -23,7 +23,7 @@ func (s *Server) registerSystem(api huma.API) {
 	}, s.systemStorage)
 	huma.Register(api, huma.Operation{
 		OperationID: "get-system-version", Method: "GET", Path: "/api/v1/system/version",
-		Summary: "What this box is running: brain version and commit, host-agent version, UI image",
+		Summary: "What this box is running: brain version and commit, host-agent version, UI image, OS version and slot",
 	}, s.systemVersion)
 }
 
@@ -52,6 +52,11 @@ type SystemVersionDTO struct {
 	Commit           string `json:"commit"`
 	HostAgentVersion string `json:"host_agent_version,omitempty"`
 	UIImage          string `json:"ui_image,omitempty"`
+	// OSVersion and OSSlot are the OS release the box runs and the A/B slot
+	// it booted ("A" or "B", #563). Absent when host-agent cannot tell (the
+	// appliance until #564) or could not be reached.
+	OSVersion string `json:"os_version,omitempty"`
+	OSSlot    string `json:"os_slot,omitempty"`
 }
 
 // hostVersionReadTimeout bounds the host-agent leg of the version read. A var,
@@ -101,6 +106,7 @@ func (s *Server) systemVersion(ctx context.Context, _ *struct{}) (*struct{ Body 
 		slog.Warn("system-version: host status read failed", "err", err)
 	} else {
 		out.HostAgentVersion = status.AgentVersion
+		out.OSVersion, out.OSSlot = status.OSVersion, status.OSSlot
 	}
 
 	if img, err := lifecycle.ControlPlaneUIImage(s.controlPlaneDir); err != nil {

@@ -418,3 +418,21 @@ func TestValidCategory(t *testing.T) {
 		}
 	}
 }
+
+func TestOSUpdateOutcome(t *testing.T) {
+	st := &fakeStore{}
+	n := New(st, nil)
+	n.OSUpdateOutcome("os-0.15.1-1", "good", "0.15.1", "0.15.0")
+	n.OSUpdateOutcome("os-0.15.2-2", "reverted", "0.15.2", "0.15.1")
+	n.OSUpdateOutcome("os-x", "something else", "1", "0")
+	if len(st.raised) != 2 {
+		t.Fatalf("want 2 raises, got %d", len(st.raised))
+	}
+	good, rev := st.raised[0], st.raised[1]
+	if good.Severity != SeverityInfo || good.Audience != AudienceAdmins || good.Category != CategoryUpdates || good.DedupKey != "os-update:os-0.15.1-1" {
+		t.Fatalf("good: %+v", good)
+	}
+	if rev.Severity != SeverityWarning || rev.SourceKind != SourceUpdate {
+		t.Fatalf("reverted: %+v", rev)
+	}
+}

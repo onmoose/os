@@ -80,6 +80,11 @@ type Target struct {
 	// window it cannot state properly must not stop the box updating. The loop
 	// parses it, warns, and falls back.
 	Window string
+	// OS is stream A's part of the answer: OS releases in ascending order, the
+	// last one the target (os.go). Empty means the source has no opinion about
+	// the OS, and the box stays on the OS it runs. It is checked on its own
+	// (ValidateOS), so a bad OS part never blocks the control-plane pair.
+	OS []OSRelease
 }
 
 // Source is the seam: one call, one answer.

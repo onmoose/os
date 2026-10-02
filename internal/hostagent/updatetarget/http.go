@@ -147,6 +147,17 @@ type wireTarget struct {
 	// Window is optional. An answer that leaves it out has no opinion about
 	// when this box may update, and the box then keeps its own setting.
 	Window string `json:"window"`
+	// OS is optional too: the OS releases on the way to this box's OS target,
+	// oldest first (os.go, UPDATES.md # 1). Left out, the answer has no
+	// opinion about the OS.
+	OS []wireOS `json:"os"`
+}
+
+// wireOS is one OS release in the answer. Part of the same contract.
+type wireOS struct {
+	Version      string `json:"version"`
+	BundleURL    string `json:"bundle_url"`
+	BundleSHA256 string `json:"bundle_sha256"`
 }
 
 // Target reads the update-target URL.
@@ -198,7 +209,12 @@ func (s HTTPSource) Target(ctx context.Context) (Target, error) {
 	if err := json.Unmarshal(b, &w); err != nil {
 		return Target{}, fmt.Errorf("updatetarget: parse the answer from %s: %w", RedactURL(url), err)
 	}
+	var osList []OSRelease
+	for _, o := range w.OS {
+		osList = append(osList, OSRelease{Version: o.Version, BundleURL: o.BundleURL, BundleSHA256: o.BundleSHA256})
+	}
 	return Target{
+		OS:          osList,
 		Version:     w.Version,
 		BrainImage:  w.BrainImage,
 		BrainDigest: w.BrainDigest,

@@ -159,6 +159,13 @@ EOF
 # are committed static files under mkosi.extra/ (etc/moose/metadata-firewall.nft).
 enable_unit /etc/systemd/system/moose-metadata-firewall.service moose-metadata-firewall.service
 
+# The OS update trial's safety net (UPDATES.md # 1, #563): reboots a box whose
+# new slot was never marked good, when host-agent itself cannot. A timer, so
+# it goes under timers.target.
+mkdir -p /etc/systemd/system/timers.target.wants
+ln -sf /etc/systemd/system/moose-os-trial.timer /etc/systemd/system/timers.target.wants/moose-os-trial.timer
+chmod 0755 /usr/lib/moose/os-trial-check
+
 
 # Docker's daemon-wide userns-remap (#530, BUILD.md # User-namespace remap).
 # daemon.json names moose-remap (made by /usr/lib/sysusers.d/moose.conf, with
