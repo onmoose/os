@@ -240,9 +240,10 @@ jobs:
     # mkosi-sandbox EPERM (#189), so the fix has to be proven here, not on a
     # floating ubuntu-latest.
     runs-on: ubuntu-24.04
-    # Two mkosi builds (production image + QEMU test image), the QEMU boots (eight
-    # on a push/dispatch, just `update` on a PR; see MOOSE_CLOUD_BOOTS below), and
-    # the compress-and-attach publish run ~10 min in practice; the 120 cap is a
+    # Two mkosi builds (production image + QEMU test image), the QEMU boots (seven
+    # on a push/dispatch, just `update` on a PR, each under UEFI and again under
+    # legacy BIOS since #561; see MOOSE_CLOUD_BOOTS below), and the compress-and-
+    # attach publish; the 120 cap is a
     # generous ceiling so a one-off slow runner is never killed mid-build.
     timeout-minutes: 120
     steps:
@@ -402,13 +403,15 @@ jobs:
       #    brain that rejects the live seed fails here -> nothing is published. The
       #    test image reuses the control-plane bundle built in step 1, so it
       #    exercises the same brain that ships.
-      # Scope to unseeded + seeded + bios + access + update + ssh + remap, each
-      # guarding a regression that must never reach publish:
+      # Scope to unseeded + seeded + access + update + ssh + remap, each
+      # guarding a regression that must never reach publish. Since #561 the
+      # harness runs every one of them twice, under UEFI and again under legacy
+      # BIOS, each firmware on its own overlays (MOOSE_CLOUD_FIRMWARES, default
+      # "uefi bios"). A box landed on a Hetzner CX (Intel) type boots under
+      # legacy BIOS (#277), and the A/B slot switch must work the same there.
+      # Every boot also checks the A/B layout (cloud-assertions.sh 1b).
       #   - unseeded + seeded: the regression this gate was built for — the built
       #     image's brain accepting the current seed schema.
-      #   - bios (#277): re-boots the same image under legacy BIOS (SeaBIOS). A box
-      #     landed on a Hetzner CX (Intel) type is unbootable otherwise, and the
-      #     OVMF-only lane cannot catch it.
       #   - access (#308): the ONLY real-Caddy proof of the hosted per-app
       #     forward-auth gate + whole-Cookie-header strip (#305/#306) — a gate that is
       #     ON BY DEFAULT for every hosted app (docs/specs/DECISIONS.md 2026-07-08
@@ -480,7 +483,7 @@ jobs:
           BOOTS_INPUT: ${{ inputs.boots }}
         run: |
           set -euo pipefail
-          full="unseeded seeded bios access update ssh remap"
+          full="unseeded seeded access update ssh remap"
           if [ "$EVENT" = "pull_request" ]; then
             # The compare API needs only `contents: read`, which this job has. The
             # PR files API would need `pull-requests: read`, and asking for it

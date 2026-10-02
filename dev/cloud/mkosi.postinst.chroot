@@ -8,12 +8,17 @@
 #   - enable docker + containerd, systemd-networkd, host-agent, the first-boot
 #     image loader, and the provisioning-seed materializer (.wants symlinks —
 #     `systemctl enable` can't run in the chroot);
-#   - provision the moose / moose-app / moose-shared identities host-agent +
-#     the brain resolve by name (FIRST_RUN.md, APP_ISOLATION.md # Runtime identity);
+#   - the moose / moose-app / moose-shared / moose-remap identities host-agent +
+#     the brain resolve by name come from /usr/lib/sysusers.d/moose.conf, not
+#     from useradd here (BUILD.md # 1b rule 3);
 #   - bring the single virtio NIC up via systemd-networkd DHCP — the minimal
 #     cloud-native path, NO NetworkManager (ENVIRONMENT.md # Networking, # Boot);
 #   - pre-commit machine-id + mask systemd-firstboot so the interactive wizard
-#     never blocks boot.
+#     never blocks boot;
+#   - the A/B layout (#561): the kernel and initramfs inside the slot, GRUB's
+#     modules and the first grubenv on the ESP, the read-only slot's mount
+#     points, and the jobs that would write to the slot masked (the end of
+#     this file).
 #
 # Deliberately NOT here (hosted cuts, ENVIRONMENT.md # How the profile is realized):
 # NetworkManager, Avahi, the LUKS/TPM enrollment of the medium lane. sshd used to
@@ -154,36 +159,16 @@ EOF
 # are committed static files under mkosi.extra/ (etc/moose/metadata-firewall.nft).
 enable_unit /etc/systemd/system/moose-metadata-firewall.service moose-metadata-firewall.service
 
-# Grow the root partition + ext4 to fill the provider disk on boot (systemd-repart
-# against /usr/lib/repart.d/50-moose-grow-root.conf). The image bakes a fixed 8 GiB
-# root (mkosi.repart/) so the shipped raw stays small; a provider VM's disk is much
-# larger, and without this the box would run on 8 GiB — docker image storage + the
-# brain's SQLite store share the volume, so one app install could fill it and 500
-# login. Ordered Before=docker/host-agent (in the unit) so the disk is full before
-# anything writes to it. Static unit under mkosi.extra/; systemd-repart ships in the
-# systemd-repart package (added to the lean set in mkosi.conf). ENVIRONMENT.md # Storage.
-enable_unit /etc/systemd/system/moose-grow-root.service moose-grow-root.service
-
-# moose primary group (GID 3000, FIRST_RUN.md # Identity) — new users are created
-# with `useradd --gid moose`; the brain's /setup needs it present. moose-app /
-# moose-shared (2000/2001, APP_ISOLATION.md # Runtime identity) are the well-known
-# app-runtime identities host-agent resolves by name. Idempotent.
-getent group moose        >/dev/null || groupadd -g 3000 moose
-getent group moose-app    >/dev/null || groupadd -g 2000 moose-app
-getent group moose-shared >/dev/null || groupadd -g 2001 moose-shared
-getent passwd moose-app   >/dev/null || useradd -r -u 2000 -g moose-app \
-    -M -d /nonexistent -s /usr/sbin/nologin moose-app
 
 # Docker's daemon-wide userns-remap (#530, BUILD.md # User-namespace remap).
-# daemon.json names moose-remap, and dockerd reads that account's range from
+# daemon.json names moose-remap (made by /usr/lib/sysusers.d/moose.conf, with
+# the other moose identities; BUILD.md # 1b rule 3), and dockerd reads that account's range from
 # /etc/subuid and /etc/subgid. The range is host ids 1000000 to 1065535, far above
 # every moose band (2000/2001, app services from 2100, users from 3000). It is
 # written here, before any user exists. SUB_UID_COUNT 0 and SUB_GID_COUNT 0 in
 # login.defs stop useradd from giving each new user a range of its own, so no
 # account can use newuidmap to reach the remap range. The appliance image does
 # the same in dev/test-qemu/mkosi.postinst.chroot. Idempotent.
-getent passwd moose-remap >/dev/null || useradd -r -U -M -d /nonexistent \
-    -s /usr/sbin/nologin moose-remap
 for f in /etc/subuid /etc/subgid; do
     touch "$f"
     grep -q '^moose-remap:' "$f" || echo 'moose-remap:1000000:65536' >> "$f"
@@ -213,3 +198,76 @@ chmod 0755 /usr/local/bin/moose-seed-materialize.sh 2>/dev/null || true
 # Mask systemd-firstboot.service so the interactive locale/timezone wizard never
 # blocks sysinit (the empty machine-id is not enough to suppress it alone).
 systemctl --root=/ mask systemd-firstboot.service >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+# The A/B layout (#561, BUILD.md # 1b). The image carries the ESP, the BIOS boot
+# partition and slot A; slot B and the state partition come at first boot.
+
+# The kernel and a Debian initramfs inside the slot, where grub.cfg reads them
+# (/usr/lib/moose/boot/). A slot is one self-contained unit: the kernel always
+# matches the root it boots. The initramfs is Debian's initramfs-tools (already
+# in the image: linux-image-amd64 depends on it), because its local-bottom hook
+# (/etc/initramfs-tools/scripts/local-bottom/moose-state) runs the early state
+# setup before systemd starts.
+#
+# The kernel is MOVED, not copied. mkosi copies every kernel it finds in
+# /usr/lib/modules/<kver>/ (or /boot) to the ESP, with an initrd of its own and
+# menu entries after grub.cfg's. Nothing boots those, and they would need a
+# much larger ESP. With the kernel moved, mkosi finds none (mkosi.conf,
+# Bootable=auto), and the ESP holds only GRUB (mkosi.repart/00-esp.conf).
+chmod 0755 /etc/initramfs-tools/scripts/local-bottom/moose-state /usr/lib/moose/state-setup
+kver="$(ls /usr/lib/modules | sort -V | tail -n1)"
+mkdir -p /usr/lib/moose/boot
+if [ -e "/usr/lib/modules/$kver/vmlinuz" ]; then
+    mv "/usr/lib/modules/$kver/vmlinuz" /usr/lib/moose/boot/vmlinuz
+else
+    mv "/boot/vmlinuz-$kver" /usr/lib/moose/boot/vmlinuz
+fi
+rm -f /boot/vmlinuz-* /usr/lib/modules/*/vmlinuz
+# The initramfs mounts the slot (squashfs), and state-setup mounts the state
+# partition (ext4) and the /etc overlay. Those mounts happen inside the
+# initramfs, so their modules must be in it, whatever MODULES= picks.
+for m in squashfs overlay ext4; do
+    grep -qx "$m" /etc/initramfs-tools/modules || echo "$m" >> /etc/initramfs-tools/modules
+done
+mkinitramfs -o /usr/lib/moose/boot/initrd.img "$kver"
+# The kernel's own postinst made a second initramfs in /boot. Nothing reads it.
+rm -f /boot/initrd.img-*
+ls -l /usr/lib/moose/boot/
+
+# GRUB modules on the ESP, so grub.cfg can insmod squash4, xzio, regexp,
+# loadenv and test. mkosi's core images embed only a short list. About 3 MB
+# per firmware.
+mkdir -p /efi/grub
+for p in i386-pc x86_64-efi; do
+    rm -rf "/efi/grub/$p"
+    cp -r "/usr/lib/grub/$p" "/efi/grub/$p"
+done
+
+# The first grubenv (RAUC's GRUB backend): slot A holds this image and is good,
+# slot B is empty.
+grub-editenv /efi/grub/grubenv create
+grub-editenv /efi/grub/grubenv set ORDER="A B" A_OK=1 A_TRY=0 B_OK=0 B_TRY=0
+
+# The slot is mounted read-only, so every mount point must already exist: the
+# state partition's, the bind targets (state-setup refuses a missing one), the
+# ESP's and /var/tmp's. /opt/containerd/{bin,lib} are made by containerd when
+# it starts if they are missing, so they are made here instead.
+mkdir -p /state /efi /home /srv/moose /var/log /var/tmp \
+    /var/lib/docker /var/lib/containerd /var/lib/moose /var/lib/systemd \
+    /var/lib/rauc /var/lib/sudo /opt/containerd/bin /opt/containerd/lib
+# dbus's tmpfiles rule makes this link at boot when it is missing.
+mkdir -p /var/lib/dbus
+ln -sf /etc/machine-id /var/lib/dbus/machine-id
+
+# The slot replaces these jobs, or they would write to it:
+#   - systemd-repart.service: state-setup runs repart in the initramfs, before
+#     systemd, on every boot. One owner.
+#   - ldconfig.service: the slot ships its own ld.so.cache. A copy written into
+#     the /etc upper layer would outlive the slot it describes, and after a
+#     revert it would name libraries of the newer slot.
+#   - systemd-update-done.service: it stamps /var/.updated on the read-only
+#     slot. Without it, the ConditionNeedsUpdate jobs (systemd-sysusers, the
+#     journal catalog) run on every boot, which is what an image that can swap
+#     under /etc needs anyway.
+systemctl --root=/ mask systemd-repart.service ldconfig.service systemd-update-done.service >/dev/null

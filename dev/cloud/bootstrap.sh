@@ -28,6 +28,8 @@
 #      just a hardcoded appliance cut list (#238). Then source-sanity-check the
 #      committed ExtraTrees marker reads `hosted`. Then assert the resolved
 #      package list, versions included, equals dev/os-lock/cloud-packages.lock.
+#   6. Check the OS slot budget (#561): the squashfs in slot A fills at most 60%
+#      of its 1 GiB partition (dev/cloud/slot-budget.sh).
 #
 # Needs root: it builds the control-plane image bundle (docker) and chowns build
 # artifacts back to the caller; mkosi itself runs as the caller (it auto-escalates
@@ -311,4 +313,10 @@ echo "source-sanity check passed: ExtraTrees source $MARKER reads 'hosted'"
 IMAGE_OUT="$(ls -1 "$WORK"/*.raw 2>/dev/null | head -n1 || true)"
 [ -n "$CALLER" ] && [ -n "$IMAGE_OUT" ] && \
     chown "$CALLER":"$(id -gn "$CALLER")" "$IMAGE_OUT" 2>/dev/null || true
+
+# The OS slot budget (#561, BUILD.md # 1b # Disk budget): the squashfs in slot A
+# must fill at most 60% of its fixed 1 GiB, or the build fails.
+# shellcheck source=dev/cloud/slot-budget.sh
+. "${CLOUD_DIR}/slot-budget.sh"
+slot_budget_check "$IMAGE_OUT"
 echo "hosted cloud image built: ${IMAGE_OUT:-<see $WORK>}"

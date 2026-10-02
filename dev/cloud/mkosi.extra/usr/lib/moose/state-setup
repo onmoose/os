@@ -1,0 +1,158 @@
+#!/bin/bash
+# moose early state setup (BUILD.md # 1b # What a slot holds). Runs on every
+# boot, in the initramfs, before systemd starts: the initramfs-tools hook
+# /etc/initramfs-tools/scripts/local-bottom/moose-state mounts the booted slot
+# read-only at $rootmnt and runs this script chrooted into it, so the tools it
+# uses are the slot's own and it works the same in every slot.
+#
+#   1. systemd-repart makes slot B and the state partition on the first boot,
+#      and grows the state partition on a later boot when the disk grew.
+#   2. The state partition is checked and mounted at /state, and its ext4 is
+#      grown to fill the partition.
+#   3. /etc becomes an overlay: the slot's /etc below, /state/etc/upper above.
+#   4. On the first boot only, the four pinned files are copied up and never
+#      follow the image again.
+#   5. The bind mounts from the state partition. When a state directory does
+#      not exist yet, the slot's directory is copied into it first (copy once).
+#
+# Any failure is fatal: the hook panics, and panic=10 reboots the box, so a
+# broken slot never hangs and never comes up without its state.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# The slot is read-only, and /tmp and /var/tmp are still the slot's own
+# directories here (their tmpfs comes later, from systemd and /etc/fstab).
+# systemd-repart and mkfs need a writable temp dir, so use the /run tmpfs
+# the initramfs hook mounted (run 36930171023: "Failed to create temporary
+# file: Read-only file system").
+mkdir -p /run/moose-state-tmp
+export TMPDIR=/run/moose-state-tmp
+
+log() { echo "moose-state: $*" > /dev/kmsg 2>/dev/null || echo "moose-state: $*" >&2; }
+die() { log "FAILED: $*"; exit 1; }
+
+STATE=/state
+STATE_LABEL=moose-state
+
+# The four pinned files (BUILD.md # 1b, rule 2). They keep a box's
+# userns-remap fixed for life (BUILD.md # User-namespace remap).
+PINNED="docker/daemon.json subuid subgid login.defs"
+
+# The bind mounts from the state partition (BUILD.md # 1b, the inventory), as
+# TARGET:SOURCE, with SOURCE relative to the state partition. The slot has an
+# empty or default directory at each target; the build makes the ones the
+# packages do not.
+#
+# Two rules shape this list (ENVIRONMENT.md # Storage (hosted)):
+#   - The databases stay on the local disk, each on a bind mount of its own:
+#     /var/lib/moose (the brain's SQLite, state/instances, state/services) and
+#     /var/lib/docker. They are never under /srv/moose.
+#   - User files live under /srv/moose, as on the appliance (STORAGE.md # Data
+#     drive(s)): /home comes from srv/moose/home. So a later storage pool at
+#     /srv/moose can take in the users' files without moving the databases.
+#     Nothing builds that pool yet.
+BINDS="srv/moose:srv/moose home:srv/moose/home
+var/lib/moose:var/lib/moose var/lib/docker:var/lib/docker
+var/lib/containerd:var/lib/containerd var/log:var/log
+var/lib/systemd:var/lib/systemd var/lib/rauc:var/lib/rauc
+var/lib/sudo:var/lib/sudo"
+
+# --- 1. partitions, on the boot disk only. The boot disk is the disk that
+# holds the booted slot: the device behind / (the slot's squashfs), then its
+# parent disk through sysfs. repart and the state lookup below both use this
+# one disk, so another disk that happens to carry a partition labelled
+# moose-state (for example one taken from another box) is never repaired,
+# grown or mounted. Idempotent: on a disk that is already laid out and has not
+# grown, repart changes nothing.
+root_majmin="$(stat -c '%Hd:%Ld' /)" || die "cannot stat /"
+root_sys="$(readlink -f "/sys/dev/block/$root_majmin")" || die "no sysfs entry for / ($root_majmin)"
+[ -e "$root_sys/partition" ] || die "/ ($root_majmin) is not a partition"
+disk="/dev/$(basename "$(dirname "$root_sys")")"
+[ -b "$disk" ] || die "the boot disk $disk is not a block device"
+log "boot disk is $disk (/ is $root_majmin)"
+
+if ! out="$(systemd-repart --dry-run=no --no-pager "$disk" 2>&1)"; then
+    while IFS= read -r line; do log "repart: $line"; done <<< "$out"
+    die "systemd-repart failed"
+fi
+log "systemd-repart done"
+
+# --- 2. the state partition, on the boot disk and nowhere else. A new
+# partition can take a moment to show up. No match on the boot disk is fatal;
+# there is no fallback to another disk.
+dev=""
+for _ in $(seq 1 100); do
+    # The disk's partitions from sysfs, and each one's GPT name read from the
+    # disk by blkid's low-level probe. Not lsblk: it takes PARTLABEL from the
+    # udev database, which this chroot's fresh /run does not have (run
+    # 36940136412 found no match that way).
+    matches=""
+    for part_sys in /sys/block/"$(basename "$disk")"/*/partition; do
+        [ -e "$part_sys" ] || continue
+        part="/dev/$(basename "$(dirname "$part_sys")")"
+        name="$(blkid -p -o value -s PART_ENTRY_NAME "$part" 2>/dev/null || true)"
+        [ "$name" = "$STATE_LABEL" ] && matches="$matches $part"
+    done
+    matches="$(echo $matches | tr ' ' '\n')"
+    if [ "$(printf '%s\n' "$matches" | grep -c .)" -gt 1 ]; then
+        die "more than one partition labelled $STATE_LABEL on $disk: $(echo $matches)"
+    fi
+    dev="$matches"
+    [ -n "$dev" ] && [ -b "$dev" ] && break
+    dev=""
+    sleep 0.1
+done
+[ -n "$dev" ] || die "no partition labelled $STATE_LABEL on the boot disk $disk"
+
+# -p fixes what is safe to fix. 1 means it fixed something, which is fine
+# before a mount; 4 and up means it could not.
+rc=0
+e2fsck -p "$dev" >/dev/null 2>&1 || rc=$?
+[ "$rc" -lt 4 ] || die "e2fsck $dev exited $rc"
+
+mount -t ext4 -o rw,noatime "$dev" "$STATE" || die "mount $dev on $STATE failed"
+# The partition may have grown (repart above). Grow the ext4 to fill it, online.
+/usr/lib/systemd/systemd-growfs "$STATE" >/dev/null 2>&1 || die "systemd-growfs $STATE failed"
+log "state partition $dev mounted on $STATE"
+
+# --- 3. /etc as an overlay. Every change the box makes in /etc (users,
+# passwords, SSH host keys, machine-id, the rendered sshd drop-ins) lands in
+# the upper layer. A file the box never touched still comes from the slot.
+mkdir -p "$STATE/etc/upper" "$STATE/etc/work"
+chmod 0755 "$STATE/etc/upper"
+mount -t overlay overlay \
+    -o "lowerdir=/etc,upperdir=$STATE/etc/upper,workdir=$STATE/etc/work" /etc \
+    || die "overlay on /etc failed"
+log "/etc is an overlay (upper on $STATE/etc/upper)"
+
+# --- 4. pinned files, first boot only. Copying a file onto itself through the
+# overlay puts it in the upper layer, where it hides every later slot's copy.
+if [ ! -e "$STATE/etc/.moose-pinned" ]; then
+    for f in $PINNED; do
+        [ -e "/etc/$f" ] || die "pinned file /etc/$f is not in the image"
+        cp -p "/etc/$f" "/etc/$f.moose-pin"
+        mv -f "/etc/$f.moose-pin" "/etc/$f"
+        log "pinned /etc/$f"
+    done
+    touch "$STATE/etc/.moose-pinned"
+fi
+
+# --- 5. bind mounts. Copy once: when the state directory does not exist yet,
+# the slot's directory (with whatever the image baked into it, such as the
+# control-plane images under /var/lib/moose) is copied into it. From then on
+# the state copy is the one in use, and a newer slot's baked copy stays
+# hidden. The copy goes to a temporary name first, so a power cut mid-copy is
+# retried whole on the next boot.
+for pair in $BINDS; do
+    d="${pair%%:*}"
+    src="$STATE/${pair#*:}"
+    [ -d "/$d" ] || die "/$d is missing from the slot (the build makes every bind target)"
+    if [ ! -d "$src" ]; then
+        mkdir -p "$(dirname "$src")"
+        rm -rf "$src.moose-new"
+        cp -a "/$d" "$src.moose-new"
+        mv "$src.moose-new" "$src"
+        log "$src made from the slot's /$d"
+    fi
+    mount --bind "$src" "/$d" || die "bind $src on /$d failed"
+done
+log "bind mounts done: $(echo $BINDS)"

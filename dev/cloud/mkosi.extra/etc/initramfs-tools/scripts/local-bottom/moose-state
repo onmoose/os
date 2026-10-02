@@ -1,0 +1,37 @@
+#!/bin/sh
+# moose early state setup (BUILD.md # 1b). initramfs-tools runs this after it
+# has mounted the booted slot read-only at ${rootmnt}, and before it hands
+# over to systemd. The work is done by /usr/lib/moose/state-setup, which lives
+# in the slot and runs chrooted into it, so this hook stays small and every
+# slot carries its own setup. The mounts it makes under ${rootmnt} move with
+# the root when initramfs-tools switches to it.
+#
+# A failure panics. With panic= on the kernel command line, initramfs-tools
+# then reboots instead of waiting at a shell nobody sees (UPDATES.md # 1).
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+
+. /scripts/functions
+
+# The setup needs the kernel's views and a writable /run inside the chroot.
+# They are mounted fresh (not moved), and unmounted again before
+# initramfs-tools moves its own /dev, /proc, /sys and /run into the root.
+mount -t proc proc "${rootmnt}/proc"
+mount -t sysfs sysfs "${rootmnt}/sys"
+mount -t devtmpfs devtmpfs "${rootmnt}/dev"
+mount -t tmpfs -o mode=0755 tmpfs "${rootmnt}/run"
+
+rc=0
+chroot "${rootmnt}" /usr/lib/moose/state-setup || rc=$?
+
+umount "${rootmnt}/run"
+umount "${rootmnt}/dev"
+umount "${rootmnt}/sys"
+umount "${rootmnt}/proc"
+
+if [ "$rc" -ne 0 ]; then
+    panic "moose: state setup failed (rc=$rc), see the moose-state lines above"
+fi

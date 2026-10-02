@@ -152,6 +152,14 @@ fail() {
     exit 1
 }
 ok() {
+    # Last gate, every boot (#561): the slot is read-only, so anything that
+    # still writes to it fails. Catch it whether it failed a unit or only
+    # logged. Container logs are left out: an app's own read-only filesystem
+    # is not the slot.
+    failed_units="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+    [ -z "${failed_units// /}" ] || fail "failed units at the end of the boot: $failed_units"
+    rofs="$(journalctl -b --no-pager -o json 2>/dev/null | grep -v '"CONTAINER_NAME"' | grep -i 'read-only file system' | head -n 5 | cut -c1-600)"
+    [ -z "$rofs" ] || fail "something tried to write to the read-only slot: $rofs"
     emit "PASS"
     # Clean poweroff so the brain's SQLite writes (the persisted box-id) flush to
     # the qcow2 overlay before the harness boots the next scenario over it. --no-block
@@ -175,26 +183,125 @@ for u in docker.service systemd-networkd.service host-agent.service moose-load-i
     grep -qx "$u" <<<"$failed" && fail "control-plane unit failed: $u (failed: $(tr '\n' ' ' <<<"$failed"))"
 done
 
-# --- 1b. root grown to fill the provider disk. moose-grow-root.service runs
-# systemd-repart at boot to extend the baked 8 GiB root partition to the whole
-# disk, then runs systemd-growfs directly to grow the ext4 inside it (issue: a
-# hosted box left on 8 GiB has docker image storage + the brain's SQLite store
-# sharing that volume, so one app install fills it and 500s login). This QEMU
-# boot-proof disk is fixed-size with no spare space, so both steps are a no-op
-# here — but the unit must still complete cleanly, which proves systemd-repart
-# and systemd-growfs are present in the lean image and the unit is wired. Real
-# full-disk growth (partition AND filesystem) can only be proven on a live
-# provider box (the cloud on-ramp), not this lane — a prior version of this unit
-# passed this exact boot-proof while only growing the partition and leaving the
-# filesystem at 8 GiB, because the growfs step was missing.
-command -v systemd-repart >/dev/null 2>&1 || fail "systemd-repart missing from the lean image — moose-grow-root cannot grow the root disk"
-[ -x /usr/lib/systemd/systemd-growfs ] || fail "systemd-growfs missing from the lean image — moose-grow-root cannot grow the root filesystem"
-grow_state="$(systemctl is-active moose-grow-root.service 2>&1 || true)"
-# Assert the unit actually completed (active, held by RemainAfterExit) — not merely
-# "not failed". An inactive/unknown state means the .wants symlink was dropped or the
-# unit was skipped, i.e. the grow never ran; that must fail the proof, not pass it.
-[ "$grow_state" = active ] || fail "moose-grow-root.service did not complete successfully (state=$grow_state): $(journalctl -u moose-grow-root.service -b --no-pager 2>/dev/null | tail -10)"
-echo "cloud-assertions: root-grow unit ok (state=$grow_state; systemd-repart + systemd-growfs present and wired — this lane cannot prove real growth, only that both steps ran)"
+# --- 1b. the A/B layout (#561, BUILD.md # 1b). Every boot, both firmwares.
+# The image carries 3 partitions (ESP 128 MiB, BIOS boot, slot A: a 1 GiB
+# squashfs); the initramfs (state-setup, via the
+# initramfs-tools hook) made slot B and the state partition at first boot,
+# grew the state partition to fill the disk (the harness gives the box a disk
+# far bigger than the image), and set up the /etc overlay, the pinned files and
+# the bind mounts before systemd started. The slot is read-only.
+layout_fail() { fail "layout: $*"; }
+root_src="$(findmnt -no SOURCE / 2>/dev/null)"
+root_disk="/dev/$(lsblk -no PKNAME "$root_src" 2>/dev/null | head -n1)"
+[ -b "$root_disk" ] || layout_fail "cannot find the disk under / (source '$root_src')"
+nparts="$(lsblk -nr -o TYPE "$root_disk" | grep -c '^part$')"
+[ "$nparts" = 5 ] || layout_fail "$root_disk has $nparts partitions, want 5 (ESP, BIOS boot, slot A, slot B, state): $(lsblk -nr -o NAME,SIZE,PARTLABEL "$root_disk" | tr '\n' ';')"
+for pair in "1:esp" "3:moose-slot-a" "4:moose-slot-b" "5:moose-state"; do
+    n="${pair%%:*}"; want="${pair#*:}"
+    got="$(lsblk -nr -o PARTN,PARTLABEL "$root_disk" | awk -v n="$n" '$1==n{print $2}')"
+    [ "$got" = "$want" ] || layout_fail "partition $n is labelled '$got', want '$want'"
+done
+esp_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==1{print $2}')"
+slot_a_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==3{print $2}')"
+slot_b_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==4{print $2}')"
+[ "$esp_bytes" = 134217728 ] || layout_fail "the ESP is $esp_bytes bytes, want 128 MiB"
+[ "$slot_a_bytes" = 1073741824 ] && [ "$slot_b_bytes" = 1073741824 ] \
+    || layout_fail "slots are A=$slot_a_bytes B=$slot_b_bytes bytes, want 1 GiB each"
+[ "$root_src" = /dev/disk/by-partuuid/20202020-2020-4020-8020-202020202020 ] || [ "$(lsblk -no PARTUUID "$root_src")" = 20202020-2020-4020-8020-202020202020 ] \
+    || layout_fail "/ is $root_src, not slot A"
+# Grown: the state partition reaches the end of the disk, and its ext4 fills it.
+disk_bytes="$(lsblk -bdn -o SIZE "$root_disk")"
+state_dev="$(findmnt -no SOURCE /state 2>/dev/null)"
+[ -n "$state_dev" ] || layout_fail "/state is not mounted"
+state_part_bytes="$(lsblk -bdn -o SIZE "$state_dev")"
+state_fs_bytes="$(df -B1 --output=size /state | tail -n1 | tr -d ' ')"
+# ESP 128 MiB + BIOS 1 MiB + two 1 GiB slots + GPT and alignment.
+used_before_state=$(( (128 + 1 + 2048 + 4) * 1024 * 1024 ))
+[ "$state_part_bytes" -ge $(( disk_bytes - used_before_state )) ] \
+    || layout_fail "state partition is $state_part_bytes bytes on a $disk_bytes byte disk: it did not grow to the end"
+# ext4 reserves its metadata and journal, so the filesystem is a little smaller.
+[ "$state_fs_bytes" -ge $(( state_part_bytes * 95 / 100 )) ] \
+    || layout_fail "state ext4 is $state_fs_bytes bytes in a $state_part_bytes byte partition: it was not grown"
+echo "cloud-assertions: layout: $nparts partitions on $root_disk (${disk_bytes} bytes), ESP 128 MiB, slots 1 GiB each, state partition $state_dev ${state_part_bytes} bytes with ext4 ${state_fs_bytes} bytes"
+# The slot is a read-only squashfs, and it is the slot GRUB chose.
+findmnt -no OPTIONS / | tr ',' '\n' | grep -qx ro || layout_fail "/ is not mounted read-only: $(findmnt -no OPTIONS /)"
+[ "$(findmnt -no FSTYPE /)" = squashfs ] || layout_fail "/ is $(findmnt -no FSTYPE /), want squashfs"
+# A squashfs keeps file owners as the build saw them. If the build had mapped
+# them wrong, sudo would be neither root's nor setuid.
+[ "$(stat -c '%u %a' /usr/bin/sudo)" = "0 4755" ] || layout_fail "/usr/bin/sudo is $(stat -c '%u %a' /usr/bin/sudo), want root-owned 4755"
+# The measured numbers for the disk budget (BUILD.md # 1b # Disk budget): the
+# squashfs's own size from its superblock (bytes_used, offset 40), the ESP's
+# use, and the state partition's use at this point of the boot.
+slot_a_dev=/dev/disk/by-partuuid/20202020-2020-4020-8020-202020202020
+sq_bytes="$(dd if="$slot_a_dev" bs=96 count=1 2>/dev/null | od -An -t u8 -j 40 -N 8 | tr -d ' ')"
+[ -n "$sq_bytes" ] && [ "$sq_bytes" -gt 0 ] || layout_fail "cannot read the squashfs size from slot A's superblock"
+esp_used="$(df -B1 --output=used /efi | tail -n1 | tr -d ' ')"
+state_used="$(df -B1 --output=used /state | tail -n1 | tr -d ' ')"
+echo "cloud-assertions: layout: measured: squashfs ${sq_bytes} bytes ($(( sq_bytes * 1000 / slot_a_bytes / 10 )).$(( sq_bytes * 1000 / slot_a_bytes % 10 ))% of the slot), ESP used ${esp_used} of ${esp_bytes} bytes, state partition used ${state_used} of ${state_fs_bytes} bytes"
+cmdline="$(cat /proc/cmdline)"
+for w in rauc.slot=A panic=10 ro psi=1 BOOT_IMAGE=/usr/lib/moose/boot/vmlinuz; do
+    grep -qw -- "$w" <<<"$cmdline" || layout_fail "kernel command line lacks '$w': $cmdline"
+done
+echo "cloud-assertions: layout: / is slot A read-only, booted by GRUB from the slot's own kernel ($cmdline)"
+# The slot's initramfs can find a provider's disk. Hetzner Cloud presents the
+# boot disk as virtio-SCSI, which needs virtio_scsi and the SCSI disk driver
+# sd_mod; without sd_mod no /dev/sda appears and the boot hangs in the
+# initramfs (diagnosed once on a live Hetzner box, when mkosi built the
+# initrd). Debian's initramfs-tools (MODULES=most) carries them; this lane
+# boots virtio-blk, so only this check would notice them gone.
+initrd_mods="$(lsinitramfs /usr/lib/moose/boot/initrd.img 2>/dev/null)" || layout_fail "lsinitramfs cannot read /usr/lib/moose/boot/initrd.img"
+for m in sd_mod virtio_scsi virtio_blk squashfs overlay ext4; do
+    grep -qE "/${m}\.ko(\.[a-z]+)?$" <<<"$initrd_mods" || layout_fail "the slot's initramfs has no ${m} module"
+done
+echo "cloud-assertions: layout: the slot's initramfs carries sd_mod, virtio_scsi, virtio_blk, squashfs, overlay and ext4"
+# /etc is an overlay with its upper layer on the state partition.
+etc_opts="$(findmnt -no FSTYPE,OPTIONS /etc)"
+grep -q '^overlay' <<<"$etc_opts" && grep -q 'upperdir=/state/etc/upper' <<<"$etc_opts" \
+    || layout_fail "/etc is not the overlay on /state: $etc_opts"
+# Every bind mount is the state partition.
+state_devno="$(stat -c %d /state)"
+for d in /home /var/lib/docker /var/lib/containerd /var/lib/moose /var/log /var/lib/systemd /var/lib/rauc /var/lib/sudo /srv/moose; do
+    [ "$(stat -c %d "$d")" = "$state_devno" ] || layout_fail "$d is not on the state partition ($(findmnt -no SOURCE,TARGET "$d" | tr '\n' ' '))"
+done
+# User files live under /srv/moose, as on the appliance; the databases have
+# their own bind mounts and never sit under it (ENVIRONMENT.md # Storage
+# (hosted)).
+findmnt -no SOURCE /home | grep -q '\[/srv/moose/home\]$' || layout_fail "/home is not bound from the state partition's srv/moose/home: $(findmnt -no SOURCE /home)"
+findmnt -no SOURCE /var/lib/moose | grep -q '\[/var/lib/moose\]$' || layout_fail "/var/lib/moose is not its own bind mount: $(findmnt -no SOURCE /var/lib/moose)"
+findmnt -no FSTYPE /var/tmp | grep -qx tmpfs || layout_fail "/var/tmp is not a tmpfs"
+echo "cloud-assertions: layout: /etc overlay and the bind mounts are on the state partition, /var/tmp is a tmpfs"
+# The per-box state is on the state partition: the four pinned files (the
+# userns-remap), the SSH host keys and machine-id, all in the upper layer.
+up=/state/etc/upper
+for f in docker/daemon.json subuid subgid login.defs; do
+    [ -s "$up/$f" ] || layout_fail "pinned file /etc/$f is not in the upper layer"
+done
+grep -q '"userns-remap": "moose-remap"' "$up/docker/daemon.json" || layout_fail "pinned daemon.json lost the remap"
+grep -q '^moose-remap:' "$up/subuid" && grep -q '^moose-remap:' "$up/subgid" || layout_fail "pinned subuid/subgid lost the moose-remap range"
+[ -e /state/etc/.moose-pinned ] || layout_fail "no pin marker on the state partition"
+for _ in $(seq 1 30); do [ -s "$up/ssh/ssh_host_ed25519_key" ] && break; sleep 1; done
+for k in ssh_host_ed25519_key ssh_host_ecdsa_key ssh_host_rsa_key; do
+    [ -s "$up/ssh/$k" ] || layout_fail "SSH host key $k is not on the state partition"
+done
+[ -s "$up/machine-id" ] && [ "$(cat "$up/machine-id")" = "$(cat /etc/machine-id)" ] \
+    || layout_fail "machine-id is not on the state partition (upper '$(cat "$up/machine-id" 2>/dev/null)', /etc '$(cat /etc/machine-id)')"
+echo "cloud-assertions: layout: pinned daemon.json/subuid/subgid/login.defs, SSH host keys and machine-id ($(cat /etc/machine-id)) are on the state partition"
+# The bootloader side: RAUC reads the slot config and the grubenv, and the
+# box reboots rather than waits in emergency or rescue mode.
+rauc_out="$(rauc status 2>&1)" || layout_fail "rauc status failed: $(tail -n3 <<<"$rauc_out" | tr '\n' ' ')"
+grep -qi 'booted from: *rootfs.0 (A)' <<<"$rauc_out" || layout_fail "rauc does not see slot A as booted: $(tr '\n' ' ' <<<"$rauc_out")"
+grub-editenv /efi/grub/grubenv list | grep -qx 'A_OK=1' || layout_fail "grubenv does not mark slot A good: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ')"
+for u in emergency.service rescue.service; do
+    systemctl cat "$u" 2>/dev/null | grep -q 'systemctl --no-block reboot' || layout_fail "$u has no reboot drop-in"
+done
+dmesg 2>/dev/null | grep -q 'moose-state: bind mounts done' || journalctl -k -b --no-pager 2>/dev/null | grep -q 'moose-state: bind mounts done' \
+    || layout_fail "no 'moose-state: bind mounts done' in the kernel log"
+# state-setup looked for the state partition on the boot disk only.
+journalctl -k -b --no-pager 2>/dev/null | grep -q "moose-state: boot disk is $root_disk " \
+    || dmesg 2>/dev/null | grep -q "moose-state: boot disk is $root_disk " \
+    || layout_fail "state-setup did not report $root_disk as the boot disk"
+[ "$(lsblk -no PKNAME "$state_dev")" = "$(basename "$root_disk")" ] || layout_fail "the state partition $state_dev is not on the boot disk $root_disk"
+echo "cloud-assertions: layout: rauc sees slot A booted, grubenv has A_OK=1, emergency and rescue reboot"
 
 # --- 1c. the baked host-agent carries a real build stamp (BUILD.md # Versioning:
 # "every build stamps two fields"). An unstamped build reports internal/version's
@@ -1273,7 +1380,7 @@ ssh)
     echo "cloud-assertions: enabling SSH with no key refused (422), :22 still closed"
 
     # --- 4. add a key and turn SSH on, in one save.
-    KEYFILE=/root/.moose-ssh-lane
+    KEYFILE=/run/moose-ssh-lane  # /run, because the OS slot is read-only (BUILD.md # 1b)
     rm -f "$KEYFILE" "${KEYFILE}.pub"
     ssh-keygen -t ed25519 -N '' -C 'moose-cloud-lane' -f "$KEYFILE" >/dev/null 2>&1 \
         || fail "ssh: ssh-keygen failed (is openssh-client in the image?)"
@@ -1925,7 +2032,7 @@ remap|remap-reboot)
     # checks on what came back. The ids the second boot needs are left in
     # REMAP_STATE on the overlay. Each boot signs in with its own single-use
     # owner assertion, so no session crosses the reboot.
-    REMAP_STATE=/var/lib/moose-remap-test/state
+    REMAP_STATE=/var/lib/moose/test/remap-state  # on the state partition, so it survives the reboot
     [ -f "$SEED" ] || fail "remap: $MODE mode but $SEED absent (seed materializer did not run?)"
     box_id="$(json_str "$SEED" box_id)"
     [ -n "$box_id" ] || fail "remap: could not read box_id from $SEED"
