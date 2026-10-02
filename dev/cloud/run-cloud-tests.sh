@@ -264,21 +264,19 @@ new_overlay() { # PATH
 # TRY flag stays. A real UEFI keeps
 # its variables in flash and never writes the ESP. layout checks there is no
 # NvVars on the ESP (cloud-assertions.sh), so this cannot come back silently.
+# The pair list is dev/cloud/ovmf.sh, shared with the bootstrap preflight.
+# A BIOS-only run (MOOSE_CLOUD_FIRMWARES=bios) never starts OVMF, so it does
+# not need it.
+# shellcheck source=dev/cloud/ovmf.sh
+. "${REPO_ROOT}/dev/cloud/ovmf.sh"
 OVMF_CODE=""
-OVMF_VARS_TEMPLATE=""
-for pair in /usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd \
-            /usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd \
-            /usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd \
-            /usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd \
-            /usr/share/edk2-ovmf/x64/OVMF_CODE.fd:/usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do
-    if [ -r "${pair%%:*}" ] && [ -r "${pair#*:}" ]; then
-        OVMF_CODE="${pair%%:*}"; OVMF_VARS_TEMPLATE="${pair#*:}"; break
-    fi
-done
-[ -n "$OVMF_CODE" ] || { echo "OVMF firmware not found: need a CODE image and its VARS template (package: ovmf)" >&2; exit 1; }
-OVMF_VARS="${RUN_DIR}/OVMF_VARS.fd"
-cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
-echo "OVMF: code ${OVMF_CODE}, vars from ${OVMF_VARS_TEMPLATE}"
+OVMF_VARS=""
+if ovmf_wanted; then
+    ovmf_find || { echo "OVMF firmware not found: need a CODE image and its VARS template (package: ovmf)" >&2; exit 1; }
+    OVMF_VARS="${RUN_DIR}/OVMF_VARS.fd"
+    cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
+    echo "OVMF: code ${OVMF_CODE}, vars from ${OVMF_VARS_TEMPLATE}"
+fi
 
 ACCEL=tcg
 if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ACCEL=kvm; fi

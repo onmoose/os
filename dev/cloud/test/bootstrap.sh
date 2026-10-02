@@ -67,18 +67,14 @@ for tool in mkosi qemu-system-x86_64 qemu-img curl python3 docker; do
 done
 # host-agent-real is a CGO binary (PAM verify is kept in hosted); needs the headers.
 [ -f /usr/include/security/pam_appl.h ] || missing+=("libpam0g-dev (PAM headers for host-agent-real)")
-# OVMF (UEFI firmware) — location varies by distro.
-# A CODE image and its VARS template, as a pair: run-cloud-tests.sh needs a
-# writable VARS store (#575; the reason is there).
-OVMF_CODE=""
-for pair in /usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd \
-            /usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd \
-            /usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd \
-            /usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd \
-            /usr/share/edk2-ovmf/x64/OVMF_CODE.fd:/usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do
-    [ -r "${pair%%:*}" ] && [ -r "${pair#*:}" ] && { OVMF_CODE="${pair%%:*}"; break; }
-done
-[ -n "$OVMF_CODE" ] || missing+=("ovmf (UEFI firmware with its VARS template, package: ovmf)")
+# OVMF (UEFI firmware): a CODE image and its VARS template, as a pair, from the
+# list in dev/cloud/ovmf.sh, which run-cloud-tests.sh uses too (#575). Only
+# when UEFI is one of the firmwares the boots run under.
+# shellcheck source=dev/cloud/ovmf.sh
+. "${CLOUD_DIR}/ovmf.sh"
+if ovmf_wanted && ! ovmf_find; then
+    missing+=("ovmf (UEFI firmware with its VARS template, package: ovmf)")
+fi
 if [ ${#missing[@]} -gt 0 ]; then
     cat >&2 <<EOF
 cloud boot-proof preflight: missing tooling
