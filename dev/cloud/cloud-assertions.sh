@@ -191,6 +191,7 @@ esac
 if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
     [ "$BOOTED" = B ] || fail "os-revert: stage 2 should boot slot B, booted '$BOOTED' (did GRUB skip the new slot?)"
     boot_env="$(journalctl -u moose-test-grubenv.service -b --no-pager -o cat 2>/dev/null | grep 'grubenv at boot' | tail -1)"
+    grep -qw B_TRY=1 <<<"$boot_env" || fail "os-revert: GRUB did not save B_TRY=1 for the trial boot of slot B (${boot_env:-no grubenv at boot line})"
     [ -e /var/lib/moose/os-update/trial-B ] || fail "os-revert: no trial marker for slot B on its trial boot"
     for _ in $(seq 1 20); do systemctl is-active -q host-agent.service && break; sleep 1; done
     systemctl is-active -q host-agent.service && fail "os-revert: host-agent runs on the slot it was meant to be kept off"
@@ -329,7 +330,10 @@ grep -qi "booted from: *rootfs.${booted_idx} (${BOOTED})" <<<"$rauc_out" || layo
 [ ! -e "$up/rauc/keyring.pem" ] || layout_fail "/etc/rauc/keyring.pem is in the /etc upper layer, so it no longer follows the image"
 grep -qx 'check-purpose=codesign' /etc/rauc/system.conf || layout_fail "/etc/rauc/system.conf does not ask for check-purpose=codesign"
 echo "cloud-assertions: layout: rauc keyring from the slot: $(openssl x509 -in /etc/rauc/keyring.pem -noout -subject 2>/dev/null || head -c 40 /etc/rauc/keyring.pem)"
-grub-editenv /efi/grub/grubenv list | grep -qx "${BOOTED}_OK=1" || layout_fail "grubenv does not mark slot $BOOTED good: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ')"
+# Read once, then match: `grub-editenv list | grep -q` under pipefail fails
+# when grep exits before grub-editenv has written everything (run 37063254219).
+grubenv_now="$(grub-editenv /efi/grub/grubenv list 2>&1)"
+grep -qx "${BOOTED}_OK=1" <<<"$grubenv_now" || layout_fail "grubenv does not mark slot $BOOTED good: $(tr '\n' ' ' <<<"$grubenv_now")"
 for u in emergency.service rescue.service; do
     systemctl cat "$u" 2>/dev/null | grep -q 'systemctl --no-block reboot' || layout_fail "$u has no reboot drop-in"
 done
@@ -343,6 +347,13 @@ journalctl -k -b --no-pager 2>/dev/null | grep -q "moose-state: boot disk is $ro
 echo "cloud-assertions: layout: rauc sees slot $BOOTED booted, grubenv has ${BOOTED}_OK=1, emergency and rescue reboot"
 boot_env="$(journalctl -u moose-test-grubenv.service -b --no-pager -o cat 2>/dev/null | grep 'grubenv at boot' | tail -1)"
 echo "cloud-assertions: layout: $boot_env"
+# GRUB saved the booted slot's try flag before it booted it (#575), under both
+# firmwares. This is what skips a slot that dies before userspace.
+grep -qw "${BOOTED}_TRY=1" <<<"$boot_env" || layout_fail "GRUB did not save ${BOOTED}_TRY=1 for the slot it booted (${boot_env:-no grubenv at boot line})"
+# No firmware wrote the ESP (#575). OVMF without a writable VARS store saves
+# its variables to an NvVars file there, and that write undid GRUB's.
+[ ! -e /efi/NvVars ] || layout_fail "the firmware wrote /efi/NvVars: the harness gave OVMF no writable VARS store, and that write undoes GRUB's grubenv save"
+echo "cloud-assertions: layout: GRUB saved ${BOOTED}_TRY=1 before booting slot $BOOTED; no NvVars on the ESP"
 
 # --- 1c. the baked host-agent carries a real build stamp (BUILD.md # Versioning:
 # "every build stamps two fields"). An unstamped build reports internal/version's
@@ -2345,7 +2356,9 @@ os-update|os-revert)
     #              window, switch; 2 (slot B) marked good, everything intact.
     #   os-revert: 1 (slot A) install and switch, host-agent kept off slot B;
     #              2 (slot B) handled at the top of this script; 3 (slot A)
-    #              reverted on its own, everything intact.
+    #              reverted on its own, everything intact, then slot B made
+    #              active again with a kernel panic planted for it (#575);
+    #              4 (slot A) GRUB skipped slot B after it panicked.
     [ -f "$SEED" ] || fail "$MODE mode but $SEED absent"
     box_id="$(json_str "$SEED" box_id)"
     apex="${box_id}.onmoose.io"
@@ -2382,6 +2395,22 @@ os-update|os-revert)
         echo "machineid=$(cat /etc/machine-id)"
         echo "data=$(cat "/home/${owner}/os-update-data.txt" 2>/dev/null)"
     }
+
+    # 4. os-revert, last stage: slot B died before userspace (#575). The
+    #    test initramfs hook crashed the kernel on slot B (dev/cloud/test/
+    #    bootstrap.sh), panic=10 rebooted, and GRUB skipped slot B because
+    #    it had saved B_TRY=1 before booting it. Without that save, slot B
+    #    would boot again and panic again for ever, and no verdict would come.
+    if [ "$MODE" = os-revert ] && [ "$stage" = 4 ]; then
+        [ "$BOOTED" = A ] || fail "os-revert: stage 4 booted slot '$BOOTED', want A: GRUB did not skip slot B after it panicked"
+        [ -e /state/moose-test/panicked-slot-B ] || fail "os-revert: no panic note from slot B, so slot B never ran its initramfs: GRUB did not boot it"
+        [ "$(grubvar B_OK)" = 1 ] && [ "$(grubvar B_TRY)" = 1 ] \
+            || fail "os-revert: after the panic the grubenv should still have B_OK=1 B_TRY=1: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
+        rm -f /state/moose-test/panic-slot-B /state/moose-test/panicked-slot-B
+        echo "cloud-assertions: os-revert: PANIC SKIP OK (slot B panicked in its initramfs, panic=10 rebooted, GRUB skipped slot B with B_TRY=1 and booted slot A)"
+        boot_gate
+        ok
+    fi
 
     if [ "$stage" = 1 ]; then
         [ "$BOOTED" = A ] || fail "$MODE: the first boot is on slot '$BOOTED', want A"
@@ -2548,6 +2577,26 @@ UNIT
     for _i in $(seq 1 150); do nb="$(full_get /api/v1/notifications "$apex" "$session_cookie" 2>/dev/null || true)"; grep -q "$note_pat" <<<"$nb" && break; sleep 2; done
     grep -q "$note_pat" <<<"$nb" || fail "$MODE: no admin notification '$note_pat': $(sed '1,/^\r*$/d' <<<"$nb" | cut -c1-400)"
     echo "cloud-assertions: $MODE: NOTIFY OK (admins were told: '$note_pat')"
+    if [ "$MODE" = os-revert ]; then
+        # 3b. A SLOT THAT DIES BEFORE USERSPACE (#575). Make slot B active
+        #     again (RAUC sets B_OK=1 B_TRY=0 and puts it first) and plant
+        #     a kernel panic for it. The next stage must come up on slot A.
+        #     Slot A must be marked good first, or GRUB would have no slot
+        #     to fall back to but the fallback rule.
+        for _i in $(seq 1 60); do [ "$(grubvar A_TRY)" = 0 ] && break; sleep 1; done
+        [ "$(grubvar A_OK)" = 1 ] && [ "$(grubvar A_TRY)" = 0 ] || fail "os-revert: slot A is not marked good before the panic test: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
+        mkdir -p /state/moose-test
+        rm -f /state/moose-test/panicked-slot-B
+        touch /state/moose-test/panic-slot-B
+        rauc status mark-active other >/dev/null 2>&1 || fail "os-revert: rauc status mark-active other failed"
+        [ "$(grubvar ORDER)" = "B A" ] && [ "$(grubvar B_OK)" = 1 ] && [ "$(grubvar B_TRY)" = 0 ] \
+            || fail "os-revert: after mark-active the grubenv is $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
+        set_os_stage 4
+        echo "cloud-assertions: os-revert: slot B is active again with a kernel panic planted for it; rebooting"
+        systemctl reboot
+        sleep 600
+        fail "os-revert: the box did not reboot into the panic test"
+    fi
     ;;
 *)
     fail "unknown assert mode '$MODE'"
