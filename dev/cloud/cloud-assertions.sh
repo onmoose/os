@@ -2440,7 +2440,9 @@ UNIT
         # A shut window: twelve hours from now, one minute wide.
         shut="$(printf '%02d:00-%02d:01' $(( (10#$(date +%H) + 12) % 24 )) $(( (10#$(date +%H) + 12) % 24 )))"
         write_os_target "$(printf '%064d' 0)" "$shut"
-        docker run -d --name moose-test-target -p 127.0.0.1:5001:80 -v "$target_dir":/srv:ro "$caddy_image" \
+        # --restart: the box reads its target again after each reboot, and the
+        # last stage checks what it decided then.
+        docker run -d --restart unless-stopped --name moose-test-target -p 127.0.0.1:5001:80 -v "$target_dir":/srv:ro "$caddy_image" \
             caddy file-server --root /srv --listen :80 >/dev/null 2>&1 || fail "$MODE: could not start the in-guest file server"
         for _i in $(seq 1 60); do grep -q ' 200' <<<"$(http_status_addr 127.0.0.1 5001 /target.json 2>/dev/null)" && break; sleep 1; done
 
