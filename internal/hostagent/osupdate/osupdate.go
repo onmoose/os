@@ -63,6 +63,45 @@ const DefaultDir = "/var/lib/moose/os-update"
 // a live host-agent always decides first.
 const DefaultTrialTimeout = 10 * time.Minute
 
+// MaxTrialTimeout is the longest trial allowed. It stays under the image's
+// moose-os-trial.timer (15 min), so a live host-agent always decides first
+// and the timer never reverts a slot that is slow but healthy.
+const MaxTrialTimeout = 14 * time.Minute
+
+// markerRetries and markerRetry bound removeMarker. Vars for tests.
+var (
+	markerRetries = 80
+	markerRetry   = 10 * time.Second
+)
+
+// markAttempts and markRetry bound the retries of one rauc mark. Vars for tests.
+var (
+	markAttempts = 3
+	markRetry    = 2 * time.Second
+)
+
+// mark runs a rauc mark, retried a few times.
+func (a *Applier) mark(state, which string) error {
+	var err error
+	for i := 0; i < markAttempts; i++ {
+		if err = a.RAUC.Mark(context.Background(), state, which); err == nil {
+			return nil
+		}
+		time.Sleep(markRetry)
+	}
+	return err
+}
+
+// removeLeftovers deletes a bundle a kill or a power cut left behind mid-download
+// or mid-install: about 438 MB on the state partition.
+func (a *Applier) removeLeftovers() {
+	for _, f := range []string{"bundle.raucb", "bundle.raucb.part"} {
+		if err := os.Remove(filepath.Join(a.dir(), f)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Error("os update: could not remove a leftover download", "err", err, "src", f)
+		}
+	}
+}
+
 // statusAttempts and statusRetry bound how long Boot waits for RAUC to
 // answer: about 30 s. Vars, so a test does not wait.
 var (
@@ -174,6 +213,15 @@ type switched struct {
 	To          string    `json:"to"`
 	Night       time.Time `json:"night"`
 	At          time.Time `json:"at"`
+	// Activated is set once mark-active succeeded and the grubenv was
+	// checked. A marker for the other slot without it is left by a power cut
+	// before the switch took effect, not by a failed trial.
+	Activated bool `json:"activated,omitempty"`
+	// TrialReboots counts the reboots a trial made without managing to mark
+	// the slot bad. Without the mark a slot can boot again (GRUB does not save
+	// the try flag under UEFI, #575), so after one the trial stays up and
+	// leaves the decision to the image's timer.
+	TrialReboots int `json:"trial_reboots,omitempty"`
 }
 
 func (a *Applier) dir() string {
@@ -315,12 +363,23 @@ func (a *Applier) Boot(ctx context.Context) {
 	a.slot = st.Booted
 	a.mu.Unlock()
 	booted, oth := st.Booted, other(st.Booted)
+	a.removeLeftovers()
+	r, rerr := a.load()
+	if rerr != nil {
+		slog.Error("os update: cannot read the record", "err", rerr)
+	}
 
 	if _, err := os.Stat(TrialMarker(a.dir(), booted)); err == nil {
-		slog.Info("os update: this boot is on trial; waiting for the brain before marking the slot good",
-			"os", a.Version, "slot", booted)
-		go a.trial(booted)
-		return
+		if s := r.Switch; s != nil && r.Last != nil && r.Last.Outcome == protocol.OSOutcomeGood && r.Last.ID == outcomeID(s) && s.To == booted {
+			// The trial already passed; only the marker removal failed.
+			slog.Warn("os update: removing a trial marker left on a slot already marked good", "slot", booted)
+			go removeMarker(TrialMarker(a.dir(), booted), booted)
+		} else {
+			slog.Info("os update: this boot is on trial; waiting for the brain before marking the slot good",
+				"os", a.Version, "slot", booted)
+			go a.trial(booted)
+			return
+		}
 	}
 
 	// Not on trial: the slot is good. Marked at once, so an unrelated problem
@@ -335,11 +394,15 @@ func (a *Applier) Boot(ctx context.Context) {
 	if _, err := os.Stat(TrialMarker(a.dir(), oth)); err != nil {
 		return
 	}
-	// The other slot was on trial and the box is back here: it reverted.
-	r, err := a.load()
-	if err != nil {
-		slog.Error("os update: cannot read the record", "err", err)
+	if s := r.Switch; rerr == nil && (s == nil || !s.Activated || s.To != oth) {
+		// The marker was written but the switch never took effect (a power
+		// cut before mark-active): nothing was tried, nothing reverted. The
+		// slot keeps what was installed into it.
+		slog.Warn("os update: removing a trial marker from a switch that never took effect", "slot", oth)
+		go removeMarker(TrialMarker(a.dir(), oth), oth)
+		return
 	}
+	// The other slot was on trial and the box is back here: it reverted.
 	out := &protocol.OSOutcome{Outcome: protocol.OSOutcomeReverted, From: a.Version, At: a.now().UTC().Format(time.RFC3339)}
 	if r.Switch != nil {
 		out.Version = r.Switch.Version
@@ -348,7 +411,7 @@ func (a *Applier) Boot(ctx context.Context) {
 	} else {
 		out.ID = "os-reverted-" + a.now().UTC().Format("20060102T150405Z")
 	}
-	if err := a.RAUC.Mark(ctx, "bad", "other"); err != nil {
+	if err := a.mark("bad", "other"); err != nil {
 		slog.Error("os update: could not mark the failed slot bad", "err", err, "slot", oth)
 	}
 	r.Last = out
@@ -356,9 +419,7 @@ func (a *Applier) Boot(ctx context.Context) {
 	if err := a.save(r); err != nil {
 		slog.Error("os update: could not write the record", "err", err)
 	}
-	if err := os.Remove(TrialMarker(a.dir(), oth)); err != nil {
-		slog.Error("os update: could not remove the trial marker", "err", err, "slot", oth)
-	}
+	go removeMarker(TrialMarker(a.dir(), oth), oth)
 	slog.Warn("os update: the new slot did not come up healthy; the box went back to the old slot",
 		"os", out.Version, "slot", booted)
 	// Which path made the revert: the new slot's host-agent (its trial timed
@@ -383,36 +444,45 @@ func (a *Applier) trial(slot string) {
 	if timeout <= 0 {
 		timeout = DefaultTrialTimeout
 	}
+	if timeout > MaxTrialTimeout {
+		timeout = MaxTrialTimeout
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	err := a.Healthy(ctx)
 	cancel()
-	bg := context.Background()
 	if err != nil {
 		slog.Error("os update: the new slot is not healthy; marking it bad and rebooting to the old slot",
 			"err", err, "os", a.Version, "slot", slot)
-		if err := a.RAUC.Mark(bg, "bad", "booted"); err != nil {
-			slog.Error("os update: could not mark the slot bad; rebooting anyway, GRUB skips a slot still on trial", "err", err)
+		if merr := a.mark("bad", "booted"); merr != nil {
+			// Without the mark this slot can boot again (#575), so reboot
+			// once at most; after that stay up and let the image's timer
+			// decide, rather than reboot into the same slot for ever.
+			r, lerr := a.load()
+			if lerr != nil || r.Switch == nil || r.Switch.TrialReboots >= 1 {
+				slog.Error("os update: could not mark the slot bad, and already rebooted once for it; staying up, the image's safety net decides", "err", merr, "slot", slot)
+				return
+			}
+			r.Switch.TrialReboots++
+			if serr := a.save(r); serr != nil {
+				slog.Error("os update: could not write the record; staying up, the image's safety net decides", "err", serr, "slot", slot)
+				return
+			}
+			slog.Error("os update: could not mark the slot bad; rebooting once, GRUB skips a slot still on trial under BIOS", "err", merr, "slot", slot)
 		}
 		if err := a.reboot(); err != nil {
 			slog.Error("os update: the trial cannot reboot; the image's safety net reboots the box", "err", err, "slot", slot)
 		}
 		return
 	}
-	if err := a.RAUC.Mark(bg, "good", "booted"); err != nil {
-		// Without the mark GRUB skips this slot on the next boot. Reboot now,
-		// inside the window, rather than leave a slot that will revert at
-		// some random later reboot.
-		slog.Error("os update: could not mark the new slot good; rebooting to the old slot", "err", err, "slot", slot)
-		if err := a.reboot(); err != nil {
-			slog.Error("os update: the trial cannot reboot; the image's safety net reboots the box", "err", err, "slot", slot)
-		}
+	if err := a.mark("good", "booted"); err != nil {
+		// Do not reboot: with RAUC failing the next boot could be this slot
+		// again, for ever. Stay up with the marker, and the image's timer
+		// gives the slot up.
+		slog.Error("os update: could not mark the new slot good; staying up, the image's safety net decides", "err", err, "slot", slot)
 		return
 	}
-	// The marker goes first: once the slot is good, nothing may reboot it
-	// away, and the image's timer reboots any slot that still has one. Tried
-	// a few times, because a marker left behind turns a good slot into a
-	// revert.
-	removeMarker(TrialMarker(a.dir(), slot), slot)
+	// The outcome is recorded before the marker goes: if the removal fails,
+	// the next boot finds the good outcome and only removes the marker.
 	r, err := a.load()
 	if err != nil {
 		slog.Error("os update: cannot read the record", "err", err)
@@ -429,6 +499,7 @@ func (a *Applier) trial(slot string) {
 	if err := a.save(r); err != nil {
 		slog.Error("os update: could not write the record", "err", err)
 	}
+	removeMarker(TrialMarker(a.dir(), slot), slot)
 	slog.Info("os update: the new slot is healthy and marked good", "os", a.Version, "slot", slot)
 }
 
@@ -551,6 +622,7 @@ func (a *Applier) doInstall(ctx context.Context, rel updatetarget.OSRelease, nig
 	if err := os.MkdirAll(a.dir(), 0o700); err != nil {
 		return err
 	}
+	a.removeLeftovers()
 	path := filepath.Join(a.dir(), "bundle.raucb")
 	defer os.Remove(path)
 	slog.Info("os update: downloading the bundle", "os", rel.Version, "slot", target, "url", updatetarget.RedactURL(rel.BundleURL))
@@ -664,6 +736,10 @@ func (a *Applier) doSwitch(ctx context.Context, rel updatetarget.OSRelease, nigh
 		return undo(fmt.Errorf("after mark-active the grubenv is ORDER=%q %s_OK=%q %s_TRY=%q; not rebooting",
 			env["ORDER"], target, env[target+"_OK"], target, env[target+"_TRY"]))
 	}
+	r.Switch.Activated = true
+	if err := a.save(r); err != nil {
+		return undo(fmt.Errorf("record the switch: %w", err))
+	}
 	slog.Info("os update: switching slots and rebooting", "os", rel.Version, "slot", target)
 	// A reboot that was not accepted must not leave the new slot first: an
 	// unrelated reboot later would then switch the OS outside the window.
@@ -704,14 +780,15 @@ func (a *Applier) Peek(rel updatetarget.OSRelease) (state, detail string, ok boo
 	return "", "", false
 }
 
-// removeMarker removes a trial marker, retrying for a few seconds.
+// removeMarker removes a trial marker, retrying until it is gone or the image's
+// timer would act (markerRetries x markerRetry, about 13 min).
 func removeMarker(path, slot string) {
 	var err error
-	for i := 0; i < 5; i++ {
+	for i := 0; i < markerRetries; i++ {
 		if err = os.Remove(path); err == nil || errors.Is(err, os.ErrNotExist) {
 			return
 		}
-		time.Sleep(time.Second)
+		time.Sleep(markerRetry)
 	}
 	slog.Error("os update: could not remove the trial marker; the image's safety net will revert this good slot", "err", err, "slot", slot)
 }

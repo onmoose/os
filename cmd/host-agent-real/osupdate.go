@@ -49,6 +49,12 @@ func osTrialTimeout() time.Duration {
 		slog.Warn("os update: "+envOSTrialTimeout+" is not a positive duration; using the default", "err", err)
 		return osupdate.DefaultTrialTimeout
 	}
+	// Under the image's 15 min timer, so a slow but healthy slot is decided
+	// by host-agent and never reverted by the timer.
+	if d > osupdate.MaxTrialTimeout {
+		slog.Warn("os update: "+envOSTrialTimeout+" is longer than the image's trial timer allows; using the longest allowed", "err", fmt.Errorf("%s > %s", d, osupdate.MaxTrialTimeout))
+		return osupdate.MaxTrialTimeout
+	}
 	return d
 }
 

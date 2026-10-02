@@ -293,9 +293,7 @@ func TestTrialUnhealthyRebootsAndOldSlotRecordsRevert(t *testing.T) {
 	if last == nil || last.Outcome != protocol.OSOutcomeReverted || last.Version != "0.15.1" {
 		t.Fatalf("outcome %+v", last)
 	}
-	if _, err := os.Stat(TrialMarker(a.dir(), "B")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("the trial marker is still there")
-	}
+	waitFor(t, func() bool { _, err := os.Stat(TrialMarker(a.dir(), "B")); return errors.Is(err, os.ErrNotExist) })
 	if d := a.Apply(h.rel, true, h.night); d.State != protocol.OSUpdateHeld {
 		t.Fatalf("after a revert the same release waits for the next night, got %+v", d)
 	}
@@ -429,9 +427,6 @@ func (f *flakyRAUC) Status(ctx context.Context) (Status, error) {
 }
 
 func TestBootRetriesStatus(t *testing.T) {
-	old := statusRetry
-	statusRetry = time.Millisecond
-	defer func() { statusRetry = old }()
 	r := &flakyRAUC{fakeRAUC: newFakeRAUC("A"), fails: 3}
 	a := &Applier{RAUC: r, Jobs: &syncJobs{}, Version: "0.15.0", Dir: t.TempDir()}
 	a.Boot(context.Background())
@@ -469,5 +464,138 @@ func TestFailedRebootUndoesTheSwitch(t *testing.T) {
 	}
 	if _, err := os.Stat(TrialMarker(h.a.dir(), "B")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the trial marker was left behind")
+	}
+}
+
+// fastRetries is a no-op kept for readability: TestMain makes every retry
+// fast for the whole package, once, so no goroutine a test leaves behind ever
+// races a restore.
+func fastRetries(*testing.T) {}
+
+func TestMain(m *testing.M) {
+	markAttempts, markRetry, markerRetries, markerRetry, statusRetry = 2, time.Millisecond, 3, time.Millisecond, time.Millisecond
+	os.Exit(m.Run())
+}
+
+// failingMark makes one rauc mark state fail.
+type failingMark struct {
+	*fakeRAUC
+	state string
+}
+
+func (f failingMark) Mark(ctx context.Context, state, which string) error {
+	if state == f.state {
+		return errors.New("rauc: d-bus timeout")
+	}
+	return f.fakeRAUC.Mark(ctx, state, which)
+}
+
+// A power cut between the marker and mark-active leaves a marker for a switch
+// that never took effect: no revert, no bad mark, no warning (review of #563).
+func TestMarkerWithoutActivationIsNoRevert(t *testing.T) {
+	fastRetries(t)
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	r, _ := h.a.load()
+	r.Switch = &switched{Version: h.rel.Version, From: "A", To: "B", Night: h.night, At: time.Now()}
+	if err := h.a.save(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(TrialMarker(h.a.dir(), "B"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := h.reboot(t, "A", "0.15.0")
+	a.Boot(context.Background())
+	if a.Last() != nil {
+		t.Fatalf("a switch that never took effect was recorded as %+v", a.Last())
+	}
+	for _, m := range h.rauc.marks {
+		if m == "bad:B" {
+			t.Fatal("the installed slot was marked bad")
+		}
+	}
+	waitFor(t, func() bool { _, err := os.Stat(TrialMarker(a.dir(), "B")); return errors.Is(err, os.ErrNotExist) })
+}
+
+// A marker left on a slot whose trial already passed is only removed: no new
+// trial, and the image's timer then finds nothing.
+func TestStaleMarkerOnAGoodSlot(t *testing.T) {
+	fastRetries(t)
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	b := h.reboot(t, "B", "0.15.1")
+	b.Boot(context.Background())
+	waitFor(t, func() bool { return b.Last() != nil })
+	waitFor(t, func() bool { _, err := os.Stat(TrialMarker(b.dir(), "B")); return errors.Is(err, os.ErrNotExist) })
+	if err := os.WriteFile(TrialMarker(b.dir(), "B"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.healthy = errors.New("would fail a new trial")
+	before := h.reboots.Load()
+	b2 := h.reboot(t, "B", "0.15.1")
+	b2.Boot(context.Background())
+	waitFor(t, func() bool { _, err := os.Stat(TrialMarker(b2.dir(), "B")); return errors.Is(err, os.ErrNotExist) })
+	if h.reboots.Load() != before {
+		t.Fatal("a stale marker started a new trial that rebooted")
+	}
+}
+
+// When RAUC cannot mark the slot bad, the trial reboots once, then stays up.
+func TestTrialRebootsOnceWithoutAMark(t *testing.T) {
+	fastRetries(t)
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	h.healthy = errors.New("brain down")
+	fm := failingMark{fakeRAUC: h.rauc, state: "bad"}
+	boot := func() int32 {
+		before := h.reboots.Load()
+		b := h.reboot(t, "B", "0.15.1")
+		b.RAUC = fm
+		b.Boot(context.Background())
+		time.Sleep(50 * time.Millisecond)
+		return h.reboots.Load() - before
+	}
+	if n := boot(); n != 1 {
+		t.Fatalf("first trial: %d reboots, want 1", n)
+	}
+	if n := boot(); n != 0 {
+		t.Fatalf("second trial on the same slot: %d reboots, want 0 (stay up for the safety net)", n)
+	}
+}
+
+// When RAUC cannot mark the slot good, the trial does not reboot.
+func TestTrialStaysUpWhenMarkGoodFails(t *testing.T) {
+	fastRetries(t)
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	before := h.reboots.Load()
+	b := h.reboot(t, "B", "0.15.1")
+	b.RAUC = failingMark{fakeRAUC: h.rauc, state: "good"}
+	b.Boot(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if h.reboots.Load() != before || b.Last() != nil {
+		t.Fatalf("reboots %d, outcome %+v", h.reboots.Load()-before, b.Last())
+	}
+	if _, err := os.Stat(TrialMarker(b.dir(), "B")); err != nil {
+		t.Fatal("the marker must stay for the image's timer")
+	}
+}
+
+func TestBootRemovesLeftovers(t *testing.T) {
+	h := newHarness(t, "A")
+	for _, f := range []string{"bundle.raucb", "bundle.raucb.part"} {
+		if err := os.WriteFile(h.a.dir()+"/"+f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := h.reboot(t, "A", "0.15.0")
+	a.Boot(context.Background())
+	for _, f := range []string{"bundle.raucb", "bundle.raucb.part"} {
+		if _, err := os.Stat(h.a.dir() + "/" + f); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s was left", f)
+		}
 	}
 }
