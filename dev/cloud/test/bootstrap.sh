@@ -296,11 +296,23 @@ if [ -z "$MKOSI_INTERPRETER" ] && [ -n "$CALLER_HOME" ]; then
 fi
 [ -n "$MKOSI_INTERPRETER" ] || { echo "mkosi needs python >=3.10; none found" >&2; exit 1; }
 
+# MOOSE_MKOSI_TOOLS_TREE (opt-in): use this tools tree instead of building the
+# default one. CI sets it to dev/cloud/mkosi.tools, which the lean build made a
+# minute earlier in the same job from the same settings, and saves about 40 s.
+# Off by default: a local tree from an older build is not checked for being
+# current when it is named by path.
+tools_tree_args=()
+if [ -n "${MOOSE_MKOSI_TOOLS_TREE:-}" ]; then
+    [ -d "$MOOSE_MKOSI_TOOLS_TREE" ] || { echo "MOOSE_MKOSI_TOOLS_TREE='${MOOSE_MKOSI_TOOLS_TREE}' is not a directory" >&2; exit 1; }
+    echo "using the tools tree ${MOOSE_MKOSI_TOOLS_TREE} (MOOSE_MKOSI_TOOLS_TREE)"
+    tools_tree_args=(--tools-tree "$MOOSE_MKOSI_TOOLS_TREE")
+fi
+
 if [ -n "$CALLER" ]; then
     sudo -u "$CALLER" env "MKOSI_INTERPRETER=$MKOSI_INTERPRETER" \
-        "$MKOSI_BIN" --directory "$TEST_DIR" --snapshot "$OS_LOCK_SNAPSHOT" --force build
+        "$MKOSI_BIN" --directory "$TEST_DIR" "${tools_tree_args[@]}" --snapshot "$OS_LOCK_SNAPSHOT" --force build
 else
-    MKOSI_INTERPRETER="$MKOSI_INTERPRETER" "$MKOSI_BIN" --directory "$TEST_DIR" --snapshot "$OS_LOCK_SNAPSHOT" --force build
+    MKOSI_INTERPRETER="$MKOSI_INTERPRETER" "$MKOSI_BIN" --directory "$TEST_DIR" "${tools_tree_args[@]}" --snapshot "$OS_LOCK_SNAPSHOT" --force build
 fi
 
 # The boot-proof image is a second, separate build of the same package set, so
