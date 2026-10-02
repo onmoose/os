@@ -248,6 +248,11 @@ env:
   SHOULD_PUBLISH_CP: ${{ (inputs.publish || inputs.publish_control_plane) && 'true' || 'false' }}
   SHOULD_PUBLISH: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'true' || 'false' }}
   MOOSE_BUILD_CACHE: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'none' || 'gha' }}
+  # The RAUC keyring the images bake as /etc/rauc/keyring.pem (#562,
+  # dev/cloud/rauc.sh): the release root (dev/release/rauc/release-ca.pem) when
+  # this run publishes the OS line, a throwaway root on every other run. Same
+  # expression as SHOULD_PUBLISH_OS.
+  MOOSE_RAUC_KEYRING: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os) && 'release' || 'throwaway' }}
 
 jobs:
   build:
@@ -267,6 +272,7 @@ jobs:
     outputs:
       matrix: ${{ steps.boots.outputs.matrix }}
       should_publish: ${{ env.SHOULD_PUBLISH }}
+      should_publish_os: ${{ env.SHOULD_PUBLISH_OS }}
     # Pin 24.04 explicitly: this is the exact environment that reproduces the
     # mkosi-sandbox EPERM (#189), so the fix has to be proven here, not on a
     # floating ubuntu-latest.
@@ -343,6 +349,22 @@ jobs:
           echo "OS (disk image on the v$(tr -d '[:space:]' < VERSION) Release): ${SHOULD_PUBLISH_OS}"
           echo "Control plane (ghcr brain + ui as v$(tr -d '[:space:]' < CONTROL_PLANE_VERSION)): ${SHOULD_PUBLISH_CP}"
           echo "Image build layer cache: ${MOOSE_BUILD_CACHE} (none on any run that publishes)"
+          echo "RAUC keyring in the image: ${MOOSE_RAUC_KEYRING} (release only when the OS line publishes)"
+
+      # An OS release bakes the release root CA into the image and has its
+      # bundle signed by the release signer (#562, docs/dev/rauc-signing.md).
+      # Without the committed root there is nothing to bake, so fail before the
+      # ~10 min build. The signer secrets are checked in the publish job, the
+      # only job that may read them.
+      - name: Assert an OS release has the release root CA
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        run: |
+          set -euo pipefail
+          if [ ! -f dev/release/rauc/release-ca.pem ]; then
+            echo "::error::this run publishes the OS line, but dev/release/rauc/release-ca.pem is not committed yet. The maintainer makes the root CA offline and commits its public cert first: see docs/dev/rauc-signing.md."
+            exit 1
+          fi
+          openssl x509 -in dev/release/rauc/release-ca.pem -noout -subject -enddate
 
       # Fail FAST on a mistagged release, before the ~10min build below runs.
       # VERSION (repo root) is the source of truth for the moose (OS) release
@@ -586,6 +608,16 @@ jobs:
           GO: ${{ steps.go.outputs.go-bin }}
         run: make build-cloud-image
 
+      # The OS update bundle (#562, BUILD.md # 1b # The bundle): slot A of the
+      # image just built, as a verity RAUC bundle signed with the throwaway key,
+      # checked against the keyring and config read back out of the slot, with
+      # a wrong-key check and a rehearsal of the publish job's re-signing. It
+      # writes the bundle size to the job summary. About 1 min.
+      - name: Build the OS update bundle (+ keyring and signature checks)
+        env:
+          GO: ${{ steps.go.outputs.go-bin }}
+        run: sudo -E ./dev/cloud/build-bundle.sh .dev/cloud/moose-cloud.raw .dev/cloud/bundle
+
       # The package list this build resolved to (#560). When the lock check
       # fails, this is the file to compare with dev/os-lock/cloud-packages.lock,
       # or to commit when the change was on purpose. Uploaded on failure too,
@@ -647,6 +679,22 @@ jobs:
           name: cloud-image-os-raw
           path: .dev/cloud/moose-cloud.raw
           compression-level: 1
+          retention-days: 3
+          if-no-files-found: error
+      # The bundle and the slot's own RAUC config and keyring, for the publish
+      # job to re-sign and check. Already squashfs-xz inside, so no zip.
+      - name: Upload the OS update bundle for the publish job
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-image-os-bundle
+          path: |
+            .dev/cloud/bundle/moose-cloud.raucb
+            .dev/cloud/bundle/image-etc/system.conf
+            .dev/cloud/bundle/image-etc/keyring.pem
+          compression-level: 0
           retention-days: 3
           if-no-files-found: error
       - name: Make the control-plane tarballs readable for the upload
@@ -754,6 +802,14 @@ jobs:
     if: ${{ needs.boot.result == 'success' && needs.build.outputs.should_publish == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # The release signer for the OS bundle lives in the `os-release` GitHub
+    # Environment (#562, DECISIONS.md 2026-10-02 key custody): RAUC_SIGNING_CERT
+    # and RAUC_SIGNING_KEY, which only `main` and `v*` tags may use. This job
+    # enters it only when the OS line publishes; a control-plane-only publish
+    # needs no signer and takes no environment (an empty name is none). A
+    # dispatch from any other branch with publish_os set is refused by the
+    # environment's branch rule, so a feature branch never reads the key.
+    environment: ${{ needs.build.outputs.should_publish_os == 'true' && 'os-release' || '' }}
     # The only job with write access: contents for the Release asset, packages
     # for the ghcr push.
     permissions:
@@ -771,6 +827,25 @@ jobs:
         with:
           name: cloud-image-os-raw
           path: .dev/cloud
+
+      - name: Download the OS update bundle
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-os-bundle
+          path: .dev/cloud/bundle
+
+      # Re-sign the bundle with the release signer, the only step that reads
+      # it. dev/release/sign-bundle.sh refuses when a secret is empty, when the
+      # image keyring is not the committed release root, or when that keyring
+      # accepts the throwaway-signed bundle; it writes the bundle only when the
+      # result verifies against the image's own config and keyring.
+      - name: Sign the OS update bundle with the release signer
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        env:
+          RAUC_SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
+          RAUC_SIGNING_KEY: ${{ secrets.RAUC_SIGNING_KEY }}
+        run: ./dev/release/sign-bundle.sh .dev/cloud/bundle/moose-cloud.raucb .dev/cloud/bundle/image-etc .dev/cloud/bundle/moose-signed.raucb
 
       # The brain and UI tarballs the build job baked into both images. Loading
       # them gives back moose-brain:dev and moose-ui:dev with the same image IDs
@@ -836,6 +911,25 @@ jobs:
           echo "asset: $asset ($(du -h "$asset" | cut -f1))"
           cat "$checksum"
 
+          # The OS update bundle (#562), signed by the release signer in the
+          # step above, beside the image it was cut from.
+          bundle="moose-${tag}-amd64.raucb"
+          bundle_sum="${bundle}.sha256"
+          cp -- .dev/cloud/bundle/moose-signed.raucb "$bundle"
+          sha256sum -- "$bundle" > "$bundle_sum"
+          cat "$bundle_sum"
+          a_bytes="$(stat -c %s "$asset")"; b_bytes="$(stat -c %s "$bundle")"
+          {
+            echo "### OS release files (${tag})"
+            echo ""
+            echo "| File | Bytes | Share of the release download |"
+            echo "|---|---|---|"
+            awk -v a="$a_bytes" -v b="$b_bytes" -v an="$asset" -v bn="$bundle" 'BEGIN {
+              printf "| `%s` | %d | %.1f%% |\n", an, a, a * 100 / (a + b)
+              printf "| `%s` | %d | %.1f%% |\n", bn, b, b * 100 / (a + b)
+              printf "| both | %d | 100%% |\n", a + b }'
+          } >> "$GITHUB_STEP_SUMMARY"
+
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
           gh_curl() { curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$@"; }
 
@@ -865,13 +959,14 @@ jobs:
             *) echo "::error::release lookup for ${tag} returned HTTP ${status}; aborting rather than treating it as absent"; exit 1 ;;
           esac
 
-          # The image and its checksum are ONE pair, and a published asset is
-          # never overwritten: both present is left, neither is uploaded, and
-          # exactly one (an upload that stopped halfway) refuses with the
-          # `gh release delete-asset` a person runs before re-running. The
-          # rules and why live in the script, which dev/release/decide_test.go
-          # tests with a stub gh.
-          ./dev/release/attach-image.sh "$tag" "$asset" "$checksum"
+          # The image, the bundle and their checksums are ONE set (#562), and
+          # a published asset is never overwritten: all present is left, none
+          # is uploaded in one call, and any other mix (an upload that stopped
+          # halfway, or a Release cut before the bundle existed) refuses with
+          # the `gh release delete-asset` lines a person runs before
+          # re-running. The rules and why live in the script, which
+          # dev/release/publish_test.go tests with a stub gh.
+          ./dev/release/attach-image.sh "$tag" "$asset" "$checksum" "$bundle" "$bundle_sum"
 
       # ---- publish the control-plane images to ghcr (only when requested) ----
 

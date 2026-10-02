@@ -233,3 +233,55 @@ func TestCommittedLayout(t *testing.T) {
 		t.Errorf("repart.d/30-state.conf = %v, want label moose-state and no size cap", state)
 	}
 }
+
+// The bundle's image is slot A's squashfs, cut at bytes_used rounded up to
+// 4 KiB: the first bytes of the partition, and nothing after them.
+func TestExtractSlot(t *testing.T) {
+	const used = 10_000_001 // not a multiple of 4 KiB
+	img := hostedImage(t, used, squashfsXZ)
+	r, err := check(img, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A marker inside the image part and one just past it.
+	f, err := os.OpenFile(img, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := uint64(10_002_432) // 2442 blocks of 4 KiB
+	if _, err := f.WriteAt([]byte("in"), int64(r.Slot.Start+want-2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte("out"), int64(r.Slot.Start+want)); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	dst := filepath.Join(t.TempDir(), "rootfs.img")
+	n, err := extractSlot(img, r, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != want || uint64(len(got)) != want {
+		t.Fatalf("extracted %d bytes (file %d), want %d", n, len(got), want)
+	}
+	if binary.LittleEndian.Uint32(got[0:4]) != squashfsMagic {
+		t.Fatal("the extracted image does not start with the squashfs superblock")
+	}
+	if string(got[len(got)-2:]) != "in" {
+		t.Fatalf("the image ends with %q, want the marker from inside the squashfs", got[len(got)-2:])
+	}
+}
+
+// A squashfs that fills its slot to the last byte is never cut past the
+// partition.
+func TestSlotImageSizeStopsAtThePartition(t *testing.T) {
+	r := report{Slot: partition{Size: gib}, Content: squashfs{BytesUsed: gib - 1}}
+	if n := slotImageSize(r); n != gib {
+		t.Fatalf("size = %d, want %d", n, gib)
+	}
+}
