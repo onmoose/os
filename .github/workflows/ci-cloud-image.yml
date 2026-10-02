@@ -406,7 +406,7 @@ jobs:
       # and falls back to TCG otherwise (slower, still correct).
       - name: Install QEMU + OVMF for the seeded-boot test
         run: |
-          sudo apt-get install -y "${RUNNER_TEMP}"/qemu-debs/*.deb
+          sudo DEBIAN_FRONTEND=noninteractive dpkg -i "${RUNNER_TEMP}"/qemu-debs/*.deb
           echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none — test lane will use TCG')"
 
       - name: Versions
@@ -682,9 +682,10 @@ jobs:
           ref: ${{ inputs.ref || '' }}
 
       # QEMU + UEFI firmware for the boot lane (run-cloud-tests.sh), from the
-      # packages the build job downloaded. `--no-download` makes apt fail
-      # rather than fetch; if the runner image moved since the build job ran
-      # and the local set no longer fits, it falls back to the mirror. Each
+      # packages the build job downloaded. dpkg, not apt: given local files
+      # whose versions are also in the mirror, apt downloads them again. If
+      # the runner image moved since the build job ran and the set no longer
+      # fits, dpkg fails and the step falls back to the mirror. Each
       # matrix job is its own ubuntu-24.04 runner, which exposes /dev/kvm the
       # way the single job did; the lane uses KVM when present and falls back
       # to TCG otherwise (slower, still correct). The line below shows which.
@@ -695,7 +696,7 @@ jobs:
           path: ${{ runner.temp }}/qemu-debs
       - name: Install QEMU + OVMF
         run: |
-          if ! sudo apt-get install -y --no-download "${RUNNER_TEMP}"/qemu-debs/*.deb; then
+          if ! sudo DEBIAN_FRONTEND=noninteractive dpkg -i "${RUNNER_TEMP}"/qemu-debs/*.deb; then
             echo "::warning::the QEMU packages from the build job did not install; falling back to the mirror"
             sudo apt-get update
             sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
