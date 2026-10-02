@@ -18,7 +18,7 @@
 # OUTDIR/os-test.version (the version in the bundle and in its host-agent).
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # shellcheck source=dev/cloud/rauc.sh
 . "${REPO_ROOT}/dev/cloud/rauc.sh"
 

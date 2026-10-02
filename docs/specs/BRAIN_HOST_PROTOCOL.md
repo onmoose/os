@@ -87,6 +87,10 @@ GET /v1/system/status
   # omitted, not zero-filled). data_disk_* are kept for the install-plan
   # footprint (DECISIONS.md 2026-06-13). The brain re-serves disks to the UI at
   # GET /api/v1/system/storage (BRAIN_UI_PROTOCOL.md).
+  # os_version and os_slot (#563, optional): the OS release this box runs and
+  # the A/B slot it booted ("A" or "B"). Set on a box in the A/B layout (the
+  # hosted build); left out elsewhere. The brain re-serves them on
+  # GET /api/v1/system/version.
 
 GET /v1/system/resources
 → 200 OK
@@ -134,6 +138,21 @@ Three things about the payload:
 - **`detail`** (omitted above) is the underlying error text for `unreachable`, `refused` and `disabled`. It is a diagnostic, not UI copy: the dashboard writes its sentence from `state`.
 
 **200 always**, like `/v1/health/system`. Every way this can go wrong is a state in the payload, so an HTTP error would tell the brain "ask again later" about facts that are not going to change on their own. The brain re-serves it at `GET /api/v1/system/update-target`, admin-only.
+
+**Stream A on the same read (`os`, as built #563).** Beside stream B's fields, the payload carries an `os` object, so one read says what both streams decided:
+
+```
+  "os": { "state": "installed", "running": "0.15.0", "slot": "A",
+          "target": { "version": "0.15.1", "bundle_url": "https://github.com/onmoose/os/releases/download/v0.15.1/moose-v0.15.1-amd64.raucb",
+                      "bundle_sha256": "…64 hex…" },
+          "detail": "…",
+          "last": { "id": "os-0.15.1-1790000000", "outcome": "good", "version": "0.15.1", "from": "0.15.0", "at": "2026-10-03T03:12:00Z" } }
+```
+
+- **`state`**: `unsupported` (this box cannot update its OS: the appliance until #564, the fake), `none` (the answer names no OS release), `refused` (its OS part was refused, nothing downloaded), `current`, `installing`, `installed` (in the other slot, waiting for the window), `waiting` (another job holds the lock), `rebooting`, `held` (already tried tonight), `failed` (the last download or install failed; `detail` says why).
+- **`running`** is `host-agent`'s own version, the version of the slot it ships in. **`target`** is the release the box picked: the next step on the way to the answer's target, or the target itself (`UPDATES.md` # 1).
+- **`last`** is the last switch's outcome, `good` or `reverted`, kept on the state partition across reboots. **`id`** names it once: the brain raises one admin notification per id (`NOTIFICATIONS.md` # Updates).
+- The loop decides once per tick; between ticks host-agent refreshes `installing`, `installed`, `waiting` and `failed` from the job and its record, so a finished install is reported at once.
 
 **Health findings report (`GET /v1/health/system`).** The brain can't read host hardware directly (it's containerized behind the socket-proxy), so all *physical* health detection — SMART, `statfs`, mount flags, `systemctl is-active`, memory pressure, the pending-reboot flag (`/var/run/reboot-required`) — is host-agent's job. host-agent samples on its own cadence and the brain polls this one report on the 60s heartbeat, reconciling findings into typed health issues (`HEALTH.md` # Detector catalog, locus B). It returns findings across domains (storage, drives, services, resources, time, system) in one payload — **not** a proliferation of per-domain endpoints — so the brain's `ApplyFindings(category, …)` reconcile can clear-absent / raise-present per category atomically. This supersedes the slice-1 single-purpose storage report (`/run/moose/health/storage.json` boot reporter stays; the polled endpoint generalizes). See `DECISIONS.md` 2026-05-29.
 
@@ -395,7 +414,7 @@ When `completed`, the response carries a `result` field with the operation's out
 
 **Why not "everything is a job":** read-only / fast routes don't need the cognitive overhead of "is this done? where's the result?" and the extra JSON nesting. The dividing line is explicit per route and documented in the API contract.
 
-**As built (#381): one kind, and a subset of the machinery.** `system-update` is the only job kind that exists today (`internal/hostagent/jobs.go`). The framework above — a kind registry with typed attributes, resource-class serialization with queue positions, cancel, and the SSE log stream of Pattern C — is **not built**, because it would be an abstraction with a single consumer (`CLAUDE.md` # Go code discipline). What is built is the part one dangerous job needs:
+**As built (#381): one kind, and a subset of the machinery.** (Since #563 there are three kinds under the same lock: `os-install` and `os-switch` run the OS update, started by host-agent's own update loop, never over the socket. They take the one lock, so no OS job ever overlaps a control-plane update or another OS job. They carry no `result`; a failure ends `failed` with the error text. The rest of this paragraph is as #381 built it.) `system-update` was the only job kind (`internal/hostagent/jobs.go`). The framework above — a kind registry with typed attributes, resource-class serialization with queue positions, cancel, and the SSE log stream of Pattern C — is **not built**, because it would be an abstraction with a single consumer (`CLAUDE.md` # Go code discipline). What is built is the part one dangerous job needs:
 
 - `POST /v1/jobs/system-update` with `{ "brain_image"?, "ui_image"? }` → `202` `{job_id, status, kind, started_at}`. An empty ref means "leave that component alone"; both empty is a `400`. `501` when this host-agent has no updater wired (the fake binary), the same degrade as `journal_follow`.
 - `GET /v1/jobs/{id}` → the record: `status`, `started_at`, `finished_at`, plus `error` `{code, message}` and a `result` `{brain_changed, ui_changed, reverted, failure_mode, revert_error}` once it ends. `404` for an unknown id.
@@ -539,6 +558,8 @@ Protocol-shaped rules about *when and how* the protocol is exercised. Not new pr
 1. Brain stops accepting new jobs.
 2. Brain waits for running jobs to drain. Hard cap (5 minutes): if a job is still running, tonight's attempt ends **not applied**, with "an operation is still running". The box stays on its current slot, nothing reverts, and the next window tries again. It counts as tonight's one attempt (`UPDATES.md` # 1).
 3. The box switches slots and reboots; the new slot's `host-agent` starts at boot.
+
+**As built (#563):** steps 1 and 2 are host-agent's job lock, not a brain drain. The switch is a job under the one lock, so it never starts while a control-plane update runs, and stream B goes first in the window. The brain has no long-running job of its own that must finish first: app auto-update is not built. Steps 3 and 4 are as written.
 4. Brain reconnects with backoff; resumes.
 
 Brain treats "host-agent unreachable" during this window as expected, not as an error.
