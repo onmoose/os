@@ -194,10 +194,10 @@ if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
     for _ in $(seq 1 20); do systemctl is-active -q host-agent.service && break; sleep 1; done
     systemctl is-active -q host-agent.service && fail "os-revert: host-agent runs on the slot it was meant to be kept off"
     systemctl list-timers --all --no-pager 2>/dev/null | grep -q moose-os-trial.timer || fail "os-revert: moose-os-trial.timer is not scheduled on the trial boot"
-    echo "cloud-assertions: os-revert: on slot B, host-agent cannot start, trial marker present; waiting for the safety net to reboot the box"
+    echo "cloud-assertions: os-revert: on slot B, host-agent cannot start, trial marker present; grubenv: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' '); waiting for the safety net to reboot the box"
     set_os_stage 3
-    sleep 900
-    fail "os-revert: the safety net never rebooted the box off the broken slot"
+    sleep 300
+    fail "os-revert: the safety net never rebooted the box off the broken slot. grubenv: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ') timer: $(systemctl list-timers --all --no-pager 2>&1 | grep moose-os-trial) service: $(journalctl -u moose-os-trial.service -b --no-pager 2>&1 | tail -5 | tr '\n' ' ')"
 fi
 
 # --- 1. no control-plane unit has failed.
