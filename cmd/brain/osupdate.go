@@ -26,7 +26,7 @@ const floorFileName = "minimum-host-agent"
 func writeFloorFile(stateDir string) {
 	path := filepath.Join(stateDir, floorFileName)
 	if err := os.WriteFile(path, []byte(minimumAgentVersion+"\n"), 0o644); err != nil {
-		slog.Warn("could not write the control-plane floor for host-agent; it will not check OS targets against it", "err", err, "dir", stateDir)
+		slog.Warn("could not write the control-plane floor for host-agent; it will not check OS targets against it", "err", err, "state_dir", stateDir)
 	}
 }
 
@@ -42,7 +42,7 @@ type notificationLookup interface {
 
 // osOutcomeNotifier is the slice of the notifier the check needs.
 type osOutcomeNotifier interface {
-	OSUpdateOutcome(outcomeID, outcome, version, from string)
+	OSUpdateOutcome(outcomeID, outcome, version, from string) bool
 }
 
 // osOutcomeMaxAge bounds which outcomes still get a notification. host-agent
@@ -71,8 +71,9 @@ func checkOSOutcome(ctx context.Context, host osOutcomeReader, seen notification
 	if done {
 		return
 	}
-	n.OSUpdateOutcome(last.ID, last.Outcome, last.Version, last.From)
-	slog.Info("os update: notified admins of the outcome", "os", last.Version)
+	if n.OSUpdateOutcome(last.ID, last.Outcome, last.Version, last.From) {
+		slog.Info("os update: notified admins of the outcome", "os", last.Version)
+	}
 }
 
 // osOutcomeLoop runs checkOSOutcome on the health-poll cadence.

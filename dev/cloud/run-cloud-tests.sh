@@ -710,6 +710,12 @@ fi
 # call for #563).
 os_boot() { # NAME BOX_ID
     local name="$1" box="$2" dir="${MOOSE_CLOUD_OS_BUNDLE_DIR:-}" mint key token disk sum ver mode
+    # A local run that built the image here makes the bundle from it too, once.
+    if [ -z "$dir" ] && [ -f "$IMAGE_OUT" ]; then
+        dir="${WORK}/os-test"
+        [ "$dir/os-test.raucb" -nt "$IMAGE_OUT" ] || GO="$GO" "${REPO_ROOT}/dev/cloud/test/build-os-test-bundle.sh" "$IMAGE_OUT" "$dir"
+        MOOSE_CLOUD_OS_BUNDLE_DIR="$dir"
+    fi
     [ -n "$GO" ] && [ -x "$GO" ] || { echo "$name boot needs go to mint the owner assertion; none found (\$GO='${GO:-}')" >&2; exit 1; }
     [ -n "$dir" ] && [ -f "$dir/os-test.raucb" ] && [ -f "$dir/os-test.sha256" ] && [ -f "$dir/os-test.version" ] || {
         echo "$name boot needs the test bundle: set MOOSE_CLOUD_OS_BUNDLE_DIR to the output of dev/cloud/test/build-os-test-bundle.sh" >&2

@@ -368,3 +368,106 @@ func TestRevertNotesTheSafetyNet(t *testing.T) {
 		t.Fatal("the safety-net note was not removed")
 	}
 }
+
+// While the booted slot is on trial, the other slot is the way back: nothing
+// installs into it and nothing switches (review of #563).
+func TestNothingMovesDuringATrial(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	h.healthy = errors.New("not yet")
+	b := h.reboot(t, "B", "0.15.1")
+	b.TrialTimeout = time.Hour // the trial stays open for the test
+	b.Boot(context.Background())
+	next := updatetarget.OSRelease{Version: "0.16.0", BundleURL: h.rel.BundleURL, BundleSHA256: h.rel.BundleSHA256}
+	jobs := len(h.jobs.errs)
+	if d := b.Apply(next, true, h.night); d.State != protocol.OSUpdateWaiting {
+		t.Fatalf("during a trial: %+v", d)
+	}
+	if len(h.jobs.errs) != jobs {
+		t.Fatal("a job started during the trial")
+	}
+}
+
+// After a good switch tonight, the next step waits for the next window.
+func TestOneSwitchPerNight(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Apply(h.rel, true, h.night)
+	b := h.reboot(t, "B", "0.15.1")
+	b.Boot(context.Background())
+	waitFor(t, func() bool { return b.Last() != nil })
+	// The next step is installed into slot A the same night.
+	body := "0.16.0\n"
+	sum := sha256.Sum256([]byte(body))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer srv.Close()
+	next := updatetarget.OSRelease{Version: "0.16.0", BundleURL: srv.URL + "/n.raucb", BundleSHA256: hex.EncodeToString(sum[:])}
+	if d := b.Apply(next, true, h.night); d.State != protocol.OSUpdateInstalling {
+		t.Fatalf("install of the next step: %+v", d)
+	}
+	if d := b.Apply(next, true, h.night); d.State != protocol.OSUpdateHeld {
+		t.Fatalf("a second switch the same night must wait: %+v", d)
+	}
+	if d := b.Apply(next, true, h.night.Add(24*time.Hour)); d.State != protocol.OSUpdateRebooting {
+		t.Fatalf("the next night switches: %+v", d)
+	}
+}
+
+// flakyRAUC fails Status a few times, the way a slow rauc-service does.
+type flakyRAUC struct {
+	*fakeRAUC
+	fails int
+}
+
+func (f *flakyRAUC) Status(ctx context.Context) (Status, error) {
+	if f.fails > 0 {
+		f.fails--
+		return Status{}, errors.New("rauc-service not ready")
+	}
+	return f.fakeRAUC.Status(ctx)
+}
+
+func TestBootRetriesStatus(t *testing.T) {
+	old := statusRetry
+	statusRetry = time.Millisecond
+	defer func() { statusRetry = old }()
+	r := &flakyRAUC{fakeRAUC: newFakeRAUC("A"), fails: 3}
+	a := &Applier{RAUC: r, Jobs: &syncJobs{}, Version: "0.15.0", Dir: t.TempDir()}
+	a.Boot(context.Background())
+	if _, slot := a.Running(); slot != "A" {
+		t.Fatalf("Boot gave up on a slow RAUC: slot %q", slot)
+	}
+}
+
+// A record that cannot be read is never written over.
+func TestInstallKeepsAnUnreadableRecord(t *testing.T) {
+	h := newHarness(t, "A")
+	path := h.a.dir() + "/state.json"
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.a.Apply(h.rel, false, h.night)
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != "{not json" {
+		t.Fatalf("the record was overwritten: %q %v", b, err)
+	}
+}
+
+// A reboot that was not accepted puts the booted slot first again, so a later
+// unrelated reboot does not switch the OS outside the window.
+func TestFailedRebootUndoesTheSwitch(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.Reboot = func() error { return errors.New("systemctl: no") }
+	h.a.Apply(h.rel, true, h.night)
+	if h.jobs.errs[1] == nil {
+		t.Fatal("the switch reported success with no reboot")
+	}
+	if h.rauc.env["ORDER"] != "A B" {
+		t.Fatalf("ORDER=%q after a failed reboot, want the booted slot first", h.rauc.env["ORDER"])
+	}
+	if _, err := os.Stat(TrialMarker(h.a.dir(), "B")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the trial marker was left behind")
+	}
+}

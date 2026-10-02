@@ -445,6 +445,11 @@ func (l *Loop) tickOS(t Target, w Window, cpBusy bool) {
 		l.recordOS(OSSnapshot{State: protocol.OSUpdateUnsupported, Detail: "this host-agent cannot update the OS"})
 		return
 	}
+	if t.OSErr != nil {
+		l.recordOS(OSSnapshot{State: protocol.OSUpdateRefused, Detail: t.OSErr.Error()})
+		l.quietOS(slog.LevelError, "refused:"+t.OSErr.Error(), "os update: refusing the OS part of the answer; nothing downloaded", "err", t.OSErr)
+		return
+	}
 	if len(t.OS) == 0 {
 		l.recordOS(OSSnapshot{State: protocol.OSUpdateNone})
 		l.quietOS(slog.LevelInfo, "none", "os update: the answer names no OS release; staying on this OS")

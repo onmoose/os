@@ -114,8 +114,8 @@ func (a line) less(b line) bool {
 //   - target further back, or below the running control plane's floor: refused.
 //
 // running is this box's OS version and floor the running control plane's
-// minimum_host_agent ("" when the box cannot read it, and then there is no
-// floor check). current is true when the box already runs the target.
+// minimum_host_agent ("" when the box cannot read it, and then every move
+// to an older release is refused). current is true when the box already runs the target.
 func PickOS(running, floor string, list []OSRelease) (rel OSRelease, current bool, err error) {
 	if len(list) == 0 {
 		return OSRelease{}, false, fmt.Errorf("%w: the answer names no OS release", ErrOSRefused)
@@ -138,12 +138,22 @@ func PickOS(running, floor string, list []OSRelease) (rel OSRelease, current boo
 				break
 			}
 		}
+		// The step must be the line right after the box's own: a list that
+		// leaves a minor out would make the box skip it.
+		if nl := lineOf(canonical(rel.Version)); !(nl == line{rl.major, rl.minor + 1} || nl == line{rl.major + 1, 0}) {
+			return OSRelease{}, false, fmt.Errorf("%w: the next step %s is not the minor right after %s; the list leaves a minor out", ErrOSRefused, rel.Version, running)
+		}
 	case tl == rl:
 		rel = target
 	case oneLineBack(tl, rl, list):
 		rel = target
 	default:
 		return OSRelease{}, false, fmt.Errorf("%w: the target %s is more than one minor back from %s", ErrOSRefused, target.Version, running)
+	}
+	// A downgrade needs the floor: without it the box cannot tell whether the
+	// older host-agent is one the running brain still works with.
+	if canonical(floor) == "" && semver.Compare(canonical(rel.Version), run) < 0 {
+		return OSRelease{}, false, fmt.Errorf("%w: %s is older than %s, and this box cannot read the running control plane's floor", ErrOSRefused, rel.Version, running)
 	}
 	if f := canonical(floor); f != "" && semver.Compare(canonical(rel.Version), f) < 0 {
 		return OSRelease{}, false, fmt.Errorf("%w: %s is below the running control plane's floor %s", ErrOSRefused, rel.Version, floor)

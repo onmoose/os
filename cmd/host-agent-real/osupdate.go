@@ -46,7 +46,7 @@ func osTrialTimeout() time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d <= 0 {
-		slog.Warn("os update: the trial timeout is not readable; using the default", "err", err, "window", v)
+		slog.Warn("os update: "+envOSTrialTimeout+" is not a positive duration; using the default", "err", err)
 		return osupdate.DefaultTrialTimeout
 	}
 	return d

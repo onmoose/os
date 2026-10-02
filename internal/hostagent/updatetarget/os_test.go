@@ -3,6 +3,8 @@ package updatetarget
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -54,15 +56,18 @@ func TestPickOS(t *testing.T) {
 	}{
 		{name: "current", running: "1.4.2", list: []string{"1.3.9", "1.4.2"}, want: "1.4.2", current: true},
 		{name: "patch up", running: "1.4.0", list: []string{"1.4.2"}, want: "1.4.2"},
-		{name: "patch down", running: "1.4.2", list: []string{"1.4.0"}, want: "1.4.0"},
+		{name: "patch down", running: "1.4.2", floor: "0.1.0", list: []string{"1.4.0"}, want: "1.4.0"},
+		{name: "a downgrade without a floor", running: "1.4.2", list: []string{"1.4.0"}, refused: true},
 		{name: "next minor", running: "1.3.1", list: []string{"1.3.9", "1.4.2"}, want: "1.4.2"},
 		{name: "never skips a minor", running: "1.2.0", list: []string{"1.2.5", "1.3.9", "1.4.2"}, want: "1.3.9"},
 		{name: "across a major", running: "1.9.3", list: []string{"1.9.4", "2.0.1"}, want: "2.0.1"},
-		{name: "one minor back", running: "1.4.2", list: []string{"1.3.9"}, want: "1.3.9"},
-		{name: "two minors back", running: "1.4.2", list: []string{"1.2.9"}, refused: true},
-		{name: "one minor back across a major", running: "2.0.1", list: []string{"1.9.4"}, want: "1.9.4"},
-		{name: "not the last line of the major", running: "2.0.1", list: []string{"1.8.4", "1.9.4"}, refused: false, want: "1.9.4"},
-		{name: "a later line of the old major exists", running: "2.0.1", list: []string{"1.8.4", "1.9.0", "1.8.9"}, refused: true},
+		{name: "a list that leaves a minor out", running: "1.2.0", list: []string{"1.4.2"}, refused: true},
+		{name: "a list that leaves a major's first minor out", running: "1.9.3", list: []string{"2.1.0"}, refused: true},
+		{name: "one minor back", running: "1.4.2", floor: "0.1.0", list: []string{"1.3.9"}, want: "1.3.9"},
+		{name: "two minors back", running: "1.4.2", floor: "0.1.0", list: []string{"1.2.9"}, refused: true},
+		{name: "one minor back across a major", running: "2.0.1", floor: "0.1.0", list: []string{"1.9.4"}, want: "1.9.4"},
+		{name: "not the last line of the major", running: "2.0.1", floor: "0.1.0", list: []string{"1.8.4", "1.9.4"}, refused: false, want: "1.9.4"},
+		{name: "a later line of the old major exists", running: "2.0.1", floor: "0.1.0", list: []string{"1.8.4", "1.9.0", "1.8.9"}, refused: true},
 		{name: "below the floor", running: "1.4.2", floor: "1.4.0", list: []string{"1.3.9"}, refused: true},
 		{name: "above the floor", running: "1.4.2", floor: "1.3.0", list: []string{"1.3.9"}, want: "1.3.9"},
 		{name: "running is not a version", running: "dev", list: []string{"1.4.2"}, refused: true},
@@ -211,4 +216,25 @@ func TestTickOS(t *testing.T) {
 			t.Fatalf("got %+v", l.Snapshot().OS)
 		}
 	})
+}
+
+func TestOSPartOfTheWrongShape(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":"v1","brain_image":"` + brainRef + `","ui_image":"` + uiRef + `","os":"invalid"}`))
+	}))
+	defer srv.Close()
+	tgt, err := HTTPSource{URL: srv.URL}.Target(context.Background())
+	if err != nil {
+		t.Fatalf("a bad os part must not fail the whole answer: %v", err)
+	}
+	if tgt.BrainImage != brainRef || !errors.Is(tgt.OSErr, ErrOSRefused) {
+		t.Fatalf("got %+v", tgt)
+	}
+	w, _ := ParseWindow("03:00-04:00")
+	l, f, ap := osLoop(tgt, "0.15.0", w, time.Date(2026, 10, 3, 3, 10, 0, 0, time.Local))
+	l.Current = fakeRunning{brain: oldBrain, ui: uiRef}
+	l.Tick(context.Background())
+	if len(ap.calls) != 1 || len(f.calls) != 0 || l.Snapshot().OS.State != protocol.OSUpdateRefused {
+		t.Fatalf("stream B must apply and stream A be refused: %d %v %+v", len(ap.calls), f.calls, l.Snapshot().OS)
+	}
 }

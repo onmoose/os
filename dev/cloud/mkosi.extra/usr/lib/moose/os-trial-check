@@ -15,6 +15,14 @@ set -u
 slot="$(sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline)"
 [ -n "$slot" ] || exit 0
 [ -e "/var/lib/moose/os-update/trial-${slot}" ] || exit 0
+# A slot already marked good (OK=1 and TRY=0; GRUB set TRY=1 when it booted
+# it) keeps its marker only because host-agent could not remove it. That is
+# not a failed trial: leave the box alone.
+env="$(grub-editenv /efi/grub/grubenv list 2>/dev/null)"
+if printf '%s\n' "$env" | grep -qx "${slot}_OK=1" && printf '%s\n' "$env" | grep -qx "${slot}_TRY=0"; then
+    echo "moose-os-trial: slot ${slot} is marked good but still has its trial marker; not rebooting"
+    exit 0
+fi
 echo "moose-os-trial: slot ${slot} was not marked good in time; rebooting so the box goes back to the other slot"
 # A note for the old slot's host-agent, so the revert says which path made it.
 date -u +%Y-%m-%dT%H:%M:%SZ > "/var/lib/moose/os-update/safety-net-${slot}" && sync

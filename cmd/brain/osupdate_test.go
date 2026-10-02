@@ -23,8 +23,9 @@ func (f fakeSeen) HasNotification(k string) (bool, error) { return f[k], nil }
 
 type fakeOutcomeNotifier struct{ raised []string }
 
-func (f *fakeOutcomeNotifier) OSUpdateOutcome(id, outcome, version, from string) {
+func (f *fakeOutcomeNotifier) OSUpdateOutcome(id, outcome, version, from string) bool {
 	f.raised = append(f.raised, id+" "+outcome+" "+version+" "+from)
+	return true
 }
 
 func TestCheckOSOutcome(t *testing.T) {

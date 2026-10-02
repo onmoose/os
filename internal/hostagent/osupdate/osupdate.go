@@ -63,6 +63,18 @@ const DefaultDir = "/var/lib/moose/os-update"
 // a live host-agent always decides first.
 const DefaultTrialTimeout = 10 * time.Minute
 
+// statusAttempts and statusRetry bound how long Boot waits for RAUC to
+// answer: about 30 s. Vars, so a test does not wait.
+var (
+	statusAttempts = 10
+	statusRetry    = 3 * time.Second
+)
+
+// maxBundleBytes caps a download. A bundle holds one slot image, and a slot is
+// 1 GiB, so anything past 2 GiB is not a bundle and must not fill the state
+// partition.
+const maxBundleBytes = 2 << 30
+
 // Job bounds. A 438 MB download and install takes well under a minute on a
 // hosted box; the bound is there for a stalled transfer.
 const (
@@ -281,9 +293,22 @@ func (a *Applier) Last() *protocol.OSOutcome {
 // Boot reads the booted slot and decides what this boot is (see the package
 // comment). It returns at once; a trial runs in the background.
 func (a *Applier) Boot(ctx context.Context) {
-	st, err := a.RAUC.Status(ctx)
+	// Retried: rauc-service is D-Bus activated and can be slow on a busy
+	// boot. Giving up on a trial boot would leave the decision to the image's
+	// timer, which would revert a healthy slot.
+	var st Status
+	var err error
+	for i := 0; i < statusAttempts; i++ {
+		if st, err = a.RAUC.Status(ctx); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(statusRetry):
+		}
+	}
 	if err != nil {
-		slog.Error("os update: cannot read the slots; this box will not update its OS until it can", "err", err)
+		slog.Error("os update: cannot read the slots; this box will not update its OS until host-agent restarts", "err", err)
 		return
 	}
 	a.mu.Lock()
@@ -368,7 +393,9 @@ func (a *Applier) trial(slot string) {
 		if err := a.RAUC.Mark(bg, "bad", "booted"); err != nil {
 			slog.Error("os update: could not mark the slot bad; rebooting anyway, GRUB skips a slot still on trial", "err", err)
 		}
-		a.reboot()
+		if err := a.reboot(); err != nil {
+			slog.Error("os update: the trial cannot reboot; the image's safety net reboots the box", "err", err, "slot", slot)
+		}
 		return
 	}
 	if err := a.RAUC.Mark(bg, "good", "booted"); err != nil {
@@ -376,7 +403,9 @@ func (a *Applier) trial(slot string) {
 		// inside the window, rather than leave a slot that will revert at
 		// some random later reboot.
 		slog.Error("os update: could not mark the new slot good; rebooting to the old slot", "err", err, "slot", slot)
-		a.reboot()
+		if err := a.reboot(); err != nil {
+			slog.Error("os update: the trial cannot reboot; the image's safety net reboots the box", "err", err, "slot", slot)
+		}
 		return
 	}
 	// The marker goes first: once the slot is good, nothing may reboot it
@@ -403,7 +432,7 @@ func (a *Applier) trial(slot string) {
 	slog.Info("os update: the new slot is healthy and marked good", "os", a.Version, "slot", slot)
 }
 
-func (a *Applier) reboot() {
+func (a *Applier) reboot() error {
 	var err error
 	if a.Reboot != nil {
 		err = a.Reboot()
@@ -413,6 +442,7 @@ func (a *Applier) reboot() {
 	if err != nil {
 		slog.Error("os update: reboot failed", "err", err)
 	}
+	return err
 }
 
 // Apply is the loop's call (updatetarget.OSApplier).
@@ -429,6 +459,11 @@ func (a *Applier) Apply(rel updatetarget.OSRelease, open bool, night time.Time) 
 	if slot == "" {
 		return updatetarget.OSDecision{State: protocol.OSUpdateUnsupported, Detail: "the booted slot is not known"}
 	}
+	// While this boot is on trial the other slot is the way back. Nothing
+	// may write it, and nothing may switch, until the trial is decided.
+	if _, err := os.Stat(TrialMarker(a.dir(), slot)); err == nil {
+		return updatetarget.OSDecision{State: protocol.OSUpdateWaiting, Detail: "this boot is on trial; nothing moves until the new slot is marked good"}
+	}
 	r, err := a.load()
 	if err != nil {
 		return updatetarget.OSDecision{State: protocol.OSUpdateFailed, Detail: err.Error()}
@@ -440,6 +475,12 @@ func (a *Applier) Apply(rel updatetarget.OSRelease, open bool, night time.Time) 
 	if in := r.Installed; in != nil && in.Version == rel.Version && in.Digest == rel.BundleSHA256 && in.Slot == other(slot) {
 		if !open {
 			return updatetarget.OSDecision{State: protocol.OSUpdateInstalled}
+		}
+		// One OS switch per night: a box several minors behind takes the
+		// next step in a later window, not right after this one (UPDATES.md # 1).
+		if s := r.Switch; s != nil && s.Night.Equal(night) {
+			return updatetarget.OSDecision{State: protocol.OSUpdateHeld,
+				Detail: "the box already switched its OS tonight; the next window switches again"}
 		}
 		return a.start(protocol.JobKindOSSwitch, switchMaxDuration, protocol.OSUpdateRebooting, func(ctx context.Context) error {
 			return a.doSwitch(ctx, rel, night)
@@ -484,7 +525,13 @@ func (a *Applier) doInstall(ctx context.Context, rel updatetarget.OSRelease, nig
 	defer func() {
 		r, lerr := a.load()
 		if lerr != nil {
-			slog.Error("os update: cannot read the record", "err", lerr)
+			// Never write over a record we could not read: it holds the
+			// switch guard and the last outcome.
+			slog.Error("os update: cannot read the record; not recording this attempt", "err", lerr)
+			if err == nil {
+				err = lerr
+			}
+			return
 		}
 		r.Attempt = &attempt{Version: rel.Version, Digest: rel.BundleSHA256, Night: night}
 		if err != nil {
@@ -556,7 +603,10 @@ func (a *Applier) download(ctx context.Context, rel updatetarget.OSRelease, path
 		return err
 	}
 	h := sha256.New()
-	_, err = io.Copy(io.MultiWriter(f, h), resp.Body)
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, maxBundleBytes+1))
+	if err == nil && n > maxBundleBytes {
+		err = fmt.Errorf("the bundle is larger than %d bytes", int64(maxBundleBytes))
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -615,7 +665,11 @@ func (a *Applier) doSwitch(ctx context.Context, rel updatetarget.OSRelease, nigh
 			env["ORDER"], target, env[target+"_OK"], target, env[target+"_TRY"]))
 	}
 	slog.Info("os update: switching slots and rebooting", "os", rel.Version, "slot", target)
-	a.reboot()
+	// A reboot that was not accepted must not leave the new slot first: an
+	// unrelated reboot later would then switch the OS outside the window.
+	if err := a.reboot(); err != nil {
+		return undo(fmt.Errorf("reboot: %w", err))
+	}
 	return nil
 }
 
@@ -633,6 +687,9 @@ func (a *Applier) Peek(rel updatetarget.OSRelease) (state, detail string, ok boo
 		return protocol.OSUpdateInstalling, "", true
 	case protocol.JobKindOSSwitch:
 		return protocol.OSUpdateRebooting, "", true
+	}
+	if _, err := os.Stat(TrialMarker(a.dir(), slot)); err == nil {
+		return protocol.OSUpdateWaiting, "this boot is on trial; nothing moves until the new slot is marked good", true
 	}
 	r, err := a.load()
 	if err != nil {
