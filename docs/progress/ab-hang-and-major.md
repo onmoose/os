@@ -50,13 +50,22 @@ The maintainer chose option A (`DECISIONS.md` 2026-10-05).
 | Hetzner watchdog reset, 30 s timeout, not fed | about 50 to 65 s (Intel), 59.5 s (AMD) |
 | Hetzner watchdog reset, 60 s timeout, PID 1 frozen | 118.3 s |
 | Hetzner probe cost | about €0.035: three cx23 VMs, a few minutes each |
-| CI time | RUNS_PLACEHOLDER |
+| CI time | no new boot. `os-update` took 208 s (UEFI) and 187 s (BIOS) in run 37378140993, against 220 s and 207 s before (run 37349532308): the faked major adds nothing measurable. The full list ran in 14.6 min wall |
 
 ## How it was verified
 
 The Hetzner probe above, and `CI / Cloud image` with `publish=false`; nothing was built or booted locally.
 
-RUNS_TABLE_PLACEHOLDER
+| Run | Boots | What it showed |
+|-----|-------|----------------|
+| 37358065628 | `unseeded`, a log-only probe | the boot lane has the same `iTCO_wdt` watchdog and systemd feeds it |
+| 37364028120 | `os-update` | red: the first boot of a new box failed in `state-setup` (the major was written before `/state/etc` existed), a panic loop; the build printed the image's accounts for the lock |
+| 37370270487 | `os-update` | red: the tidy-up on slot B tried to copy a plain path the box did not have, panicked, and GRUB's fallback slot A ran the same step and panicked too. Hence the rule that a failed tidy-up never stops a boot |
+| 37374562648 | `os-update` | red only in the check: the tidy-up worked (the major was recorded as 13), but the journal's kernel log did not have its line; the check now reads `dmesg` first |
+| 37376508079 | `os-update` | green under both firmwares: `MAJOR TIDY OK`, kept 16 files, the admin's edit in the attic, the owner intact; upper-layer and account checks green; check 6 green |
+| **37378140993** | **the full list, head `f7108c7`** | **green, all 14 jobs: 7 boot groups under UEFI and under legacy BIOS, 14.6 min wall. Every boot checked the watchdog, the upper layer (17 files on the `os-update` boot) and the 69 image accounts** |
+
+`make test-nopam` is green; `sshaccess` has a new test for `EnsureOnAtStart`.
 
 ## How it maps to the specs
 
