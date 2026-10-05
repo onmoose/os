@@ -65,6 +65,13 @@ The Hetzner probe above, and `CI / Cloud image` with `publish=false`; nothing wa
 | 37376508079 | `os-update` | green under both firmwares: `MAJOR TIDY OK`, kept 16 files, the admin's edit in the attic, the owner intact; upper-layer and account checks green; check 6 green |
 | **37378140993** | **the full list, head `f7108c7`** | **green, all 14 jobs: 7 boot groups under UEFI and under legacy BIOS, 14.6 min wall. Every boot checked the watchdog, the upper layer (17 files on the `os-update` boot) and the 69 image accounts** |
 
+After review round 1 (a slot with no `VERSION_ID`, a failed swap, a full state partition, sshd re-enabled only after a tidy-up, and an SSH proof across the faked major):
+
+| Run | Boots | What it showed |
+|-----|-------|----------------|
+| 37380583165 | `unseeded os-update` | green under both firmwares: `SSH on for 'owner'` before the switch, `SSHD BACK OK` and `MAJOR TIDY OK` (kept 18 files) on slot B |
+| **37380588141** | **the full list (the PR's own run), head `2304072`** | **green, all 14 jobs, 14.2 min wall** |
+
 `make test-nopam` is green; `sshaccess` has a new test for `EnsureOnAtStart`.
 
 ## How it maps to the specs
