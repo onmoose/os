@@ -2485,7 +2485,9 @@ UNIT
             systemctl restart host-agent.service || fail "$MODE: could not restart host-agent"
             wait_ha "update target names; refusing it" 180 "host-agent did not refuse a bundle whose digest the target does not name"
             [ -z "$(rauc_slot_version B)" ] || fail "$MODE: slot B holds '$(rauc_slot_version B)' after a refused download"
-            st="$(os_field "$(os_read)" state)"
+            # host-agent logs the refusal just before it writes the state, so
+            # one read can still see 'installing'. Poll, as 1b does.
+            st=""; for _i in $(seq 1 30); do st="$(os_field "$(os_read)" state)"; [ "$st" = failed ] && break; sleep 1; done
             [ "$st" = failed ] || fail "$MODE: the update-target read says os.state '$st' after a wrong digest, want failed"
             echo "cloud-assertions: os-update: WRONG DIGEST OK (refused before RAUC saw it; slot B untouched; os.state=failed)"
 
