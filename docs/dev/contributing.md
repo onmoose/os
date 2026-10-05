@@ -266,7 +266,10 @@ gh workflow run "OS lock bump" --ref dev -f base=hotfix/X.Y.Z
 #    the released pair instead and boots the full list:
 gh workflow run "CI / Cloud image" --ref hotfix/X.Y.Z -f publish=false -f control_plane=released
 #    If os-update or os-revert go red here, the released brain is too old for
-#    the boot checks: cut a control-plane release first (see below).
+#    the boot checks: cut a control-plane release first (see below). This check
+#    reads CONTROL_PLANE_VERSION from the hotfix branch, so once that release
+#    has merged into main, run `git merge origin/main` on hotfix/X.Y.Z (it brings
+#    the new CONTROL_PLANE_VERSION; do not bump it here by hand) and re-run this.
 
 # 4. Bump VERSION on the hotfix branch and open the release PR into main.
 git pull

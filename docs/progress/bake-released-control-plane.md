@@ -76,7 +76,6 @@ Fixed after the review (a fresh agent and Greptile):
 - **A box still updates its control plane once after first boot.** The baked reference is `moose-brain:dev`, and the update loop compares it as a string with the target's digest refs. So even a box whose baked pair equals its target re-pulls it by digest (the layers are already there). That was true before this change, and it is not in this slice.
 - **The record is checked against the image ID, not the manifest digest.** A box that loads a tarball keeps no manifest digest. The config digest pins the same bytes; the manifest digest is in the record as the ref.
 - **`release.yml` does not check before it tags** that `v<CONTROL_PLANE_VERSION>` is on ghcr. An OS-only release with a missing image tag fails early in the build, before mkosi runs, and re-running `release.yml` resumes once the control-plane release is finished.
-- **The PR trigger does not watch `dev/control-plane/`.** A change only to `pull-released.sh` or `bundle-record.sh` does not start `CI / Cloud image` on its own; the release run and a dispatch still exercise them.
 
 ## What's next
 
