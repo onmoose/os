@@ -96,11 +96,12 @@ stage_control_plane() {
     if [ -f "$CP_BUNDLE/control-plane.env" ]; then
         have="$(. "$CP_BUNDLE/control-plane.env" && echo "${MOOSE_BAKED_CP_SOURCE:-} ${MOOSE_BAKED_CP_VERSION:-}")"
     fi
-    local want="$cp_source"
-    [ "$cp_source" = released ] && want="released ${cp_version}"
+    # The same source AND the same version: a local build stamps the brain
+    # with CONTROL_PLANE_VERSION, so a bump must rebuild it too.
+    local want="${cp_source} ${cp_version}"
     if [ "${MOOSE_REBUILD_CP:-0}" = "1" ] || ! ls "$CP_BUNDLE"/moose-brain.tar "$CP_BUNDLE"/moose-ui.tar \
             "$CP_BUNDLE"/caddy.tar "$CP_BUNDLE"/docker-socket-proxy.tar >/dev/null 2>&1 \
-            || [ "${have%% *}" != "$cp_source" ] || { [ "$cp_source" = released ] && [ "$have" != "$want" ]; }; then
+            || [ "$have" != "$want" ]; then
         if [ "$cp_source" = released ]; then
             echo "pulling the released control plane ${cp_version} from ghcr by digest..."
             make -C "$REPO_ROOT" control-plane-released

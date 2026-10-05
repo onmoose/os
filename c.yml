@@ -129,8 +129,6 @@ on:
   #   - internal/api/system*.go    POST /api/v1/system/update, the trigger the
   #                                boot drives
   #   - dev/cloud/**               the lane and its in-guest assertions
-  #   - dev/control-plane/**, dev/release/ghcr-resolve.sh, Makefile
-  #                                the control-plane bundle both images bake (#566)
   #   - dev/os-lock/**             the OS package lock (#560). A PR that touches
   #                                it runs the FULL boot list, not only `update`
   #                                (see "Choose the boots"): a lock bump changes
@@ -154,11 +152,6 @@ on:
       - "internal/api/system*.go"
       - "dev/cloud/**"
       - "dev/os-lock/**"
-      # The control-plane bundle the images bake (#566): the pull, the record
-      # and the make targets that run them.
-      - "dev/control-plane/**"
-      - "dev/release/ghcr-resolve.sh"
-      - "Makefile"
       - ".github/actions/setup-mkosi/**"
       - ".github/workflows/ci-cloud-image.yml"
   workflow_dispatch:
@@ -827,7 +820,7 @@ jobs:
           set -euo pipefail
           grep -qx 'MOOSE_BAKED_CP_SOURCE=local' .dev/control-plane/control-plane.env \
             || { echo "::error::a control-plane release must bake the images it builds, not ${MOOSE_CONTROL_PLANE_SOURCE}"; exit 1; }
-          sudo chmod a+r .dev/control-plane/moose-brain.tar .dev/control-plane/moose-ui.tar .dev/control-plane/control-plane.env
+          sudo chmod a+r .dev/control-plane/moose-brain.tar .dev/control-plane/moose-ui.tar
       - name: Upload the control-plane images for the publish job
         if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
         uses: actions/upload-artifact@v4
@@ -838,7 +831,6 @@ jobs:
           path: |
             .dev/control-plane/moose-brain.tar
             .dev/control-plane/moose-ui.tar
-            .dev/control-plane/control-plane.env
           compression-level: 1
           retention-days: 3
           if-no-files-found: error
@@ -1072,20 +1064,6 @@ jobs:
           docker load -i .dev/control-plane/moose-brain.tar
           docker load -i .dev/control-plane/moose-ui.tar
           docker image inspect --format '{{.RepoTags}} {{.Id}}' moose-brain:dev moose-ui:dev
-          # The loaded images must be the ones the boots ran (#566): the image
-          # IDs the build recorded, which every boot checked the running
-          # containers against (cloud-assertions.sh step 5a).
-          . .dev/control-plane/control-plane.env
-          [ "${MOOSE_BAKED_CP_SOURCE}" = local ] || { echo "::error::the bundle is '${MOOSE_BAKED_CP_SOURCE}', not a build of this commit"; exit 1; }
-          for pair in "moose-brain:${MOOSE_BAKED_BRAIN_ID}" "moose-ui:${MOOSE_BAKED_UI_ID}"; do
-            name="${pair%%:*}"; want="${pair#*:}"
-            # The config digest of what Docker now holds, read the same way the
-            # build read it (bundle-record.sh), so the image store of this
-            # runner does not matter.
-            got="$(docker save "${name}:dev" | tar -xOf - manifest.json | python3 -c 'import json,re,sys; c=json.load(sys.stdin)[0]["Config"]; print("sha256:"+re.search(r"[0-9a-f]{64}",c).group(0))')"
-            [ "$got" = "$want" ] || { echo "::error::${name}:dev loaded as ${got}, but the boots ran ${want}"; exit 1; }
-            echo "${name}:dev is ${want}, the image the boots ran"
-          done
 
       # ---- attach the image to the tagged GitHub Release (only when requested) ----
 

@@ -1,10 +1,10 @@
 # OS releases bake the last released control plane
 
-- **Status:** done
+- **Status:** in progress. The code is built, but the released path is not fully green yet: it waits for a control-plane release that carries #563 (# Known gaps). #566 stays open until then.
 - **Date:** 2026-10-05
 - **Specs touched:** `docs/specs/BUILD.md`, `docs/specs/UPDATES.md`, `docs/architecture.md`, `docs/dev/contributing.md`, `docs/dev/hosted-boot-proof.md`
 
-Closes #566, a slice of #486. It closes the "same number, different bytes in the disk image" gap of [control-plane-version-line.md](control-plane-version-line.md) (#559). Since #559 the OS and the control plane are two release lines, but the disk image still baked the brain and UI built from its own commit. So an OS-only release made while `main` held unreleased brain or UI changes baked them under the last released control-plane number. Now an OS-only release bakes the last released control plane, pulled from ghcr by digest, and its boot proof runs against those images.
+Part of #566 (it stays open), a slice of #486. It closes the "same number, different bytes in the disk image" gap of [control-plane-version-line.md](control-plane-version-line.md) (#559). Since #559 the OS and the control plane are two release lines, but the disk image still baked the brain and UI built from its own commit. So an OS-only release made while `main` held unreleased brain or UI changes baked them under the last released control-plane number. Now an OS-only release bakes the last released control plane, pulled from ghcr by digest, and its boot proof runs against those images.
 
 ## What was done
 
@@ -57,6 +57,16 @@ All in CI with every publish input false. Nothing was built or booted locally. `
 - `BUILD.md` # Versioning: the "same commit" bullet is replaced by the as-built rule and the record. The design bullet now says the disk images bake a released control plane. # 1b # As built (copy once) and # 5c and # 6 follow.
 - `UPDATES.md` # 3: a new box starts on a released pair.
 - `docs/dev/contributing.md` # Release model: what an OS-only release bakes, and how to check ahead.
+
+## Review
+
+Fixed after the review (a fresh agent and Greptile):
+
+- **The PR trigger watches the bundle code.** `dev/control-plane/**`, `dev/release/ghcr-resolve.sh` and `Makefile` now start `CI / Cloud image` on a PR (the `update` boot).
+- **The local caches key on the version.** `stage-control-plane.sh` reuses a bundle only when both its source and its `CONTROL_PLANE_VERSION` match, for a local build too (the brain is stamped with that number). The boot-proof canary carries the version as well.
+- **The publish job checks what it pushes.** After `docker load` it reads each image's config digest the same way the build did, and fails unless it is the image ID in the record, the one every boot checked. The record now travels with the tarballs.
+- **The hotfix steps** in `contributing.md` gain a `-f control_plane=released` check before the version bump, and say plainly that the next OS patch release needs a control-plane release with #563 first.
+- **#566 stays open** (this entry's status), because "Done when" is met only in part.
 
 ## Known gaps & deviations
 

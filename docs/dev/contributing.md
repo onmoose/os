@@ -260,20 +260,30 @@ gh workflow run "OS lock bump" --ref dev -f base=hotfix/X.Y.Z
 #    CI / Go and CI / Cloud image run on PRs into hotfix/** too, so that PR gets
 #    the lock check and the full boot list. Merge it once they are green.
 
-# 3. Bump VERSION on the hotfix branch and open the release PR into main.
+# 3. Check that the OS boots with the control plane the release will bake.
+#    An OS-only release bakes the LAST RELEASED control plane from ghcr (#566),
+#    but the PR CI below builds the brain and UI from the branch. This run bakes
+#    the released pair instead and boots the full list:
+gh workflow run "CI / Cloud image" --ref hotfix/X.Y.Z -f publish=false -f control_plane=released
+#    If os-update or os-revert go red here, the released brain is too old for
+#    the boot checks: cut a control-plane release first (see below).
+
+# 4. Bump VERSION on the hotfix branch and open the release PR into main.
 git pull
 echo "X.Y.Z" > VERSION
 # commit, push, open a PR from hotfix/X.Y.Z into main. Its CI runs the full boot
 # list (the PR touches dev/os-lock/). Merge it; release.yml tags vX.Y.Z and
 # attaches the image.
 
-# 4. Carry main into dev, as after every release.
+# 5. Carry main into dev, as after every release.
 git checkout dev && git pull
 git merge origin/main
 git push
 ```
 
-In step 4, resolve `VERSION` to the new `X.Y.Z`: that is now the last released version, and `dev` did not have it. Resolve `dev/os-lock/` to `dev`'s side when it is newer; the next daily bump moves `dev` forward anyway. Step 2 needs `dev/os-lock/` and the shared mkosi setup on `main`, so it works from the first release after #560.
+**The next OS patch release needs a control-plane release first.** The last released control plane, 0.15.0, is older than #563, so its brain cannot report an OS update: with it baked, the `os-update` and `os-revert` boots go red and the release stops at the boot proof. Release a control plane that carries #563 before, or bump `CONTROL_PLANE_VERSION` with the release (a hotfix branch from `main` only can if `main` already holds #563). Step 3 shows the result before anything is tagged.
+
+In step 5, resolve `VERSION` to the new `X.Y.Z`: that is now the last released version, and `dev` did not have it. Resolve `dev/os-lock/` to `dev`'s side when it is newer; the next daily bump moves `dev` forward anyway. Step 2 needs `dev/os-lock/` and the shared mkosi setup on `main`, so it works from the first release after #560.
 
 ## Definition of done — checklist
 
