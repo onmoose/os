@@ -70,7 +70,9 @@ After review round 1 (a slot with no `VERSION_ID`, a failed swap, a full state p
 | Run | Boots | What it showed |
 |-----|-------|----------------|
 | 37380583165 | `unseeded os-update` | green under both firmwares: `SSH on for 'owner'` before the switch, `SSHD BACK OK` and `MAJOR TIDY OK` (kept 18 files) on slot B |
-| **37380588141** | **the full list (the PR's own run), head `2304072`** | **green, all 14 jobs, 14.2 min wall** |
+| 37380588141 | the full list (the PR's own run), head `2304072` | green, all 14 jobs, 14.2 min wall |
+| 37382329910 | `os-update os-revert`, after Greptile (marker only when sshd was on; the revert direction) | green under both firmwares: `MAJOR TIDY BACK OK` on slot A (Debian 14 to 13, sshd left off as the admin set it). The revert stage's measured switch-to-slot-A time went from 116 to 117 s to 121 to 122 s, the 5 s wait before the sshd check; the SSH setup on slot A adds a few seconds more. Job times moved by -4 s (UEFI) and +48 s (BIOS), within the runners' noise |
+| **37382337527** | **the full list (the PR's own run), head `023a634`** | **green, all 14 jobs, 16.8 min wall** |
 
 `make test-nopam` is green; `sshaccess` has a new test for `EnsureOnAtStart`.
 
