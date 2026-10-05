@@ -247,6 +247,12 @@ if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
     systemctl is-active -q host-agent.service && fail "os-revert: host-agent runs on the slot it was meant to be kept off"
     systemctl list-timers --all --no-pager 2>/dev/null | grep -q moose-os-trial.timer || fail "os-revert: moose-os-trial.timer is not scheduled on the trial boot"
     echo "cloud-assertions: os-revert: on slot B, host-agent cannot start, trial marker present; grubenv: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' '); waiting for the safety net to reboot the box"
+    # The revert direction of a Debian-major tidy-up (BUILD.md # 1b, rule 4):
+    # record a major one above this slot's, as a newer major would have, so
+    # slot A must tidy the upper layer when the safety net takes the box back.
+    rec_major="$(( $( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" ) + 1 ))"
+    echo "$rec_major" > /state/etc/.moose-debian-major && sync
+    echo "cloud-assertions: os-revert: recorded Debian $rec_major on the state partition before the revert"
     set_os_stage 3
     sleep 300
     fail "os-revert: the safety net never rebooted the box off the broken slot. $boot_env. grubenv now: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ') timer: $(systemctl list-timers --all --no-pager 2>&1 | grep moose-os-trial) service: $(journalctl -u moose-os-trial.service -b --no-pager 2>&1 | tail -5 | tr '\n' ' ')"
@@ -2513,7 +2519,7 @@ os-update|os-revert)
         [ -n "$session_cookie" ] || fail "$MODE: no moose_session cookie from the SSO landing"
         owner="$(json_str_of "$(full_get /api/v1/me "$apex" "$session_cookie" 2>/dev/null || true)" username)"
         [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1 || fail "$MODE: the SSO owner '$owner' has no host account"
-        if [ "$MODE" = os-update ]; then
+        if :; then
             # SSH on for the owner, so the faked major below must bring sshd
             # back on slot B (BUILD.md # 1b, rule 4: the tidy-up keeps the
             # drop-in, drops the enable links, and host-agent enables sshd once).
@@ -2528,7 +2534,16 @@ os-update|os-revert)
                 "{\"enabled\":true,\"keys\":[{\"public_key\":\"$(tr -d '\n' < /run/moose-os-update-key.pub)\",\"label\":\"os-update\"}]}" 2>/dev/null)"
             grep -q ' 200' <<<"$(status_of "$on")" || fail "$MODE: turning SSH on for the owner failed: status='$(status_of "$on")'"
             [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] || fail "$MODE: ssh.service is not enabled after the owner turned SSH on"
-            echo "cloud-assertions: $MODE: SSH on for '$owner' (ssh.service enabled) before the faked major"
+            if [ "$MODE" = os-revert ]; then
+                # An admin turns sshd off by hand while the owner keeps SSH on
+                # in the drop-in. The tidy-up on the way back must not turn it
+                # on again (no marker for host-agent).
+                systemctl disable --now ssh.service >/dev/null 2>&1 || fail "$MODE: could not turn sshd off by hand"
+                [ "$(systemctl is-enabled ssh.service 2>/dev/null)" != enabled ] || fail "$MODE: ssh.service still enabled after disable"
+                echo "cloud-assertions: $MODE: SSH on for '$owner' in the drop-in, sshd turned off by hand before the faked major"
+            else
+                echo "cloud-assertions: $MODE: SSH on for '$owner' (ssh.service enabled) before the faked major"
+            fi
         fi
         head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "/home/${owner}/os-update-data.txt"
         chown "$owner" "/home/${owner}/os-update-data.txt"
@@ -2693,6 +2708,21 @@ UNIT
         [ "$(grubvar B_OK)" = 0 ] && [ "$(grubvar A_OK)" = 1 ] || fail "os-revert: grubenv after the revert: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
         [ "$(/usr/lib/moose/host-agent-real --version | awk '{print $2}')" = "$base_ver" ] || fail "os-revert: back on slot A, host-agent is not $base_ver"
         want_outcome=reverted; want_state=held; want_ver="$base_ver"
+        # The revert direction of the tidy-up: slot B recorded a newer major,
+        # so slot A tidied the upper layer on the way back.
+        slot_major="$( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" )"
+        [ "$(cat /state/etc/.moose-debian-major 2>/dev/null)" = "$slot_major" ] \
+            || fail "os-revert: the state partition records Debian '$(cat /state/etc/.moose-debian-major 2>/dev/null)' back on slot A, want $slot_major"
+        tidy_log="$(dmesg 2>/dev/null; journalctl -k -b --no-pager -o cat 2>/dev/null)"
+        grep -q "moose-state: tidied /etc for Debian $(( slot_major + 1 )) to $slot_major: .* sshd was off" <<<"$tidy_log" \
+            || fail "os-revert: slot A did not tidy the upper layer on the way back (or saw sshd on): $(grep 'moose-state' <<<"$tidy_log" | tail -4 | tr '\n' ' ')"
+        ls -d /state/etc/attic/*-debian-$(( slot_major + 1 ))-to-"$slot_major" >/dev/null 2>&1 || fail "os-revert: no attic entry for the tidy-up on the way back"
+        # sshd was off by hand, so no marker, and host-agent left it off.
+        [ ! -e /state/etc/.moose-major-tidied ] || fail "os-revert: the tidy-up left the sshd marker although sshd was off"
+        grep -qE "^AllowUsers .*\b${owner}\b" /etc/ssh/sshd_config.d/moose-allowed.conf 2>/dev/null || fail "os-revert: the sshd drop-in lost '$owner' on the way back"
+        sleep 5
+        [ "$(systemctl is-enabled ssh.service 2>/dev/null)" != enabled ] || fail "os-revert: ssh.service is enabled again after the tidy-up, but the admin had turned it off"
+        echo "cloud-assertions: os-revert: MAJOR TIDY BACK OK (Debian $(( slot_major + 1 )) to $slot_major on slot A, attic entry made, sshd left off as the admin set it)"
         echo "cloud-assertions: os-revert: REVERT OK (slot B never came up; back on slot A, B marked bad, A good); measured: switch to back on slot A $(( $(date +%s) - $(cat "$OS_STATE_DIR/switch-at") )) s, two reboots and the safety net included"
         note_pat="did not work, so moose went back"
     fi

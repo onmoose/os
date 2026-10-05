@@ -229,6 +229,10 @@ tidy_swap() {
     local up="$STATE/etc/upper" new="$STATE/etc/upper.moose-new" attic
     attic="$STATE/etc/attic/$(date -u +%Y%m%dT%H%M%SZ)-debian-$1-to-$2"
     mkdir -p "$(dirname "$attic")" || return 1
+    # Was sshd on? Its enable link is in the old layer only when the box turned
+    # it on (the image ships it off). Read before the swap moves the layer.
+    local sshd_on=""
+    [ -L "$up/systemd/system/multi-user.target.wants/ssh.service" ] && sshd_on=1
     mv "$up" "$attic" || return 1
     if ! mv "$new" "$up"; then
         # Put the old layer back. If even that fails, the copy at
@@ -240,9 +244,14 @@ tidy_swap() {
     rm -rf "$STATE/etc/work"
     mkdir -p "$STATE/etc/work"
     # For host-agent: sshd's enable links went to the attic (BUILD.md # 1b,
-    # rule 4), so it turns sshd back on once, at its next start.
-    touch "$TIDIED_MARKER" 2>/dev/null || log "tidy-up: could not leave $TIDIED_MARKER for host-agent"
-    log "tidied /etc for Debian $1 to $2: kept $(find "$up" ! -type d | wc -l) files, the old upper layer is in $attic"
+    # rule 4), so it turns sshd back on once, at its next start. Only when sshd
+    # was on: an admin who turned it off by hand keeps it off.
+    if [ -n "$sshd_on" ]; then
+        touch "$TIDIED_MARKER" 2>/dev/null || log "tidy-up: could not leave $TIDIED_MARKER for host-agent"
+    else
+        rm -f "$TIDIED_MARKER"
+    fi
+    log "tidied /etc for Debian $1 to $2: kept $(find "$up" ! -type d | wc -l) files, sshd was $([ -n "$sshd_on" ] && echo on || echo off), the old upper layer is in $attic"
 }
 
 # A tidy-up a power cut stopped: between the two renames, finish it; before
