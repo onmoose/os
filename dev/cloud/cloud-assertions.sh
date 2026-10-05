@@ -421,6 +421,30 @@ for c in $want; do
     grep -qw "$c" <<<"$running" || fail "control-plane container '$c' not running after 120s (have: $running)"
 done
 
+# --- 5a. the brain and UI that run are the ones the image baked (#566). The
+# build records which control plane it baked, and the image ID each one loads
+# as (dev/control-plane/bundle-record.sh): a build of this commit, or the last
+# released pair pulled from ghcr by digest. Checking the RUNNING containers, not
+# only the loaded images, is what makes this boot proof a proof of those bytes.
+# Docker's image ID here is the sha256 of the image config, because the remap
+# keeps Docker on its classic store (BUILD.md # 1).
+cp_record=/usr/lib/moose/control-plane.env
+[ -f "$cp_record" ] || fail "no ${cp_record}: the image does not say which control plane it baked"
+baked_source="$(. "$cp_record"; echo "${MOOSE_BAKED_CP_SOURCE:-}")"
+baked_version="$(. "$cp_record"; echo "${MOOSE_BAKED_CP_VERSION:-}")"
+for pair in "moose-brain:$(. "$cp_record"; echo "${MOOSE_BAKED_BRAIN_ID:-}")" "moose-ui:$(. "$cp_record"; echo "${MOOSE_BAKED_UI_ID:-}")"; do
+    c="${pair%%:*}"; want_id="${pair#*:}"
+    [ -n "$want_id" ] || fail "${cp_record} names no image ID for ${c}"
+    img_id="$(docker image inspect -f '{{.Id}}' "${c}:dev" 2>/dev/null || true)"
+    run_id="$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null || true)"
+    [ "$img_id" = "$want_id" ] || fail "baked ${c}:dev loaded as '${img_id}', but the image recorded ${want_id} (${baked_source} ${baked_version})"
+    [ "$run_id" = "$want_id" ] || fail "container ${c} runs image '${run_id}', not the baked ${want_id} (${baked_source} ${baked_version})"
+done
+echo "cloud-assertions: control plane baked: ${baked_source} ${baked_version}; moose-brain and moose-ui run the recorded images"
+case "$baked_source" in
+    released) echo "layout: control plane baked from ghcr: $(. "$cp_record"; echo "${MOOSE_BAKED_BRAIN_REF} ${MOOSE_BAKED_UI_REF}")" ;;
+esac
+
 # --- 5b. container stdout is readable through journald by CONTAINER_NAME — the
 # EXACT query host-agent-real's per-app log tail runs
 # (internal/hostagent/journalsource: `journalctl CONTAINER_NAME=<container>`).

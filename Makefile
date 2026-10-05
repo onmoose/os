@@ -45,7 +45,7 @@ export MOOSE_STATE_DIR := $(STATE_DIR)
 # store offline. To boot against a local snapshot instead, see `make dev-app`.
 export MOOSE_CATALOG_CACHE_DIR := ./.dev/catalog-cache
 
-.PHONY: build host-agent brain host-agent-real host-agent-real-hosted brain-image ui-image control-plane-images caddy-acmedns-image build-cloud-image check check-web fmt fmt-check vet test test-nopam test-caddy test-avahi test-netstate test-health test-usermgr test-usermgr-nspawn test-boot-chain-nspawn test-medium-qemu test-cloud-qemu run-agent run-brain net caddy caddy-down ui dev dev-app seed-catalog stop openapi openapi-check clean check-state-owner help
+.PHONY: build host-agent brain host-agent-real host-agent-real-hosted brain-image ui-image control-plane-images control-plane-released control-plane-third-party caddy-acmedns-image build-cloud-image check check-web fmt fmt-check vet test test-nopam test-caddy test-avahi test-netstate test-health test-usermgr test-usermgr-nspawn test-boot-chain-nspawn test-medium-qemu test-cloud-qemu run-agent run-brain net caddy caddy-down ui dev dev-app seed-catalog stop openapi openapi-check clean check-state-owner help
 
 # msteinert/pam v2.1.0 uses RTLD_NEXT, a GNU extension that requires
 # _GNU_SOURCE at C compile time. Apply globally; harmless to non-cgo builds.
@@ -60,6 +60,7 @@ help:
 	@echo "make check-web   - pre-PR gate for frontend changes: web-ui typecheck + build"
 	@echo "make clean       - stop apps, remove dev state"
 	@echo "make control-plane-images - build moose-brain + moose-ui images and docker-save the control-plane bundle to .dev/"
+	@echo "make control-plane-released - the same bundle with the last released brain + UI, pulled from ghcr by digest"
 	@echo "make caddy-acmedns-image  - build the hosted Caddy (stock Caddy + the caddy-dns/acmedns module)"
 	@echo "make dev         - all three foreground procs in one terminal (recommended); Go edits rebuild + restart the brain"
 	@echo "make dev-app APP=<id> [STORE=../store] - boot ONE store app under curation: seed its catalog snapshot, then make dev with an inert catalog URL"
@@ -250,17 +251,32 @@ ui-image:
 	  --build-arg UI_RUNTIME_IMAGE=$(CADDY_IMAGE) \
 	  -t $(UI_IMAGE) web-ui
 
-control-plane-images: brain-image ui-image
+control-plane-images: brain-image ui-image control-plane-third-party
+	@rm -f $(CP_IMAGE_DIR)/control-plane.env
+	docker save $(BRAIN_IMAGE) -o $(CP_IMAGE_DIR)/moose-brain.tar
+	docker save $(UI_IMAGE)    -o $(CP_IMAGE_DIR)/moose-ui.tar
+	./dev/control-plane/bundle-record.sh $(CP_IMAGE_DIR) local $(CONTROL_PLANE_VERSION)
+	@echo "saved control-plane image bundle to $(CP_IMAGE_DIR)/"
+
+# The same bundle with the LAST RELEASED brain and UI instead of a build of
+# this commit (#566, BUILD.md # Versioning): ghcr.io/onmoose/{brain,ui} at
+# v$(CONTROL_PLANE_VERSION), resolved to digests once and pulled by digest, then
+# saved under the same local names. An OS-only release bakes this, so the pair
+# in the image is a real control-plane release. Needs only Docker and network.
+control-plane-released: control-plane-third-party
+	./dev/control-plane/pull-released.sh $(CP_IMAGE_DIR) $(CONTROL_PLANE_VERSION)
+	@echo "saved control-plane image bundle (released $(CONTROL_PLANE_VERSION)) to $(CP_IMAGE_DIR)/"
+
+# The two third-party images the bundle carries, pulled by digest from the pin
+# file and saved under their plain tags. Shared by both bundles above.
+control-plane-third-party:
 	@mkdir -p $(CP_IMAGE_DIR)
 	docker pull $(CADDY_IMAGE)
 	docker pull $(PROXY_IMAGE)
 	docker tag $(CADDY_IMAGE) $(CADDY_TAG)
 	docker tag $(PROXY_IMAGE) $(PROXY_TAG)
-	docker save $(BRAIN_IMAGE) -o $(CP_IMAGE_DIR)/moose-brain.tar
-	docker save $(UI_IMAGE)    -o $(CP_IMAGE_DIR)/moose-ui.tar
 	docker save $(CADDY_TAG)   -o $(CP_IMAGE_DIR)/caddy.tar
 	docker save $(PROXY_TAG)   -o $(CP_IMAGE_DIR)/docker-socket-proxy.tar
-	@echo "saved control-plane image bundle to $(CP_IMAGE_DIR)/"
 
 # The hosted profile's Caddy: stock Caddy plus the caddy-dns/acmedns module, for
 # the wildcard cert's ACME DNS-01 (ENVIRONMENT.md # Networking & discovery). Both

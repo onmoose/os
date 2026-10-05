@@ -40,6 +40,9 @@ CANARY_VERSION="v29"  # bump when staging/mkosi.conf/repart changes require a cl
 # The keyring mode is in it too (#562): a build for release bakes another
 # /etc/rauc/keyring.pem.
 CANARY_VERSION="${CANARY_VERSION}-rauc-${MOOSE_RAUC_KEYRING:-throwaway}"
+# And where the brain and UI come from (#566): a build of this commit, or the
+# last released pair from ghcr.
+CANARY_VERSION="${CANARY_VERSION}-cp-${MOOSE_CONTROL_PLANE_SOURCE:-local}"
 CANARY_VERSION="${CANARY_VERSION}-lock-$(cat "${REPO_ROOT}/dev/os-lock/debian-snapshot" "${REPO_ROOT}/dev/os-lock/third-party.lock" "${REPO_ROOT}/dev/os-lock/cloud-packages.lock" | sha256sum | cut -c1-12)"
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 

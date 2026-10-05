@@ -181,6 +181,20 @@ on:
         description: "Boots to run, space separated (empty = the full gate list)"
         type: string
         default: ""
+      # Which brain and UI the images bake (#566, BUILD.md # Versioning).
+      # `local` builds them from this commit; `released` pulls the last
+      # released control plane (CONTROL_PLANE_VERSION) from ghcr by digest,
+      # which is what an OS-only release bakes. Use `released` with
+      # publish=false to see, before cutting an OS release, that the OS boots
+      # with the control plane it will ship. Only a run that publishes nothing
+      # reads it: an OS-only release always bakes `released`, a run that
+      # publishes the control plane always bakes `local`, and asking for
+      # `released` there fails at once.
+      control_plane:
+        description: "Brain and UI to bake: local (build this commit) or released (ghcr, v<CONTROL_PLANE_VERSION>)"
+        type: choice
+        options: [local, released]
+        default: local
   workflow_call:
     inputs:
       publish_os:
@@ -271,6 +285,19 @@ env:
   # this run publishes the OS line, a throwaway root on every other run. Same
   # expression as SHOULD_PUBLISH_OS.
   MOOSE_RAUC_KEYRING: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os) && 'release' || 'throwaway' }}
+  # Which brain and UI both images bake (#566, dev/cloud/stage-control-plane.sh,
+  # BUILD.md # Versioning). The rule, in order:
+  #   1. The control plane publishes (SHOULD_PUBLISH_CP): `local`. This run
+  #      cuts that release, its images are not on ghcr yet, and the publish job
+  #      pushes the very images the boots ran. A merge that bumps both files
+  #      lands here too, so its disk image bakes the control plane released
+  #      beside it.
+  #   2. Only the OS publishes (SHOULD_PUBLISH_OS): `released`, the last
+  #      released control plane from ghcr by digest, so the image never bakes
+  #      unreleased brain or UI code under the last released number.
+  #   3. Nothing publishes: the dispatch input `control_plane`, else `local`, so
+  #      a PR or a lock bump boots the brain of its own commit.
+  MOOSE_CONTROL_PLANE_SOURCE: ${{ (inputs.publish || inputs.publish_control_plane) && 'local' || (((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish_os) && 'released' || (inputs.control_plane == 'released' && 'released' || 'local')) }}
 
 jobs:
   build:
@@ -363,12 +390,23 @@ jobs:
           fi
           echo "boots='${BOOTS_INPUT}', SHOULD_PUBLISH=${SHOULD_PUBLISH}: nothing will be published"
 
+      # The control-plane source is decided by the publish switches when a
+      # line publishes (MOOSE_CONTROL_PLANE_SOURCE above). A dispatch that asks
+      # for `released` while it publishes the control plane would get `local`
+      # instead, so refuse it rather than quietly bake something else.
+      - name: Assert a control-plane release does not ask for the released control plane
+        if: ${{ inputs.control_plane == 'released' && env.SHOULD_PUBLISH_CP == 'true' }}
+        run: |
+          echo "::error::control_plane=released with a control-plane publish: a control-plane release bakes and pushes the images it builds. Drop one of the two."
+          exit 1
+
       # Say what this run will publish, per line, before the build. It costs
       # nothing and makes a wrong switch visible in the log at once.
       - name: What this run publishes
         run: |
           echo "OS (disk image on the v$(tr -d '[:space:]' < VERSION) Release): ${SHOULD_PUBLISH_OS}"
           echo "Control plane (ghcr brain + ui as v$(tr -d '[:space:]' < CONTROL_PLANE_VERSION)): ${SHOULD_PUBLISH_CP}"
+          echo "Brain and UI baked into the images: ${MOOSE_CONTROL_PLANE_SOURCE} (released = v$(tr -d '[:space:]' < CONTROL_PLANE_VERSION) from ghcr by digest)"
           echo "Image build layer cache: ${MOOSE_BUILD_CACHE} (none on any run that publishes)"
           echo "RAUC keyring in the image: ${MOOSE_RAUC_KEYRING} (release only when the OS line publishes)"
 
@@ -634,7 +672,19 @@ jobs:
       - name: Build the hosted cloud image (+ lean check + OS package lock check)
         env:
           GO: ${{ steps.go.outputs.go-bin }}
-        run: make build-cloud-image
+        run: |
+          set -euo pipefail
+          make build-cloud-image
+          # What the image that ships baked (#566). The boot-proof build below
+          # must bake the same pair; the step after it checks.
+          cp .dev/control-plane/control-plane.env "${RUNNER_TEMP}/control-plane.env"
+          {
+            echo "### Control plane baked into the image (${MOOSE_CONTROL_PLANE_SOURCE})"
+            echo ""
+            echo '```'
+            grep '^MOOSE_BAKED_' "${RUNNER_TEMP}/control-plane.env"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # The OS update bundle (#562, BUILD.md # 1b # The bundle): slot A of the
       # image just built, as a verity RAUC bundle signed with the throwaway key,
@@ -683,6 +733,15 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E ./dev/cloud/test/bootstrap.sh
+          # The boots must run the brain and UI the shipped image baked (#566):
+          # the same record, so the same image IDs (cloud-assertions.sh 5a then
+          # checks the running containers against it).
+          if ! cmp "${RUNNER_TEMP}/control-plane.env" dev/cloud/mkosi.extra.wiring/usr/lib/moose/control-plane.env; then
+            echo "::error::the boot-proof image baked another control plane than the image that ships"
+            diff "${RUNNER_TEMP}/control-plane.env" dev/cloud/mkosi.extra.wiring/usr/lib/moose/control-plane.env || true
+            exit 1
+          fi
+          echo "boot-proof image bakes the same control plane as the image that ships"
           qemu-img convert -f raw -O qcow2 .dev/cloud-boot/moose-cloud.raw .dev/cloud-boot/moose-cloud-boot.qcow2
           ls -l .dev/cloud-boot/moose-cloud-boot.qcow2
 
@@ -751,9 +810,17 @@ jobs:
           compression-level: 0
           retention-days: 3
           if-no-files-found: error
+      # A control-plane release always bakes `local` (MOOSE_CONTROL_PLANE_SOURCE),
+      # so these are the images this commit built and the boots ran. Checked,
+      # not trusted: pushing a pulled release under a new number would publish
+      # old bytes as a new release.
       - name: Make the control-plane tarballs readable for the upload
         if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
-        run: sudo chmod a+r .dev/control-plane/moose-brain.tar .dev/control-plane/moose-ui.tar
+        run: |
+          set -euo pipefail
+          grep -qx 'MOOSE_BAKED_CP_SOURCE=local' .dev/control-plane/control-plane.env \
+            || { echo "::error::a control-plane release must bake the images it builds, not ${MOOSE_CONTROL_PLANE_SOURCE}"; exit 1; }
+          sudo chmod a+r .dev/control-plane/moose-brain.tar .dev/control-plane/moose-ui.tar
       - name: Upload the control-plane images for the publish job
         if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
         uses: actions/upload-artifact@v4
