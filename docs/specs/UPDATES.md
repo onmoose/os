@@ -97,7 +97,7 @@ The control plane ships as **two container images** on **one release manifest**:
 
 This is the most user-visible update stream because the brain + UI together *are* moose from the user's perspective.
 
-**The control plane has its own version line** (`DECISIONS.md` 2026-10-01, `BUILD.md` # Versioning). A control-plane release never needs an OS release, and an OS release never changes which control plane a box runs: the ledger (# 8.3) keeps naming the pair the box was on, so a new slot launches the same brain and UI. The control plane only ever waits for the OS through its compatibility floor (# 7).
+**The control plane has its own version line** (`DECISIONS.md` 2026-10-01, `BUILD.md` # Versioning). A control-plane release never needs an OS release, and an OS release never changes which control plane a box runs: the ledger (# 8.3) keeps naming the pair the box was on, so a new slot launches the same brain and UI. The control plane only ever waits for the OS through its compatibility floor (# 7). A new box starts on a released pair too: the disk image bakes a control-plane release, never unreleased code under a released number (`BUILD.md` # Versioning, #566).
 
 **One channel, two artifacts.** The user sees a single "auto-update moose" affordance. The updater pulls and recreates only what changed — UI-only ship recreates only `moose-ui`; brain-only ship recreates only `moose-brain`; coordinated ship recreates both as one transaction (pull both, recreate both, verify both healthy, commit; on failure, revert both).
 

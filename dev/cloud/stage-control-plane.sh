@@ -11,7 +11,9 @@
 #   - the slim host-agent (-tags hosted, #204) + its unit + the cloud brain drop-in
 #   - the PAM stack host-agent-real's verify-password needs
 #   - the control-plane image bundle (brain/ui/proxy + the acmedns Caddy) + the
-#     first-boot loader unit (reused verbatim from the medium lane)
+#     first-boot loader unit (reused verbatim from the medium lane). The brain
+#     and UI are a build of this commit, or the last released pair from ghcr
+#     (MOOSE_CONTROL_PLANE_SOURCE, #566), recorded in /usr/lib/moose/control-plane.env
 #   - the control-plane compose + caddy.json at the same host path the brain sees
 #   - the first-boot provisioning-seed materializer + its unit
 #
@@ -69,17 +71,49 @@ stage_control_plane() {
     # --- slim host-agent (-tags hosted, #204).
     stage_build_go "$hostagent_bin" "${REPO_ROOT}/cmd/host-agent-real/" -tags hosted
 
-    # --- control-plane image bundle. Rebuild only when absent (or forced via
-    # MOOSE_REBUILD_CP=1): `make control-plane-images` re-runs the brain (Go) + UI
-    # (Vue) docker builds, regenerating ~13 GB of BuildKit cache each time. The
-    # images don't change while iterating on the boot wiring, so reuse the tarballs.
-    if [ "${MOOSE_REBUILD_CP:-0}" = "1" ] || ! ls "$CP_BUNDLE"/moose-brain.tar "$CP_BUNDLE"/moose-ui.tar \
-            "$CP_BUNDLE"/caddy.tar "$CP_BUNDLE"/docker-socket-proxy.tar >/dev/null 2>&1; then
-        echo "building + saving control-plane image bundle (docker)..."
-        make -C "$REPO_ROOT" control-plane-images
-    else
-        echo "reusing existing control-plane image bundle (set MOOSE_REBUILD_CP=1 to force)"
+    # --- control-plane image bundle (#566, BUILD.md # Versioning). Which brain
+    # and UI the image bakes is MOOSE_CONTROL_PLANE_SOURCE:
+    #   local    (default) a build of this commit: `make control-plane-images`.
+    #            Every run that publishes nothing, so a PR boots its own brain,
+    #            and a control-plane release, whose images are not on ghcr yet
+    #            (the publish job pushes the very ones the boots ran).
+    #   released the last released control plane, CONTROL_PLANE_VERSION, pulled
+    #            from ghcr by digest: `make control-plane-released`. An OS-only
+    #            release bakes this, so the pair in the image is a real
+    #            control-plane release and not unreleased code under its number.
+    # The bundle records where it came from (control-plane.env). Reuse it only
+    # when that matches what is asked for, or MOOSE_REBUILD_CP=1 forces it:
+    # `make control-plane-images` re-runs the brain (Go) + UI (Vue) docker
+    # builds, regenerating ~13 GB of BuildKit cache each time, and the images
+    # don't change while iterating on the boot wiring. Both bootstraps of one CI
+    # run stage from the same bundle, so the image that ships and the image the
+    # boots run bake the same bytes.
+    local cp_source="${MOOSE_CONTROL_PLANE_SOURCE:-local}" cp_version have=""
+    cp_version="$(tr -d '[:space:]' < "${REPO_ROOT}/CONTROL_PLANE_VERSION")"
+    case "$cp_source" in local|released) ;; *)
+        echo "MOOSE_CONTROL_PLANE_SOURCE='${cp_source}' (want local or released)" >&2; return 1 ;;
+    esac
+    if [ -f "$CP_BUNDLE/control-plane.env" ]; then
+        have="$(. "$CP_BUNDLE/control-plane.env" && echo "${MOOSE_BAKED_CP_SOURCE:-} ${MOOSE_BAKED_CP_VERSION:-}")"
     fi
+    # The same source AND the same version: a local build stamps the brain
+    # with CONTROL_PLANE_VERSION, so a bump must rebuild it too.
+    local want="${cp_source} ${cp_version}"
+    if [ "${MOOSE_REBUILD_CP:-0}" = "1" ] || ! ls "$CP_BUNDLE"/moose-brain.tar "$CP_BUNDLE"/moose-ui.tar \
+            "$CP_BUNDLE"/caddy.tar "$CP_BUNDLE"/docker-socket-proxy.tar >/dev/null 2>&1 \
+            || [ "$have" != "$want" ]; then
+        if [ "$cp_source" = released ]; then
+            echo "pulling the released control plane ${cp_version} from ghcr by digest..."
+            make -C "$REPO_ROOT" control-plane-released
+        else
+            echo "building + saving control-plane image bundle (docker)..."
+            make -C "$REPO_ROOT" control-plane-images
+        fi
+    else
+        echo "reusing existing control-plane image bundle (${have}; set MOOSE_REBUILD_CP=1 to force)"
+    fi
+    echo "control plane baked into the image:"
+    grep '^MOOSE_BAKED_' "$CP_BUNDLE/control-plane.env"
 
     # --- stage mkosi.extra.wiring/ (generated; gitignored).
     rm -rf "$WIRING"
@@ -124,6 +158,10 @@ EOF
     # plane integration). A tenant box is air-gapped at boot, so every image is a
     # local tarball; the VM never pulls.
     cp "$CP_BUNDLE"/*.tar "$WIRING/var/lib/moose/control-plane-images/"
+    # The bundle's record, in the slot: which control plane this image bakes
+    # and the image ID each one loads as. The boot lane checks the running
+    # brain and UI against it (cloud-assertions.sh step 5a).
+    cp "$CP_BUNDLE/control-plane.env" "$WIRING/usr/lib/moose/control-plane.env"
     # Hosted-only Caddy swap: the wildcard cert needs the caddy-dns/acmedns module
     # (ACME DNS-01 — os #207/C3b), which stock caddy:2-alpine lacks. Build the
     # xcaddy recipe and docker-save it OVER the *staged* caddy.tar — not the shared

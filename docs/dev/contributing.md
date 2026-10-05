@@ -176,7 +176,7 @@ Feature work always branches off `dev` and PRs into `dev` — that's covered abo
   - **If the control-plane version's image tag is already on ghcr**, for the brain or the UI, with no `control-plane-vX.Y.Z` git tag, the run fails before tagging anything, rather than overwrite released images with new bytes under the same number.
 - **Every release runs the full boot proof.** A control-plane-only release still builds the disk image and boots it, then pushes the images that image baked and skips only the attach of the OS release files. An OS-only release attaches the disk image and the signed bundle (#562) and pushes nothing to ghcr. A release that bumps both does both from one run.
 - The cloud-image build is invoked directly as a reusable workflow (`workflow_call`), not via `ci-cloud-image.yml`'s `push: tags` trigger — a tag pushed with the default `GITHUB_TOKEN` (as `release.yml` does) does not fire another workflow's tag-push trigger, so relying on that event would silently tag a release and never build or publish it. `ci-cloud-image.yml`'s `push: tags: v*` trigger still exists as a manual escape hatch for a human pushing an OS tag by hand (it publishes the OS release files only: the disk image and the signed bundle with their checksums, never the control-plane images; like any OS release it needs the release root CA committed and the `os-release` signer, `rauc-signing.md`); see that workflow's header comment for the full reasoning. `workflow_dispatch` on `ci-cloud-image.yml` remains available for manual build-only runs (`-f publish=false`), build+publish runs of both lines (`publish=true`, the default), or one line (`-f publish=false -f publish_control_plane=true`, or `publish_os=true`). A publish never replaces an asset already on a Release or an image tag already on ghcr; delete it first to replace it on purpose. The four OS files are one set: a Release holding some of them (for example one cut before #562, with the image but no bundle) refuses, and the error lists the `gh release delete-asset` lines to run first.
-- The disk image bakes the brain and UI built from the same commit. An OS-only release made while `main` holds unreleased control-plane changes therefore bakes those changes under the last control-plane number. If that matters for a release, bump `CONTROL_PLANE_VERSION` in the same PR.
+- **Which brain and UI the disk image bakes** (#566, `../specs/BUILD.md` # Versioning). An OS-only release bakes the **last released** control plane, pulled from ghcr by digest at `v<CONTROL_PLANE_VERSION>`, and its boot proof runs against those images. A control-plane release, or a release that bumps both files, bakes the brain and UI it builds and releases. So when `main` holds control-plane changes that the OS release's boot checks rely on, an OS-only release fails at the boot proof: release the control plane first, or bump both files in the same PR. To check ahead, dispatch `gh workflow run "CI / Cloud image" --ref <branch> -f publish=false -f control_plane=released`.
 
 Contributors never push directly to `main`; the tags and the GitHub Releases are created automatically by `release.yml`, not by hand. **The one exception is a one-time step** for the control-plane line's first tag. `CONTROL_PLANE_VERSION` starts at `0.15.0`, and the `v0.15.0` images on ghcr were built at the `v0.15.0` commit. So tag that commit `control-plane-v0.15.0` once, before the first dev->main merge after #559 lands: `git tag control-plane-v0.15.0 v0.15.0 && git push origin control-plane-v0.15.0`. Until that tag exists, `release.yml` refuses on every push to `main`, because the `v0.15.0` image tag is already published.
 
@@ -260,20 +260,33 @@ gh workflow run "OS lock bump" --ref dev -f base=hotfix/X.Y.Z
 #    CI / Go and CI / Cloud image run on PRs into hotfix/** too, so that PR gets
 #    the lock check and the full boot list. Merge it once they are green.
 
-# 3. Bump VERSION on the hotfix branch and open the release PR into main.
+# 3. Check that the OS boots with the control plane the release will bake.
+#    An OS-only release bakes the LAST RELEASED control plane from ghcr (#566),
+#    but the PR CI below builds the brain and UI from the branch. This run bakes
+#    the released pair instead and boots the full list:
+gh workflow run "CI / Cloud image" --ref hotfix/X.Y.Z -f publish=false -f control_plane=released
+#    If os-update or os-revert go red here, the released brain is too old for
+#    the boot checks: cut a control-plane release first (see below). This check
+#    reads CONTROL_PLANE_VERSION from the hotfix branch, so once that release
+#    has merged into main, run `git merge origin/main` on hotfix/X.Y.Z (it brings
+#    the new CONTROL_PLANE_VERSION; do not bump it here by hand) and re-run this.
+
+# 4. Bump VERSION on the hotfix branch and open the release PR into main.
 git pull
 echo "X.Y.Z" > VERSION
 # commit, push, open a PR from hotfix/X.Y.Z into main. Its CI runs the full boot
 # list (the PR touches dev/os-lock/). Merge it; release.yml tags vX.Y.Z and
 # attaches the image.
 
-# 4. Carry main into dev, as after every release.
+# 5. Carry main into dev, as after every release.
 git checkout dev && git pull
 git merge origin/main
 git push
 ```
 
-In step 4, resolve `VERSION` to the new `X.Y.Z`: that is now the last released version, and `dev` did not have it. Resolve `dev/os-lock/` to `dev`'s side when it is newer; the next daily bump moves `dev` forward anyway. Step 2 needs `dev/os-lock/` and the shared mkosi setup on `main`, so it works from the first release after #560.
+**The next OS patch release needs a control-plane release first.** The last released control plane, 0.15.0, is older than #563, so its brain cannot report an OS update: with it baked, the `os-update` and `os-revert` boots go red and the release stops at the boot proof. Release a control plane that carries #563 before, or bump `CONTROL_PLANE_VERSION` with the release (a hotfix branch from `main` only can if `main` already holds #563). Step 3 shows the result before anything is tagged.
+
+In step 5, resolve `VERSION` to the new `X.Y.Z`: that is now the last released version, and `dev` did not have it. Resolve `dev/os-lock/` to `dev`'s side when it is newer; the next daily bump moves `dev` forward anyway. Step 2 needs `dev/os-lock/` and the shared mkosi setup on `main`, so it works from the first release after #560.
 
 ## Definition of done — checklist
 
