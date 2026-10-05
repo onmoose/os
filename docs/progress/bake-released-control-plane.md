@@ -48,7 +48,8 @@ All in CI with every publish input false. Nothing was built or booted locally. `
 | Run | What | Result |
 |---|---|---|
 | 37345392679 | the full list, `-f control_plane=released` | The build baked control plane 0.15.0 from ghcr (`brain@sha256:cefc9592...`, `ui@sha256:2bbf0ee2...`), both images recorded the same pair, and every boot printed `control plane baked: released 0.15.0`. **10 of 14 jobs green**: `unseeded seeded access update ssh remap` under both firmwares. The 4 `os-update` and `os-revert` jobs are red, as expected: they read the OS update state and the OS notification through the brain, and the 0.15.0 brain is older than #563, so its `/api/v1/system/update-target` has no `os` object. host-agent itself did the right thing (it refused the wrong digest in the log). See # Known gaps. |
-| **37347252464** | **the full list, default (`local`), head `2e16ca4` (later commits change only docs)** | **green, all 14 jobs: 7 boot groups under UEFI and under legacy BIOS, 14.0 min wall. Every boot printed `control plane baked: local 0.15.0`, the `os-update` boot on slot A and again on slot B** |
+| 37347252464 | the full list, default (`local`), head `2e16ca4`, before the review fixes | green, all 14 jobs: 7 boot groups under UEFI and under legacy BIOS, 14.0 min wall. Every boot printed `control plane baked: local 0.15.0`, the `os-update` boot on slot A and again on slot B |
+| **37349532308** | **the full list, default (`local`), head `c8c7aa5`, after the review fixes (later commits change only docs)** | **green, all 14 jobs, 15.0 min wall** |
 
 - **Tests.** `dev/release/controlplane_test.go`: `ghcr-resolve.sh` with a stub registry (a single manifest, an index with the amd64 entry, an index with none, a digest header that does not match the bytes, a missing tag, a manifest with no config), and `bundle-record.sh` (a released and a local record, both tarball layouts, and the refusals). `make check` green; `actionlint` clean.
 
