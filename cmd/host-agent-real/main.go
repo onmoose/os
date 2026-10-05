@@ -41,6 +41,7 @@ import (
 	"github.com/onmoose/os/internal/hostagent/brainlaunch"
 	"github.com/onmoose/os/internal/hostagent/controlplane"
 	"github.com/onmoose/os/internal/hostagent/cpupdate"
+	"github.com/onmoose/os/internal/hostagent/sshaccess"
 	"github.com/onmoose/os/internal/profile"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/version"
@@ -79,6 +80,17 @@ func main() {
 	// wiring_appliance.go (!hosted) / wiring_hosted.go (hosted).
 	a, cleanup := buildAgent()
 	defer cleanup()
+
+	// After a Debian major the /etc tidy-up keeps the sshd drop-in but drops the
+	// unit's enable links (BUILD.md # 1b, rule 4). Turn sshd back on when the
+	// drop-in still names accounts. It never turns sshd off.
+	if sm, ok := a.SSH.(*sshaccess.Manager); ok {
+		if on, err := sm.EnsureOnAtStart(); err != nil {
+			slog.Warn("could not turn sshd on at start", "err", err)
+		} else if on {
+			slog.Info("sshd turned on at start: accounts have SSH on but the unit was not enabled")
+		}
+	}
 
 	// The brain's launch config is built once and used twice: to launch the
 	// brain at boot, and as the base of every control-plane update. Reusing it

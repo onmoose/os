@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v29"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v30"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 # A change to the OS package lock (#560) must rebuild too, so all three lock
 # files are part of the canary. The resolved list is in it as well: a re-run
 # after only the list changed must not exit early and skip os_lock_check below.
@@ -134,6 +134,15 @@ mkdir -p "$EXTRA/usr/local/bin" "$EXTRA/etc/systemd/system"
 cp "${CLOUD_DIR}/cloud-assertions.sh" "$EXTRA/usr/local/bin/cloud-assertions.sh"
 chmod 0755 "$EXTRA/usr/local/bin/cloud-assertions.sh"
 cp "${TEST_DIR}/moose-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
+# What this lane writes into /etc at run time: host-agent drop-ins that point
+# it at the in-guest update targets. They go on a keep list of their own, so a
+# Debian-major tidy-up (BUILD.md # 1b, rule 4) keeps them across the os-update
+# boot's faked major, and the end-of-boot check of the upper layer accepts them.
+mkdir -p "$EXTRA/usr/lib/moose/etc-keep.d"
+cat > "$EXTRA/usr/lib/moose/etc-keep.d/boot-lane.list" <<'EOF'
+# The boot lane's own writes into /etc (dev/cloud/test/bootstrap.sh).
+systemd/system/host-agent.service.d
+EOF
 
 # The OS update trial's safety net fires after 90 s here instead of 15 min
 # (#563), so the os-revert boot does not sit out a quarter of an hour. A

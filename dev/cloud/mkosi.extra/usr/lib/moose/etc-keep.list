@@ -1,0 +1,26 @@
+# The files in the /etc upper layer that a Debian-major tidy-up keeps as they
+# are (BUILD.md # 1b, rule 4; state-setup step 3a). One shell glob per line,
+# relative to /etc; a directory keeps everything under it. Everything else in
+# the upper layer moves to the attic at a major, except the account files
+# (merged) and the pinned daemon.json and login.defs (taken again from the slot
+# when that keeps the box's remap). The boot lane fails a boot whose upper
+# layer holds a file this list, the account files, the pinned files and the
+# links sshd's run state makes do not cover (cloud-assertions.sh), so a new
+# file moose writes into /etc must be added here, or given a regeneration rule.
+#
+# The box's identity.
+machine-id
+ssh/ssh_host_*
+# What users set: SSH access (the drop-in is the enabled set) and keys, and
+# the time zone.
+ssh/sshd_config.d/moose-allowed.conf
+ssh/moose-authorized-keys
+localtime
+# The box's remap range, pinned at first boot (rule 2).
+subuid
+subgid
+# Appliance only (#564): the LUKS recovery key, the data-drive marker and the
+# network connections, WiFi included.
+moose/secrets
+moose/data-drive.enrolled
+NetworkManager/system-connections

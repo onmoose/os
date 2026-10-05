@@ -1,0 +1,73 @@
+# The account and group ids of the hosted image (BUILD.md # 1b, rule 3).
+# A box keeps them for life, so dev/cloud/build-bundle.sh fails a build whose
+# image differs. Edited by hand: add a new account's line; never change an id.
+# "g NAME GID" and "u NAME UID GID", sorted.
+g _ssh 101
+g adm 4
+g audio 29
+g backup 34
+g bin 2
+g cdrom 24
+g clock 994
+g daemon 1
+g dialout 20
+g dip 30
+g disk 6
+g docker 991
+g fax 21
+g floppy 25
+g games 60
+g input 996
+g irc 39
+g kmem 15
+g kvm 993
+g list 38
+g lp 7
+g mail 8
+g man 12
+g messagebus 997
+g news 9
+g nogroup 65534
+g operator 37
+g plugdev 46
+g proxy 13
+g render 992
+g root 0
+g sasl 45
+g sgx 995
+g shadow 42
+g src 40
+g staff 50
+g sudo 27
+g sys 3
+g systemd-journal 999
+g systemd-network 998
+g tape 26
+g tty 5
+g users 100
+g utmp 43
+g uucp 10
+g video 44
+g voice 22
+g www-data 33
+u _apt 42 65534
+u backup 34 34
+u bin 2 2
+u daemon 1 1
+u games 5 60
+u irc 39 39
+u list 38 38
+u lp 7 7
+u mail 8 8
+u man 6 12
+u messagebus 997 997
+u news 9 9
+u nobody 65534 65534
+u proxy 13 13
+u root 0 0
+u sshd 990 65534
+u sync 4 65534
+u sys 3 3
+u systemd-network 998 998
+u uucp 10 10
+u www-data 33 33

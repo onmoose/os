@@ -202,7 +202,17 @@ So this doc isn't read as a claim about the finished product:
   `os_version`/`os_slot` and stream A's decision, and raises one admin
   notification per outcome. Proven by the `os-update` and `os-revert` boots
   under both firmwares, and `os-revert` also proves that GRUB skips a slot
-  whose kernel panics before userspace (#575). Not built: the OS part of the private control plane's
+  whose kernel panics before userspace (#575). **A Debian major tidies the
+  `/etc` upper layer** (`BUILD.md` # 1b, rule 4): `state-setup` keeps the
+  files on `/usr/lib/moose/etc-keep.list`, merges the account files, takes the
+  pinned files again from the slot when the remap stays, and moves the rest to
+  an attic, in both directions; the `os-update` boot fakes a major, and every
+  boot fails on an upper-layer file no rule covers. The image's accounts are a
+  generated `sysusers.d` file whose ids the build checks against
+  `dev/os-lock/cloud-accounts.lock`, and host-agent turns sshd back on at start
+  when the drop-in names an account (`sshaccess.EnsureOnAtStart`). systemd
+  feeds the hardware watchdog a Hetzner VM has (ICH9 TCO), checked on every
+  boot. Not built: the OS part of the private control plane's
   answer (described in `docs/progress/host-agent-os-update.md`), so no
   production box moves its OS yet, and the appliance layout (#564). **The OS
   package lock is built (#560)** for the hosted image: `dev/os-lock/` holds a

@@ -9,7 +9,9 @@
 #      and grows the state partition on a later boot when the disk grew.
 #   2. The state partition is checked and mounted at /state, and its ext4 is
 #      grown to fill the partition.
-#   3. /etc becomes an overlay: the slot's /etc below, /state/etc/upper above.
+#   3. When the slot's Debian major is not the one the box last booted, the
+#      /etc upper layer is tidied first (rule 4 below). Then /etc becomes an
+#      overlay: the slot's /etc below, /state/etc/upper above.
 #   4. On the first boot only, the four pinned files are copied up and never
 #      follow the image again.
 #   5. The bind mounts from the state partition. When a state directory does
@@ -113,6 +115,158 @@ mount -t ext4 -o rw,noatime "$dev" "$STATE" || die "mount $dev on $STATE failed"
 # The partition may have grown (repart above). Grow the ext4 to fill it, online.
 /usr/lib/systemd/systemd-growfs "$STATE" >/dev/null 2>&1 || die "systemd-growfs $STATE failed"
 log "state partition $dev mounted on $STATE"
+
+# --- 3a. a Debian major (BUILD.md # 1b, rule 4). A file in the upper layer
+# hides the slot's copy, so after a move to another Debian major it would stay
+# at the old major's version under the new major's packages. So when the
+# slot's major is not the one recorded on the state partition, the upper layer
+# is rebuilt before the overlay is mounted, from three things:
+#   - the files moose keeps (/usr/lib/moose/etc-keep.list, and any list in
+#     /usr/lib/moose/etc-keep.d/), copied as they are: the box's identity and
+#     its users' settings;
+#   - the account files, merged: the slot's own entries, plus the box's
+#     entries the slot does not have, with group members joined;
+#   - the pinned files, taken again from the slot when that keeps the box's
+#     remap as it was, and kept as they are otherwise.
+# Everything else (an admin's own edits, files a package wrote at run time)
+# moves to an attic on the state partition, where it can still be read. It
+# runs in both directions, so a revert to the older major is tidied the same
+# way. The old upper layer moves to the attic whole, so nothing is lost.
+MAJOR_FILE="$STATE/etc/.moose-debian-major"
+slot_major="$( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" )"
+[ -n "$slot_major" ] || die "no VERSION_ID in /usr/lib/os-release"
+
+keep_patterns() {
+    local f
+    for f in /usr/lib/moose/etc-keep.list /usr/lib/moose/etc-keep.d/*.list; do
+        [ -f "$f" ] || continue
+        sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$f"
+    done
+}
+
+# merge_accounts FILE SLOT BOX: the slot's file with the box's entries the slot
+# lacks. passwd: the slot's line wins (the slot's packages own it). shadow and
+# gshadow: the box's password field wins, so a password set on the box stays.
+# group and gshadow: members are joined.
+merge_accounts() {
+    awk -F: -v OFS=: -v kind="$1" '
+        function join(a, b,   n, i, m, out, seen) {
+            out = ""; split("", seen)
+            n = split(a "," b, m, ",")
+            for (i = 1; i <= n; i++) if (m[i] != "" && !(m[i] in seen)) { seen[m[i]] = 1; out = out (out == "" ? "" : ",") m[i] }
+            return out
+        }
+        FNR == NR { box[$1] = $0; order[++nb] = $1; next }
+        {
+            name = $1; slot[name] = 1
+            if (name in box) {
+                split(box[name], b, ":")
+                if (kind == "passwd" && b[3] != $3) printf "moose-state: account %s has uid %s on the box and %s in the slot\n", name, b[3], $3 > "/dev/stderr"
+                if (kind == "group" && b[3] != $3) printf "moose-state: group %s has gid %s on the box and %s in the slot\n", name, b[3], $3 > "/dev/stderr"
+                if (kind == "shadow") $2 = b[2]
+                if (kind == "group") $4 = join($4, b[4])
+                if (kind == "gshadow") { $2 = b[2]; $3 = join($3, b[3]); $4 = join($4, b[4]) }
+            }
+            print
+        }
+        END { for (i = 1; i <= nb; i++) if (!(order[i] in slot)) print box[order[i]] }
+    ' "$3" "$2"
+}
+
+# tidy_build FROM TO: build the new upper layer at upper.moose-new. It never
+# dies: it returns non-zero on any failure, and the caller boots with the
+# upper layer as it was. A bug here must not stop the box from booting, on
+# either slot, because both slots run this same step.
+tidy_build() {
+    local up="$STATE/etc/upper" new="$STATE/etc/upper.moose-new" pat p f line
+    rm -rf "$new" && mkdir -p "$new" && chmod 0755 "$new" || return 1
+    # The files moose keeps, as they are (whiteouts and opaque dirs included).
+    # A pattern with no match is skipped: nullglob drops a glob, and the test
+    # drops a plain path the box does not have.
+    (
+        cd "$up" || exit 1
+        shopt -s nullglob dotglob
+        for pat in $(keep_patterns); do
+            for p in $pat; do
+                [ -e "$p" ] || [ -L "$p" ] || continue
+                cp -a --parents "$p" "$new/" || exit 1
+            done
+        done
+    ) || { log "tidy-up: copying the kept files failed"; return 1; }
+    # The account files, merged.
+    for f in passwd group shadow gshadow; do
+        [ -f "$up/$f" ] || continue
+        merge_accounts "$f" "/etc/$f" "$up/$f" > "$new/$f" 2> "$TMPDIR/merge.log" \
+            || { log "tidy-up: merging /etc/$f failed"; return 1; }
+        while IFS= read -r line; do log "${line#moose-state: }"; done < "$TMPDIR/merge.log"
+        chown --reference="/etc/$f" "$new/$f" && chmod --reference="/etc/$f" "$new/$f" || return 1
+    done
+    # The pinned files (rule 2). subuid and subgid are the box's remap range:
+    # they are on the keep list. daemon.json and login.defs are taken again from
+    # the slot when that keeps the box's remap, and kept as they are otherwise.
+    mkdir -p "$new/docker" || return 1
+    if [ "$(grep -o '"userns-remap"[^,}]*' /etc/docker/daemon.json 2>/dev/null)" = "$(grep -o '"userns-remap"[^,}]*' "$up/docker/daemon.json" 2>/dev/null)" ]; then
+        cp -p /etc/docker/daemon.json "$new/docker/daemon.json" || return 1
+    else
+        cp -a "$up/docker/daemon.json" "$new/docker/daemon.json" || return 1
+        log "tidy-up: the slot's daemon.json would change this box's remap, so the box's copy stays"
+    fi
+    if grep -Eq '^SUB_UID_COUNT[[:space:]]+0$' /etc/login.defs && grep -Eq '^SUB_GID_COUNT[[:space:]]+0$' /etc/login.defs; then
+        cp -p /etc/login.defs "$new/login.defs" || return 1
+    else
+        cp -a "$up/login.defs" "$new/login.defs" || return 1
+        log "tidy-up: the slot's login.defs does not set SUB_UID_COUNT and SUB_GID_COUNT to 0, so the box's copy stays"
+    fi
+}
+
+# tidy_swap FROM TO: the old upper layer goes to the attic and the new one
+# takes its place. A power cut between the two renames is finished on the next
+# boot (below); one before the first rename starts the tidy-up again.
+tidy_swap() {
+    local up="$STATE/etc/upper" new="$STATE/etc/upper.moose-new" attic
+    attic="$STATE/etc/attic/$(date -u +%Y%m%dT%H%M%SZ)-debian-$1-to-$2"
+    mkdir -p "$(dirname "$attic")" || return 1
+    mv "$up" "$attic" || return 1
+    if ! mv "$new" "$up"; then
+        mv "$attic" "$up"
+        return 1
+    fi
+    rm -rf "$STATE/etc/work"
+    mkdir -p "$STATE/etc/work"
+    log "tidied /etc for Debian $1 to $2: kept $(find "$up" ! -type d | wc -l) files, the old upper layer is in $attic"
+}
+
+# A tidy-up a power cut stopped: between the two renames, finish it; before
+# them, the half-built copy goes and the tidy-up runs again.
+if [ -d "$STATE/etc/upper.moose-new" ]; then
+    if [ -d "$STATE/etc/upper" ]; then
+        rm -rf "$STATE/etc/upper.moose-new"
+    else
+        mv "$STATE/etc/upper.moose-new" "$STATE/etc/upper"
+        log "finished a tidy-up of /etc that a reboot cut short"
+    fi
+fi
+box_major="$(cat "$MAJOR_FILE" 2>/dev/null || true)"
+record_major=1
+if [ -n "$box_major" ] && [ "$box_major" != "$slot_major" ] && [ -e "$STATE/etc/.moose-pinned" ] && [ -d "$STATE/etc/upper" ]; then
+    if tidy_build "$box_major" "$slot_major" && tidy_swap "$box_major" "$slot_major"; then
+        :
+    else
+        # The box boots with the upper layer as it was, and the next boot
+        # tries again, because the old major stays recorded.
+        rm -rf "$STATE/etc/upper.moose-new"
+        record_major=""
+        log "tidy-up of /etc for Debian $box_major to $slot_major FAILED; booting with the upper layer as it was"
+    fi
+fi
+# Recorded last, so a tidy-up a power cut stopped runs again. A box without the
+# record (a new box, or one made before the tidy-up shipped) gets the slot's.
+if [ -n "$record_major" ] && [ "$box_major" != "$slot_major" ]; then
+    mkdir -p "$STATE/etc"
+    echo "$slot_major" > "$MAJOR_FILE.new"
+    mv -f "$MAJOR_FILE.new" "$MAJOR_FILE"
+fi
+log "Debian major of the slot: $slot_major; recorded on the state partition: $(cat "$MAJOR_FILE" 2>/dev/null)"
 
 # --- 3. /etc as an overlay. Every change the box makes in /etc (users,
 # passwords, SSH host keys, machine-id, the rendered sshd drop-ins) lands in
