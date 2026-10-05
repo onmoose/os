@@ -245,11 +245,11 @@ tidy_swap() {
     mkdir -p "$STATE/etc/work"
     # For host-agent: sshd's enable links went to the attic (BUILD.md # 1b,
     # rule 4), so it turns sshd back on once, at its next start. Only when sshd
-    # was on: an admin who turned it off by hand keeps it off.
+    # was on: an admin who turned it off by hand keeps it off. A marker that is
+    # already there stays: it comes from a swap a power cut stopped before the
+    # record, and this repeat sees the tidied layer, which has no sshd link.
     if [ -n "$sshd_on" ]; then
         touch "$TIDIED_MARKER" 2>/dev/null || log "tidy-up: could not leave $TIDIED_MARKER for host-agent"
-    else
-        rm -f "$TIDIED_MARKER"
     fi
     log "tidied /etc for Debian $1 to $2: kept $(find "$up" ! -type d | wc -l) files, sshd was $([ -n "$sshd_on" ] && echo on || echo off), the old upper layer is in $attic"
 }
