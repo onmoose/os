@@ -209,7 +209,13 @@ So this doc isn't read as a claim about the finished product:
   snapshot.debian.org timestamp, exact Docker pins and the resolved package
   list, both cloud builds fail when they resolve to a different list, and
   `os-lock-bump.yml` moves it forward daily. The appliance lane is not locked
-  yet (`BUILD.md` # 1b # The OS package lock). **Stream B — the
+  yet (`BUILD.md` # 1b # The OS package lock). **An OS-only release bakes
+  the last released control plane (#566):** the brain and UI of
+  `v<CONTROL_PLANE_VERSION>`, pulled from ghcr by digest
+  (`make control-plane-released`); a control-plane release and every run
+  that publishes nothing bake a build of the commit. The image records the
+  pair in `/usr/lib/moose/control-plane.env`, and every boot checks the
+  running brain and UI against it (`BUILD.md` # Versioning). **Stream B — the
   control-plane update — is half built.** A box declares its brain/UI pair in
   two files (`internal/hostagent/controlplane`: the staged compose plus an
   `images.json` ledger), the apply/health-check/revert transaction exists
