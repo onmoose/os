@@ -209,8 +209,9 @@ So this doc isn't read as a claim about the finished product:
   an attic, in both directions; the `os-update` boot fakes a major, and every
   boot fails on an upper-layer file no rule covers. The image's accounts are a
   generated `sysusers.d` file whose ids the build checks against
-  `dev/os-lock/cloud-accounts.lock`, and host-agent turns sshd back on at start
-  when the drop-in names an account (`sshaccess.EnsureOnAtStart`). systemd
+  `dev/os-lock/cloud-accounts.lock`, and host-agent turns sshd back on once,
+  at its first start after a tidy-up, when the drop-in names an account
+  (`sshaccess.EnsureOnAtStart`, gated by `/state/etc/.moose-major-tidied`). systemd
   feeds the hardware watchdog a Hetzner VM has (ICH9 TCO), checked on every
   boot. Not built: the OS part of the private control plane's
   answer (described in `docs/progress/host-agent-os-update.md`), so no

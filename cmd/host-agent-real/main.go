@@ -82,13 +82,21 @@ func main() {
 	defer cleanup()
 
 	// After a Debian major the /etc tidy-up keeps the sshd drop-in but drops the
-	// unit's enable links (BUILD.md # 1b, rule 4). Turn sshd back on when the
-	// drop-in still names accounts. It never turns sshd off.
-	if sm, ok := a.SSH.(*sshaccess.Manager); ok {
-		if on, err := sm.EnsureOnAtStart(); err != nil {
-			slog.Warn("could not turn sshd on at start", "err", err)
-		} else if on {
-			slog.Info("sshd turned on at start: accounts have SSH on but the unit was not enabled")
+	// unit's enable links (BUILD.md # 1b, rule 4), and leaves a marker. Only
+	// then is sshd turned back on for the accounts the drop-in names. On any
+	// other start host-agent leaves sshd's run state alone.
+	if _, err := os.Stat(sshaccess.MajorTidiedMarker); err == nil {
+		if sm, ok := a.SSH.(*sshaccess.Manager); ok {
+			if on, err := sm.EnsureOnAtStart(); err != nil {
+				slog.Warn("could not turn sshd on after a Debian-major tidy-up; trying again at the next start", "err", err)
+			} else {
+				if on {
+					slog.Info("sshd turned on after a Debian-major tidy-up: accounts have SSH on")
+				}
+				if err := os.Remove(sshaccess.MajorTidiedMarker); err != nil {
+					slog.Warn("could not remove the tidy-up marker", "err", err)
+				}
+			}
 		}
 	}
 

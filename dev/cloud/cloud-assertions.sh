@@ -2513,6 +2513,23 @@ os-update|os-revert)
         [ -n "$session_cookie" ] || fail "$MODE: no moose_session cookie from the SSO landing"
         owner="$(json_str_of "$(full_get /api/v1/me "$apex" "$session_cookie" 2>/dev/null || true)" username)"
         [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1 || fail "$MODE: the SSO owner '$owner' has no host account"
+        if [ "$MODE" = os-update ]; then
+            # SSH on for the owner, so the faked major below must bring sshd
+            # back on slot B (BUILD.md # 1b, rule 4: the tidy-up keeps the
+            # drop-in, drops the enable links, and host-agent enables sshd once).
+            # A known password first, for the elevation gate, as the ssh boot
+            # does (harness setup, not a product path).
+            printf '%s:%s\n' "$owner" 'moose-cloud-lane-owner-pw' | chpasswd || fail "$MODE: could not set a known password for '$owner'"
+            el="$(full_send POST /api/v1/auth/elevate "$apex" "$session_cookie" '{"password":"moose-cloud-lane-owner-pw"}' 2>/dev/null)"
+            grep -q ' 200' <<<"$(status_of "$el")" || fail "$MODE: elevate as the owner failed: status='$(status_of "$el")'"
+            rm -f /run/moose-os-update-key /run/moose-os-update-key.pub
+            ssh-keygen -t ed25519 -N '' -C 'moose-os-update' -f /run/moose-os-update-key >/dev/null 2>&1 || fail "$MODE: ssh-keygen failed"
+            on="$(full_send PUT /api/v1/me/ssh "$apex" "$session_cookie" \
+                "{\"enabled\":true,\"keys\":[{\"public_key\":\"$(tr -d '\n' < /run/moose-os-update-key.pub)\",\"label\":\"os-update\"}]}" 2>/dev/null)"
+            grep -q ' 200' <<<"$(status_of "$on")" || fail "$MODE: turning SSH on for the owner failed: status='$(status_of "$on")'"
+            [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] || fail "$MODE: ssh.service is not enabled after the owner turned SSH on"
+            echo "cloud-assertions: $MODE: SSH on for '$owner' (ssh.service enabled) before the faked major"
+        fi
         head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "/home/${owner}/os-update-data.txt"
         chown "$owner" "/home/${owner}/os-update-data.txt"
         mkdir -p "$OS_STATE_DIR" && chmod 700 "$OS_STATE_DIR"
@@ -2654,6 +2671,16 @@ UNIT
         [ ! -e /etc/moose-test-hand-edit.conf ] || fail "os-update: the admin's own /etc edit survived the faked major"
         attic_edit="$(ls -d /state/etc/attic/*-debian-12-to-"$slot_major"/moose-test-hand-edit.conf 2>/dev/null | head -1)"
         [ -n "$attic_edit" ] || fail "os-update: the admin's own /etc edit is not in the attic: $(ls /state/etc/attic 2>&1 | tr '\n' ' ')"
+        # sshd comes back: the drop-in was kept, its enable links were not, and
+        # host-agent enabled the unit once because of the tidy-up marker.
+        grep -qE "^AllowUsers .*\b${owner}\b" /etc/ssh/sshd_config.d/moose-allowed.conf 2>/dev/null \
+            || fail "os-update: the sshd drop-in does not name '$owner' after the faked major: $(cat /etc/ssh/sshd_config.d/moose-allowed.conf 2>&1 | tr '\n' ' ')"
+        for _i in $(seq 1 60); do [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] && break; sleep 1; done
+        [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] \
+            || fail "os-update: ssh.service is '$(systemctl is-enabled ssh.service 2>&1)' after the faked major, want enabled: $(ha_log | grep -i 'sshd\|tidy' | tail -3 | tr '\n' ' ')"
+        ha_log | grep -q "sshd turned on after a Debian-major tidy-up" || fail "os-update: host-agent did not log turning sshd on after the tidy-up"
+        [ ! -e /state/etc/.moose-major-tidied ] || fail "os-update: host-agent did not remove the tidy-up marker"
+        echo "cloud-assertions: os-update: SSHD BACK OK (drop-in names '$owner', ssh.service enabled again by host-agent after the tidy-up, marker removed)"
         echo "cloud-assertions: os-update: MAJOR TIDY OK (faked Debian 12 to $slot_major: the upper layer was rebuilt, the admin's edit is in $(dirname "$attic_edit"), $(grep -o 'kept [0-9]* files' <<<"$tidy_log" | tail -1))"
         echo "cloud-assertions: os-update: SWITCH OK (booted slot B, marked good, grubenv ORDER='B A' B_OK=1 B_TRY=0); measured: switch to marked good $(awk -v a="$(cat "$OS_STATE_DIR/switch-at")" -v b="$t_good" 'BEGIN{printf "%.0f", b-a}') s, the reboot included"
         note_pat="updated its system to $os_ver"

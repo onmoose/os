@@ -133,8 +133,11 @@ log "state partition $dev mounted on $STATE"
 # runs in both directions, so a revert to the older major is tidied the same
 # way. The old upper layer moves to the attic whole, so nothing is lost.
 MAJOR_FILE="$STATE/etc/.moose-debian-major"
-slot_major="$( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" )"
-[ -n "$slot_major" ] || die "no VERSION_ID in /usr/lib/os-release"
+# Set by a swap that took place; host-agent reads it once (below).
+TIDIED_MARKER="$STATE/etc/.moose-major-tidied"
+# Debian testing and sid have no VERSION_ID. Then this step is skipped: no
+# tidy-up and no record. It never stops a boot.
+slot_major="$( . /usr/lib/os-release 2>/dev/null; v="${VERSION_ID:-}"; echo "${v%%.*}" )" || slot_major=""
 
 keep_patterns() {
     local f
@@ -228,11 +231,17 @@ tidy_swap() {
     mkdir -p "$(dirname "$attic")" || return 1
     mv "$up" "$attic" || return 1
     if ! mv "$new" "$up"; then
-        mv "$attic" "$up"
+        # Put the old layer back. If even that fails, the copy at
+        # upper.moose-new is kept: the caller never removes it while upper is
+        # missing, and the next boot finishes the swap from it.
+        [ -d "$up" ] || mv "$attic" "$up" || log "tidy-up: could not put the old upper layer back from $attic"
         return 1
     fi
     rm -rf "$STATE/etc/work"
     mkdir -p "$STATE/etc/work"
+    # For host-agent: sshd's enable links went to the attic (BUILD.md # 1b,
+    # rule 4), so it turns sshd back on once, at its next start.
+    touch "$TIDIED_MARKER" 2>/dev/null || log "tidy-up: could not leave $TIDIED_MARKER for host-agent"
     log "tidied /etc for Debian $1 to $2: kept $(find "$up" ! -type d | wc -l) files, the old upper layer is in $attic"
 }
 
@@ -248,23 +257,36 @@ if [ -d "$STATE/etc/upper.moose-new" ]; then
 fi
 box_major="$(cat "$MAJOR_FILE" 2>/dev/null || true)"
 record_major=1
-if [ -n "$box_major" ] && [ "$box_major" != "$slot_major" ] && [ -e "$STATE/etc/.moose-pinned" ] && [ -d "$STATE/etc/upper" ]; then
+if [ -z "$slot_major" ]; then
+    record_major=""
+    log "the slot's /usr/lib/os-release has no VERSION_ID; no Debian-major tidy-up of /etc on this boot"
+elif [ -n "$box_major" ] && [ "$box_major" != "$slot_major" ] && [ -e "$STATE/etc/.moose-pinned" ] && [ -d "$STATE/etc/upper" ]; then
     if tidy_build "$box_major" "$slot_major" && tidy_swap "$box_major" "$slot_major"; then
         :
     else
         # The box boots with the upper layer as it was, and the next boot
-        # tries again, because the old major stays recorded.
-        rm -rf "$STATE/etc/upper.moose-new"
+        # tries again, because the old major stays recorded. The half-built
+        # copy is removed only while the old layer is in place; with no upper
+        # layer it is all the box has, and the next boot's check above uses it.
+        if [ -d "$STATE/etc/upper" ]; then
+            rm -rf "$STATE/etc/upper.moose-new"
+        else
+            # Both renames back failed. Booting would mount an empty upper
+            # layer: no users, host keys or machine-id. Stop instead; the next
+            # boot moves upper.moose-new into place (the check above).
+            die "tidy-up: no /etc upper layer after a failed swap"
+        fi
         record_major=""
         log "tidy-up of /etc for Debian $box_major to $slot_major FAILED; booting with the upper layer as it was"
     fi
 fi
 # Recorded last, so a tidy-up a power cut stopped runs again. A box without the
 # record (a new box, or one made before the tidy-up shipped) gets the slot's.
+# A failed write (a full state partition) is logged and the boot goes on.
 if [ -n "$record_major" ] && [ "$box_major" != "$slot_major" ]; then
-    mkdir -p "$STATE/etc"
-    echo "$slot_major" > "$MAJOR_FILE.new"
-    mv -f "$MAJOR_FILE.new" "$MAJOR_FILE"
+    if ! { mkdir -p "$STATE/etc" && echo "$slot_major" > "$MAJOR_FILE.new" && mv -f "$MAJOR_FILE.new" "$MAJOR_FILE"; }; then
+        log "could not record Debian major $slot_major in $MAJOR_FILE; the next boot tries again"
+    fi
 fi
 log "Debian major of the slot: $slot_major; recorded on the state partition: $(cat "$MAJOR_FILE" 2>/dev/null)"
 
