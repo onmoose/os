@@ -220,6 +220,57 @@ func TestStaleTryStopsTheSwitch(t *testing.T) {
 	}
 }
 
+// failingUndo fails only the mark-active that puts the booted slot first again.
+type failingUndo struct{ *fakeRAUC }
+
+func (f failingUndo) Mark(ctx context.Context, state, which string) error {
+	if state == "active" && which == "booted" {
+		return errors.New("rauc: d-bus timeout")
+	}
+	return f.fakeRAUC.Mark(ctx, state, which)
+}
+
+// When the switch stops after mark-active and the booted slot cannot be put
+// first again, the new slot may boot next: its trial marker must stay, so it
+// boots on trial (Greptile on #583).
+func TestFailedUndoKeepsTheTrialMarker(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.rauc.staleTry = true
+	h.a.RAUC = failingUndo{h.rauc}
+	h.a.Apply(h.rel, true, h.night)
+	if h.jobs.errs[1] == nil || h.reboots.Load() != 0 {
+		t.Fatalf("a TRY=1 after mark-active must stop the reboot: %v, reboots %d", h.jobs.errs[1], h.reboots.Load())
+	}
+	if _, err := os.Stat(TrialMarker(h.a.dir(), "B")); err != nil {
+		t.Fatalf("the trial marker must stay while slot B may boot next: %v", err)
+	}
+	// Slot B boots next after all: it must boot on trial, so an unhealthy
+	// slot is marked bad and the box reboots to the old one.
+	h.healthy = errors.New("the brain is not up yet")
+	before := h.reboots.Load()
+	b := h.reboot(t, "B", "0.15.1")
+	b.Boot(context.Background())
+	waitFor(t, func() bool {
+		h.rauc.mu.Lock()
+		defer h.rauc.mu.Unlock()
+		for _, m := range h.rauc.marks {
+			if m == "bad:B" {
+				return true
+			}
+		}
+		return false
+	})
+	waitFor(t, func() bool { return h.reboots.Load() > before })
+	h.rauc.mu.Lock()
+	defer h.rauc.mu.Unlock()
+	for _, m := range h.rauc.marks {
+		if m == "good:B" {
+			t.Fatal("slot B was marked good; it must boot on trial")
+		}
+	}
+}
+
 func TestBusyLockWaits(t *testing.T) {
 	h := newHarness(t, "A")
 	h.jobs.busy = true

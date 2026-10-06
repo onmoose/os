@@ -774,8 +774,13 @@ func (a *Applier) doSwitch(ctx context.Context, rel updatetarget.OSRelease, nigh
 		return err
 	}
 	undo := func(cause error) error {
+		// The trial marker goes only once the booted slot is first again. If
+		// that fails, the new slot may still boot next, and it must boot on
+		// trial. A marker left while the old slot boots is removed by Boot as a
+		// switch that never took effect.
 		if err := a.RAUC.Mark(context.Background(), "active", "booted"); err != nil {
-			slog.Error("os update: could not put the booted slot first again", "err", err)
+			slog.Error("os update: could not put the booted slot first again; the trial marker stays", "slot", target, "err", err)
+			return cause
 		}
 		os.Remove(TrialMarker(a.dir(), target))
 		return cause
