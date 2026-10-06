@@ -220,6 +220,33 @@ func TestStaleTryStopsTheSwitch(t *testing.T) {
 	}
 }
 
+// failingUndo fails only the mark-active that puts the booted slot first again.
+type failingUndo struct{ *fakeRAUC }
+
+func (f failingUndo) Mark(ctx context.Context, state, which string) error {
+	if state == "active" && which == "booted" {
+		return errors.New("rauc: d-bus timeout")
+	}
+	return f.fakeRAUC.Mark(ctx, state, which)
+}
+
+// When the switch stops after mark-active and the booted slot cannot be put
+// first again, the new slot may boot next: its trial marker must stay, so it
+// boots on trial (Greptile on #583).
+func TestFailedUndoKeepsTheTrialMarker(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.rauc.staleTry = true
+	h.a.RAUC = failingUndo{h.rauc}
+	h.a.Apply(h.rel, true, h.night)
+	if h.jobs.errs[1] == nil || h.reboots.Load() != 0 {
+		t.Fatalf("a TRY=1 after mark-active must stop the reboot: %v, reboots %d", h.jobs.errs[1], h.reboots.Load())
+	}
+	if _, err := os.Stat(TrialMarker(h.a.dir(), "B")); err != nil {
+		t.Fatalf("the trial marker must stay while slot B may boot next: %v", err)
+	}
+}
+
 func TestBusyLockWaits(t *testing.T) {
 	h := newHarness(t, "A")
 	h.jobs.busy = true
