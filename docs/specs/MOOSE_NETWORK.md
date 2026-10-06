@@ -129,14 +129,14 @@ Previously specified as "the app cannot be installed until the user enrolls." Re
 
 Enrollment is opt-in. The first-run wizard surfaces it with plain-language framing:
 
-> *Enrolling gives every app a secure URL like `photos.cindy-fox.onmoose.io`. Your data never goes through moose's servers — only DNS lookups do. You can skip this and access your apps at `photos.local` instead.*
+> *Enrolling gives every app a secure URL like `photos.andrei.onmoose.io`. Your data never goes through moose's servers — only DNS lookups do. You can skip this and access your apps at `photos.local` instead.*
 
 If the user enrolls:
 
 1. Box generates a keypair, sends an enrollment request to the enrollment API.
-2. Wizard shows a **"Name your box"** screen with a base-name text field (e.g. `cindy`) and a system-assigned suffix shown as static text next to it (e.g. `-fox`). A reshuffle die (`🎲`) picks a different suffix; reshuffles are unlimited.
-3. API checks availability of the `(base, suffix)` pair. On collision, auto-rerolls the suffix and shows the new combo. Reserved bases (moose-internal slugs, crude words) are rejected with a clear message; the user types another.
-4. Once accepted, API returns the box-id (`<base>-<suffix>`) and an API token. Box persists both.
+2. Wizard shows a **"Name your box"** screen with one text field (e.g. `andrei`). What the user types is the whole box-id. Nothing is added to it.
+3. API checks the name against the rules below. A name that breaks a rule, is reserved, is in use, or is held for a former owner is refused with a clear message, and the user types another. The API never changes the name to make it fit.
+4. Once accepted, API returns the box-id (the name as typed) and an API token. Box persists both.
 5. Box phones the API to set an A record: `*.<box-id>.onmoose.io` → box's LAN IP.
 6. Caddy on the box uses ACME DNS-01 (via a moose-provided plugin or generic API) to obtain a wildcard cert for `*.<box-id>.onmoose.io`. Renewal every ~60 days.
 
@@ -148,38 +148,48 @@ If the user declines:
 - Apps that declare `needs_secure_context: true` (see `APP_MANIFEST.md`) install fine but show a warning that some features may not work over HTTP.
 - The user can enroll later from Settings → Network at any time.
 
-### Locked: box-id is base + curated suffix, joined by a dash
+### Locked: the box-id is the name the owner chose
 
-The box-id is two parts joined by a dash: a **user-chosen base name** and a **system-assigned suffix** drawn from a small curated list. Examples: `cindy-fox`, `the-perez-family-pine`, `larry-raven`.
+The box-id is the name the owner types, used as given. `andrei` puts the dashboard at `andrei.onmoose.io` and every app at `<slug>.andrei.onmoose.io`. There is no part the system adds.
 
-**The base** is what the user types. Validation is permissive: lowercase letters and digits, single internal dashes, not starting or ending with a dash, reasonable length cap. A **reserved-base blocklist** rejects names that would collide with moose-internal slugs (`photos`, `home`, `mail`, etc.) and a small set of crude words that combine poorly with any suffix. Not a generic profanity filter — a targeted list, kept small.
+This replaces the earlier design, where the box-id was a typed base plus a system-assigned suffix from a curated word list (`cindy-fox`). See `DECISIONS.md` 2026-10-06.
 
-**The suffix** is system-assigned at enrollment, never typed. It's drawn from a hand-curated list themed around **Nordic nature** — concrete nouns only, no adjectives, no verbs: animals (`fox`, `elk`, `owl`, `raven`, `wolf`), plants (`pine`, `oak`, `birch`, `moss`, `fern`), geography (`bay`, `cove`, `fjord`, `lake`, `dune`). 3–5 characters. **~50 entries at launch.** The semantic neutrality is load-bearing: a concrete-noun suffix can't combine with the base to form an unintended phrase, which is the failure mode of free-typed suffixes and adjective-noun pairs.
+**Rules for a new box-id:**
 
-The wizard renders the suffix as static text next to the base field, with a **🎲 reshuffle** affordance that picks a different one. **No cap on reshuffles** — the pool is curated to be semantically safe, so grinding produces nothing worth grinding for.
+- 4 to 30 characters.
+- Lowercase letters and digits, with single dashes inside the name: `^[a-z0-9]+(-[a-z0-9]+)*$`. No dash at the start or the end, and never two in a row, which also keeps out the `xn--` prefix of punycode names.
+- Not on the reserved list.
+- Not used by another box, and not held for a former owner.
 
-The actual word list lives outside this spec (data, not design). Curation policy: concrete nouns only, Nordic-nature theme, 3–5 chars, no homophones with crude words, no trademarked terms, no ASCII-confusables.
+A name that fails a rule is refused with a clear message, and the owner types another. Nothing is appended, rerolled or swapped in. The name is the owner's choice or it is nothing.
+
+**The reserved list.** A bare box-id is a direct child of the fleet domain, so it sits next to every other name under that domain. The list must cover **every name that has its own record under the fleet domain** (service hosts such as the acme-dns host, `www`, and the like). If it did not, a box could take a service's name, or a service could not be added because a box already holds its name, so a new service name goes on the list before its record is created. The list also covers names that would mislead a visitor (`admin`, `support`, `login`, `moose`) and a small set of crude words. It is a targeted list, kept small, not a general profanity filter.
+
+**A destroyed box's name is held for one year.** When a box is destroyed, its name stays held for its former owner for one year. Only that owner can take it again in that time. After the year it is free for anyone. Old bookmarks and shared links still point at that name, and the hold is what stops them from opening a stranger's box soon after.
+
+**Older ids stay as they are.** Boxes named under the earlier design have a dashed id such as `cindy-fox`. Those ids stay valid and never change: the box-id is fixed for the life of the box (next section).
+
+**Who checks what.** The service that issues the box-id (the provisioning service for a hosted box, the enrollment API for an enrolled appliance) checks the rules, keeps names unique and keeps the hold. A hosted box gets its id in the seed (`ENVIRONMENT.md` # Provisioning & first-boot). The box treats `box_id` as an opaque label: it does not check its shape, so an older dashed id and a new bare id work the same on the box.
 
 **Why this shape:**
 
-- **Dash, not dot.** Industry precedent for `<name>-<random>` PaaS URLs (Vercel, Netlify, Heroku, Render, Fly) is uniformly dash. Dot is reserved for hierarchically distinct labels (e.g. `<worker>.<account>.workers.dev`). Our suffix is anti-collision plumbing, not a namespace.
-- **Curated, not generated.** A pronounceable-nonsense generator (`cindy-zoki`) would also work and avoids list maintenance — but curated suffixes feel intentional, verbalize cleanly, and quietly carry moose's Nordic identity. ~50 entries at launch is an afternoon; growth is on the order of ~10/year.
-- **System-assigned, not typed.** Letting users type the suffix re-opens squatting (`bob-001`...`bob-999`) and re-introduces the second naming negotiation we removed by adding the suffix in the first place. Reshuffle gives aesthetic choice without giving targetable strings.
-- **No paid "drop the suffix" tier.** Considered (`larry.onmoose.io` as an upgrade). Rejected — willingness-to-pay is low, the suffix doesn't bleed enough to upsell, and pay-gating cosmetics doesn't fit the monetization shape (paid SKUs are off-site backup, relay bandwidth, paid apps).
-
-**Collision capacity.** ~50 suffixes × any base means each (base, suffix) pair is unique within the namespace; the brain rejects pair-level collisions at enrollment and auto-rerolls. Even at 100k-box scale, the most popular base name is expected to see low-thousand assignments — each suffix shoulders a manageable share. The list grows if real assignments outpace forecasts.
+- **Friendlier addresses.** `andrei.onmoose.io` is easy to say, type and remember. The suffix made every address longer, and it put a word in the owner's address that the owner did not pick.
+- **The suffix's job is done by other rules now.** The suffix existed so that two owners who both typed `cindy` could both get a name, and so that names could not be squatted in series (`bob-001` to `bob-999`). Refusing a taken name covers the first: the second owner picks another name, as with usernames and domains everywhere. A short list of chosen names is not worth squatting the way a numbered series was. The one-year hold covers a case the suffix did not: a name passing to a new owner while old links still use it.
+- **The earlier rejection of `larry.onmoose.io` no longer applies.** A bare name was once considered as a paid upgrade and rejected, because the suffix did not bother owners enough to pay to drop it. Bare names are now the default for everyone, at no cost, so that question is gone.
+- **First come, first served is the accepted cost.** A common first name goes to the first owner who asks for it. Later owners use a longer form (`andrei-home`, `the-perez-family`). The 4-character floor and the reserved list keep out the short and service-like names most likely to mislead.
+- **Kept from the earlier design:** one DNS label of lowercase letters, digits and single dashes, which every client handles; the reserved list; and a name picked once, at enrollment, with no rename.
 
 ### Locked: pick the name at enrollment, no rename afterward
 
 The user names their box at first-run enrollment. After that, the box-id is frozen for the life of the install.
 
-**Why pick at enrollment:** the moment the user cares is when they first see the suggestion. Giving them a chance to type something memorable then is cheap and meaningful. Tailscale handles tailnet naming the same way.
+**Why pick at enrollment:** the moment the user cares is when they first set the box up. Asking them to type something memorable then is cheap and meaningful. Tailscale handles tailnet naming the same way.
 
 **Why no rename afterward:** every alternative we considered has real costs.
 - DNS TTL propagation means the old name keeps resolving for the TTL window.
 - Cert reissuance for the new wildcard adds a renewal cycle.
 - Bookmarks and previously-shared links break silently.
-- Audit/identity surfaces ("this device was registered under `cindy-zx9`") need historical mapping.
+- Audit/identity surfaces ("this device was registered under `andrei`") need historical mapping.
 
 If a user truly needs a different name, the supported path is **re-enrollment**: pick a new name, old subdomain decommissions, the box is told its old URLs no longer work. Same operational cost as a fresh box, no half-state. Locking the name out of the rename surface removes a class of "I changed the name and now nothing works" tickets we'd otherwise own.
 
@@ -298,7 +308,7 @@ We need a coordination service to make the identity-based mesh work — keys exc
 2. User installs the **moose app**, taps **"Pair with my moose"**, scans the QR.
 3. The phone sends the token to the onmoose.io coordinator. Coordinator validates, registers the phone's public key under the user's tailnet, and returns the box's address candidates plus an ACL granting access to the user's apps.
 4. Phone establishes a WireGuard tunnel — direct via hole-punching if possible, via DERP relay otherwise.
-5. Done. `photos.cindy-fox.onmoose.io` now resolves and is reachable from anywhere with a network connection.
+5. Done. `photos.andrei.onmoose.io` now resolves and is reachable from anywhere with a network connection.
 
 #### Sharing with another person (e.g. grandma sees Photos)
 

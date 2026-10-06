@@ -131,8 +131,8 @@ Two buttons: **"Yes, set it up"** and **"Skip for now"**.
 
 If the user proceeds:
 
-1. Wizard shows a "Name your moose" field with a suggested name (e.g. `cindy-zx9`). Editable; user can accept the suggestion or type their own (e.g. `the-perez-family`).
-2. Availability is checked live against the enrollment API. On collision, the wizard offers alternatives or invites the user to try again. Reserved names (single dictionary words, moose-internal slugs) are rejected with a clear message.
+1. Wizard shows a "Name your moose" field. The user types a name (e.g. `andrei` or `the-perez-family`), and that name is the whole box-id: nothing is added to it.
+2. Availability is checked live against the enrollment API. A name that is taken, reserved, held for a former owner, or breaks the naming rules is refused with a clear message, and the user types another. The wizard never changes the name to make it fit. The rules are in `MOOSE_NETWORK.md` ("Locked: the box-id is the name the owner chose").
 3. On confirm: box is enrolled, the API token is persisted, cert issuance starts in the background, and the **"Use secure URLs" toggle is set to ON**. The wizard moves on.
 
 The name is **frozen at this step** for the life of the install — changing it later requires re-enrollment, which decommissions the old subdomain. See `MOOSE_NETWORK.md` for the rationale ("Locked: pick the name at enrollment, no rename afterward").
