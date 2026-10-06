@@ -35,9 +35,12 @@ var ErrSeedAbsent = errors.New("seed absent")
 // systemd credential over SMBIOS; a real cloud's metadata / config-drive maps
 // onto the same first-boot materialization.
 type Seed struct {
-	// BoxID is the box's permanent identity in `base-suffix` form (e.g.
-	// "cindy-fox"), allocated at provision and frozen for the life of the
-	// install (MOOSE_NETWORK.md). The brain persists and surfaces it.
+	// BoxID is the box's permanent identity: the name the owner chose, used
+	// as given (e.g. "andrei"). Boxes named before that rule carry a dashed
+	// id (e.g. "cindy-fox"), which stays valid. It is allocated at provision
+	// and frozen for the life of the install (MOOSE_NETWORK.md # Locked: the
+	// box-id is the name the owner chose). The box treats it as an opaque
+	// label: it does not check its shape, it persists and surfaces it.
 	BoxID string `json:"box_id"`
 	// AssertionVerificationKey is the portal's Ed25519 *public* key in standard
 	// (padded) base64 — 44 chars for the 32-byte key, the same for every box in v1

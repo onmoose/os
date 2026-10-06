@@ -48,6 +48,23 @@ func TestIssueForwardAuthPersistsAndValidates(t *testing.T) {
 	}
 }
 
+// A box-id is the owner's chosen name used as given, so the forward-auth cookie
+// is scoped to "andrei.onmoose.io" with no extra label: the box does not reshape
+// the domain it was configured with.
+func TestIssueForwardAuthBareBoxIDDomain(t *testing.T) {
+	m, _, u, _ := fixture(t)
+	m.ForwardAuthDomain = "andrei.onmoose.io"
+	sess, _ := m.Issue(u.ID)
+
+	cookie, err := m.IssueForwardAuth(sess.Token)
+	if err != nil {
+		t.Fatalf("IssueForwardAuth: %v", err)
+	}
+	if cookie.Domain != "andrei.onmoose.io" {
+		t.Fatalf("cookie Domain = %q, want andrei.onmoose.io", cookie.Domain)
+	}
+}
+
 func TestValidateForwardAuthRejectsUnknownAndEmpty(t *testing.T) {
 	m, _, _, _ := fixture(t)
 	// A well-formed but never-minted token: rejected (and it does hit the store —
