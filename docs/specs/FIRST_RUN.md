@@ -119,7 +119,7 @@ This step is two coupled choices presented as one. Turning on **"Use secure (HTT
 
 > *"Use secure (HTTPS) URLs for your apps?"*
 >
-> *Some apps need HTTPS to work fully — cameras, password managers, app-like installs on your phone. We'll give your moose a name like `cindy-zx9.onmoose.io` and a real certificate, so your apps are reachable at HTTPS URLs on your home network. Your data never leaves your box; only DNS lookups go through our servers.*
+> *Some apps need HTTPS to work fully — cameras, password managers, app-like installs on your phone. We'll give your moose a name like `andrei.onmoose.io` and a real certificate, so your apps are reachable at HTTPS URLs on your home network. Your data never leaves your box; only DNS lookups go through our servers.*
 >
 > *Tip: **if anyone in your household uses an Android phone, you'll want this on.** Android can't open the default `.local` URLs from a browser; the secure URLs work everywhere.*
 >
@@ -131,8 +131,8 @@ Two buttons: **"Yes, set it up"** and **"Skip for now"**.
 
 If the user proceeds:
 
-1. Wizard shows a "Name your moose" field with a suggested name (e.g. `cindy-zx9`). Editable; user can accept the suggestion or type their own (e.g. `the-perez-family`).
-2. Availability is checked live against the enrollment API. On collision, the wizard offers alternatives or invites the user to try again. Reserved names (single dictionary words, moose-internal slugs) are rejected with a clear message.
+1. Wizard shows a "Name your moose" field. The user types a name (e.g. `andrei` or `the-perez-family`), and that name is the whole box-id: nothing is added to it.
+2. Availability is checked live against the enrollment API. A name that is taken, reserved, held for a former owner, or breaks the naming rules is refused with a clear message, and the user types another. The wizard never changes the name to make it fit. The rules are in `MOOSE_NETWORK.md` ("Locked: the box-id is the name the owner chose").
 3. On confirm: box is enrolled, the API token is persisted, cert issuance starts in the background, and the **"Use secure URLs" toggle is set to ON**. The wizard moves on.
 
 The name is **frozen at this step** for the life of the install — changing it later requires re-enrollment, which decommissions the old subdomain. See `MOOSE_NETWORK.md` for the rationale ("Locked: pick the name at enrollment, no rename afterward").
@@ -214,7 +214,7 @@ What's *on* the dashboard at first arrival is an open question (see below) — e
 
 `moose.local` resolves out of the box on macOS, iOS, and Linux (with `nss-mdns`, almost universal). Two cases need help:
 
-- **Windows clients** need Apple's Bonjour service. Most Windows 10/11 installs do not have it. The "Add another device" / share-link surface in the dashboard detects a Windows User-Agent visiting for the first time and links to the Bonjour Print Services installer with a one-line explanation. If the household is using the secure-URL path, this is moot — `cindy-zx9.onmoose.io` resolves via public DNS on every OS.
+- **Windows clients** need Apple's Bonjour service. Most Windows 10/11 installs do not have it. The "Add another device" / share-link surface in the dashboard detects a Windows User-Agent visiting for the first time and links to the Bonjour Print Services installer with a one-line explanation. If the household is using the secure-URL path, this is moot — `andrei.onmoose.io` resolves via public DNS on every OS.
 - **Android browsers** do not resolve `.local` at all (see Step 5 above and `DISCOVERY.md`). The only path that works is the secure-URL scheme; the same share surface surfaces this for Android visitors when secure URLs are off.
 
 ## What v1 does not include

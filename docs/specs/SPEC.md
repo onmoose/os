@@ -134,7 +134,7 @@ We considered path-based routing (`moose.local/photos`, `moose.local/grocery`) a
 **Subdomain wins on both axes:**
 - Each app gets its own origin → real browser-enforced isolation. Cookies, localStorage, CORS all properly scoped without per-app effort.
 - Apps work as upstream authors designed them — they assume root path of their own domain. Far less per-app patching.
-- Maps cleanly to remote access (`photos.cindy.zx9.onmoose.io`) — same pattern everywhere.
+- Maps cleanly to remote access (`photos.andrei.onmoose.io`) — same pattern everywhere.
 - Industry-standard for multi-tenant hosting (Vercel, Netlify, Heroku, Railway).
 
 **Subdomain costs we accept:**

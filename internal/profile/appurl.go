@@ -1,10 +1,12 @@
 package profile
 
 // NetworkApex is the moose-owned public apex every hosted box lives under
-// (MOOSE_NETWORK.md; ENVIRONMENT.md # Networking & discovery). A hosted box with
-// box-id "<base>-<suffix>" serves the dashboard at "<box-id>.onmoose.io" and
-// every app at "<slug>.<box-id>.onmoose.io", all under the box's
-// "*.<box-id>.onmoose.io" wildcard cert.
+// (MOOSE_NETWORK.md; ENVIRONMENT.md # Networking & discovery). A hosted box
+// serves the dashboard at "<box-id>.onmoose.io" and every app at
+// "<slug>.<box-id>.onmoose.io", all under the box's "*.<box-id>.onmoose.io"
+// wildcard cert. The box-id is one DNS label, used as given: "andrei" gives
+// "andrei.onmoose.io", and an older dashed id such as "cindy-fox" works the
+// same way.
 const NetworkApex = "onmoose.io"
 
 // HostedAppHost returns the public host an app is served at on a hosted box:

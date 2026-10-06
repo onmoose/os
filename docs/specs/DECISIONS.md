@@ -21,6 +21,21 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-06 — The box-id is the name the owner chose, with no suffix
+
+**Previously:** the box-id was a typed base plus a system-assigned suffix from a curated Nordic-nature word list, joined by a dash (`cindy-fox`). The suffix let two owners type the same base, and stopped names being squatted in series. The wizard offered a reshuffle for a different suffix, and a bare name (`larry.onmoose.io`) was considered as a paid upgrade and rejected (`MOOSE_NETWORK.md`, the section "Locked: box-id is base + curated suffix, joined by a dash").
+
+**Now:** the box-id is the name the owner types, used as given: `andrei` gives `andrei.onmoose.io` and `<slug>.andrei.onmoose.io`. A new id is 4 to 30 characters of lowercase letters and digits with single dashes inside (`^[a-z0-9]+(-[a-z0-9]+)*$`), not on the reserved list, and not taken. A taken name is refused, with no suffix, reroll or reshuffle. The reserved list covers every name that has its own record under the fleet domain, because a bare box-id is a direct sibling of those records. A destroyed box's name is held for its former owner for one year before anyone else can take it. Ids issued under the old shape stay valid and unchanged. The box-id is still fixed for the life of the box, and the box still treats `box_id` as an opaque string: it does not check the shape.
+
+**Why:**
+
+- **Friendlier addresses.** A bare name is easier to say, type and remember, and every word in it is one the owner chose.
+- **The suffix's job is covered another way.** Refusing a taken name handles two owners wanting the same name, as usernames and domains do. The one-year hold handles a name passing to a new owner while old links still point at it, which would otherwise send those links to a stranger's box.
+- **The paid-upgrade argument has nothing left to act on.** It was about whether owners would pay to drop the suffix. With no suffix for anyone, it does not apply.
+- **The box needs no change in behavior.** It already used the id only as an opaque DNS label, so new bare ids and older dashed ids work the same. Adding a shape check on the box would only risk refusing an id the issuing service sent.
+
+**Affected docs:** `MOOSE_NETWORK.md` (the box-id section rewritten as "Locked: the box-id is the name the owner chose"; enrollment flow steps 2 to 4; examples), `FIRST_RUN.md` (step 5 naming), `NEXT.md` (the box-id allocation item resolved).
+
 ## 2026-10-05 — A Debian major tidies the /etc upper layer, in both directions (#486)
 
 **Previously:** a Debian major was "a new A/B OS image like any other" (2026-10-01), with one risk left open: a file in the `/etc` upper layer stays at the old major's version under the new major's packages. The choice was between resetting the upper layer to a known list and shipping a migration step (`NEXT.md` # A/B OS image, point 5).

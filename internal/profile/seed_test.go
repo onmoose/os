@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -30,7 +31,13 @@ func TestReadSeed(t *testing.T) {
 		wantKey    string
 	}{
 		{
-			name:    "valid seed",
+			name:    "bare box-id (the owner's chosen name)",
+			content: ptr(`{"box_id":"andrei","assertion_verification_key":"a2V5"}`),
+			wantBox: "andrei",
+			wantKey: "a2V5",
+		},
+		{
+			name:    "valid seed with a legacy dashed box-id",
 			content: ptr(`{"box_id":"cindy-fox","assertion_verification_key":"a2V5"}`),
 			wantBox: "cindy-fox",
 			wantKey: "a2V5",
@@ -145,5 +152,39 @@ func TestReadSeed_EnrollmentOptional(t *testing.T) {
 	}
 	if got.Enrollment.Complete() {
 		t.Errorf("enrollment = %+v, want !Complete() (absent block)", got.Enrollment)
+	}
+}
+
+// TestSeed_BareBoxIDRoundTrip writes a seed with a bare box-id the way the
+// provisioning service would, reads it back, and checks the hosted names the
+// box derives from it. The box must not split, extend or reshape the id.
+func TestSeed_BareBoxIDRoundTrip(t *testing.T) {
+	in := Seed{
+		BoxID:                    "andrei",
+		AssertionVerificationKey: "a2V5",
+		Enrollment:               EnrollmentCredentials{Subdomain: "abc-123", Username: "user", Password: "pass"},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"box_id":"andrei"`) {
+		t.Fatalf("wire seed = %s, want it to carry \"box_id\":\"andrei\"", raw)
+	}
+	got, err := ReadSeed(writeSeed(t, string(raw)))
+	if err != nil {
+		t.Fatalf("ReadSeed: %v", err)
+	}
+	if got.BoxID != "andrei" {
+		t.Fatalf("BoxID = %q, want %q", got.BoxID, "andrei")
+	}
+	if !got.Enrollment.Complete() {
+		t.Errorf("enrollment = %+v, want Complete()", got.Enrollment)
+	}
+	if h := HostedDashboardHost(got.BoxID); h != "andrei.onmoose.io" {
+		t.Errorf("dashboard host = %q, want andrei.onmoose.io", h)
+	}
+	if h := HostedAppHost(got.BoxID, "photos"); h != "photos.andrei.onmoose.io" {
+		t.Errorf("app host = %q, want photos.andrei.onmoose.io", h)
 	}
 }
