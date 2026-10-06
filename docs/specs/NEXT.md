@@ -319,6 +319,12 @@ A managed queue + worker that apps can fire background work into (overnight re-e
 **Context:** `SERVICE_PROVISIONING.md` (Tier-1 catalog — would extend it), `APP_MANIFEST.md` (`services:` block).
 **Why Tier 3:** completely separate from brain↔host-agent jobs (which are OS-level). This is an app-platform feature; the bet is that "apps can offload async work to moose" is a real differentiator vs. Umbrel/CasaOS. Pin the shape now so we don't accidentally make decisions in `SERVICE_PROVISIONING.md` that close it off; full design post-MVP.
 
+### Terminal apps (AI coding agents) in a browser tab
+
+Run terminal apps such as Claude Code, Codex CLI, Grok CLI and OpenCode as personal catalog apps that open in a new tab, on the hosted profile first. Draft design in `TERMINAL_APPS.md` (2026-10-06): user-chosen folder slots with a safety limit, a `Projects` folder, a Git integration, and a shared `moose-terminal` base image (ttyd + tmux) with a project page. This is not the host shell below: it runs inside the normal app sandbox. Open: where the base image is built, whether Claude Code may be baked into a published image, the session cap, field names, ownership of the moose GitHub App, and a login in front of apps on the appliance.
+
+**Context:** `TERMINAL_APPS.md`, `APP_MANIFEST.md`, `STORAGE.md`, `DASHBOARD.md`, `ENVIRONMENT.md`.
+
 ### Web terminal in the dashboard
 
 `SPEC.md` # Local access promises a "virtual terminal in the web UI" — a shell without leaving the browser. Needs design across:
