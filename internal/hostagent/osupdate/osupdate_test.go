@@ -245,6 +245,30 @@ func TestFailedUndoKeepsTheTrialMarker(t *testing.T) {
 	if _, err := os.Stat(TrialMarker(h.a.dir(), "B")); err != nil {
 		t.Fatalf("the trial marker must stay while slot B may boot next: %v", err)
 	}
+	// Slot B boots next after all: it must boot on trial, so an unhealthy
+	// slot is marked bad and the box reboots to the old one.
+	h.healthy = errors.New("the brain is not up yet")
+	before := h.reboots.Load()
+	b := h.reboot(t, "B", "0.15.1")
+	b.Boot(context.Background())
+	waitFor(t, func() bool {
+		h.rauc.mu.Lock()
+		defer h.rauc.mu.Unlock()
+		for _, m := range h.rauc.marks {
+			if m == "bad:B" {
+				return true
+			}
+		}
+		return false
+	})
+	waitFor(t, func() bool { return h.reboots.Load() > before })
+	h.rauc.mu.Lock()
+	defer h.rauc.mu.Unlock()
+	for _, m := range h.rauc.marks {
+		if m == "good:B" {
+			t.Fatal("slot B was marked good; it must boot on trial")
+		}
+	}
 }
 
 func TestBusyLockWaits(t *testing.T) {

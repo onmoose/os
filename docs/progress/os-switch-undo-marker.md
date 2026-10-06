@@ -10,7 +10,7 @@ A fix to [host-agent-os-update.md](host-agent-os-update.md) (#563), part of #486
 
 - **The bug.** When an `os-switch` job stops after `rauc status mark-active other` (for example, the grubenv check finds `TRY=1`, or the record cannot be saved), it undoes the switch: it puts the booted slot first again and removes the new slot's trial marker. It removed the marker even when putting the booted slot first failed. Then the new slot could still boot next, with no trial marker, so no safety net and no revert, and host-agent would mark it good.
 - **The fix** (`internal/hostagent/osupdate/osupdate.go`, `doSwitch`): the marker is removed only after the booted slot is first again. If that fails, the marker stays and host-agent logs it. If the old slot boots after all, `Boot` already removes a marker for a switch that never took effect (`TestMarkerWithoutActivationIsNoRevert`).
-- **Test:** `TestFailedUndoKeepsTheTrialMarker` makes the grubenv check fail and the undo's mark-active fail, and wants the marker kept. It fails without the fix.
+- **Test:** `TestFailedUndoKeepsTheTrialMarker` makes the grubenv check fail and the undo's mark-active fail, and wants the marker kept. Then slot B boots, unhealthy, and must boot on trial: it is marked bad and the box reboots to the old slot (Greptile on #584). It fails without the fix.
 - `UPDATES.md` # 1 says it in the switch step.
 
 ## What's next
