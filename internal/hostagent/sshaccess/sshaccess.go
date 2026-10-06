@@ -284,6 +284,46 @@ func (m *Manager) State() (protocol.SSHState, error) {
 	}, nil
 }
 
+// EnsureOnAtStart turns sshd on when the drop-in names at least one account but
+// the unit is not enabled, and reports whether it did.
+//
+// host-agent calls it only on the first start after a Debian-major tidy-up of
+// the /etc upper layer (BUILD.md # 1b, rule 4), which state-setup marks with
+// MajorTidiedMarker. The tidy-up keeps the drop-in, which is the enabled set,
+// but drops the unit's enable links, so the new major's own unit name is the
+// one that gets enabled. Without this, every account that had SSH on would
+// lose it. On every other start it is not called, so an admin who ran
+// `systemctl disable ssh` by hand is not overruled: on hosted, sshd's run
+// state is the only control over :22.
+//
+// It only ever turns sshd on, never off.
+func (m *Manager) EnsureOnAtStart() (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	accounts, err := m.readDropIn()
+	if err != nil {
+		return false, err
+	}
+	if len(accounts) == 0 {
+		return false, nil
+	}
+	// `systemctl is-enabled` exits non-zero for every state but enabled, so the
+	// output is the answer and the error is not.
+	out, _ := m.run("systemctl", "is-enabled", m.unit())
+	if strings.TrimSpace(string(out)) == "enabled" {
+		return false, nil
+	}
+	if err := m.applyDaemon(true); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MajorTidiedMarker is left on the state partition by state-setup when a
+// Debian-major tidy-up swapped the /etc upper layer. host-agent removes it once
+// it has handled it.
+const MajorTidiedMarker = "/state/etc/.moose-major-tidied"
+
 // ManagedKeysDir holds one root-owned file per enabled account. moose's keys
 // live here and **never** in the user's home directory.
 //

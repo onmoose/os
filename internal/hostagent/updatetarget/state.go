@@ -56,6 +56,27 @@ type Snapshot struct {
 	// so this is the resolved value, not the configured one.
 	Window     Window
 	WindowFrom string
+	// OS is stream A's last decision. It is kept across a tick that ends
+	// before the OS part is read (an unreachable source), so it is the last
+	// decision, not this tick's.
+	OS OSSnapshot
+}
+
+// OSSnapshot is stream A's last decision. State is one of the
+// protocol.OSUpdate* values; the zero value means stream A has not been
+// decided yet.
+type OSSnapshot struct {
+	State  string
+	Detail string
+	// Target is the release the box picked, when it picked one.
+	Target *OSRelease
+}
+
+// recordOS stores stream A's decision for this tick.
+func (l *Loop) recordOS(o OSSnapshot) {
+	l.snapMu.Lock()
+	defer l.snapMu.Unlock()
+	l.snap.OS = o
 }
 
 // Snapshot returns the last tick's decision. Safe to call from another
@@ -74,5 +95,6 @@ func (l *Loop) record(o Outcome, t Target, w Window, from string, err error) {
 	}
 	l.snapMu.Lock()
 	defer l.snapMu.Unlock()
+	s.OS = l.snap.OS
 	l.snap = s
 }

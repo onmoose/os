@@ -33,7 +33,17 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v25"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v30"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+# A change to the OS package lock (#560) must rebuild too, so all three lock
+# files are part of the canary. The resolved list is in it as well: a re-run
+# after only the list changed must not exit early and skip os_lock_check below.
+# The keyring mode is in it too (#562): a build for release bakes another
+# /etc/rauc/keyring.pem.
+CANARY_VERSION="${CANARY_VERSION}-rauc-${MOOSE_RAUC_KEYRING:-throwaway}"
+# And where the brain and UI come from (#566): a build of this commit, or the
+# last released pair from ghcr, at which control-plane version.
+CANARY_VERSION="${CANARY_VERSION}-cp-${MOOSE_CONTROL_PLANE_SOURCE:-local}-$(tr -d '[:space:]' < "${REPO_ROOT}/CONTROL_PLANE_VERSION")"
+CANARY_VERSION="${CANARY_VERSION}-lock-$(cat "${REPO_ROOT}/dev/os-lock/debian-snapshot" "${REPO_ROOT}/dev/os-lock/third-party.lock" "${REPO_ROOT}/dev/os-lock/cloud-packages.lock" | sha256sum | cut -c1-12)"
 IMAGE_OUT="${WORK}/moose-cloud.raw"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -60,13 +70,14 @@ for tool in mkosi qemu-system-x86_64 qemu-img curl python3 docker; do
 done
 # host-agent-real is a CGO binary (PAM verify is kept in hosted); needs the headers.
 [ -f /usr/include/security/pam_appl.h ] || missing+=("libpam0g-dev (PAM headers for host-agent-real)")
-# OVMF (UEFI firmware) — location varies by distro.
-OVMF_CODE=""
-for cand in /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd \
-            /usr/share/OVMF/OVMF.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
-    [ -r "$cand" ] && { OVMF_CODE="$cand"; break; }
-done
-[ -n "$OVMF_CODE" ] || missing+=("ovmf (UEFI firmware — package: ovmf)")
+# OVMF (UEFI firmware): a CODE image and its VARS template, as a pair, from the
+# list in dev/cloud/ovmf.sh, which run-cloud-tests.sh uses too (#575). Only
+# when UEFI is one of the firmwares the boots run under.
+# shellcheck source=dev/cloud/ovmf.sh
+. "${CLOUD_DIR}/ovmf.sh"
+if ovmf_wanted && ! ovmf_find; then
+    missing+=("ovmf (UEFI firmware with its VARS template, package: ovmf)")
+fi
 if [ ${#missing[@]} -gt 0 ]; then
     cat >&2 <<EOF
 cloud boot-proof preflight: missing tooling
@@ -123,6 +134,85 @@ mkdir -p "$EXTRA/usr/local/bin" "$EXTRA/etc/systemd/system"
 cp "${CLOUD_DIR}/cloud-assertions.sh" "$EXTRA/usr/local/bin/cloud-assertions.sh"
 chmod 0755 "$EXTRA/usr/local/bin/cloud-assertions.sh"
 cp "${TEST_DIR}/moose-cloud-assertions.service" "$EXTRA/etc/systemd/system/"
+# What this lane writes into /etc at run time: host-agent drop-ins that point
+# it at the in-guest update targets. They go on a keep list of their own, so a
+# Debian-major tidy-up (BUILD.md # 1b, rule 4) keeps them across the os-update
+# boot's faked major, and the end-of-boot check of the upper layer accepts them.
+mkdir -p "$EXTRA/usr/lib/moose/etc-keep.d"
+cat > "$EXTRA/usr/lib/moose/etc-keep.d/boot-lane.list" <<'EOF'
+# The boot lane's own writes into /etc (dev/cloud/test/bootstrap.sh).
+systemd/system/host-agent.service.d
+EOF
+
+# The OS update trial's safety net fires after 90 s here instead of 15 min
+# (#563), so the os-revert boot does not sit out a quarter of an hour. A
+# healthy trial boot marks its slot good about 17 s after the switch in CI
+# (run 37031756819), which the os-update boot proves under the same setting.
+# The image that ships keeps 15 min.
+# What GRUB left in the grubenv for this boot, logged before host-agent can
+# mark anything (#563): GRUB sets the booted slot's TRY=1, and the boot lane
+# checks it did, under both firmwares (#575). RequiresMountsFor: the ESP is
+# `nofail` in fstab, so local-fs.target does not wait for it, and a read
+# before the mount found no grubenv (run 37063254219).
+cat > "$EXTRA/etc/systemd/system/moose-test-grubenv.service" <<'EOF'
+[Unit]
+Description=moose test: log the grubenv GRUB left for this boot
+Before=host-agent.service
+After=local-fs.target
+RequiresMountsFor=/efi
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo "grubenv at boot: $(grub-editenv /efi/grub/grubenv list | tr "\n" " ")"'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+# A slot that dies before userspace (#575), for the last stage of the
+# os-revert boot. This initramfs hook runs right after moose-state, so the
+# state partition is mounted at ${rootmnt}/state. When the state partition
+# holds moose-test/panic-slot-<slot> for the booted slot, it leaves a note and
+# crashes the kernel: a real kernel panic, before systemd, which panic=10
+# turns into a reboot. GRUB must then skip the slot, because it saved the
+# slot's TRY=1 before it booted it. The hook is in the boot-proof image only,
+# so in the test bundle too (it is this image's slot), never in the image
+# that ships. mkosi copies the extra trees before any postinst runs, and
+# dev/cloud/mkosi.postinst.chroot builds the initramfs, so the hook is in it.
+# If it ever is not, slot B boots in full and stage 4 fails on the slot it
+# booted.
+mkdir -p "$EXTRA/etc/initramfs-tools/scripts/local-bottom"
+cat > "$EXTRA/etc/initramfs-tools/scripts/local-bottom/moose-test-panic" <<'EOF'
+#!/bin/sh
+PREREQ="moose-state"
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+. /scripts/functions
+slot=""
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in rauc.slot=*) slot="${arg#rauc.slot=}" ;; esac
+done
+[ -n "$slot" ] || exit 0
+[ -e "${rootmnt}/state/moose-test/panic-slot-${slot}" ] || exit 0
+echo "moose-test: slot ${slot} panics before userspace, as the os-revert boot asked" > /dev/kmsg
+echo "${slot}" > "${rootmnt}/state/moose-test/panicked-slot-${slot}"
+echo s > /proc/sysrq-trigger
+sleep 2
+echo c > /proc/sysrq-trigger
+# Not reached when the crash works. If it did not, fail the initramfs instead:
+# panic= reboots that too.
+panic "moose-test: slot ${slot}: the kernel crash did not happen"
+EOF
+chmod 0755 "$EXTRA/etc/initramfs-tools/scripts/local-bottom/moose-test-panic"
+
+mkdir -p "$EXTRA/etc/systemd/system/moose-os-trial.timer.d"
+cat > "$EXTRA/etc/systemd/system/moose-os-trial.timer.d/10-cloud-test.conf" <<'EOF'
+[Timer]
+OnBootSec=
+OnBootSec=90s
+EOF
 
 # --- 3b. app-install fixtures for the access-mode e2e (#308) — TEST-LANE ONLY. The
 # access boot installs whoami air-gapped and drives the per-app forward-auth access
@@ -258,15 +348,13 @@ docker pull "$POSTGRES_REF"
 docker tag "$POSTGRES_REF" postgres:16
 docker save postgres:16 -o "$EXTRA/var/lib/moose/test-images/postgres-16.tar"
 
-# --- 4. Docker apt repo for the build's package manager (trixie pocket — the
-# cloud image is Release=trixie). Build-host network only; the VM never apt-installs.
-rm -rf "$PKGMNGR"
-mkdir -p "$PKGMNGR/etc/apt/keyrings" "$PKGMNGR/etc/apt/sources.list.d"
-curl -fsSL https://download.docker.com/linux/debian/gpg -o "$PKGMNGR/etc/apt/keyrings/docker.asc"
-chmod a+r "$PKGMNGR/etc/apt/keyrings/docker.asc"
-cat > "$PKGMNGR/etc/apt/sources.list.d/docker.list" <<'EOF'
-deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable
-EOF
+# --- 4. the OS package lock (#560): the same apt sources, snapshot and pins as
+# the lean build (dev/os-lock/os-lock.sh), so this image installs the versions
+# the shipped image does. Build-host network only; the VM never apt-installs.
+# shellcheck source=dev/os-lock/os-lock.sh
+. "${REPO_ROOT}/dev/os-lock/os-lock.sh"
+stage_os_lock_apt "$PKGMNGR"
+OS_LOCK_SNAPSHOT="$(os_lock_snapshot)"
 
 # --- 5. mkosi build (from dev/cloud/test; Include=.. pulls in the production base
 # + its wiring). Re-own the staged trees + work dir to the caller; mkosi runs as
@@ -294,12 +382,32 @@ if [ -z "$MKOSI_INTERPRETER" ] && [ -n "$CALLER_HOME" ]; then
 fi
 [ -n "$MKOSI_INTERPRETER" ] || { echo "mkosi needs python >=3.10; none found" >&2; exit 1; }
 
+# MOOSE_MKOSI_TOOLS_TREE (opt-in): use this tools tree instead of building the
+# default one. CI sets it to dev/cloud/mkosi.tools, which the lean build made a
+# minute earlier in the same job from the same settings, and saves about 40 s.
+# Off by default: a local tree from an older build is not checked for being
+# current when it is named by path.
+tools_tree_args=()
+if [ -n "${MOOSE_MKOSI_TOOLS_TREE:-}" ]; then
+    [ -d "$MOOSE_MKOSI_TOOLS_TREE" ] || { echo "MOOSE_MKOSI_TOOLS_TREE='${MOOSE_MKOSI_TOOLS_TREE}' is not a directory" >&2; exit 1; }
+    echo "using the tools tree ${MOOSE_MKOSI_TOOLS_TREE} (MOOSE_MKOSI_TOOLS_TREE)"
+    tools_tree_args=(--tools-tree "$MOOSE_MKOSI_TOOLS_TREE")
+fi
+
 if [ -n "$CALLER" ]; then
     sudo -u "$CALLER" env "MKOSI_INTERPRETER=$MKOSI_INTERPRETER" \
-        "$MKOSI_BIN" --directory "$TEST_DIR" --force build
+        "$MKOSI_BIN" --directory "$TEST_DIR" "${tools_tree_args[@]}" --snapshot "$OS_LOCK_SNAPSHOT" --force build
 else
-    MKOSI_INTERPRETER="$MKOSI_INTERPRETER" "$MKOSI_BIN" --directory "$TEST_DIR" --force build
+    MKOSI_INTERPRETER="$MKOSI_INTERPRETER" "$MKOSI_BIN" --directory "$TEST_DIR" "${tools_tree_args[@]}" --snapshot "$OS_LOCK_SNAPSHOT" --force build
 fi
+
+# The boot-proof image is a second, separate build of the same package set, so
+# it must resolve to the same committed lock as the lean one. In CI this is the
+# "two builds of one commit install the same versions" proof (#560). Never in
+# record mode: only the lean build records.
+TEST_MANIFEST="$(ls -1 "$WORK"/*.manifest 2>/dev/null | head -n1 || true)"
+[ -n "$TEST_MANIFEST" ] || { echo "no package manifest under $WORK" >&2; exit 1; }
+MOOSE_OS_LOCK_RECORD= os_lock_check "$TEST_MANIFEST" "$WORK/cloud-packages.lock"
 
 # mkosi writes to OutputDirectory=.dev/cloud-boot. Confirm the raw exists.
 if [ ! -f "$IMAGE_OUT" ]; then
@@ -312,6 +420,14 @@ if [ ! -f "$IMAGE_OUT" ]; then
     ls -la "$WORK" >&2 || true
     exit 1
 fi
+
+# The slot budget, reported but not gated (#561, dev/cloud/slot-budget.sh). The
+# 60% gate is on the image that ships (dev/cloud/bootstrap.sh); this one also
+# carries test-only images, so it only has to fit its 1 GiB slot, which
+# systemd-repart already enforces when it builds the image.
+# shellcheck source=dev/cloud/slot-budget.sh
+. "${CLOUD_DIR}/slot-budget.sh"
+slot_budget_check "$IMAGE_OUT" 100 "OS slot use (the boot-proof image, with test-only images; not gated)"
 
 echo -n "$CANARY_VERSION" > "$CANARY"
 [ -n "$CALLER" ] && chown "$CALLER":"$(id -gn "$CALLER")" "$CANARY" "$IMAGE_OUT" 2>/dev/null || true

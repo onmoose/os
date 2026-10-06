@@ -41,6 +41,7 @@ import (
 	"github.com/onmoose/os/internal/hostagent/brainlaunch"
 	"github.com/onmoose/os/internal/hostagent/controlplane"
 	"github.com/onmoose/os/internal/hostagent/cpupdate"
+	"github.com/onmoose/os/internal/hostagent/sshaccess"
 	"github.com/onmoose/os/internal/profile"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/version"
@@ -79,6 +80,25 @@ func main() {
 	// wiring_appliance.go (!hosted) / wiring_hosted.go (hosted).
 	a, cleanup := buildAgent()
 	defer cleanup()
+
+	// After a Debian major the /etc tidy-up keeps the sshd drop-in but drops the
+	// unit's enable links (BUILD.md # 1b, rule 4), and leaves a marker. Only
+	// then is sshd turned back on for the accounts the drop-in names. On any
+	// other start host-agent leaves sshd's run state alone.
+	if _, err := os.Stat(sshaccess.MajorTidiedMarker); err == nil {
+		if sm, ok := a.SSH.(*sshaccess.Manager); ok {
+			if on, err := sm.EnsureOnAtStart(); err != nil {
+				slog.Warn("could not turn sshd on after a Debian-major tidy-up; trying again at the next start", "err", err)
+			} else {
+				if on {
+					slog.Info("sshd turned on after a Debian-major tidy-up: accounts have SSH on")
+				}
+				if err := os.Remove(sshaccess.MajorTidiedMarker); err != nil {
+					slog.Warn("could not remove the tidy-up marker", "err", err)
+				}
+			}
+		}
+	}
 
 	// The brain's launch config is built once and used twice: to launch the
 	// brain at boot, and as the base of every control-plane update. Reusing it
@@ -138,7 +158,15 @@ func main() {
 	// prompt differ, and both come from the build-tagged updateTargetSource.
 	// Started last for the same reason the poll is: nothing about booting waits
 	// on it.
-	stopTarget := startUpdateTarget(brainCfg, a, poller)
+	// Stream A (#563). Boot decides first whether this boot is an OS trial,
+	// whatever the update loop does below: a trial has to be decided even on
+	// a box whose update target is unusable.
+	osApp := osUpdateApplier(osUpdateDeps{agent: a, brainCfg: brainCfg})
+	if osApp != nil {
+		osApp.Boot(context.Background())
+		a.OS = osApp
+	}
+	stopTarget := startUpdateTarget(brainCfg, a, poller, osApp)
 	defer stopTarget()
 
 	slog.Info("host-agent-real listening", "sock", sockPath)

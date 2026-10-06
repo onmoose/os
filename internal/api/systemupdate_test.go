@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,4 +376,31 @@ func TestUpdateTarget_HostFailureIs502(t *testing.T) {
 	h.targetStatus = http.StatusInternalServerError
 	_, err := h.readTarget(adminCtx("u_admin"))
 	assertStatus(t, err, http.StatusBadGateway)
+}
+
+// Stream A rides the same read (#563): the host's os part reaches the caller
+// unchanged, outcome included.
+func TestUpdateTarget_OSPart(t *testing.T) {
+	h := newUpdateHarness(t)
+	h.target = protocol.UpdateTarget{
+		State: protocol.UpdateTargetCurrent,
+		OS: &protocol.OSUpdate{
+			State: protocol.OSUpdateInstalled, Running: "0.15.0", Slot: "A",
+			Target: &protocol.OSRelease{Version: "0.15.1", BundleURL: "https://github.com/onmoose/os/releases/download/v0.15.1/b.raucb", BundleSHA256: strings.Repeat("e", 64)},
+			Last:   &protocol.OSOutcome{ID: "os-0.15.0-1", Outcome: protocol.OSOutcomeGood, Version: "0.15.0", From: "0.14.9", At: "2026-10-01T03:10:00Z"},
+		},
+	}
+	out, err := h.readTarget(adminCtx("u_admin"))
+	if err != nil {
+		t.Fatalf("getSystemUpdateTarget: %v", err)
+	}
+	o := out.Body.OS
+	if o == nil || o.State != protocol.OSUpdateInstalled || o.Slot != "A" || o.Target == nil || o.Target.Version != "0.15.1" ||
+		o.Last == nil || o.Last.Outcome != "good" || o.Last.From != "0.14.9" {
+		t.Fatalf("os = %+v", o)
+	}
+	h.target.OS = nil
+	if out, _ := h.readTarget(adminCtx("u_admin")); out.Body.OS != nil {
+		t.Fatalf("no os part on the host must leave it out, got %+v", out.Body.OS)
+	}
 }

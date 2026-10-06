@@ -15,7 +15,8 @@ name: CI / Go
 
 on:
   pull_request:
-    branches: [dev, main]
+    # hotfix/** gates an OS lock bump into a patch-release branch (#560).
+    branches: [dev, main, "hotfix/**"]
     paths:
       - "**.go"
       - "go.mod"
@@ -23,6 +24,9 @@ on:
       - "Makefile"
       - "VERSION"
       - "api/**"
+      # The lock files have no .go in them, but dev/os-lock/oslock's test checks
+      # they fit together, so a lock bump PR must run it (#560).
+      - "dev/os-lock/**"
       - ".github/workflows/ci-go.yml"
 
 # Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).

@@ -1,0 +1,17 @@
+# Exact versions of the packages the OS image installs from apt repos that are
+# not in the Debian snapshot (BUILD.md # 1b # The OS package lock). Today that is
+# Docker's repo, download.docker.com, trixie pocket (dev/os-lock/os-lock.sh).
+#
+# One "package=version" line per package, in apt's own syntax. The build turns
+# each line into an apt pin (preferences.d, Pin-Priority 1001), so apt installs
+# exactly this version. A version that is gone from the repo makes apt fall back
+# to the newest one, and the package lock check (cloud-packages.lock) then fails
+# the build, so a missing pin never ships quietly.
+#
+# The scheduled bump (.github/workflows/os-lock-bump.yml) moves each pin to the
+# newest version within its current major. A move to a new major is a manual
+# edit here, in its own PR. Keep the four Docker packages on one release train.
+containerd.io=2.3.6-1~debian.13~trixie
+docker-ce=5:29.8.2-1~debian.13~trixie
+docker-ce-cli=5:29.8.2-1~debian.13~trixie
+docker-compose-plugin=5.6.0-1~debian.13~trixie

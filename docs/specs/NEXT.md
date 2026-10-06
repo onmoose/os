@@ -150,6 +150,20 @@ The obvious fix is optional pinned-reference fields (`brain_image`, `ui_image`) 
 
 ---
 
+### A/B OS image: what to prove before it ships
+
+The shape is decided (`BUILD.md` # 1b, `UPDATES.md` # 1, `DECISIONS.md` 2026-10-01) and the engine was proved in QEMU (`../progress/ab-update-engine-spike.md`). These points are still open, and each one can change the build:
+
+1. **Secure Boot on the appliance.** shim plus Debian's signed GRUB limits which modules and files GRUB may load. The `grub.cfg` uses `regexp`, `loadenv`, `test`, `squash4` and `xzio`, and reads the kernel from a slot's squashfs (xz), which is how the hosted image boots since #561. Prove it, or find the shape that works.
+2. **dm-verity for the slots**, set up in the initrd for the booted slot, with the root hash carried where the signed boot chain can vouch for it.
+3. **A slot that hangs.** *Resolved for hosted 2026-10-05.* Hetzner Cloud VMs have a hardware watchdog (the ICH9 TCO timer of QEMU's `q35` machine), the image's generic kernel drives it, and a VM whose PID 1 froze reset itself after 118 s (`../progress/ab-hang-and-major.md`). Two gaps are written down in `BUILD.md` # 1b # As built: the reset comes after about twice `RuntimeWatchdogSec`, and a hang in GRUB or the initramfs is not covered. The appliance falls back to `softdog` where a machine has no hardware watchdog (#564).
+4. **A replaced OS drive (appliance).** The state partition now holds users, password hashes and host keys, and the OS drive was sold as replaceable (`STORAGE.md` # OS drive). Decide how they come back: from the off-box backup, or by rebuilding them from the brain's records.
+5. **A Debian major across the overlay.** *Resolved 2026-10-05 (`DECISIONS.md` 2026-10-05).* When the booted slot's Debian major differs from the one the state partition records, in either direction, the initramfs tidies the `/etc` upper layer: moose's known files are kept, the account files are merged, the pinned files are taken again from the slot when that keeps the box's remap, and everything else moves to an attic (`BUILD.md` # 1b, rule 4). It must ship in a Debian 13 release before the first Debian 14 release.
+6. **How OS patch releases are cut.** *Resolved 2026-10-01 (#560, `DECISIONS.md` 2026-10-01).* A lock-only release is cut from `main` on a `hotfix/X.Y.Z` branch: the bump is re-run against it, `VERSION` is bumped there, the PR goes into `main`, and `main` is then carried into `dev` as after every release. A bump that changes any package from `trixie-security` is released within 7 days; any other bump ships with the next normal release (`docs/dev/contributing.md` # OS patch releases from a lock bump).
+
+**Context:** `BUILD.md` # 1b, `UPDATES.md` # 1, `STORAGE.md` # OS drive, `RELEASE_MANIFEST.md`, #486.
+**Why Tier 2:** none of it blocks the hosted build, which has no Secure Boot, no verity and no replaceable drive. Points 1, 2 and 4 block the appliance build.
+
 ## Tier 3 — Defer-able, but pin the shape
 
 ### Align the QEMU test lane to Trixie (currently Bookworm)
@@ -184,10 +198,7 @@ App-level and managed-service migration are well-specced (`SERVICE_PROVISIONING.
 
 ### OS major-version upgrade commitment
 
-`UPDATES.md` covers both streams under one Debian release. What about Debian 12 → 13? Options: in-place `do-release-upgrade` (Debian's blessed path, sometimes brittle), image-based A/B (HexOS / ChromeOS shape — clean rollback, doubles OS-drive footprint), or "reinstall + import data" (cheap to ship, terrible UX). The *commitment* (will we ever expect users to reinstall to get a new Debian major?) is a position to take now; the mechanism can wait.
-
-**Context:** `UPDATES.md`, `STORAGE.md` (system dataset vs. data drive split makes image-based A/B more feasible), `BUILD.md`.
-**Why Tier 3:** doesn't bite until Debian cuts the next stable (~2027). Pin the commitment now so design choices don't accidentally foreclose A/B.
+**Resolved 2026-10-01.** The commitment: **nobody reinstalls to get a new Debian major.** The mechanism: a Debian major is a new A/B OS image like any other (`UPDATES.md` # 1, `DECISIONS.md` 2026-10-01), with the same automatic revert. The one risk left, files in the `/etc` upper layer staying at the old major's version, was resolved on 2026-10-05: a Debian major tidies the upper layer (# A/B OS image, point 5).
 
 ### Outgoing mail — what stays deferred past BYO (`SERVICE_PROVISIONING.md` # BYO outgoing mail)
 
@@ -335,6 +346,8 @@ When a box has been offline long enough that `.onmoose.io` certs expired: serve 
 
 Both deferred from v1 (`DECISIONS.md` 2026-05-15). Shape is pinned in `RELEASE_MANIFEST.md` # Future work + # Channels — schema is additive, hash formula is `hash(machine_id || canonical(brain, ui))`, beta is a sibling `beta.json` file. What's still open: the **trigger conditions** in concrete terms (what fleet-size threshold, what auto-apply milestone, what bad-release detection latency forces our hand). Pre-decide so we don't dither when one of them fires.
 
+**The primary trigger is now designed (2026-10-01).** OS updates auto-apply on appliance once the A/B image ships (#486), so a bad OS release reaches every appliance box in one night. Pacing for OS releases on appliance is part of this topic.
+
 **Narrowed to appliance (2026-08-11).** Hosted no longer needs any of this: a per-box target version in the cloud control plane gives staged rollout, per-box pinning, and halt without a cohort hash or a second channel file (`UPDATES.md` # 8.1). This entry is now only about boxes we cannot address individually.
 
 **Context:** `RELEASE_MANIFEST.md`, `UPDATES.md` # 3, # 8.1.
@@ -348,7 +361,7 @@ The architecture and the install/wizard/add-drive/eject mechanics are locked (`S
 
 ### Reboot scheduling UX
 
-"Reboot tonight at 3am OK?" prompt vs. silent within window. Surface only when blocked vs. always.
+**Narrowed 2026-10-01.** The OS update now reboots by itself in the window on both profiles, with no prompt (`DECISIONS.md` 2026-10-01). What is still open is only how it is shown: whether the dashboard says beforehand that tonight's window will restart the box, and whether an admin can push one night's reboot back.
 
 **Context:** `UPDATES.md`.
 
@@ -547,7 +560,7 @@ Loose ends. Each is parked until it bites or a higher-tier topic pulls it in.
 - Per-region / per-cohort rollouts. `UPDATES.md`.
 - Concrete "stable" promotion criteria. `UPDATES.md`.
 - CI signature-verification check on every `releases` PR (covered in `RELEASE_MANIFEST.md` # Promotion; tracked here so the implementation isn't forgotten when CI is stood up). `RELEASE_MANIFEST.md`.
-- Signing-key custody + rotation runbook (deferred per `RELEASE_MANIFEST.md` # Signing — "until we have a release to sign"). `RELEASE_MANIFEST.md`, `BUILD.md`.
+- Signing-key custody + rotation runbook for the release **manifest** (minisign; deferred per `RELEASE_MANIFEST.md` # Signing — "until we have a release to sign"). The OS bundle's custody and runbook are decided (`DECISIONS.md` 2026-10-02, `docs/dev/rauc-signing.md`); the manifest's should follow the same offline-root shape where it can. `RELEASE_MANIFEST.md`, `BUILD.md`.
 
 **Services**
 - Per-app DB resource quotas. `SERVICE_PROVISIONING.md`.
@@ -561,7 +574,7 @@ Loose ends. Each is parked until it bites or a higher-tier topic pulls it in.
 - Per-session concurrent file-transfer cap for the streaming `GET`/`PUT /api/v1/files/content` endpoints. These are streaming (not jobs, not SSE), so neither the per-session request-rate bucket nor the SSE-stream concurrency cap governs them (`BRAIN_UI_PROTOCOL.md` # Rate limiting & abuse — deliberately left out of the v1 posture). A small concurrency counter (same shape as the ≤16 SSE cap) is the obvious backstop for a buggy uploader; pin it when file-transfer abuse actually bites. `BRAIN_UI_PROTOCOL.md`, `FILES.md`.
 
 **Build & distribution**
-- Signing infrastructure for apt repo, registry images, ISO. `BUILD.md`.
+- Signing infrastructure for registry images and disk images. *(The OS bundle part is resolved 2026-10-02, #562: an offline root CA and a CI-only signer, `DECISIONS.md` 2026-10-02, `docs/dev/rauc-signing.md`.)* `BUILD.md`.
 - ISO size budget. `BUILD.md`.
 - Installer shares code with `moose-brain` vs. clean-sheet. `BUILD.md`.
 - Kiosk-installer failure-mode UX ("stuck at 73%"). `BUILD.md`.

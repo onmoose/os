@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/onmoose/os/internal/hostagent/controlplane"
+	"github.com/onmoose/os/internal/protocol"
 )
 
 // PollInterval is how often the box asks its source what it should be running.
@@ -40,6 +41,29 @@ type Applier interface {
 	// job runs in the background: a nil error means the transaction started, not
 	// that it succeeded.
 	StartUpdate(brainRef, uiRef string) (jobID string, err error)
+}
+
+// OSApplier is stream A's transaction (internal/hostagent/osupdate). Consumer-
+// side interface. Nil on a box that cannot update its OS.
+type OSApplier interface {
+	// Running is the OS release this box runs and the slot it booted.
+	Running() (version, slot string)
+	// Floor is the running control plane's minimum_host_agent, or "" when the
+	// box cannot read it.
+	Floor() string
+	// Apply moves the box towards rel: it installs into the other slot when
+	// that slot does not hold rel yet, and switches and reboots only when
+	// open is true. night names tonight's window, for the one attempt per
+	// target per night. It never blocks on the work: the work runs as a job.
+	Apply(rel OSRelease, open bool, night time.Time) OSDecision
+}
+
+// OSDecision is what the applier did or is doing. State is one of the
+// protocol.OSUpdate* values.
+type OSDecision struct {
+	State  string
+	Detail string
+	JobID  string
 }
 
 // RunningPair reports the control-plane images the box is running right now, so
@@ -100,6 +124,13 @@ type Loop struct {
 	// Profile is the environment profile this loop runs on (ENVIRONMENT.md),
 	// carried only so the logs say which one made a decision.
 	Profile string
+	// OS applies stream A. Nil means this box cannot update its OS (the
+	// appliance until #564, a test), and the OS part of an answer is then
+	// reported as unsupported and never acted on.
+	OS OSApplier
+	// OSURLPrefix is the expected start of every bundle URL; empty means
+	// DefaultOSURLPrefix.
+	OSURLPrefix string
 	// Interval between polls; zero means PollInterval.
 	Interval time.Duration
 	// Now and After exist so a test can drive a week of polling in
@@ -118,6 +149,9 @@ type Loop struct {
 	// that moves every night must not keep re-announcing a window that never
 	// moved.
 	lastWindow string
+	// lastOS dedupes stream A's lines, apart from lastQuiet for the same
+	// reason as lastWindow.
+	lastOS string
 	// attempted is the target version this loop last started an update for, and
 	// the night it did it in. One attempt per night per version: a failed
 	// update reverts the box, so the next tick sees the same difference again,
@@ -301,6 +335,14 @@ func (l *Loop) Tick(ctx context.Context) {
 		return
 	}
 
+	// The window is resolved first, before either stream is judged. An
+	// answer's window outranks the box's setting the moment the answer is read
+	// (UPDATES.md # 8.4), so a box that is already current still reports the
+	// hour it would update in, and stream A uses the same window whatever
+	// stream B's part says. The log line is deduped, so resolving it every tick
+	// costs nothing.
+	w, windowFrom := l.windowFor(t)
+
 	// Untrusted input, validated before anything is pulled. A refusal is loud
 	// and repeated: an operator needs to see that a box has been declining its
 	// target since Tuesday, and a source stuck on a bad answer is a fleet-wide
@@ -313,19 +355,16 @@ func (l *Loop) Tick(ctx context.Context) {
 		//
 		// The refused answer is kept in the snapshot. Nothing acts on it — the
 		// version and refs are what an operator needs to see to fix the source.
-		l.record(OutcomeRefused, t, l.window(), l.windowFrom(), err)
+		l.record(OutcomeRefused, t, w, windowFrom, err)
 		l.quiet(slog.LevelError, "refused:"+t.Version+":"+t.BrainImage+":"+t.UIImage,
 			"update target: refusing the answer; nothing pulled, box unchanged",
 			"err", err, "brain", t.Version, "image", t.BrainImage)
+		// Stream A is judged on its own (os.go): a refused control-plane part
+		// holds back only stream B, the same way a bad OS part holds back
+		// only stream A.
+		l.tickOS(t, w, false)
 		return
 	}
-
-	// The window is resolved here, before the compare, not further down on the
-	// apply path. An answer's window outranks the box's setting the moment the
-	// answer is read (UPDATES.md # 8.4), so a box that is already current still
-	// reports the hour it would update in. The log line is deduped, so resolving
-	// it every tick costs nothing.
-	w, windowFrom := l.windowFor(t)
 
 	brain, ui, err := l.Current.Running()
 	if err != nil {
@@ -339,14 +378,26 @@ func (l *Loop) Tick(ctx context.Context) {
 		l.record(OutcomeUnreachable, t, w, windowFrom, err)
 		l.quiet(slog.LevelWarn, "running-err:"+err.Error(),
 			"update target: cannot read what this box is running", "err", err)
+		// Stream B cannot tell whether it has work; stream A can, and goes on.
+		l.tickOS(t, w, false)
 		return
 	}
 	l.record(OutcomeOK, t, w, windowFrom, nil)
+	cpBusy := l.applyControlPlane(t, w, brain, ui)
+	l.tickOS(t, w, cpBusy)
+}
+
+// applyControlPlane is stream B's half of a tick: compare the running pair
+// with the target and start the update in the window. It reports whether
+// stream B holds the window right now (it started an update this tick, or
+// could not start one because a job runs), so stream A waits: stream B goes
+// first in the window and the OS reboot goes last (UPDATES.md # 7).
+func (l *Loop) applyControlPlane(t Target, w Window, brain, ui string) (busy bool) {
 	if brain == t.BrainImage && ui == t.UIImage {
 		// The overwhelmingly common case. No pull, no work, and one line the
 		// first time it is true.
 		l.quiet(slog.LevelInfo, "current:"+t.Version, "update target: already on the target version", "brain", t.Version)
-		return
+		return false
 	}
 
 	if !l.AutoApply || l.Applier == nil {
@@ -355,19 +406,20 @@ func (l *Loop) Tick(ctx context.Context) {
 		// slice; this is where the fact enters the box.
 		l.quiet(slog.LevelInfo, "available:"+t.Version, "update target: a different control plane is available",
 			"brain", t.Version, "image", t.BrainImage)
-		return
+		return false
 	}
 
 	now := l.now()
 	if !w.Contains(now) {
 		l.quiet(slog.LevelInfo, "holding:"+t.Version, "update target: holding a new version for the update window",
 			"brain", t.Version, "step", "waiting", "zone", now.Location().String())
-		return
+		return false
 	}
 	if night := occurrenceNight(w, now); l.attempted.version == t.Version && !night.After(l.attempted.night) {
 		// Already tried this version tonight. If it failed it has already put
-		// the box back, and the next window is soon enough to try again.
-		return
+		// the box back, and the next window is soon enough to try again. It
+		// no longer holds the window, so stream A may go.
+		return false
 	}
 
 	l.attempted.version, l.attempted.night = t.Version, occurrenceNight(w, now)
@@ -377,10 +429,71 @@ func (l *Loop) Tick(ctx context.Context) {
 		// Includes the ordinary "a job is already running" refusal, which is why
 		// this is a Warn and not an Error.
 		slog.Warn("update target: could not start the update", "err", err, "brain", t.Version)
-		return
+		return true
 	}
 	slog.Info("update target: applying", "brain", t.Version, "image", t.BrainImage,
 		"step", "accepted", "job_id", jobID)
+	return true
+}
+
+// tickOS is stream A's half of a tick (UPDATES.md # 1): check the OS part,
+// pick the release to install, and hand it to the OS applier with whether the
+// window is open to it. The applier installs ahead of the window and switches
+// and reboots only inside it.
+func (l *Loop) tickOS(t Target, w Window, cpBusy bool) {
+	if l.OS == nil {
+		l.recordOS(OSSnapshot{State: protocol.OSUpdateUnsupported, Detail: "this host-agent cannot update the OS"})
+		return
+	}
+	if t.OSErr != nil {
+		l.recordOS(OSSnapshot{State: protocol.OSUpdateRefused, Detail: t.OSErr.Error()})
+		l.quietOS(slog.LevelError, "refused:"+t.OSErr.Error(), "os update: refusing the OS part of the answer; nothing downloaded", "err", t.OSErr)
+		return
+	}
+	if len(t.OS) == 0 {
+		l.recordOS(OSSnapshot{State: protocol.OSUpdateNone})
+		l.quietOS(slog.LevelInfo, "none", "os update: the answer names no OS release; staying on this OS")
+		return
+	}
+	prefix := l.OSURLPrefix
+	if prefix == "" {
+		prefix = DefaultOSURLPrefix
+	}
+	running, slot := l.OS.Running()
+	if err := ValidateOS(t.OS, prefix); err != nil {
+		l.recordOS(OSSnapshot{State: protocol.OSUpdateRefused, Detail: err.Error()})
+		l.quietOS(slog.LevelError, "refused:"+err.Error(), "os update: refusing the OS part of the answer; nothing downloaded",
+			"err", err, "os", running)
+		return
+	}
+	rel, current, err := PickOS(running, l.OS.Floor(), t.OS)
+	if err != nil {
+		l.recordOS(OSSnapshot{State: protocol.OSUpdateRefused, Detail: err.Error()})
+		l.quietOS(slog.LevelError, "refused:"+err.Error(), "os update: refusing the OS target; nothing downloaded",
+			"err", err, "os", running)
+		return
+	}
+	if current {
+		l.recordOS(OSSnapshot{State: protocol.OSUpdateCurrent, Target: &rel})
+		l.quietOS(slog.LevelInfo, "current:"+rel.Version, "os update: already on the target OS", "os", running, "slot", slot)
+		return
+	}
+	now := l.now()
+	open := w.Contains(now) && !cpBusy
+	d := l.OS.Apply(rel, open, occurrenceNight(w, now))
+	l.recordOS(OSSnapshot{State: d.State, Detail: d.Detail, Target: &rel})
+	l.quietOS(slog.LevelInfo, "decision:"+rel.Version+":"+d.State+":"+d.Detail, "os update: "+d.State,
+		"os", rel.Version, "digest", rel.BundleSHA256, "slot", slot, "job_id", d.JobID)
+}
+
+// quietOS is quiet for stream A, with its own memory: the two streams change
+// independently.
+func (l *Loop) quietOS(level slog.Level, key, msg string, args ...any) {
+	if l.lastOS == key {
+		return
+	}
+	l.lastOS = key
+	slog.Log(context.Background(), level, msg, args...)
 }
 
 // Run ticks until ctx is done: once at the start, then on the jittered interval.

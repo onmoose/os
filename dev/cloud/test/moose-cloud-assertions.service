@@ -35,6 +35,7 @@ ImportCredential=moose.sso_token
 # other boot, like the first.
 ImportCredential=moose.sso_token2
 ImportCredential=moose.sso_token3
+ImportCredential=moose.os_test
 # The script polls the control plane up (docker load + brain bootstrap + compose
 # up race this unit) and can run for minutes; the default 90s start timeout would
 # kill it mid-poll before it writes a verdict. No timeout — the QEMU harness owns

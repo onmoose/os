@@ -384,3 +384,53 @@ func healthDedupKey(id, instanceKey string) string {
 	}
 	return "health:" + id + ":" + instanceKey
 }
+
+// SourceUpdate is the source_kind of an update-outcome notification
+// (NOTIFICATIONS.md # Updates).
+const SourceUpdate = "update"
+
+// OSUpdateDedupKey is the dedup key of one OS update outcome. The outcome id
+// comes from host-agent and names one switch, so a re-read of the same outcome
+// maps to the same row.
+func OSUpdateDedupKey(outcomeID string) string { return "os-update:" + outcomeID }
+
+// OSUpdateOutcome tells admins what the last OS update did (UPDATES.md # 1
+// step 6, NOTIFICATIONS.md # Updates): info when the box moved to the new
+// release, warning when the new release did not come up and the box went back
+// on its own. The caller makes sure each outcome is raised once. It reports
+// whether a notification was raised.
+func (n *Notifier) OSUpdateOutcome(outcomeID, outcome, version, from string) bool {
+	note := Notification{
+		TS:          n.now().UnixMilli(),
+		Category:    CategoryUpdates,
+		SourceKind:  SourceUpdate,
+		SourceID:    outcomeID,
+		DedupKey:    OSUpdateDedupKey(outcomeID),
+		Audience:    AudienceAdmins,
+		Variant:     VariantTransparency,
+		ActionLabel: "Open About",
+		ActionRoute: "/settings/about",
+	}
+	switch outcome {
+	case "good":
+		note.Severity = SeverityInfo
+		note.Summary = "moose updated its system to " + version
+		note.Body = "Your moose installed system version " + version + " overnight and restarted. Everything came back as it was."
+	case "reverted":
+		note.Severity = SeverityWarning
+		note.Summary = "A system update did not work, so moose went back"
+		note.Body = "Your moose tried to install system version " + version + " overnight. It did not start correctly, so moose went back to version " + from + " on its own. Nothing was lost. It tries again in a later night."
+	default:
+		return false
+	}
+	if err := n.store.RaiseNotification(note); err != nil {
+		slog.Error("notify: raise failed", "source_id", outcomeID, "err", err)
+		return false
+	}
+	n.publish(events.NotificationCreated, map[string]any{
+		"dedup_key": note.DedupKey,
+		"category":  string(note.Category),
+		"severity":  string(note.Severity),
+	})
+	return true
+}

@@ -5,15 +5,31 @@
 # separate, downstream concern that consumes this asset; this workflow does not
 # do it and holds no provider credentials.
 #
-# Three triggers, three intents:
+# Two release lines publish from here (BUILD.md # Versioning, DECISIONS.md
+# 2026-10-01), each behind its own switch:
+#   - the OS line (`VERSION`, git tag `vX.Y.Z`): the disk image, attached to the
+#     `vX.Y.Z` GitHub Release. Gated on SHOULD_PUBLISH_OS.
+#   - the control-plane line (`CONTROL_PLANE_VERSION`, git tag
+#     `control-plane-vX.Y.Z`): the brain and UI images pushed to ghcr, tagged
+#     `v<CONTROL_PLANE_VERSION>` + `latest`. Gated on SHOULD_PUBLISH_CP.
+# Both lines share the one build and the one boot proof: a control-plane-only
+# release builds the disk image too, boots it, and pushes the images that image
+# baked, so a control plane is only ever published after it was proven to boot.
+#
+# Triggers and their intents:
 #   - `workflow_call` — the AUTOMATED release path. `release.yml` runs on every
-#     push to `main`; when it finds `VERSION` names a version with no matching
-#     tag yet, it creates the tag + GitHub Release itself, THEN calls this
-#     workflow with `publish: true` (`secrets: inherit`) to build and publish
-#     the image for that same commit. This is the path a release actually
-#     takes now — read on for why it isn't the `push: tags` trigger below.
-#   - `push: tags: v*` — the MANUAL escape hatch: a human pushing a `vX.Y.Z`
-#     tag by hand (e.g. re-cutting an image for an already-tagged release
+#     push to `main`; when it finds a version file names a version with no
+#     matching tag yet, it creates the tag + GitHub Release itself, THEN calls
+#     this workflow with `publish_os` and/or `publish_control_plane` set
+#     (`secrets: inherit`) to build and publish for that same commit. This is
+#     the path a release actually takes now — read on for why it isn't the
+#     `push: tags` trigger below.
+#   - `push: tags: v*` — the MANUAL escape hatch for the OS line: a human
+#     pushing a `vX.Y.Z` tag by hand. It publishes the OS release files only
+#     (the disk image and the signed bundle, #562), never the control-plane images (a `v*` tag is an OS release now). A
+#     `control-plane-v*` tag does not match `v*` and triggers nothing; re-publish
+#     the control plane with workflow_dispatch instead (`publish=false
+#     publish_control_plane=true`) (e.g. re-cutting an image for an already-tagged release
 #     without touching `release.yml`). Deliberately KEPT alongside
 #     `workflow_call` rather than replaced by it, for a reason that is easy to
 #     "fix" into a bug if you don't know it: a tag created by `release.yml`
@@ -26,10 +42,17 @@
 #     triggers can never fire for the same tag-creation event, so there is no
 #     double-build risk from keeping both — `push: tags` only ever fires for a
 #     human-originated tag push (a PAT or a person's own `git push --tags`),
-#     never for the auto-tag `release.yml` creates.
+#     never for the auto-tag `release.yml` creates. Since #562 that OS
+#     release is the whole OS set: the disk image AND the signed bundle, so it
+#     needs the release root CA committed and the `os-release` signer, like
+#     any OS release (docs/dev/rauc-signing.md).
 #   - `workflow_dispatch` — manual, on-demand, ad hoc ref. The `publish` input
-#     still governs whether the run publishes (default true); `publish=false`
-#     gives a build-only smoke run. Unchanged from before tags existed.
+#     governs whether the run publishes BOTH lines (default true);
+#     `publish=false` gives a build-only smoke run. To re-publish one line only,
+#     pass `publish=false` with `publish_os=true` or `publish_control_plane=true`.
+#     Each publish step refuses to overwrite a release cut from another commit,
+#     and adds only what is missing: it never replaces an asset on a Release or
+#     an image tag on ghcr that is already published (see the guards).
 #   - `pull_request` (path-filtered, #389) — the UPDATER GUARD. A PR that touches
 #     the control-plane updater runs this lane automatically and boots ONLY the
 #     `update` scenario (see the boot-test step). It publishes nothing: no tag
@@ -41,14 +64,29 @@
 #     updater lands on `dev` and stays green until someone runs this workflow by
 #     hand (the same argument that put the `access` boot in the gate).
 #
-# The three publish-capable triggers share one `publish` input name/shape (`workflow_dispatch` and
-# `workflow_call` inputs both surface as the same `inputs.*` context), which
-# is why `SHOULD_PUBLISH` below needs no per-trigger special-casing for the
-# call path: `inputs.publish` already carries the right value regardless of
-# whether a human or `release.yml` set it.
+# `workflow_dispatch` and `workflow_call` inputs both surface as the same
+# `inputs.*` context. Dispatch has a `publish` switch for both lines plus one per
+# line; the call has one per line. An input a trigger does not declare reads as null, which is
+# falsy, so each SHOULD_PUBLISH_* below simply ORs the inputs that may set it.
 #
-# Either way the full build takes ~10 min and a publish is a deliberate act,
-# not a per-push one.
+# A publish is a deliberate act, not a per-push one.
+#
+# Shape (the CI speed-up, docs/progress/ci-cloud-image-speedup.md; `sign` from
+# #562). Four jobs:
+#   - `build` runs every assert, builds the production image and the boot-proof
+#     image once, and uploads them as artifacts. It also picks the boots.
+#   - `boot` is a matrix with one job per boot group and firmware, all at once,
+#     each booting the downloaded boot-proof image. `unseeded seeded` (and
+#     `frozen`, when it is asked for) stay one group: they share one disk.
+#   - `sign` runs only when the OS line publishes, after every `boot` job
+#     passed. It alone enters the `os-release` environment and re-signs the OS
+#     update bundle with the release signer; it does nothing else.
+#   - `publish` runs only when a line publishes, and only after `build` and
+#     every `boot` job passed (and `sign`, when the OS line publishes). It publishes the image and the control-plane
+#     images that `build` made, the same bytes the boots proved.
+# A full run takes about 12 min instead of about 27, and uses more runner
+# minutes in total (about 34 instead of about 27). The repo is public, so
+# standard runners cost nothing.
 #
 # Closes the gap #189/#238 carried: until now the cloud image had NO automated
 # build — `make build-cloud-image` ran only by hand, and on an Ubuntu 24.04 box
@@ -91,13 +129,23 @@ on:
   #   - internal/api/system*.go    POST /api/v1/system/update, the trigger the
   #                                boot drives
   #   - dev/cloud/**               the lane and its in-guest assertions
-  #   - this workflow
+  #   - dev/control-plane/**, dev/release/ghcr-resolve.sh, Makefile
+  #                                the control-plane bundle both images bake (#566)
+  #   - dev/os-lock/**             the OS package lock (#560). A PR that touches
+  #                                it runs the FULL boot list, not only `update`
+  #                                (see "Choose the boots"): a lock bump changes
+  #                                every package the boots stand on.
+  #   - the shared mkosi setup action, and this workflow
   pull_request:
     # `ready_for_review` is not in the default set and is needed here: the job
     # skips draft PRs (see the job's `if`), so marking one ready has to be what
     # starts the run. Without it a PR opened as a draft would never build.
     types: [opened, synchronize, reopened, ready_for_review]
-    branches: [dev, main]
+    # hotfix/** (#560): an OS lock bump for a patch release opens its PR into
+    # hotfix/X.Y.Z (docs/dev/contributing.md # OS patch releases from a lock
+    # bump). It touches dev/os-lock/, so it gets the lock check and the full
+    # boot list like a bump into dev.
+    branches: [dev, main, "hotfix/**"]
     paths:
       - "internal/hostagent/**"
       - "cmd/host-agent-real/**"
@@ -105,13 +153,30 @@ on:
       - "internal/lifecycle/lifecycle.go"
       - "internal/api/system*.go"
       - "dev/cloud/**"
+      - "dev/os-lock/**"
+      # The control-plane bundle the images bake (#566): the pull, the record
+      # and the make targets that run them.
+      - "dev/control-plane/**"
+      - "dev/release/ghcr-resolve.sh"
+      - "Makefile"
+      - ".github/actions/setup-mkosi/**"
       - ".github/workflows/ci-cloud-image.yml"
   workflow_dispatch:
     inputs:
       publish:
-        description: "Attach the built image to the tagged GitHub Release as an asset"
+        description: "Publish both lines: attach the disk image to the v<VERSION> Release and push the control-plane images to ghcr"
         type: boolean
         default: true
+      # One line at a time, for a re-publish of just that line. Use with
+      # publish=false, or `publish` turns both lines on anyway.
+      publish_os:
+        description: "With publish=false: attach the disk image to the v<VERSION> Release only"
+        type: boolean
+        default: false
+      publish_control_plane:
+        description: "With publish=false: push the control-plane images to ghcr only"
+        type: boolean
+        default: false
       # Run only some boots, for a quick proof of one scenario (#531), for
       # example `remap`. Empty runs the full gate list below. The names are the
       # ones dev/cloud/run-cloud-tests.sh knows, and it refuses any other, so a
@@ -123,70 +188,154 @@ on:
         description: "Boots to run, space separated (empty = the full gate list)"
         type: string
         default: ""
+      # Which brain and UI the images bake (#566, BUILD.md # Versioning).
+      # `local` builds them from this commit; `released` pulls the last
+      # released control plane (CONTROL_PLANE_VERSION) from ghcr by digest,
+      # which is what an OS-only release bakes. Use `released` with
+      # publish=false to see, before cutting an OS release, that the OS boots
+      # with the control plane it will ship. Only a run that publishes nothing
+      # reads it: an OS-only release always bakes `released`, a run that
+      # publishes the control plane always bakes `local`, and asking for
+      # `released` there fails at once.
+      control_plane:
+        description: "Brain and UI to bake: local (build this commit) or released (ghcr, v<CONTROL_PLANE_VERSION>)"
+        type: choice
+        options: [local, released]
+        default: local
   workflow_call:
     inputs:
-      publish:
-        description: "Attach the built image to the tagged GitHub Release as an asset"
+      publish_os:
+        description: "OS release: attach the built disk image to the v<VERSION> GitHub Release"
         type: boolean
-        default: true
+        default: false
+      publish_control_plane:
+        description: "Control-plane release: push the brain and UI images to ghcr as v<CONTROL_PLANE_VERSION>"
+        type: boolean
+        default: false
+      # The OS lock bump (os-lock-bump.yml, #560) calls this workflow to boot
+      # its bot/os-lock branch when no PR can be opened for it. A called
+      # workflow checks out the CALLER's ref by default, so the bump names the
+      # branch here. A run with a ref must not publish (asserted below): the
+      # publish steps describe github.sha, which is not the commit built.
+      ref:
+        description: "Git ref to build instead of the caller's (the OS lock bump branch)"
+        type: string
+        default: ""
 
-# contents: write is the minimum grant for `gh release upload`/`gh release
-# create` in the release-asset step below. packages: write is what lets the
-# job's own GITHUB_TOKEN push the control-plane images to ghcr (# 370) — still
-# no long-lived registry credential anywhere in this lane. Neither grant is
-# used on a pull_request run: both steps that need them are gated on
-# SHOULD_PUBLISH, which is false there (and asserted so, below). A PR from a
-# fork gets a read-only token regardless — it still builds and boots.
+# Read only by default. Every job sets its own permissions: `build` and `boot`
+# read only, and `publish` alone gets the two write grants. contents: write is
+# the minimum grant for `gh release upload`/`gh release create` in the
+# release-asset step, and packages: write is what lets the job's own
+# GITHUB_TOKEN push the control-plane images to ghcr (#370), so there is still
+# no long-lived registry credential anywhere in this lane. The publish job does
+# not run on a pull_request run: SHOULD_PUBLISH is false there (and asserted
+# so, in `build`). A PR from a fork gets a read-only token regardless, and it
+# still builds and boots. A caller (release.yml, os-lock-bump.yml) must still
+# grant both, since a called workflow can only narrow what its caller grants.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
-# Cancel superseded runs on the same ref.
+# Cancel superseded runs on the same ref. A call with `ref` (the OS lock bump)
+# is grouped by that ref, not by the caller's: the caller's ref is `dev`, and a
+# shared group would let a bump cancel an unrelated run on `dev`, or the reverse.
+#
+# A run that publishes has a group of its own (#562), marked `publish`
+# before the ref (`build` for every other run), and is never cancelled. The
+# marker comes first so no branch name, such as `main-publish`, can land in
+# the other group: a cancelled Release upload or ghcr push
+# leaves a half-published set that the next run then refuses. GitHub reads
+# `cancel-in-progress` from the NEW run, so one shared group would let a
+# build-only run on the same ref cancel a release in flight. With two groups a
+# build-only run can never cancel a release or wait behind one, and two
+# releases on one ref queue one after the other. Same expression as
+# SHOULD_PUBLISH below; the workflow `env` is not readable here.
 concurrency:
-  group: ci-cloud-image-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-cloud-image-${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'publish' || 'build' }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ !((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) }}
+
+# Single source of truth for "should this run publish", one per line, computed
+# once for the whole workflow and read by every job. SHOULD_PUBLISH is "either
+# line", for the asserts that must hold whatever is published.
+#
+# OS: a real `v*` tag push always publishes the disk image (that's the
+# point of tagging an OS release); otherwise `publish` (dispatch) or
+# `publish_os` (dispatch or call). On a `push` event no input is defined, which is why
+# the tag-push half of the OR is needed.
+# Control plane: only `publish` (dispatch) or `publish_control_plane`
+# (dispatch or call). A `v*` tag push is an OS release and never
+# pushes the control-plane images.
+# Each expression ends in `&& 'true' || 'false'` so the env value is always
+# the string true or false, never an empty string from a null input.
+#
+# `startsWith(github.ref, 'refs/tags/')` is LOAD-BEARING, not
+# belt-and-braces. In a reusable workflow the `github` context is the
+# CALLER's, not this workflow's: when release.yml (triggered by
+# `push: branches: [main]`) calls us, github.event_name here is `push` and
+# github.ref is `refs/heads/main`. Keyed on event_name alone this would
+# collapse to "any call from a push-triggered workflow publishes",
+# ignoring `publish` entirely — a future caller passing publish=false
+# would publish anyway. Keyed on the ref, the only path that publishes
+# without an explicit input is a genuine tag push.
+#
+# MOOSE_BUILD_CACHE comes from the same expression as SHOULD_PUBLISH, inverted.
+# A run that publishes nothing builds the hosted Caddy image with the GitHub
+# Actions layer cache (`gha`); the brain and UI always build plain. A run where either line
+# publishes gets `none`: it reads no cache and builds what ships fresh, so no
+# layer another run wrote can reach a release. The Makefile reads it.
+env:
+  SHOULD_PUBLISH_OS: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os) && 'true' || 'false' }}
+  SHOULD_PUBLISH_CP: ${{ (inputs.publish || inputs.publish_control_plane) && 'true' || 'false' }}
+  SHOULD_PUBLISH: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'true' || 'false' }}
+  MOOSE_BUILD_CACHE: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os || inputs.publish_control_plane) && 'none' || 'gha' }}
+  # The RAUC keyring the images bake as /etc/rauc/keyring.pem (#562,
+  # dev/cloud/rauc.sh): the release root (dev/release/rauc/release-ca.pem) when
+  # this run publishes the OS line, a throwaway root on every other run. Same
+  # expression as SHOULD_PUBLISH_OS.
+  MOOSE_RAUC_KEYRING: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish || inputs.publish_os) && 'release' || 'throwaway' }}
+  # Which brain and UI both images bake (#566, dev/cloud/stage-control-plane.sh,
+  # BUILD.md # Versioning). The rule, in order:
+  #   1. The control plane publishes (SHOULD_PUBLISH_CP): `local`. This run
+  #      cuts that release, its images are not on ghcr yet, and the publish job
+  #      pushes the very images the boots ran. A merge that bumps both files
+  #      lands here too, so its disk image bakes the control plane released
+  #      beside it.
+  #   2. Only the OS publishes (SHOULD_PUBLISH_OS): `released`, the last
+  #      released control plane from ghcr by digest, so the image never bakes
+  #      unreleased brain or UI code under the last released number.
+  #   3. Nothing publishes: the dispatch input `control_plane`, else `local`, so
+  #      a PR or a lock bump boots the brain of its own commit.
+  MOOSE_CONTROL_PLANE_SOURCE: ${{ (inputs.publish || inputs.publish_control_plane) && 'local' || (((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish_os) && 'released' || (inputs.control_plane == 'released' && 'released' || 'local')) }}
 
 jobs:
-  cloud-image:
-    name: Build + seeded-boot test + publish hosted cloud image
+  build:
+    name: Build the hosted cloud image and the boot-proof image
     # Skip draft PRs. This job builds a whole OS image, so every push to a draft
-    # would spend ~12-15 min of runner on work nobody is reading yet. Marking the
+    # would spend runner time on work nobody is reading yet. Marking the
     # PR ready fires `ready_for_review` and the run starts then. Only affects
     # pull_request runs — a tag push, a dispatch or the release call has no draft
-    # field and passes the first half of the condition.
+    # field and passes the first half of the condition. The boot and publish
+    # jobs need this one, so they skip with it.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    # Single source of truth for "should this run publish", computed once and
-    # read by the release-asset step below.
-    # A real tag push always publishes (that's the point of tagging a release);
-    # a workflow_dispatch OR workflow_call run publishes iff its `publish`
-    # input says so. On a `push` event `inputs.publish` is undefined, which is
-    # why the tag-push half of the OR is needed — `inputs.publish` alone would
-    # evaluate falsy and silently skip publishing on every tagged release.
-    # `workflow_call` and `workflow_dispatch` both populate the SAME `inputs`
-    # context under the same input name (`publish`), so `release.yml` calling
-    # this workflow with `publish: true` flows through the `inputs.publish`
-    # half identically to a human running `workflow_dispatch publish=true`.
-    #
-    # `startsWith(github.ref, 'refs/tags/')` is LOAD-BEARING, not
-    # belt-and-braces. In a reusable workflow the `github` context is the
-    # CALLER's, not this workflow's: when release.yml (triggered by
-    # `push: branches: [main]`) calls us, github.event_name here is `push` and
-    # github.ref is `refs/heads/main`. Keyed on event_name alone this would
-    # collapse to "any call from a push-triggered workflow publishes",
-    # ignoring `publish` entirely — a future caller passing publish=false
-    # would publish anyway. Keyed on the ref, the only path that publishes
-    # without an explicit input is a genuine tag push.
-    env:
-      SHOULD_PUBLISH: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || inputs.publish }}
+    # This job runs mkosi as root with a lot of third-party code, and it
+    # publishes nothing, so it gets read access only. The write grants are on
+    # the publish job alone.
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.boots.outputs.matrix }}
+      should_publish: ${{ env.SHOULD_PUBLISH }}
+      should_publish_os: ${{ env.SHOULD_PUBLISH_OS }}
+      # The sha256 of the bundle this job built (#562). The `sign` job signs
+      # only a bundle with this digest.
+      bundle_sha256: ${{ steps.bundle.outputs.sha256 }}
     # Pin 24.04 explicitly: this is the exact environment that reproduces the
     # mkosi-sandbox EPERM (#189), so the fix has to be proven here, not on a
     # floating ubuntu-latest.
     runs-on: ubuntu-24.04
-    # Two mkosi builds (production image + QEMU test image), the QEMU boots (eight
-    # on a push/dispatch, just `update` on a PR; see MOOSE_CLOUD_BOOTS below), and
-    # the compress-and-attach publish run ~10 min in practice; the 120 cap is a
-    # generous ceiling so a one-off slow runner is never killed mid-build.
-    timeout-minutes: 120
+    # Two mkosi builds (production image + QEMU test image) and the uploads;
+    # a full build is about 8 min, and the cap is a generous ceiling so a
+    # one-off slow runner is never killed mid-build.
+    timeout-minutes: 60
     steps:
       # persist-credentials: false matters more now that a PR can start this job.
       # The job holds `packages: write` (the ghcr push below needs it), and by
@@ -201,6 +350,19 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Assert a run that builds another ref publishes nothing
+        if: ${{ inputs.ref != '' && inputs.ref != null }}
+        env:
+          REF_INPUT: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${SHOULD_PUBLISH}" = "true" ]; then
+            echo "::error::ref='${REF_INPUT}' builds a ref other than the caller's, so this run must not publish."
+            exit 1
+          fi
+          echo "building ref '${REF_INPUT}', SHOULD_PUBLISH=${SHOULD_PUBLISH}: nothing will be published"
 
       # A PR run must never publish. That already falls out of SHOULD_PUBLISH
       # (a pull_request event has no tag ref and no `publish` input, so both
@@ -235,10 +397,39 @@ jobs:
           fi
           echo "boots='${BOOTS_INPUT}', SHOULD_PUBLISH=${SHOULD_PUBLISH}: nothing will be published"
 
+      # The control-plane source is decided by the publish switches when a
+      # line publishes (MOOSE_CONTROL_PLANE_SOURCE above). A dispatch that asks
+      # for `released` while it publishes the control plane would get `local`
+      # instead, so refuse it rather than quietly bake something else.
+      - name: Assert a control-plane release does not ask for the released control plane
+        if: ${{ inputs.control_plane == 'released' && env.SHOULD_PUBLISH_CP == 'true' }}
+        run: |
+          echo "::error::control_plane=released with a control-plane publish: a control-plane release bakes and pushes the images it builds. Drop one of the two."
+          exit 1
+
+      # Say what this run will publish, per line, before the build. It costs
+      # nothing and makes a wrong switch visible in the log at once.
+      - name: What this run publishes
+        run: |
+          echo "OS (disk image on the v$(tr -d '[:space:]' < VERSION) Release): ${SHOULD_PUBLISH_OS}"
+          echo "Control plane (ghcr brain + ui as v$(tr -d '[:space:]' < CONTROL_PLANE_VERSION)): ${SHOULD_PUBLISH_CP}"
+          echo "Brain and UI baked into the images: ${MOOSE_CONTROL_PLANE_SOURCE} (released = v$(tr -d '[:space:]' < CONTROL_PLANE_VERSION) from ghcr by digest)"
+          echo "Image build layer cache: ${MOOSE_BUILD_CACHE} (none on any run that publishes)"
+          echo "RAUC keyring in the image: ${MOOSE_RAUC_KEYRING} (release only when the OS line publishes)"
+
+      # An OS release bakes the release root CA into the image and has its
+      # bundle signed by the release signer (#562, docs/dev/rauc-signing.md).
+      # Without the committed root there is nothing to bake, so fail before the
+      # ~10 min build. The signer secrets are checked in the `sign` job, the
+      # only job that may read them.
+      - name: Assert an OS release has the release root CA
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        run: ./dev/release/require-release-ca.sh
+
       # Fail FAST on a mistagged release, before the ~10min build below runs.
-      # VERSION (repo root) is the single source of truth for the monorepo's
-      # one version (BUILD.md # Versioning, DECISIONS.md 2026-07-16); a `v*`
-      # tag push is only a real release if it matches. workflow_dispatch has no
+      # VERSION (repo root) is the source of truth for the moose (OS) release
+      # (BUILD.md # Versioning, DECISIONS.md 2026-10-01); a `v*` tag push is
+      # only a real OS release if it matches. workflow_dispatch has no
       # tag (github.ref_name is the branch/ref it ran against), so this only
       # runs — and only can fail — on a genuine `push: tags: v*` trigger.
       #
@@ -265,41 +456,44 @@ jobs:
           fi
           echo "tag ${{ github.ref_name }} matches VERSION"
 
-      # mkosi 26 builds rootless: it unshares a user namespace and drops
-      # capabilities inside it. Ubuntu 24.04 ships
-      # kernel.apparmor_restrict_unprivileged_userns=1, which hands an unconfined
-      # process a userns with no CAP_SETPCAP, so mkosi's PR_CAPBSET_DROP returns
-      # EPERM and the build dies at sandbox bring-up (#189). Relaxing the knob is
-      # safe on an ephemeral runner.
-      - name: Relax AppArmor unprivileged-userns restriction
+      # The QEMU packages, downloaded ONCE here, on a fresh runner before
+      # anything else is installed, so the set is exactly what a fresh boot
+      # runner lacks. Each boot job installs them from the artifact instead of
+      # the Ubuntu mirror: with ten boot jobs at once, one slow mirror would
+      # otherwise hold up the whole run (a boot job once spent 6 min fetching
+      # these 46 MB at 135 kB/s).
+      - name: Download the QEMU packages for the boot jobs
         run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          echo "before: $(cat "$knob" 2>/dev/null || echo 'n/a')"
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          echo "after:  $(cat "$knob")"
-
-      # Host tooling mkosi needs to bootstrap a Debian tools tree and build
-      # rootless (uidmap/mmdebstrap/keyring; dosfstools/mtools for the ESP;
-      # squashfs-tools/e2fsprogs for the root; systemd-container for the nspawn
-      # build sandbox; libpam0g-dev for the slim host-agent-real CGO build).
-      - name: Install mkosi and image-build tooling
-        run: |
+          set -euo pipefail
+          debs="${RUNNER_TEMP}/qemu-debs"
+          mkdir -p "${debs}/partial"
           sudo apt-get update
-          sudo apt-get install -y \
-            uidmap mmdebstrap debian-archive-keyring \
-            dosfstools mtools squashfs-tools e2fsprogs systemd-container \
-            libpam0g-dev
-          git clone --depth=1 --branch v26 \
-            https://github.com/systemd/mkosi.git /tmp/mkosi-src
-          sudo ln -sf /tmp/mkosi-src/bin/mkosi /usr/local/bin/mkosi
+          sudo apt-get install -y --download-only -o Dir::Cache::Archives="${debs}" qemu-system-x86 qemu-utils ovmf
+          sudo rm -rf "${debs}/partial" "${debs}/lock"
+          sudo chmod -R a+r "${debs}"
+          ls "${debs}" | wc -l
+      - name: Upload the QEMU packages
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-image-qemu-debs
+          path: ${{ runner.temp }}/qemu-debs/*.deb
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+      # The userns knob (#189), the image-build tools and mkosi v26. Shared with
+      # the OS lock bump (os-lock-bump.yml), so both build the same way.
+      - uses: ./.github/actions/setup-mkosi
 
       # QEMU + UEFI firmware for the seeded-boot test lane (run-cloud-tests.sh).
       # GitHub-hosted Linux runners expose /dev/kvm; the lane uses it when present
       # and falls back to TCG otherwise (slower, still correct).
       - name: Install QEMU + OVMF for the seeded-boot test
         run: |
-          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
-          echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none — test lane will use TCG')"
+          sudo DEBIAN_FRONTEND=noninteractive dpkg -i "${RUNNER_TEMP}"/qemu-debs/*.deb
+          echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none: test lane will use TCG')"
 
       - name: Versions
         run: |
@@ -323,24 +517,23 @@ jobs:
           echo "go-bin=${go_bin}" >> "$GITHUB_OUTPUT"
           echo "go: ${go_bin} ($("$go_bin" version))"
 
-      # 1. Build the production image that will be published. A fresh checkout has
-      #    no .dev/ cache, so make rebuilds the control-plane images (brain/ui)
-      #    from source — this is what removes the stale-cached-brain failure mode.
-      - name: Build the hosted cloud image (+ lean check)
-        run: make build-cloud-image
-
-      # 2. SEEDED-BOOT GATE. Boot the image under QEMU with a current-schema seed
+      # The boots are chosen BEFORE the build, so a typo in the `boots` input
+      # fails at once, not after the ~10 min build.
+      #
+      # SEEDED-BOOT GATE. Boot the image under QEMU with a current-schema seed
       #    and assert the brain ingests it (cloud-assertions.sh 'seeded' boot). A
       #    brain that rejects the live seed fails here -> nothing is published. The
       #    test image reuses the control-plane bundle built in step 1, so it
       #    exercises the same brain that ships.
-      # Scope to unseeded + seeded + bios + access + update + ssh + remap, each
-      # guarding a regression that must never reach publish:
+      # Scope to unseeded + seeded + access + update + ssh + remap, each
+      # guarding a regression that must never reach publish. Since #561 every
+      # one of them runs twice, under UEFI and again under legacy BIOS, each
+      # firmware in its own boot job here (MOOSE_CLOUD_FIRMWARES, the lane's default
+      # "uefi bios"). A box landed on a Hetzner CX (Intel) type boots under
+      # legacy BIOS (#277), and the A/B slot switch must work the same there.
+      # Every boot also checks the A/B layout (cloud-assertions.sh 1b).
       #   - unseeded + seeded: the regression this gate was built for — the built
       #     image's brain accepting the current seed schema.
-      #   - bios (#277): re-boots the same image under legacy BIOS (SeaBIOS). A box
-      #     landed on a Hetzner CX (Intel) type is unbootable otherwise, and the
-      #     OVMF-only lane cannot catch it.
       #   - access (#308): the ONLY real-Caddy proof of the hosted per-app
       #     forward-auth gate + whole-Cookie-header strip (#305/#306) — a gate that is
       #     ON BY DEFAULT for every hosted app (docs/specs/DECISIONS.md 2026-07-08
@@ -384,8 +577,8 @@ jobs:
       # ON A PULL REQUEST the list narrows to `update` alone (#389). That boot is
       # standalone — its own fresh overlay and its own box-id — so it needs none
       # of the others, and the ones it drops each guard a publish-time regression
-      # that a PR cannot ship. One boot keeps the PR cost close to the build cost
-      # (the build dominates), while still failing a PR that breaks the updater.
+      # that a PR cannot ship. One boot (two jobs, one per firmware) keeps the PR
+      # cost close to the build cost, while still failing a PR that breaks the updater.
       # A PR that wants the whole list can still get it: `gh workflow run
       # "CI / Cloud image" --ref <branch> -f publish=false`. A manual run can
       # also pick its own list with the `boots` input, for example
@@ -397,11 +590,502 @@ jobs:
       # under `sudo -E`, and sudo's secure_path resets PATH, so `go` on the runner's
       # PATH is invisible to the script; pass it explicitly (run-cloud-tests.sh
       # honours ${GO:-}, and -E preserves it).
-      - name: Boot test (${{ github.event_name == 'pull_request' && 'control-plane update only' || inputs.boots || 'seed schema + BIOS/UEFI + access modes + control-plane update + SSH + userns tiers' }})
+      # Which boots run. A PR boots only `update` (the updater guard, #389),
+      # unless it touches the OS package lock: a lock bump changes every package
+      # the boots stand on, so it runs the full gate list (#560). Any other run
+      # takes the `boots` input or the full list. The PR's file list comes from
+      # the compare API, so the checkout can stay shallow.
+      - name: Choose the boots
+        id: boots
         env:
-          MOOSE_CLOUD_BOOTS: ${{ github.event_name == 'pull_request' && 'update' || inputs.boots || 'unseeded seeded bios access update ssh remap' }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BOOTS_INPUT: ${{ inputs.boots }}
+        run: |
+          set -euo pipefail
+          full="unseeded seeded access update ssh remap os-update os-revert"
+          if [ "$EVENT" = "pull_request" ]; then
+            # The compare API needs only `contents: read`, which this job has. The
+            # PR files API would need `pull-requests: read`, and asking for it
+            # here would break release.yml's call, which does not grant it.
+            files="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.files[].filename')"
+            if printf '%s\n' "$files" | grep -q '^dev/os-lock/'; then
+              list="$full"; why="this PR changes the OS package lock"
+            else
+              list="update"; why="control-plane update only"
+            fi
+          else
+            list="${BOOTS_INPUT:-$full}"; why="full gate list or the boots input"
+          fi
+          echo "boots: ${list} (${why})"
+
+          # One boot job per group and firmware. unseeded, seeded and frozen
+          # share one disk overlay (frozen reboots the disk seeded provisioned),
+          # so they stay one group; every other boot takes its own overlay and
+          # gets its own job. The names are checked here, before any boot job
+          # starts; run-cloud-tests.sh checks them again.
+          # set -f: the list is split on spaces, never expanded as a glob.
+          set -f
+          chain=""; groups=()
+          for b in $list; do
+            case "$b" in
+              unseeded|seeded|frozen) case " $chain " in *" $b "*) ;; *) chain="${chain:+$chain }$b" ;; esac ;;
+              access|update|ssh|remap|os-update|os-revert) case " ${groups[*]-} " in *" $b "*) ;; *) groups+=("$b") ;; esac ;;
+              bios) echo "::error::'bios' is no longer a boot: every boot runs under both firmwares"; exit 1 ;;
+              *) echo "::error::unknown boot '$b' (known: unseeded seeded frozen access update ssh remap os-update os-revert)"; exit 1 ;;
+            esac
+          done
+          # A run that publishes the OS bakes only the release root into the
+          # boot-proof image, so the throwaway-signed test bundle cannot install
+          # (#563). os-update then runs its refusal half only, and os-revert,
+          # which needs an install, is left out.
+          if [ "$SHOULD_PUBLISH_OS" = true ]; then
+            kept=(); for g in "${groups[@]}"; do [ "$g" = os-revert ] || kept+=("$g"); done; groups=("${kept[@]}")
+            echo "an OS release run: os-update runs its refusal half only, os-revert is left out"
+          fi
+          # The OS update boots need the test bundle; the build makes it only
+          # when one of them runs (about 1.5 min).
+          os_test=false
+          case " ${groups[*]} " in *" os-update "*|*" os-revert "*) os_test=true ;; esac
+          echo "os_test=${os_test}" >> "$GITHUB_OUTPUT"
+          if [ -n "$chain" ]; then groups=("$chain" "${groups[@]}"); fi
+          [ "${#groups[@]}" -gt 0 ] || { echo "::error::the boot list '${list}' names no boot"; exit 1; }
+          matrix="$(printf '%s\n' "${groups[@]}" | jq -Rnc '[inputs] as $g | {include: [$g[] as $b | ("uefi", "bios") as $f | {boots: $b, firmware: $f}]}')"
+          echo "matrix: ${matrix}"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+      # Layer cache for the hosted Caddy image build, on a run that publishes
+      # nothing (MOOSE_BUILD_CACHE, workflow env above). The Makefile's Caddy
+      # build reads and writes the GitHub Actions cache through
+      # BuildKit, which needs the runtime token and cache URLs a `run` step
+      # does not see; the first step exposes them. The second makes the
+      # docker-container builder the Makefile names, under `sudo -E` like the
+      # build itself, so both find the same builder config. A cache is scoped
+      # to a branch: a run reads its own branch's entries and those of `dev`.
+      # Pinned by commit: this third-party action runs in a job that builds
+      # what CI boots.
+      - name: Expose the Actions cache to the image builds
+        if: ${{ env.MOOSE_BUILD_CACHE == 'gha' }}
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+      - name: Create the builder for the layer cache
+        if: ${{ env.MOOSE_BUILD_CACHE == 'gha' }}
+        run: sudo -E docker buildx create --name moose-cache --driver docker-container --bootstrap
+
+      # 1. Build the production image that will be published. A fresh checkout has
+      #    no .dev/ cache, so make rebuilds the control-plane images (brain/ui)
+      #    from source — this is what removes the stale-cached-brain failure mode.
+      - name: Build the hosted cloud image (+ lean check + OS package lock check)
+        env:
+          GO: ${{ steps.go.outputs.go-bin }}
+        run: |
+          set -euo pipefail
+          make build-cloud-image
+          # What the image that ships baked (#566). The boot-proof build below
+          # must bake the same pair; the step after it checks.
+          cp .dev/control-plane/control-plane.env "${RUNNER_TEMP}/control-plane.env"
+          {
+            echo "### Control plane baked into the image (${MOOSE_CONTROL_PLANE_SOURCE})"
+            echo ""
+            echo '```'
+            grep '^MOOSE_BAKED_' "${RUNNER_TEMP}/control-plane.env"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The OS update bundle (#562, BUILD.md # 1b # The bundle): slot A of the
+      # image just built, as a verity RAUC bundle signed with the throwaway key,
+      # checked against the keyring and config read back out of the slot, with
+      # a wrong-key check and a rehearsal of the sign job's re-signing. It
+      # writes the bundle size to the job summary. About 1 min.
+      - name: Build the OS update bundle (+ keyring and signature checks)
+        id: bundle
+        env:
+          GO: ${{ steps.go.outputs.go-bin }}
+        run: |
+          set -euo pipefail
+          sudo -E ./dev/cloud/build-bundle.sh .dev/cloud/moose-cloud.raw .dev/cloud/bundle
+          sum="$(sha256sum .dev/cloud/bundle/moose-cloud.raucb | cut -d' ' -f1)"
+          echo "bundle sha256: ${sum}"
+          echo "sha256=${sum}" >> "$GITHUB_OUTPUT"
+
+      # The package list this build resolved to (#560). When the lock check
+      # fails, this is the file to compare with dev/os-lock/cloud-packages.lock,
+      # or to commit when the change was on purpose. Uploaded on failure too,
+      # which is when it matters.
+      - name: Upload the resolved package list
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-packages-lock
+          path: |
+            .dev/cloud/cloud-packages.lock
+            .dev/cloud/lean-check.txt
+          if-no-files-found: ignore
+
+
+      # 1b. The boot-proof image: the production image plus the test harness
+      #     (dev/cloud/test/). It reuses the control-plane bundle built in step 1,
+      #    so the boots exercise the same brain that ships. It also reuses the
+      #    tools tree step 1 just made from the same settings
+      #    (MOOSE_MKOSI_TOOLS_TREE), which saves about 40 s. Then it converts the
+      #    image to qcow2 once, for every boot job to download: the qcow2 skips
+      #    the empty space, so it is about half the size of the raw.
+      - name: Build the boot-proof image
+        env:
+          GO: ${{ steps.go.outputs.go-bin }}
+          MOOSE_MKOSI_TOOLS_TREE: ${{ github.workspace }}/dev/cloud/mkosi.tools
+        run: |
+          set -euo pipefail
+          sudo -E ./dev/cloud/test/bootstrap.sh
+          # The boots must run the brain and UI the shipped image baked (#566):
+          # the same record, so the same image IDs (cloud-assertions.sh 5a then
+          # checks the running containers against it).
+          if ! cmp "${RUNNER_TEMP}/control-plane.env" dev/cloud/mkosi.extra.wiring/usr/lib/moose/control-plane.env; then
+            echo "::error::the boot-proof image baked another control plane than the image that ships"
+            diff "${RUNNER_TEMP}/control-plane.env" dev/cloud/mkosi.extra.wiring/usr/lib/moose/control-plane.env || true
+            exit 1
+          fi
+          echo "boot-proof image bakes the same control plane as the image that ships"
+          qemu-img convert -f raw -O qcow2 .dev/cloud-boot/moose-cloud.raw .dev/cloud-boot/moose-cloud-boot.qcow2
+          ls -l .dev/cloud-boot/moose-cloud-boot.qcow2
+
+      # The test-only OS bundle the os-update and os-revert boots install
+      # (#563): the boot-proof slot repacked fast (gzip level 1) with a
+      # host-agent one patch release up, signed with the throwaway key. Only
+      # when one of those boots runs.
+      - name: Build the OS test bundle
+        if: ${{ steps.boots.outputs.os_test == 'true' }}
+        env:
+          GO: ${{ steps.go.outputs.go-bin }}
+        run: sudo -E ./dev/cloud/test/build-os-test-bundle.sh .dev/cloud-boot/moose-cloud.raw .dev/cloud-boot/os-test
+      - name: Upload the OS test bundle
+        if: ${{ steps.boots.outputs.os_test == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          overwrite: true
+          name: cloud-image-os-test-bundle
+          path: .dev/cloud-boot/os-test
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+      # The squashfs inside is already xz, so zipping it again only costs time.
+      # Three days is enough to re-run a failed boot or publish job.
+      - name: Upload the boot-proof image
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-image-boot-qcow2
+          path: .dev/cloud-boot/moose-cloud-boot.qcow2
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+      # What the publish job publishes, uploaded only when that line publishes:
+      # the production raw this job built, and the brain and UI tarballs that
+      # step 1 baked into both images. The publish job loads those tarballs, so
+      # it pushes the very images the boots ran, not a rebuild. The raw is
+      # mostly empty space, so the fastest zip level still shrinks it a lot.
+      - name: Upload the production image for the publish job
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-image-os-raw
+          path: .dev/cloud/moose-cloud.raw
+          compression-level: 1
+          retention-days: 3
+          if-no-files-found: error
+      # The bundle and the slot's own RAUC config and keyring, for the `sign`
+      # job to re-sign and check. Already squashfs-xz inside, so no zip.
+      - name: Upload the OS update bundle for the sign job
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-image-os-bundle
+          path: |
+            .dev/cloud/bundle/moose-cloud.raucb
+            .dev/cloud/bundle/image-etc/system.conf
+            .dev/cloud/bundle/image-etc/keyring.pem
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+      # A control-plane release always bakes `local` (MOOSE_CONTROL_PLANE_SOURCE),
+      # so these are the images this commit built and the boots ran. Checked,
+      # not trusted: pushing a pulled release under a new number would publish
+      # old bytes as a new release.
+      - name: Make the control-plane tarballs readable for the upload
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
+        run: |
+          set -euo pipefail
+          grep -qx 'MOOSE_BAKED_CP_SOURCE=local' .dev/control-plane/control-plane.env \
+            || { echo "::error::a control-plane release must bake the images it builds, not ${MOOSE_CONTROL_PLANE_SOURCE}"; exit 1; }
+          sudo chmod a+r .dev/control-plane/moose-brain.tar .dev/control-plane/moose-ui.tar .dev/control-plane/control-plane.env
+      - name: Upload the control-plane images for the publish job
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-image-control-plane
+          path: |
+            .dev/control-plane/moose-brain.tar
+            .dev/control-plane/moose-ui.tar
+            .dev/control-plane/control-plane.env
+          compression-level: 1
+          retention-days: 3
+          if-no-files-found: error
+
+  # Every boot group under each firmware, all at once, on its own runner. The
+  # longest boot (`update`, about 2.7 min) sets the wall time, so this is the
+  # split that gives the shortest run: one job per firmware would take about
+  # 18 min, one job per boot running both firmwares about 15, this about 12. It
+  # costs each job about a minute of setup and one image download, which is
+  # free on a public repo. fail-fast is off, so a red run shows every failing
+  # boot at once instead of the first one.
+  boot:
+    name: Boot ${{ matrix.boots }} (${{ matrix.firmware }})
+    needs: build
+    # The boots publish nothing and need no write access.
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    # The update and remap boots allow themselves up to 25 min of verdict
+    # wait each (run-cloud-tests.sh VERDICT_TIMEOUT); remap is two boots.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
+    steps:
+      # Same reasoning as the build job: no git credentials on disk.
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      # QEMU + UEFI firmware for the boot lane (run-cloud-tests.sh), from the
+      # packages the build job downloaded. dpkg, not apt: given local files
+      # whose versions are also in the mirror, apt downloads them again. If
+      # the runner image moved since the build job ran and the set no longer
+      # fits, dpkg fails and the step falls back to the mirror. Each
+      # matrix job is its own ubuntu-24.04 runner, which exposes /dev/kvm the
+      # way the single job did; the lane uses KVM when present and falls back
+      # to TCG otherwise (slower, still correct). The line below shows which.
+      - name: Download the QEMU packages
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-qemu-debs
+          path: ${{ runner.temp }}/qemu-debs
+      - name: Install QEMU + OVMF
+        run: |
+          if ! sudo DEBIAN_FRONTEND=noninteractive dpkg -i "${RUNNER_TEMP}"/qemu-debs/*.deb; then
+            echo "::warning::the QEMU packages from the build job did not install; falling back to the mirror"
+            sudo apt-get update
+            sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+          fi
+          echo "kvm: $(ls -l /dev/kvm 2>/dev/null || echo 'none: test lane will use TCG')"
+
+      # Absolute path to the runner's go, for the host-side assertion mint
+      # (see GO in the gate notes above). Resolved as a step output so a runner
+      # image that moves go doesn't silently fall back to the script's guesses.
+      - name: Resolve go (for the assertion mint)
+        id: go
+        run: |
+          go_bin="$(command -v go)"
+          echo "go-bin=${go_bin}" >> "$GITHUB_OUTPUT"
+          echo "go: ${go_bin} ($("$go_bin" version))"
+
+      - name: Download the boot-proof image
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-boot-qcow2
+          path: .dev/cloud-boot
+      - name: Download the OS test bundle
+        if: ${{ matrix.boots == 'os-update' || matrix.boots == 'os-revert' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-os-test-bundle
+          path: .dev/cloud-boot/os-test
+
+      # MOOSE_CLOUD_QCOW2 makes the lane boot the downloaded image and build
+      # nothing. The boot list reaches the script through an env var, never
+      # the shell text, so the `boots` input cannot inject a command.
+      - name: Boot test (${{ matrix.boots }}, ${{ matrix.firmware }})
+        env:
+          MOOSE_CLOUD_QCOW2: ${{ github.workspace }}/.dev/cloud-boot/moose-cloud-boot.qcow2
+          MOOSE_CLOUD_BOOTS: ${{ matrix.boots }}
+          MOOSE_CLOUD_FIRMWARES: ${{ matrix.firmware }}
+          MOOSE_CLOUD_OS_BUNDLE_DIR: ${{ github.workspace }}/.dev/cloud-boot/os-test
+          MOOSE_CLOUD_OS_REFUSE_ONLY: ${{ env.SHOULD_PUBLISH_OS }}
           GO: ${{ steps.go.outputs.go-bin }}
         run: make test-cloud-qemu
+
+  # Re-sign the OS update bundle with the release signer (#562, DECISIONS.md
+  # 2026-10-02 key custody). Only when the OS line publishes, and only after
+  # the build and every boot job passed. This job does nothing else: it is the
+  # only job that enters the `os-release` environment, whose secrets
+  # RAUC_SIGNING_CERT and RAUC_SIGNING_KEY only `main` and `v*` tags may use, so
+  # a dispatch from any other branch with publish_os set fails here and never
+  # reads the key. It writes nothing anywhere but its own artifact: the
+  # publish job attaches what it signed.
+  sign:
+    name: Sign the OS update bundle
+    needs: [build, boot]
+    if: ${{ needs.boot.result == 'success' && needs.build.outputs.should_publish_os == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: os-release
+    permissions:
+      contents: read
+    outputs:
+      signed_sha256: ${{ steps.sign.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Download the OS update bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-os-bundle
+          path: .dev/cloud/bundle
+
+      # The signature vouches for what the build job produced, so sign only
+      # the bundle whose digest the build job reported. The build job itself
+      # could still produce a bad bundle; the box's check of the bundle digest
+      # its update target names (#563) is the control that covers that.
+      - name: Check the bundle is the one the build job made
+        env:
+          WANT: ${{ needs.build.outputs.bundle_sha256 }}
+        run: |
+          set -euo pipefail
+          got="$(sha256sum .dev/cloud/bundle/moose-cloud.raucb | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$got" != "$WANT" ]; then
+            echo "::error::the downloaded bundle has sha256 ${got}, but the build job reported '${WANT}'; refusing to sign"
+            exit 1
+          fi
+          echo "bundle sha256 ${got} matches the build job"
+
+      # dev/release/sign-bundle.sh refuses when a secret is empty, when the
+      # image keyring is not the committed release root, or when that keyring
+      # accepts the throwaway-signed bundle; it writes the bundle only when the
+      # result verifies against the image's own config and keyring.
+      - name: Sign it with the release signer
+        id: sign
+        env:
+          RAUC_SIGNING_CERT: ${{ secrets.RAUC_SIGNING_CERT }}
+          RAUC_SIGNING_KEY: ${{ secrets.RAUC_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          ./dev/release/sign-bundle.sh .dev/cloud/bundle/moose-cloud.raucb .dev/cloud/bundle/image-etc .dev/cloud/bundle/moose-signed.raucb
+          sum="$(sha256sum .dev/cloud/bundle/moose-signed.raucb | cut -d' ' -f1)"
+          echo "signed bundle sha256: ${sum}"
+          echo "sha256=${sum}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the signed bundle for the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          # A re-run of this job uploads again; replace, do not fail with 409.
+          overwrite: true
+          name: cloud-image-os-bundle-signed
+          path: .dev/cloud/bundle/moose-signed.raucb
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+  # Only when a line publishes, and only after the build and every boot job
+  # passed. `needs` waits for all of them. The `if` says it in so many words:
+  # the boot matrix must have succeeded as a whole (one red, skipped or
+  # cancelled boot job makes it fail), and a line must publish. A red boot
+  # skips this job, so nothing is published from an image that did not prove
+  # itself.
+  #
+  # When the OS line publishes it also waits for `sign` and needs it green.
+  # `!cancelled()` lets this job run when `sign` was skipped (a
+  # control-plane-only publish), which `needs` alone would not.
+  publish:
+    name: Publish the hosted cloud image and the control plane
+    needs: [build, boot, sign]
+    if: ${{ !cancelled() && needs.boot.result == 'success' && needs.build.outputs.should_publish == 'true' && (needs.sign.result == 'success' || (needs.sign.result == 'skipped' && needs.build.outputs.should_publish_os != 'true')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The only job with write access: contents for the Release asset, packages
+    # for the ghcr push.
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Download the production image
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-os-raw
+          path: .dev/cloud
+
+      # The bundle the `sign` job signed, checked against the digest it
+      # reported.
+      - name: Download the signed OS update bundle
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-os-bundle-signed
+          path: .dev/cloud/bundle
+      - name: Check the signed bundle is the one the sign job made
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
+        env:
+          WANT: ${{ needs.sign.outputs.signed_sha256 }}
+        run: |
+          set -euo pipefail
+          got="$(sha256sum .dev/cloud/bundle/moose-signed.raucb | cut -d' ' -f1)"
+          if [ -z "$WANT" ] || [ "$got" != "$WANT" ]; then
+            echo "::error::the signed bundle has sha256 ${got}, but the sign job reported '${WANT}'; refusing to attach it"
+            exit 1
+          fi
+          echo "signed bundle sha256 ${got} matches the sign job"
+
+      # The brain and UI tarballs the build job baked into both images. Loading
+      # them gives back moose-brain:dev and moose-ui:dev with the same image IDs
+      # the boots ran, so the push below publishes the proven images.
+      - name: Download the control-plane images the boots ran
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cloud-image-control-plane
+          path: .dev/control-plane
+      - name: Load them into Docker
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
+        run: |
+          set -euo pipefail
+          docker load -i .dev/control-plane/moose-brain.tar
+          docker load -i .dev/control-plane/moose-ui.tar
+          docker image inspect --format '{{.RepoTags}} {{.Id}}' moose-brain:dev moose-ui:dev
+          # The loaded images must be the ones the boots ran (#566): the image
+          # IDs the build recorded, which every boot checked the running
+          # containers against (cloud-assertions.sh step 5a).
+          . .dev/control-plane/control-plane.env
+          [ "${MOOSE_BAKED_CP_SOURCE}" = local ] || { echo "::error::the bundle is '${MOOSE_BAKED_CP_SOURCE}', not a build of this commit"; exit 1; }
+          for pair in "moose-brain:${MOOSE_BAKED_BRAIN_ID}" "moose-ui:${MOOSE_BAKED_UI_ID}"; do
+            name="${pair%%:*}"; want="${pair#*:}"
+            # The config digest of what Docker now holds, read the same way the
+            # build read it (bundle-record.sh), so the image store of this
+            # runner does not matter.
+            got="$(docker save "${name}:dev" | tar -xOf - manifest.json | python3 -c 'import json,re,sys; c=json.load(sys.stdin)[0]["Config"]; print("sha256:"+re.search(r"[0-9a-f]{64}",c).group(0))')"
+            [ "$got" = "$want" ] || { echo "::error::${name}:dev loaded as ${got}, but the boots ran ${want}"; exit 1; }
+            echo "${name}:dev is ${want}, the image the boots ran"
+          done
 
       # ---- attach the image to the tagged GitHub Release (only when requested) ----
 
@@ -412,22 +1096,22 @@ jobs:
       # a publish emits: the `.raw` built in step 1 lives under `.dev/cloud/`;
       # we xz it here and attach it plus a checksum to the Release.
       #
-      # Naming follows BUILD.md # 6's existing per-release artifact scheme
-      # (`moose-vX.Y.Z-amd64.<ext>`, one `vX.Y.Z` from the repo `VERSION`
-      # file) — `.raw.xz` names the actual shipped format (raw disk image,
+      # Naming follows BUILD.md # 6's per-release artifact scheme
+      # (`moose-vX.Y.Z-amd64.<ext>`, the OS release `vX.Y.Z` from the repo
+      # `VERSION` file) — `.raw.xz` names the actual shipped format (raw disk image,
       # xz-compressed) rather than the `.qcow2` that section's cloud-image
       # bullet names, since this lane's build produces `.raw` (mkosi
       # `Format=disk`), not a qcow2 conversion.
       #
       # Tag resolution: `v$(cat VERSION)` matches the tag on both paths that
-      # reach here with SHOULD_PUBLISH=true — a human tag push (asserted
+      # reach here with SHOULD_PUBLISH_OS=true — a human tag push (asserted
       # equal to VERSION by the earlier gate step) and the workflow_call from
       # the release automation (which tags from VERSION by construction
       # before calling this workflow). The create-if-missing fallback only
       # matters for a workflow_dispatch publish run against a commit whose
       # VERSION hasn't been tagged yet.
       - name: Attach image + checksum to the GitHub Release
-        if: ${{ env.SHOULD_PUBLISH == 'true' }}
+        if: ${{ env.SHOULD_PUBLISH_OS == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -449,6 +1133,25 @@ jobs:
           sha256sum -- "$asset" > "$checksum"
           echo "asset: $asset ($(du -h "$asset" | cut -f1))"
           cat "$checksum"
+
+          # The OS update bundle (#562), signed by the release signer in the
+          # `sign` job, beside the image it was cut from.
+          bundle="moose-${tag}-amd64.raucb"
+          bundle_sum="${bundle}.sha256"
+          cp -- .dev/cloud/bundle/moose-signed.raucb "$bundle"
+          sha256sum -- "$bundle" > "$bundle_sum"
+          cat "$bundle_sum"
+          a_bytes="$(stat -c %s "$asset")"; b_bytes="$(stat -c %s "$bundle")"
+          {
+            echo "### OS release files (${tag})"
+            echo ""
+            echo "| File | Bytes | Share of the release download |"
+            echo "|---|---|---|"
+            awk -v a="$a_bytes" -v b="$b_bytes" -v an="$asset" -v bn="$bundle" 'BEGIN {
+              printf "| `%s` | %d | %.1f%% |\n", an, a, a * 100 / (a + b)
+              printf "| `%s` | %d | %.1f%% |\n", bn, b, b * 100 / (a + b)
+              printf "| both | %d | 100%% |\n", a + b }'
+          } >> "$GITHUB_STEP_SUMMARY"
 
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
           gh_curl() { curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$@"; }
@@ -479,11 +1182,15 @@ jobs:
             *) echo "::error::release lookup for ${tag} returned HTTP ${status}; aborting rather than treating it as absent"; exit 1 ;;
           esac
 
-          # --clobber: a legitimate re-run against this same commit's tag (e.g.
-          # retrying a failed publish) replaces the asset instead of erroring on
-          # "already exists".
-          gh release upload "$tag" "$asset" "$checksum" --clobber
-          echo "attached $asset + $checksum to release $tag"
+          # The image, the bundle and their checksums are ONE set (#562), and
+          # a published asset is never overwritten. The script detects and
+          # refuses a mixed set: all present is left, none is uploaded in one
+          # call, and any other mix (an upload that stopped
+          # halfway, or a Release cut before the bundle existed) refuses with
+          # the `gh release delete-asset` lines a person runs before
+          # re-running. The rules and why live in the script, which
+          # dev/release/publish_test.go tests with a stub gh.
+          ./dev/release/attach-image.sh "$tag" "$asset" "$checksum" "$bundle" "$bundle_sum"
 
       # ---- publish the control-plane images to ghcr (only when requested) ----
 
@@ -494,14 +1201,15 @@ jobs:
       # reprovisioning from a fresh image.
       #
       # Why this lane and not a separate, faster workflow: the images pushed
-      # here are the SAME local images `make build-cloud-image` already built
-      # and baked into the disk image that the seeded-boot proof just booted.
+      # here are the SAME images `make build-cloud-image` built in the build
+      # job and baked into the disk image the boot jobs just booted (loaded
+      # above from the tarballs that were baked).
       # Re-building them in a standalone job would publish artifacts that are
       # merely equivalent, not identical, and would let a red boot proof
       # coexist with a green publish. Gating on SHOULD_PUBLISH *after* the boot
       # steps means we can only ever publish a control plane that was proven to
-      # boot. The cost — publish waits on a ~10 min build plus three QEMU boots
-      # — is accepted deliberately.
+      # boot. The cost, publish waiting on the build and every boot job, is
+      # accepted deliberately.
       #
       # ORDERING: this step runs LAST, after the Release-asset attach above.
       # Every step in this job is a hard sequential gate (nothing here sets
@@ -515,6 +1223,13 @@ jobs:
       # red and is retried on its own, while the release still carries its
       # image.
       #
+      # VERSIONING (BUILD.md # Versioning, DECISIONS.md 2026-10-01): the images
+      # are the control-plane line. Their number is CONTROL_PLANE_VERSION, and
+      # the image tag is `v<that number>`: the shape every release before the
+      # split used, and the one the private control plane resolves digests by.
+      # The git tag and GitHub Release for the same release are named
+      # `control-plane-v<that number>`, which is what the guard below checks.
+      #
       # Images are PUBLIC by design (BUILD.md # 6): the brain and UI are built
       # from this public repo, and every secret a box holds is per-box and
       # seeded at provision time, never baked into an image. A private registry
@@ -523,27 +1238,48 @@ jobs:
       # them to public is a one-time manual change in the package settings and
       # cannot be done from here.
       - name: Publish control-plane images to ghcr
-        if: ${{ env.SHOULD_PUBLISH == 'true' }}
+        if: ${{ env.SHOULD_PUBLISH_CP == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          moose_version="$(cat VERSION)"
-          tag="v${moose_version}"
+          cp_version="$(tr -d '[:space:]' < CONTROL_PLANE_VERSION)"
+          git_tag="control-plane-v${cp_version}"
+          tag="v${cp_version}"
           registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
 
-          # Same guard as the Release-asset step below, and duplicated rather
-          # than shared on purpose: SHOULD_PUBLISH is also true for a manual
-          # workflow_dispatch, which can run against ANY commit while VERSION
-          # still names an already-shipped release. Pushing then would overwrite
-          # a released version's images with ones built from another source.
+          # Same guard as the Release-asset step above, and duplicated rather
+          # than shared on purpose: SHOULD_PUBLISH_CP is also true for a manual
+          # workflow_dispatch, which can run against ANY commit while
+          # CONTROL_PLANE_VERSION still names an already-shipped release.
+          # Pushing then would overwrite a released version's images with ones
+          # built from another source. The guard reads the control-plane GIT
+          # tag, since the image tag carries no prefix.
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
           tag_commit="$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
-            "${api}/commits/${tag}" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("sha","") if isinstance(d,dict) else "")')"
+            "${api}/commits/${git_tag}" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("sha","") if isinstance(d,dict) else "")')"
           if [ -n "$tag_commit" ] && [ "$tag_commit" != "$GITHUB_SHA" ]; then
-            echo "::notice::tag ${tag} points at ${tag_commit}, not this build (${GITHUB_SHA}); skipping ghcr push to avoid clobbering released images"
+            echo "::notice::tag ${git_tag} points at ${tag_commit}, not this build (${GITHUB_SHA}); skipping ghcr push to avoid clobbering released images"
             exit 0
+          fi
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+
+          # With no git tag at all (a dispatch run ahead of any release), the
+          # image tag may still be published already, by a release before the
+          # split or by an earlier dispatch. Check the brain AND the UI before
+          # pushing either, and refuse if either is there or the registry gives
+          # no clear answer. release.yml makes the same check before it tags
+          # (dev/release/decide.sh).
+          if [ -z "$tag_commit" ]; then
+            rc=0
+            ./dev/release/ghcr-tag-exists.sh "${owner}/brain" "${owner}/ui" "$tag" || rc=$?
+            case "$rc" in
+              0) echo "::error::no git tag ${git_tag}, but ${tag} is already published for the brain or the UI. Refusing to overwrite it; bump CONTROL_PLANE_VERSION."; exit 1 ;;
+              1) ;;
+              *) echo "::error::could not tell whether ${tag} is published for the brain and the UI (exit ${rc}); refusing to push"; exit 1 ;;
+            esac
           fi
 
           echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
@@ -552,19 +1288,73 @@ jobs:
           # by digest, not by either tag; the tags are for humans and for the
           # offline `docker load` path.
           echo "### Control-plane images" >> "$GITHUB_STEP_SUMMARY"
+          # Push only an image whose tag is not published yet. With the git tag
+          # at this commit, an image already there was pushed by an earlier
+          # attempt at this same release (a resume or a retry), and a rebuild
+          # is not byte-identical, so pushing again would change what the tag
+          # names after something may already have resolved it. To replace one
+          # on purpose, delete the tag on ghcr first. An unclear answer
+          # refuses, as everywhere else.
+          #
+          # `latest` is REPAIRED for such an image, not left alone: an attempt
+          # that pushed `vX.Y.Z` and died before `latest` would otherwise leave
+          # `latest` behind for good, and the brain and the UI could end with
+          # different `latest`. dev/release/ghcr-retag.sh points `latest` at
+          # the manifest `vX.Y.Z` already names, byte for byte, so nothing is
+          # rebuilt or re-pushed and both tags carry the same digest. Only when
+          # this run publishes this version: the git tag points at this commit
+          # (with no git tag, an existing image tag already refused above),
+          # and only when this version is the newest (move_latest, above).
+          # `latest` only ever moves FORWARD. Re-running an older tagged
+          # control-plane release passes the commit guard above, and a dispatch
+          # can publish any version, so neither may point `latest` back at
+          # older images. `latest` moves (by a push or by the repair below)
+          # only when this version is the newest `control-plane-v*` tag by
+          # semver. A tag list that cannot be read leaves `latest` alone,
+          # with a warning, and still publishes the version tag: a stale
+          # `latest` is a smaller harm than a missing release.
+          move_latest=false
+          rc=0
+          ./dev/release/is-newest.sh control-plane-v "$cp_version" || rc=$?
+          case "$rc" in
+            0) move_latest=true ;;
+            1) echo "::notice::control-plane ${cp_version} is not the newest control-plane release; leaving latest where it is" ;;
+            *) echo "::warning::could not tell whether control-plane ${cp_version} is the newest release (exit ${rc}); leaving latest where it is" ;;
+          esac
+          echo "move latest: ${move_latest}"
+
           for spec in "moose-brain:dev=brain" "moose-ui:dev=ui"; do
             local_img="${spec%%=*}"
             remote="${registry}/${spec##*=}"
 
+            rc=0
+            ./dev/release/ghcr-tag-exists.sh "${owner}/${spec##*=}" "$tag" || rc=$?
+            case "$rc" in
+              0) echo "::notice::${remote}:${tag} is already published; leaving it (delete the tag on ghcr first to replace it)"
+                 if [ "$tag_commit" = "$GITHUB_SHA" ] && [ "$move_latest" = "true" ]; then
+                   digest="$(GHCR_USER="${GITHUB_ACTOR}" GHCR_TOKEN="${GH_TOKEN}" \
+                     ./dev/release/ghcr-retag.sh "${owner}/${spec##*=}" "$tag" latest)"
+                   echo "pointed ${remote}:latest at ${remote}:${tag} (${digest})"
+                   echo "- \`${remote}:${tag}\`: already published, \`latest\` re-pointed to it (\`${digest}\`)" >> "$GITHUB_STEP_SUMMARY"
+                 else
+                   echo "- \`${remote}:${tag}\`: already published, left as it is" >> "$GITHUB_STEP_SUMMARY"
+                 fi
+                 continue ;;
+              1) ;;
+              *) echo "::error::could not tell whether ${remote}:${tag} is published (exit ${rc}); refusing to push"; exit 1 ;;
+            esac
+
             docker tag "$local_img" "${remote}:${tag}"
-            docker tag "$local_img" "${remote}:latest"
 
             # Read the digest out of the push output rather than from
             # `docker inspect .RepoDigests`: after pushing two tags of the same
             # image, RepoDigests holds an entry per tag and index 0 is not
             # guaranteed to be the one we want. The push line is authoritative.
             push_log="$(docker push "${remote}:${tag}" | tee /dev/stderr)"
-            docker push "${remote}:latest"
+            if [ "$move_latest" = "true" ]; then
+              docker tag "$local_img" "${remote}:latest"
+              docker push "${remote}:latest"
+            fi
 
             digest="$(printf '%s\n' "$push_log" | grep -oE 'sha256:[0-9a-f]{64}' | tail -n1)"
             [ -n "$digest" ] || { echo "::error::could not resolve pushed digest for ${remote}:${tag}"; exit 1; }

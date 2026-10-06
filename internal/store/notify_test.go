@@ -963,3 +963,16 @@ func dedupSet(ns []notify.Notification, want ...string) bool {
 	}
 	return true
 }
+
+func TestHasNotification(t *testing.T) {
+	s := open(t)
+	if ok, err := s.HasNotification("os-update:x"); err != nil || ok {
+		t.Fatalf("empty table: %v %v", ok, err)
+	}
+	if err := s.RaiseNotification(newNotification("os-update:x")); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.HasNotification("os-update:x"); err != nil || !ok {
+		t.Fatalf("after a raise: %v %v", ok, err)
+	}
+}

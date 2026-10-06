@@ -1,0 +1,38 @@
+# Set up an ubuntu-24.04 runner to build a moose image with mkosi. Shared by
+# ci-cloud-image.yml (the build, boot proofs and publish) and os-lock-bump.yml
+# (the scheduled OS package lock bump, #560), so both build with the same mkosi
+# and the same host tools, and a bump resolves exactly what CI will check.
+name: Set up mkosi
+description: Relax the userns restriction, install the image-build tools and mkosi v26.
+runs:
+  using: composite
+  steps:
+    # mkosi 26 builds rootless: it unshares a user namespace and drops
+    # capabilities inside it. Ubuntu 24.04 ships
+    # kernel.apparmor_restrict_unprivileged_userns=1, which hands an unconfined
+    # process a userns with no CAP_SETPCAP, so mkosi's PR_CAPBSET_DROP returns
+    # EPERM and the build dies at sandbox bring-up (#189). Relaxing the knob is
+    # safe on an ephemeral runner.
+    - name: Relax AppArmor unprivileged-userns restriction
+      shell: bash
+      run: |
+        knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+        echo "before: $(cat "$knob" 2>/dev/null || echo 'n/a')"
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        echo "after:  $(cat "$knob")"
+
+    # Host tooling mkosi needs to bootstrap a Debian tools tree and build
+    # rootless (uidmap/mmdebstrap/keyring; dosfstools/mtools for the ESP;
+    # squashfs-tools/e2fsprogs for the root; systemd-container for the nspawn
+    # build sandbox; libpam0g-dev for the slim host-agent-real CGO build).
+    - name: Install mkosi and image-build tooling
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          uidmap mmdebstrap debian-archive-keyring \
+          dosfstools mtools squashfs-tools e2fsprogs systemd-container \
+          libpam0g-dev
+        git clone --depth=1 --branch v26 \
+          https://github.com/systemd/mkosi.git /tmp/mkosi-src
+        sudo ln -sf /tmp/mkosi-src/bin/mkosi /usr/local/bin/mkosi

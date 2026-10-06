@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/onmoose/os/internal/hostagent/osupdate"
 	"github.com/onmoose/os/internal/hostagent/updatetarget"
 	"github.com/onmoose/os/internal/protocol"
 )
@@ -39,6 +40,57 @@ type updateTargetReport struct {
 	// build-tagged source that built the loop.
 	profile   string
 	autoApply bool
+	// os reads stream A's facts that the loop does not hold: the running OS
+	// release and slot, and the last outcome, which outlive a reboot. Nil on
+	// a box that cannot update its OS.
+	os osFacts
+}
+
+// osFacts is the slice of osupdate.Applier the report reads.
+type osFacts interface {
+	Running() (version, slot string)
+	Last() *protocol.OSOutcome
+	Peek(rel updatetarget.OSRelease) (state, detail string, ok bool)
+}
+
+// osReporter returns the applier as osFacts, or a nil interface for a nil
+// applier, so a box with no applier reports no OS facts rather than calling a
+// nil pointer.
+func osReporter(a *osupdate.Applier) osFacts {
+	if a == nil {
+		return nil
+	}
+	return a
+}
+
+// readOS assembles stream A's part of the report.
+func (r updateTargetReport) readOS() *protocol.OSUpdate {
+	if r.os == nil {
+		return &protocol.OSUpdate{State: protocol.OSUpdateUnsupported, Detail: "this host-agent cannot update the OS"}
+	}
+	out := &protocol.OSUpdate{State: protocol.OSUpdateNone, Last: r.os.Last()}
+	out.Running, out.Slot = r.os.Running()
+	if r.loop == nil {
+		out.Detail = "this box has no update loop, so it will not update its OS"
+		return out
+	}
+	s := r.loop.Snapshot().OS
+	if s.State != "" {
+		out.State, out.Detail = s.State, s.Detail
+	}
+	if s.Target != nil {
+		// The loop decides once per tick; the job it started may have ended
+		// since. Only the states a job moves between are refreshed: current,
+		// refused, held and the rest are the loop's to say.
+		switch s.State {
+		case protocol.OSUpdateInstalling, protocol.OSUpdateInstalled, protocol.OSUpdateWaiting, protocol.OSUpdateFailed:
+			if st, d, ok := r.os.Peek(*s.Target); ok {
+				out.State, out.Detail = st, d
+			}
+		}
+		out.Target = &protocol.OSRelease{Version: s.Target.Version, BundleURL: s.Target.BundleURL, BundleSHA256: s.Target.BundleSHA256}
+	}
+	return out
 }
 
 // Read assembles the report. It never fails: every way this can go wrong is a
@@ -46,6 +98,7 @@ type updateTargetReport struct {
 // say so in a form the dashboard can render.
 func (r updateTargetReport) Read() protocol.UpdateTarget {
 	out := protocol.UpdateTarget{
+		OS:         r.readOS(),
 		From:       r.from,
 		Window:     r.window.String(),
 		WindowFrom: r.windowFrom,

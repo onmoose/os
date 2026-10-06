@@ -7,6 +7,7 @@ import (
 
 	"github.com/onmoose/os/internal/hostagent"
 	"github.com/onmoose/os/internal/hostagent/brainlaunch"
+	"github.com/onmoose/os/internal/hostagent/osupdate"
 	"github.com/onmoose/os/internal/hostagent/relmanifest"
 	"github.com/onmoose/os/internal/hostagent/updatetarget"
 )
@@ -20,7 +21,7 @@ import (
 // validation, the window, the apply, the failure handling — is one loop shared by
 // both profiles. A second copy of any of it, per profile, is what UPDATES.md # 8
 // means by "we only build it once".
-func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *relmanifest.Poller) func() {
+func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *relmanifest.Poller, osApp *osupdate.Applier) func() {
 	window, windowFrom := updateWindow()
 	// What the box is running, read fresh on every socket read. Built here
 	// whatever happens below: a box that will not update itself still has to be
@@ -53,6 +54,7 @@ func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *
 			// box could not build. autoApply is left false on purpose: nothing
 			// on this box will apply anything, whatever profile it is.
 			profile: buildProfile,
+			os:      osReporter(osApp),
 		}
 		return func() {}
 	}
@@ -64,10 +66,16 @@ func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *
 		Repos:   repositories(),
 		// The box's own window. An answer that names one wins over it, so this
 		// is the fallback the loop uses until a source has an opinion.
-		Window:     window,
-		WindowFrom: windowFrom,
-		AutoApply:  src.AutoApply,
-		Profile:    src.Profile,
+		Window:      window,
+		WindowFrom:  windowFrom,
+		AutoApply:   src.AutoApply,
+		Profile:     src.Profile,
+		OSURLPrefix: osURLPrefix(),
+	}
+	// Set only when there is an applier: a nil *Applier in the interface
+	// field would not read as nil.
+	if osApp != nil {
+		loop.OS = osApp
 	}
 	// The socket read (GET /v1/system/update-target) is served from this loop's
 	// snapshot. Set before Run, so a read that arrives during the first tick
@@ -80,6 +88,7 @@ func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *
 		windowFrom: windowFrom,
 		profile:    src.Profile,
 		autoApply:  src.AutoApply,
+		os:         osReporter(osApp),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go loop.Run(ctx)

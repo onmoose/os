@@ -63,7 +63,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
-		fmt.Println(version.String())
+		fmt.Println(version.ControlPlaneString())
 		return
 	}
 
@@ -81,6 +81,7 @@ func main() {
 	if err := os.MkdirAll(cfg.stateDir, 0o755); err != nil {
 		fatal("create state dir", "err", err)
 	}
+	writeFloorFile(cfg.stateDir)
 
 	st, err := store.Open(filepath.Join(cfg.stateDir, "moose.db"))
 	if err != nil {
@@ -294,6 +295,10 @@ func main() {
 	// startup (the first handshake) then on the same loose poll cadence.
 	checkAgentVersion(pollCtx, host, healthMgr, auditor, notifier, bus)
 	go versionCheckPollLoop(pollCtx, host, healthMgr, auditor, notifier, bus, cfg.healthPollPeriod)
+
+	// Stream A outcomes (#563): one admin notification per OS update, read
+	// off host-agent's update-target report on the same cadence.
+	go osOutcomeLoop(pollCtx, host, st, notifier, cfg.healthPollPeriod)
 
 	// Locus-C brain-DB integrity check (HEALTH.md # Detector catalog): PRAGMA
 	// integrity_check at boot + every 6h, reconciling brain-db-corrupt. Runs
@@ -837,15 +842,14 @@ func notificationPruneLoop(ctx context.Context, st *store.Store, interval time.D
 // works with — the box-side stand-in for the release manifest's
 // minimum_host_agent field (UPDATES.md # 7 Compatibility matrix,
 // RELEASE_MANIFEST.md # Manifest schema) until that manifest is actually wired
-// up. It is deliberately NOT the same value as this brain's own
-// internal/version.Version: with one repo version (DECISIONS.md 2026-07-16),
-// host-agent and brain still ship from the same commit, but host-agent updates
-// ride apt on their own cadence and can lag the brain by up to 24h during a
-// rollout (UPDATES.md # 2) — an update ordering where host-agent updates
-// *first*, so a brain running a newer build than the agent it's paired with is
-// the normal, expected mid-rollout state, not a mismatch. Bump this by hand
-// only when a real host-agent<->brain protocol break lands (i.e. an agent
-// older than this genuinely can't serve this brain), not on every release.
+// up. host-agent carries the moose (OS) version, so this reads as "the oldest
+// moose release this control plane runs on". It is deliberately NOT this
+// brain's own internal/version.Version: the brain is on the control-plane line
+// (CONTROL_PLANE_VERSION) and host-agent on the OS line (VERSION), two numbers
+// that move on their own (BUILD.md # Versioning, DECISIONS.md 2026-10-01). A
+// newer agent is always fine. Bump this by hand only when a real
+// host-agent<->brain protocol break lands (an agent older than this genuinely
+// can't serve this brain), not on every release.
 const minimumAgentVersion = "0.4.0"
 
 // agentVersionAcceptable reports whether reportedVersion is new enough to

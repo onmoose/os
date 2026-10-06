@@ -1,0 +1,35 @@
+#!/bin/sh
+# The safety net for an OS update trial (UPDATES.md # 1, #563), run by
+# moose-os-trial.timer some minutes after boot.
+#
+# host-agent writes /var/lib/moose/os-update/trial-<slot> before it switches to
+# a new slot, and removes it once the new slot is healthy and marked good
+# (internal/hostagent/osupdate). If the marker for the slot this box booted is
+# still there now, the new slot never got that far: host-agent did not start,
+# or it hung. host-agent cannot reboot the box then, so this does. GRUB skips a
+# slot still on trial (TRY=1), so the next boot is the old slot.
+#
+# Nothing else: a boot that is not on trial has no marker, so this does nothing
+# on every normal boot, and on a box that never updated its OS.
+set -u
+slot="$(sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline)"
+[ -n "$slot" ] || exit 0
+[ -e "/var/lib/moose/os-update/trial-${slot}" ] || exit 0
+# The marker alone decides, not the grubenv. The grubenv's TRY flag is written
+# by GRUB through the firmware, and a firmware can lose that write: OVMF
+# without a VARS store did, by saving its variables to the ESP (#575). Trusting
+# TRY=0 as "already good" would then leave a hung slot running for ever. The
+# marker is on the state partition, written and removed by host-agent only,
+# which removes it, with retries, right after it marks the slot good.
+# Once per slot: if this script already rebooted this slot and the box came
+# back to it (the mark-bad failed, and GRUB did not skip the slot), rebooting
+# again would only loop. Stay up for a person.
+if [ -e "/var/lib/moose/os-update/safety-net-${slot}" ]; then
+    echo "moose-os-trial: slot ${slot} was already rebooted once by this safety net and booted again; not rebooting again"
+    exit 0
+fi
+echo "moose-os-trial: slot ${slot} was not marked good in time; rebooting so the box goes back to the other slot"
+# A note for the old slot's host-agent, so the revert says which path made it.
+date -u +%Y-%m-%dT%H:%M:%SZ > "/var/lib/moose/os-update/safety-net-${slot}" && sync
+rauc status mark-bad booted || echo "moose-os-trial: mark-bad failed; rebooting anyway, GRUB skips a slot still on trial"
+systemctl reboot

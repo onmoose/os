@@ -118,6 +118,8 @@ Required. Small (32–64 GB is plenty). Holds:
 
 **Designed to be replaceable.** No irreplaceable state lives here. If it dies: install fresh moose on a new SSD, point at the existing data drive, the world resumes.
 
+**Planned with the A/B OS image (#486, `BUILD.md` # 1b).** The OS drive holds two OS slots and a **state partition**. The slots are unencrypted and verity-checked; they hold only what moose publishes. The state partition is LUKS with TPM unseal against PCR 7, like the root today, and holds the `/etc` overlay (users, password hashes, SSH host keys, `/etc/moose/secrets/` with the recovery passphrase), `/var/lib/moose` and `/var/lib/docker`. So the recovery passphrase stays on the encrypted OS drive. One honest note: the OS drive was already not free of irreplaceable state (the recovery passphrase lives here), and the overlay adds the box's users and host keys. How a replaced OS drive gets them back is open (`NEXT.md` # A/B OS image).
+
 ### Data drive(s)
 
 Optional but expected. One or more drives, each ext4 + LUKS + TPM-enrolled independently. Each drive mounts at `/mnt/disk<N>/`.

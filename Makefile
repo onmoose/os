@@ -11,12 +11,15 @@ DEV_DIR := .dev
 STATE_DIR := $(DEV_DIR)/state
 AGENT_SOCK := $(abspath $(DEV_DIR)/agent.sock)
 
-# Build identity (BUILD.md # Versioning): one repo VERSION for the whole
-# monorepo, plus the git commit a build was cut from — two stamped fields, no
-# "-dev" suffix logic (DECISIONS.md 2026-07-16). VERSION is read from the repo
-# root; the commit falls back to "unknown" outside a git checkout (e.g. a
-# container build context with no .git) rather than failing the build.
+# Build identity (BUILD.md # Versioning): two version lines, one per update
+# stream (DECISIONS.md 2026-10-01). VERSION is the moose (OS) release and stamps
+# host-agent; CONTROL_PLANE_VERSION is the control-plane release and stamps the
+# brain (and labels both control-plane images). Every build also stamps the git
+# commit it was cut from, with no "-dev" suffix logic. The commit falls back to
+# "unknown" outside a git checkout (e.g. a container build context with no .git)
+# rather than failing the build.
 MOOSE_VERSION := $(shell cat $(CURDIR)/VERSION)
+CONTROL_PLANE_VERSION := $(shell cat $(CURDIR)/CONTROL_PLANE_VERSION)
 MOOSE_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 # The minisign public keys a host-agent build accepts for the appliance release
 # manifest (RELEASE_MANIFEST.md # Signing). Comma-separated base64 key lines.
@@ -28,6 +31,10 @@ MOOSE_RELEASE_KEYS ?=
 LDFLAGS := -X github.com/onmoose/os/internal/version.Version=$(MOOSE_VERSION) \
            -X github.com/onmoose/os/internal/version.Commit=$(MOOSE_COMMIT) \
            -X github.com/onmoose/os/internal/hostagent/relmanifest.BakedKeys=$(MOOSE_RELEASE_KEYS)
+# The brain is on the control-plane line, so it gets its own version stamp. It
+# takes no release keys: those are host-agent's.
+BRAIN_LDFLAGS := -X github.com/onmoose/os/internal/version.Version=$(CONTROL_PLANE_VERSION) \
+           -X github.com/onmoose/os/internal/version.Commit=$(MOOSE_COMMIT)
 
 export MOOSE_AGENT_SOCK := $(AGENT_SOCK)
 export MOOSE_STATE_DIR := $(STATE_DIR)
@@ -38,7 +45,7 @@ export MOOSE_STATE_DIR := $(STATE_DIR)
 # store offline. To boot against a local snapshot instead, see `make dev-app`.
 export MOOSE_CATALOG_CACHE_DIR := ./.dev/catalog-cache
 
-.PHONY: build host-agent brain host-agent-real host-agent-real-hosted brain-image ui-image control-plane-images caddy-acmedns-image build-cloud-image check check-web fmt fmt-check vet test test-nopam test-caddy test-avahi test-netstate test-health test-usermgr test-usermgr-nspawn test-boot-chain-nspawn test-medium-qemu test-cloud-qemu run-agent run-brain net caddy caddy-down ui dev dev-app seed-catalog stop openapi openapi-check clean check-state-owner help
+.PHONY: build host-agent brain host-agent-real host-agent-real-hosted brain-image ui-image control-plane-images control-plane-released control-plane-third-party caddy-acmedns-image build-cloud-image check check-web fmt fmt-check vet test test-nopam test-caddy test-avahi test-netstate test-health test-usermgr test-usermgr-nspawn test-boot-chain-nspawn test-medium-qemu test-cloud-qemu run-agent run-brain net caddy caddy-down ui dev dev-app seed-catalog stop openapi openapi-check clean check-state-owner help
 
 # msteinert/pam v2.1.0 uses RTLD_NEXT, a GNU extension that requires
 # _GNU_SOURCE at C compile time. Apply globally; harmless to non-cgo builds.
@@ -53,6 +60,7 @@ help:
 	@echo "make check-web   - pre-PR gate for frontend changes: web-ui typecheck + build"
 	@echo "make clean       - stop apps, remove dev state"
 	@echo "make control-plane-images - build moose-brain + moose-ui images and docker-save the control-plane bundle to .dev/"
+	@echo "make control-plane-released - the same bundle with the last released brain + UI, pulled from ghcr by digest"
 	@echo "make caddy-acmedns-image  - build the hosted Caddy (stock Caddy + the caddy-dns/acmedns module)"
 	@echo "make dev         - all three foreground procs in one terminal (recommended); Go edits rebuild + restart the brain"
 	@echo "make dev-app APP=<id> [STORE=../store] - boot ONE store app under curation: seed its catalog snapshot, then make dev with an inert catalog URL"
@@ -182,7 +190,7 @@ host-agent-real-hosted:
 	$(GO) build -tags hosted -ldflags "$(LDFLAGS)" -o $(DEV_DIR)/host-agent-real-hosted ./cmd/host-agent-real
 
 brain:
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(DEV_DIR)/brain ./cmd/brain
+	$(GO) build -ldflags "$(BRAIN_LDFLAGS)" -o $(DEV_DIR)/brain ./cmd/brain
 
 # ---- Control-plane images (M0, #163) -----------------------------------
 # Build the two moose OCI images and `docker save` them — together with the two
@@ -207,8 +215,28 @@ include dev/control-plane/images.lock
 CADDY_TAG := $(firstword $(subst @, ,$(CADDY_IMAGE)))
 PROXY_TAG := $(firstword $(subst @, ,$(PROXY_IMAGE)))
 
+# BuildKit layer cache for the hosted Caddy build only (caddy-acmedns-image,
+# #486). Every input of that build is pinned, so its cache hits on every run.
+# The brain and UI copy the whole tree and rebuild on each commit, so a cache
+# cost them more to upload than it saved; they always build plain. The default
+# is a plain `docker build` with no cache. CI sets MOOSE_BUILD_CACHE=gha on a
+# run that publishes nothing (ci-cloud-image.yml): the Caddy build then goes
+# through the docker-container builder named by MOOSE_BUILD_CACHE_BUILDER and
+# reads and writes the GitHub Actions cache. A run that publishes sets it to
+# `none`, so what ships is always built fresh, with no cache read. A failed
+# cache write never fails the build (ignore-error).
+MOOSE_BUILD_CACHE ?= none
+MOOSE_BUILD_CACHE_BUILDER ?= moose-cache
+ifeq ($(MOOSE_BUILD_CACHE),gha)
+docker_build = docker buildx build --builder $(MOOSE_BUILD_CACHE_BUILDER) --load \
+	  --cache-from type=gha,scope=$(1) --cache-to type=gha,mode=max,scope=$(1),ignore-error=true
+else
+docker_build = docker build
+endif
+
 brain-image:
 	docker build -f cmd/brain/Dockerfile --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
+	  --build-arg CONTROL_PLANE_VERSION=$(CONTROL_PLANE_VERSION) \
 	  --build-arg BRAIN_BUILDER_IMAGE=$(BRAIN_BUILDER_IMAGE) \
 	  --build-arg BRAIN_RUNTIME_IMAGE=$(BRAIN_RUNTIME_IMAGE) \
 	  -t $(BRAIN_IMAGE) .
@@ -217,21 +245,38 @@ brain-image:
 # for both, not two pins to keep level.
 ui-image:
 	docker build -f web-ui/Dockerfile \
+	  --build-arg MOOSE_COMMIT=$(MOOSE_COMMIT) \
+	  --build-arg CONTROL_PLANE_VERSION=$(CONTROL_PLANE_VERSION) \
 	  --build-arg UI_BUILDER_IMAGE=$(UI_BUILDER_IMAGE) \
 	  --build-arg UI_RUNTIME_IMAGE=$(CADDY_IMAGE) \
 	  -t $(UI_IMAGE) web-ui
 
-control-plane-images: brain-image ui-image
+control-plane-images: brain-image ui-image control-plane-third-party
+	@rm -f $(CP_IMAGE_DIR)/control-plane.env
+	docker save $(BRAIN_IMAGE) -o $(CP_IMAGE_DIR)/moose-brain.tar
+	docker save $(UI_IMAGE)    -o $(CP_IMAGE_DIR)/moose-ui.tar
+	./dev/control-plane/bundle-record.sh $(CP_IMAGE_DIR) local $(CONTROL_PLANE_VERSION)
+	@echo "saved control-plane image bundle to $(CP_IMAGE_DIR)/"
+
+# The same bundle with the LAST RELEASED brain and UI instead of a build of
+# this commit (#566, BUILD.md # Versioning): ghcr.io/onmoose/{brain,ui} at
+# v$(CONTROL_PLANE_VERSION), resolved to digests once and pulled by digest, then
+# saved under the same local names. An OS-only release bakes this, so the pair
+# in the image is a real control-plane release. Needs only Docker and network.
+control-plane-released: control-plane-third-party
+	./dev/control-plane/pull-released.sh $(CP_IMAGE_DIR) $(CONTROL_PLANE_VERSION)
+	@echo "saved control-plane image bundle (released $(CONTROL_PLANE_VERSION)) to $(CP_IMAGE_DIR)/"
+
+# The two third-party images the bundle carries, pulled by digest from the pin
+# file and saved under their plain tags. Shared by both bundles above.
+control-plane-third-party:
 	@mkdir -p $(CP_IMAGE_DIR)
 	docker pull $(CADDY_IMAGE)
 	docker pull $(PROXY_IMAGE)
 	docker tag $(CADDY_IMAGE) $(CADDY_TAG)
 	docker tag $(PROXY_IMAGE) $(PROXY_TAG)
-	docker save $(BRAIN_IMAGE) -o $(CP_IMAGE_DIR)/moose-brain.tar
-	docker save $(UI_IMAGE)    -o $(CP_IMAGE_DIR)/moose-ui.tar
 	docker save $(CADDY_TAG)   -o $(CP_IMAGE_DIR)/caddy.tar
 	docker save $(PROXY_TAG)   -o $(CP_IMAGE_DIR)/docker-socket-proxy.tar
-	@echo "saved control-plane image bundle to $(CP_IMAGE_DIR)/"
 
 # The hosted profile's Caddy: stock Caddy plus the caddy-dns/acmedns module, for
 # the wildcard cert's ACME DNS-01 (ENVIRONMENT.md # Networking & discovery). Both
@@ -239,7 +284,7 @@ control-plane-images: brain-image ui-image
 # Dockerfile carries no unpinned default — build it through this target, not `docker build` by hand.
 # dev/cloud/stage-control-plane.sh calls it, then docker-saves the result.
 caddy-acmedns-image:
-	docker build \
+	$(call docker_build,moose-caddy-acmedns) \
 	  --build-arg CADDY_ACMEDNS_BUILDER_IMAGE=$(CADDY_ACMEDNS_BUILDER_IMAGE) \
 	  --build-arg CADDY_ACMEDNS_BASE_IMAGE=$(CADDY_ACMEDNS_BASE_IMAGE) \
 	  --build-arg CADDY_ACMEDNS_MODULE=$(CADDY_ACMEDNS_MODULE) \
@@ -386,7 +431,7 @@ dev: check-state-owner build caddy
 	@mkdir -p $(STATE_DIR)
 	@cd web-ui && [ -d node_modules ] || npm install
 	@trap 'kill 0' INT TERM EXIT; \
-	  (GO="$(GO)" DEV_DIR="$(DEV_DIR)" LDFLAGS="$(LDFLAGS)" ./dev/dev-go.sh) & \
+	  (GO="$(GO)" DEV_DIR="$(DEV_DIR)" LDFLAGS="$(LDFLAGS)" BRAIN_LDFLAGS="$(BRAIN_LDFLAGS)" ./dev/dev-go.sh) & \
 	  (cd web-ui && npm run dev 2>&1 | sed -u 's/^/[ui]    /') & \
 	  wait
 

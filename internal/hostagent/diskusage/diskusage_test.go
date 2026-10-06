@@ -159,3 +159,41 @@ func TestDisksRealDeviceID(t *testing.T) {
 		t.Fatalf("want a coherent System bar, got %+v", disks[0])
 	}
 }
+
+// TestNewHostedMeasuresStatePartition pins the hosted paths: the "System"
+// volume is the state partition seen through /var/lib/moose, never the 1 GiB
+// OS slot at / (BUILD.md # 1b). A box that reported / would show about 1 GB
+// on a 40 GB disk.
+func TestNewHostedMeasuresStatePartition(t *testing.T) {
+	r := NewHosted()
+	if r.osPath != "/var/lib/moose" {
+		t.Fatalf("hosted System path = %q, want /var/lib/moose", r.osPath)
+	}
+	if r.osPath == "/" {
+		t.Fatal("hosted System must not measure the OS slot at /")
+	}
+	if r.dataPath != "/srv/moose" {
+		t.Fatalf("hosted data path = %q, want /srv/moose", r.dataPath)
+	}
+}
+
+// TestHostedOneVolumeWhenSrvIsTheSamePartition: on the A/B layout /srv/moose
+// is a bind mount of the state partition, so it shares /var/lib/moose's
+// device and Disks reports one System bar, measured on the state path.
+func TestHostedOneVolumeWhenSrvIsTheSamePartition(t *testing.T) {
+	state := t.TempDir()
+	srv := t.TempDir()
+	r := &Reporter{
+		osPath:   state,
+		dataPath: srv,
+		deviceID: fakeDevices(map[string]uint64{state: 7, srv: 7}),
+	}
+	disks := r.Disks()
+	if len(disks) != 1 || disks[0].Label != "System" || disks[0].TotalBytes <= 0 {
+		t.Fatalf("want one coherent System bar, got %+v", disks)
+	}
+	_, want, ok := statfsBytes(state)
+	if !ok || disks[0].TotalBytes != want {
+		t.Fatalf("System total = %d, want the state path's %d", disks[0].TotalBytes, want)
+	}
+}

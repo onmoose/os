@@ -1,0 +1,10 @@
+# moose hosted A/B image (BUILD.md # 1b). The root is a read-only slot, and
+# the state partition, the /etc overlay and the bind mounts are set up in the
+# initramfs before systemd starts (/usr/lib/moose/state-setup), so none of
+# them are here.
+#
+# The ESP, where GRUB and the grubenv live. RAUC reads and writes the grubenv.
+PARTLABEL=esp  /efi      vfat   umask=0077,nofail          0 2
+# /var/tmp has no home on the state partition: nothing in it has to outlive a
+# reboot on this box, and the slot is read-only.
+tmpfs          /var/tmp  tmpfs  mode=1777,nosuid,nodev     0 0

@@ -14,7 +14,7 @@ one is JavaScript, one is a container we don't write.
 |---|---|---|---|
 | **`moose-brain`** | `cmd/brain/`, `internal/` | The control-plane daemon. Owns SQLite state, the REST+SSE API, the app lifecycle, and the Caddy config. One Go binary. | Real |
 | **`host-agent` (fake)** | `cmd/host-agent/` | Privileged side used in the inner dev loop. Speaks the real `BRAIN_HOST_PROTOCOL.md` wire format over a UNIX socket; the host operations themselves (Avahi, LUKS, PAM, apt) are stubbed in memory. | **Fake** (real wire, canned ops) |
-| **`host-agent-real`** | `cmd/host-agent-real/`, `internal/hostagent/` | The real privileged binary. Seam-injected reporters: PAM password verify (`pamverifier`), `/proc` system sampling (`procsource`), disk usage, RAM pressure, journal streaming, service health, reboot-required flag, user manager, system time-zone setter (`timezone`, `timedatectl set-timezone` — the first-run wizard's Step 3, wired in both build profiles), per-account SSH access (`sshaccess`, #463 — renders `sshd_config.d/moose-allowed.conf` whole from the enabled set, validates with `sshd -t`, and starts or stops sshd so :22 is open only while someone has SSH on; wired in both build profiles). Discovery is real: per-LAN-interface Avahi announcements (`avahipublisher`) driven by the NetworkManager LAN set (`netstate`), with an avahi-daemon.conf allowlist sync and IP-change replay. Seeds the brain's Docker transport then launches the brain container on startup (`brainlaunch`: `EnsureTransport` creates `moose-ingress` + runs the `docker-socket-proxy`; `Launch` docker-loads the bundled image if absent, lockstep `moose.protocol.major` OCI-label check, `docker run --restart unless-stopped` on the ingress net with `DOCKER_HOST` at the proxy). Before the launch it makes sure the household shared tree `/srv/moose/shared` exists as `root:moose-shared` `02770` (`brainlaunch.EnsureSharedTree`) and mounts it into the brain at the same path, so the brain can prepare shared folder sources (#519). Personal folder sources are prepared by host-agent itself, over `POST /v1/users/{username}/prepare-folder` (`usermgr`, a walk that never follows a symlink), so the brain never mounts `/home`. Host ops not yet wired: LUKS/TPM, apt, NM configuration (WiFi setup, `/v1/network/*`). A build-tagged slim **`hosted`** profile (`go build -tags hosted`, #204/C1c) compiles the discovery/NetworkManager stack out for the cloud image — `avahipublisher`/`netstate` unwired, no-op publisher, nil `Net` — keeping the same PAM/user-mgmt/health-system/brain-launch seams (`cmd/host-agent-real/wiring_appliance.go` vs `wiring_hosted.go`). | Partial — see "What is not built yet" |
+| **`host-agent-real`** | `cmd/host-agent-real/`, `internal/hostagent/` | The real privileged binary. Seam-injected reporters: PAM password verify (`pamverifier`), `/proc` system sampling (`procsource`), disk usage, RAM pressure, journal streaming, service health, reboot-required flag, user manager, system time-zone setter (`timezone`, `timedatectl set-timezone` — the first-run wizard's Step 3, wired in both build profiles), per-account SSH access (`sshaccess`, #463 — renders `sshd_config.d/moose-allowed.conf` whole from the enabled set, validates with `sshd -t`, and starts or stops sshd so :22 is open only while someone has SSH on; wired in both build profiles). Discovery is real: per-LAN-interface Avahi announcements (`avahipublisher`) driven by the NetworkManager LAN set (`netstate`), with an avahi-daemon.conf allowlist sync and IP-change replay. Seeds the brain's Docker transport then launches the brain container on startup (`brainlaunch`: `EnsureTransport` creates `moose-ingress` + runs the `docker-socket-proxy`; `Launch` docker-loads the bundled image if absent, lockstep `moose.protocol.major` OCI-label check, `docker run --restart unless-stopped` on the ingress net with `DOCKER_HOST` at the proxy). Before the launch it makes sure the household shared tree `/srv/moose/shared` exists as `root:moose-shared` `02770` (`brainlaunch.EnsureSharedTree`) and mounts it into the brain at the same path, so the brain can prepare shared folder sources (#519). Personal folder sources are prepared by host-agent itself, over `POST /v1/users/{username}/prepare-folder` (`usermgr`, a walk that never follows a symlink), so the brain never mounts `/home`. The A/B OS update on the hosted build (`osupdate`, #563: RAUC install into the other slot, switch in the window, trial boot, revert). Host ops not yet wired: LUKS/TPM, NM configuration (WiFi setup, `/v1/network/*`). A build-tagged slim **`hosted`** profile (`go build -tags hosted`, #204/C1c) compiles the discovery/NetworkManager stack out for the cloud image — `avahipublisher`/`netstate` unwired, no-op publisher, nil `Net` — keeping the same PAM/user-mgmt/health-system/brain-launch seams (`cmd/host-agent-real/wiring_appliance.go` vs `wiring_hosted.go`). | Partial — see "What is not built yet" |
 | **Caddy** | `dev/caddy.json`, `dev/docker-compose.yml` | Reverse proxy. Terminates `*.local` (appliance) or `*.<box-id>.onmoose.io` over real Let's Encrypt HTTPS (hosted, via a custom acme-dns build) and routes to app containers + the brain. Configured live by the brain via Caddy's admin API. | Real (container) |
 | **`web-ui`** | `web-ui/` | Vue 3 + Vite + TanStack Query dashboard. Talks only to the brain. Tailwind 4 with the Oatmeal `@theme` tokens; `reka-ui` + `cn()` are present as shadcn-vue scaffolding, but the owned components in `components/ui/` (`Button`, `Heading`) are hand-written from the Oatmeal patterns, not pulled through the shadcn CLI (#261). The catalog install is a set of steps, one need per step with the saved accounts listed and one picked, and the last step installs; an app with no steps installs from the App page (`INSTALL_STEPS.md`, `DASHBOARD.md` # Install authorization). Internal code architecture: [`dev/web-ui.md`](dev/web-ui.md). | Real |
 | **SQLite** | `$STATE_DIR/moose.db` | The brain's only persistent store. Schema + queries in `internal/store/`. | Real |
@@ -107,7 +107,7 @@ the `host-agent-real` row in # Components and by # What is not built yet.
 | `applog` | Per-app log fan-out (`BRAIN_UI_PROTOCOL.md` Pattern C, `LOGGING.md` # Per-app logs). Sits between host-agent's single upstream follow per instance and the dashboard's many SSE readers, and owns the reconnect contract host-agent deliberately does not: a ~256 KiB ring buffer, replay from `Last-Event-ID`, one `{"lost":true}` marker when a position was evicted, and a linger so a quick reconnect reuses the warm buffer. One ref-counted `Hub` per instance — zero idle cost when nobody is watching. | `api`, `cmd/brain` |
 | `systemlive` | The live system-resources stream (`BRAIN_UI_PROTOCOL.md` Pattern C stream 3, `LOCAL_ANALYTICS.md`). Ref-counted upstream poller: the first SSE subscriber starts a 1 Hz poll of host-agent's raw cumulative counters, each poll is diffed into rates and fanned out, the last unsubscribe stops it. Same zero-idle-cost shape as `applog`. | `api`, `cmd/brain` |
 | `storageverify` | The canary + enrollment-marker check behind the `moose-storage-verify` reporter (`BOOT.md` # The storage-ready target, `STORAGE.md` # Storage canary). Split out of `cmd/` only so the check is unit-testable against a tempdir root; the binary is a thin shell that writes findings to `/run/moose/health/storage.json`. **Not a brain package** — it is imported by `cmd/moose-storage-verify` alone. | `cmd/moose-storage-verify` |
-| `version` | The moose build identity: `Version` (repo `VERSION` file) and `Commit` (git sha), stamped at build time via `-ldflags -X` (`Makefile`, `BUILD.md` # Versioning). Dumb — vars + a `String()`, no logic. | `api`, `hostagent`, `cmd/brain`, `cmd/host-agent`, `cmd/host-agent-real` |
+| `version` | A binary's build identity: `Version` (its release line's version file) and `Commit` (git sha), stamped at build time via `-ldflags -X` (`Makefile`, `cmd/brain/Dockerfile`, `BUILD.md` # Versioning). host-agent is stamped from `VERSION` (the moose OS release), the brain from `CONTROL_PLANE_VERSION`. Dumb: vars, `String()` (OS form) and `ControlPlaneString()` (brain form), no logic. | `api`, `hostagent`, `cmd/brain`, `cmd/host-agent`, `cmd/host-agent-real` |
 
 **Cross-cutting invariants:**
 
@@ -173,7 +173,60 @@ So this doc isn't read as a claim about the finished product:
   wherever Docker puts volumes.
 - **Boot, install ISO, updates.** The `mkosi` image build (`BUILD.md` # 2;
   proven in the test lane, not yet the production ISO) and stream A
-  (`unattended-upgrades` + the apt repo) are spec-only. **Stream B — the
+  (an A/B OS image with RAUC and GRUB, `UPDATES.md` # 1 and `BUILD.md`
+  # 1b, #486) is half built. **The hosted image is in the A/B layout (#561):**
+  the 128 MiB ESP, a BIOS boot partition and slot A, a read-only 1 GiB
+  squashfs (xz) holding the kernel and initramfs, in the image; slot B (1 GiB)
+  and a state partition (the rest of the disk, grown on every boot) made by
+  `systemd-repart` in the initramfs at first boot. The OS reserves 5.7% of a
+  40 GB disk, and the build fails when the squashfs fills more than 60% of its
+  slot (`dev/cloud/slotbudget`). GRUB on both firmwares from one `grub.cfg`
+  and `grubenv`; the `/etc` overlay, the four pinned files and the bind mounts
+  set up by an initramfs-tools hook (`dev/cloud/mkosi.extra/usr/lib/moose/state-setup`);
+  `rauc` and `rauc-service` with the slot config and a keyring
+  (`/etc/rauc/keyring.pem`). **Every OS release builds a signed RAUC bundle
+  (#562):** slot A of the image that ships, in the verity format, built by
+  `dev/cloud/build-bundle.sh` and checked against the keyring read back out of
+  the slot, re-signed in a `sign` job of its own (the only job that enters the
+  `os-release` environment, `dev/release/sign-bundle.sh`; an offline root CA,
+  `docs/dev/rauc-signing.md`) and attached beside the image. host-agent's
+  hosted build reports the state partition as its "System" volume
+  (`diskusage.NewHosted`). **A hosted box updates its OS (#563):**
+  `internal/hostagent/osupdate` downloads the bundle the update target names,
+  checks its sha256 against the target, has RAUC install it into the other
+  slot ahead of the window, switches and reboots inside it (`os-install` and
+  `os-switch` jobs under the one job lock, after stream B), and on the next
+  boot marks the slot good once the brain answers, or reboots back. An image
+  timer (`moose-os-trial.timer`) reboots a slot whose host-agent never
+  started. Only the first boot after a switch is on trial. The brain reports
+  `os_version`/`os_slot` and stream A's decision, and raises one admin
+  notification per outcome. Proven by the `os-update` and `os-revert` boots
+  under both firmwares, and `os-revert` also proves that GRUB skips a slot
+  whose kernel panics before userspace (#575). **A Debian major tidies the
+  `/etc` upper layer** (`BUILD.md` # 1b, rule 4): `state-setup` keeps the
+  files on `/usr/lib/moose/etc-keep.list`, merges the account files, takes the
+  pinned files again from the slot when the remap stays, and moves the rest to
+  an attic, in both directions; the `os-update` boot fakes a major, and every
+  boot fails on an upper-layer file no rule covers. The image's accounts are a
+  generated `sysusers.d` file whose ids the build checks against
+  `dev/os-lock/cloud-accounts.lock`, and host-agent turns sshd back on once,
+  at its first start after a tidy-up, when the drop-in names an account
+  (`sshaccess.EnsureOnAtStart`, gated by `/state/etc/.moose-major-tidied`). systemd
+  feeds the hardware watchdog a Hetzner VM has (ICH9 TCO), checked on every
+  boot. Not built: the OS part of the private control plane's
+  answer (described in `docs/progress/host-agent-os-update.md`), so no
+  production box moves its OS yet, and the appliance layout (#564). **The OS
+  package lock is built (#560)** for the hosted image: `dev/os-lock/` holds a
+  snapshot.debian.org timestamp, exact Docker pins and the resolved package
+  list, both cloud builds fail when they resolve to a different list, and
+  `os-lock-bump.yml` moves it forward daily. The appliance lane is not locked
+  yet (`BUILD.md` # 1b # The OS package lock). **An OS-only release bakes
+  the last released control plane (#566):** the brain and UI of
+  `v<CONTROL_PLANE_VERSION>`, pulled from ghcr by digest
+  (`make control-plane-released`); a control-plane release and every run
+  that publishes nothing bake a build of the commit. The image records the
+  pair in `/usr/lib/moose/control-plane.env`, and every boot checks the
+  running brain and UI against it (`BUILD.md` # Versioning). **Stream B — the
   control-plane update — is half built.** A box declares its brain/UI pair in
   two files (`internal/hostagent/controlplane`: the staged compose plus an
   `images.json` ledger), the apply/health-check/revert transaction exists

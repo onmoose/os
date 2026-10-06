@@ -147,6 +147,20 @@ type wireTarget struct {
 	// Window is optional. An answer that leaves it out has no opinion about
 	// when this box may update, and the box then keeps its own setting.
 	Window string `json:"window"`
+	// OS is optional too: the OS releases on the way to this box's OS target,
+	// oldest first (os.go, UPDATES.md # 1). Left out, the answer has no
+	// opinion about the OS.
+	//
+	// It is decoded on its own (RawMessage), so an OS part of the wrong shape
+	// refuses stream A only and never the control-plane pair beside it.
+	OS json.RawMessage `json:"os"`
+}
+
+// wireOS is one OS release in the answer. Part of the same contract.
+type wireOS struct {
+	Version      string `json:"version"`
+	BundleURL    string `json:"bundle_url"`
+	BundleSHA256 string `json:"bundle_sha256"`
 }
 
 // Target reads the update-target URL.
@@ -198,7 +212,20 @@ func (s HTTPSource) Target(ctx context.Context) (Target, error) {
 	if err := json.Unmarshal(b, &w); err != nil {
 		return Target{}, fmt.Errorf("updatetarget: parse the answer from %s: %w", RedactURL(url), err)
 	}
+	var osList []OSRelease
+	var osErr error
+	if len(w.OS) > 0 && string(w.OS) != "null" {
+		var raw []wireOS
+		if err := json.Unmarshal(w.OS, &raw); err != nil {
+			osErr = fmt.Errorf("%w: the os part is not a list of releases: %v", ErrOSRefused, err)
+		}
+		for _, o := range raw {
+			osList = append(osList, OSRelease{Version: o.Version, BundleURL: o.BundleURL, BundleSHA256: o.BundleSHA256})
+		}
+	}
 	return Target{
+		OS:          osList,
+		OSErr:       osErr,
 		Version:     w.Version,
 		BrainImage:  w.BrainImage,
 		BrainDigest: w.BrainDigest,

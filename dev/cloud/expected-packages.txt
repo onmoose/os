@@ -28,14 +28,23 @@
 # fix/decision is tracked there; until then it is part of the lean set, not a
 # leak.
 #
-# grub-common + grub-pc-bin (and their transitive libs — dmsetup, gettext-base,
-# libbrotli1, libdevmapper1.02.1, libefiboot1t64, libefivar1t64, libfreetype6,
-# libfuse3-4, libpng16-16t64) are in the set because the image is dual-firmware
-# (#277): it boots UEFI via systemd-boot AND legacy BIOS via GRUB
-# (BiosBootloader=grub), so it comes up on providers that present either firmware
-# (Hetzner CX/Intel boots legacy BIOS; CPX/AMD boots UEFI). grub is the BIOS
-# bootloader only — the UEFI path stays systemd-boot, so the systemd-boot* entries
-# below remain.
+# grub-common + grub-pc-bin + grub-efi-amd64-bin (+ grub-efi-amd64-unsigned, and
+# the transitive libs: dmsetup, gettext-base, libbrotli1, libdevmapper1.02.1,
+# libefiboot1t64, libefivar1t64, libfreetype6, libfuse3-4, libpng16-16t64) are in
+# the set because GRUB boots the A/B image under both firmwares (#561; #277):
+# legacy BIOS (Hetzner CX) and UEFI (CPX), from one grub.cfg and grubenv.
+# systemd-boot left the image with #561.
+#
+# rauc + rauc-service (#561) carry the slot config for the A/B update (#562,
+# #563). They bring glib (libglib2.0-0t64, libffi8, libatomic1), json-glib,
+# libnl-3, and libcurl3t64-gnutls with its TLS and HTTP stack (libgnutls30t64,
+# libnettle8t64, libhogweed6t64, libp11-kit0, libtasn1-6, libidn2-0,
+# libunistring5, libpsl5t64, libnghttp2-14, libnghttp3-9, libngtcp2-16,
+# libngtcp2-crypto-gnutls8, librtmp1, libssh2-1t64, libldap2, libsasl2-2,
+# libsasl2-modules-db).
+#
+# e2fsprogs (+ libext2fs2t64, libss2, #561) formats and checks the state
+# partition at boot; the image had no mkfs.ext4 before.
 #
 # The concrete kernel-image package (linux-image-<abi>-amd64) is deliberately
 # NOT listed: its name carries the ABI version, which changes on every kernel
@@ -71,19 +80,22 @@ docker-ce-cli
 docker-compose-plugin
 dpkg
 dracut-install
+e2fsprogs
 findutils
 gawk
 gcc-14-base
 gettext-base
 grep
 grub-common
+grub-efi-amd64-bin
+grub-efi-amd64-unsigned
 grub-pc-bin
 gzip
 hostname
+init-system-helpers
 initramfs-tools
 initramfs-tools-bin
 initramfs-tools-core
-init-system-helpers
 iproute2
 iptables
 klibc-utils
@@ -91,22 +103,24 @@ kmod
 less
 libacl1
 libapparmor1
+libatomic1
 libattr1
-libaudit1
 libaudit-common
+libaudit1
 libblkid1
 libbpf1
 libbrotli1
 libbsd0
 libbz2-1.0
+libc-bin
 libc6
+libcap-ng0
 libcap2
 libcap2-bin
-libcap-ng0
-libc-bin
 libcbor0.10
 libcom-err2
 libcrypt1
+libcurl3t64-gnutls
 libdb5.3t64
 libdbus-1-3
 libdebconfclient0
@@ -116,16 +130,24 @@ libefiboot1t64
 libefivar1t64
 libelf1t64
 libexpat1
+libext2fs2t64
 libfdisk1
+libffi8
 libfido2-1
 libfreetype6
 libfuse3-4
 libgcc-s1
+libglib2.0-0t64
 libgmp10
+libgnutls30t64
 libgssapi-krb5-2
+libhogweed6t64
+libidn2-0
 libip4tc2
 libip6tc2
 libjansson4
+libjson-glib-1.0-0
+libjson-glib-1.0-common
 libk5crypto3
 libkeyutils1
 libklibc
@@ -133,6 +155,7 @@ libkmod2
 libkrb5-3
 libkrb5support0
 liblastlog2-2
+libldap2
 liblzma5
 libmd0
 libmnl0
@@ -140,34 +163,50 @@ libmount1
 libmpfr6
 libncursesw6
 libnetfilter-conntrack3
+libnettle8t64
 libnfnetlink0
 libnftables1
 libnftnl11
-libpam0g
+libnghttp2-14
+libnghttp3-9
+libngtcp2-16
+libngtcp2-crypto-gnutls8
+libnl-3-200
+libnl-genl-3-200
+libp11-kit0
 libpam-modules
 libpam-modules-bin
 libpam-runtime
+libpam0g
 libpcre2-8-0
 libpng16-16t64
 libproc2-0
+libpsl5t64
 libreadline8t64
+librtmp1
+libsasl2-2
+libsasl2-modules-db
 libseccomp2
 libselinux1
-libsemanage2
 libsemanage-common
+libsemanage2
 libsepol2
 libsigsegv2
 libsmartcols1
 libsqlite3-0
+libss2
+libssh2-1t64
 libssl3t64
-libsystemd0
 libsystemd-shared
+libsystemd0
+libtasn1-6
 libtext-charwidth-perl
 libtext-wrapi18n-perl
 libtinfo6
-libtirpc3t64
 libtirpc-common
+libtirpc3t64
 libudev1
+libunistring5
 libuuid1
 libwrap0
 libwtmpdb0
@@ -191,15 +230,14 @@ openssl-provider-legacy
 passwd
 perl-base
 procps
+rauc
+rauc-service
 readline-common
 runit-helper
 sed
 sensible-utils
 sudo
 systemd
-systemd-boot
-systemd-boot-efi
-systemd-boot-tools
 systemd-repart
 systemd-sysv
 sysvinit-utils

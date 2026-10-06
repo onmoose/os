@@ -21,6 +21,120 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-05 — A Debian major tidies the /etc upper layer, in both directions (#486)
+
+**Previously:** a Debian major was "a new A/B OS image like any other" (2026-10-01), with one risk left open: a file in the `/etc` upper layer stays at the old major's version under the new major's packages. The choice was between resetting the upper layer to a known list and shipping a migration step (`NEXT.md` # A/B OS image, point 5).
+
+**Now:** when the booted slot's Debian major is not the one recorded on the state partition, the initramfs rebuilds the upper layer before it mounts `/etc` (`BUILD.md` # 1b, rule 4):
+
+- moose's known files are kept as they are (`/usr/lib/moose/etc-keep.list`: identity, SSH access and keys, time zone, the remap range, and the appliance's secrets and network connections);
+- `passwd`, `group`, `shadow` and `gshadow` are merged: the slot's entries plus the box's own, the box's passwords, group members joined;
+- `daemon.json` and `login.defs` are taken again from the slot when that keeps the box's remap, and kept otherwise;
+- everything else, an admin's own edits included, moves to an attic on the state partition, where it can still be read.
+
+It runs in both directions, so a revert to the older major is tidied the same way. **It must ship in a Debian 13 release before the first Debian 14 release.** The build also writes every image account into a `sysusers.d` file and fails when an account's id differs from `dev/os-lock/cloud-accounts.lock`, so an account keeps its id for life.
+
+**Why:**
+
+- **A migration step cannot cover a revert.** The older slot boots its own code, which cannot know what the newer major's step changed. A tidy-up that only depends on "which major am I" works the same in both directions.
+- **A known list is checked on every boot, not once every two years.** The boot lane fails a boot whose upper layer holds a file no rule covers, and the `os-update` boot fakes a major in every full run. A migration step would run for real once per major, untested in between.
+- **An admin's hand edits are not part of the product.** SSH is rescue-only. Dropping them at a major (into an attic, not deleted) is the price of a `/etc` that follows the new major. Keeping only the known list on every boot (considered) would also drop a rescue edit at every reboot, and an older release would delete a file a newer one added to its list.
+
+**Affected docs:** `BUILD.md` # 1b (rules 3 and 4, # As built), `UPDATES.md` # 1, `NEXT.md` # A/B OS image (points 3 and 5) and # OS major-version upgrade commitment, `docs/dev/hosted-boot-proof.md`, `docs/architecture.md`.
+
+## 2026-10-02 — Key custody for the OS bundle: an offline root CA and a CI-only signer (#562)
+
+**Previously:** the OS bundle was to be signed against "an X.509 CA baked into the image", and its key custody was left to release signing as a whole (`BUILD.md` # 1b # The bundle, `NEXT.md` # Build & distribution). Nothing signed a release artifact.
+
+**Now:**
+
+- **The root CA is offline.** The maintainer makes it with `dev/release/rauc-ca.sh` on a machine that is not CI, keeps its key encrypted and backed up, and commits only its public cert as `dev/release/rauc/release-ca.pem`. Every image built to publish bakes that cert as `/etc/rauc/keyring.pem`.
+- **A signer issued by the root lives in CI**, as the secrets `RAUC_SIGNING_CERT` and `RAUC_SIGNING_KEY` of the GitHub Environment `os-release`. Only `main` and `v*` tags may use it, there is no required reviewer, and only a `sign` job of `CI / Cloud image`, which does nothing else, enters it. The build job signs with a throwaway key and reports the bundle's sha256, and the `sign` job re-signs (`rauc resign`) only a bundle with that digest.
+- **Runs that publish no OS image use a throwaway root**, made per checkout and never stored. Neither a test key in the repo nor a placeholder root is committed. While `release-ca.pem` is missing, `release.yml` tags nothing for a merge that bumps `VERSION`, on either line; the `sign` job refuses without the secrets or when the image would trust the throwaway signer.
+- **No CRLs.** Rotation replaces the signer (secrets only, no box change). Replacing the root takes two OS releases, with both roots in the keyring in between. The how-to is `docs/dev/rauc-signing.md`.
+
+**Why:**
+
+- **The key that signs must not meet the build that runs third-party code as root.** Splitting signing into a job of its own, behind an environment limited to `main` and `v*` tags, keeps a feature branch or a compromised build step from reading it.
+- **An offline root makes the common case cheap.** A leaked or old signer is replaced in minutes and no box has to change. A self-signed key in CI (considered) would need an image release before every rotation.
+- **Fully offline signing (considered) would stop every OS release for a manual step**, and an OS patch release for a security bump has a 7-day deadline (2026-10-01).
+- **A cloud KMS key over PKCS#11 (considered)** removes the long-lived secret, but adds a cloud account and wiring that is easy to get wrong, for a gain that the next point mostly gives already.
+- **The signature is not the only gate.** A box installs only the bundle whose digest its update target names: the authenticated cloud answer on hosted, the minisign-signed manifest on the appliance (`UPDATES.md` # 1; the box side is #563). So a leaked signer on its own cannot push an update to a box.
+- **CRLs were rejected** because an expired CRL makes RAUC refuse every bundle, and a box offline past the CRL's next update could then never update again.
+
+**Affected docs:** `BUILD.md` # 1b # The bundle, # 6; `UPDATES.md` # 1; `NEXT.md` # Build & distribution; `docs/dev/rauc-signing.md` (new); `docs/dev/hosted-boot-proof.md`; `docs/dev/contributing.md` # Release model; `docs/architecture.md`.
+
+## 2026-10-01 — OS slots are 1 GiB of read-only squashfs-xz, with a 60% budget (#561)
+
+**Previously:** `BUILD.md` # 1b planned two 4 GiB ext4 slots and a 512 MiB ESP: about 8.5 GiB (9.1 GB), or 23% of the smallest hosted box's 40 GB disk. The size came from the spike ("choose generously") and was not put to the maintainer (`../progress/ab-os-update-design.md` # Known gaps).
+
+**Now:** each OS slot is a **1 GiB read-only squashfs compressed with xz**, and the **ESP is 128 MiB**. With the 1 MiB BIOS boot partition that reserves about 2.3 GB, **5.7% of a 40 GB disk**. The state partition takes the rest, and it is the box's main data store: the databases (the brain's SQLite, `state/instances`, `state/services`, Docker's data) always stay on it, each on a bind mount of its own, and `/home` lives under `/srv/moose` as on the appliance. **The build fails when the squashfs in slot A fills more than 60% of its slot** (`dev/cloud/slotbudget`). The control-plane image tarballs stay baked in the slot. A/B stays.
+
+**Why:**
+
+- **Every GiB reserved for the OS is taken from every box for life.** Slot B is made right after slot A at first boot, so slots never shrink or grow later. On a 40 GB box, 8.5 GiB was almost a quarter of the disk for an OS that measures 1.13 GB uncompressed (CI run 36909222361).
+- **squashfs-xz is the one compressed format GRUB 2.12 reads.** The kernel and initramfs must stay inside the slot, so a slot is one unit and the kernel always matches its root (`BUILD.md` # 1b # Boot). erofs (no GRUB driver) or squashfs with zstd (no GRUB decoder) would need the kernel outside the slot. Compressed, the slot content is 435 MB (314 MB without the tarballs), 41% of 1 GiB.
+- **A slot never needs to be written in place.** The box never writes it, and RAUC writes a whole new image into the other slot, so a read-only filesystem costs nothing.
+- **The 60% budget fails long before the slot is full.** It leaves room for Debian to grow between now and the next major, and turns a slow creep into a red build someone has to look at.
+- **Considered and rejected by the maintainer:** dropping slot B, which would also drop the automatic revert that makes unattended OS updates safe (`UPDATES.md` # 1), and slots kept as files instead of partitions.
+
+**Affected docs:** `BUILD.md` # 1b (layout, boot, as built, disk budget), `ENVIRONMENT.md` # Storage (hosted) and # Boot (hosted), `NEXT.md` # A/B OS image (point 1), `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+## 2026-10-01 — An OS patch release for a lock bump is cut from `main` (#560)
+
+**Previously:** every release went `dev` -> `main`, and every PR targeted `dev` (`docs/dev/contributing.md` # Release model). How a security bump of the OS package lock became a release was open (`NEXT.md` # A/B OS image, point 6).
+
+**Now:** a release that only moves the OS package lock is cut **from `main`**. A `hotfix/X.Y.Z` branch is made from `main`, the bump workflow is re-run against it, `VERSION` is bumped there, and the PR goes into `main`. `main` is then carried into `dev` as after every release. This is the one PR into `main` that does not come from `dev`. **Speed:** a bump that changes any package from `trixie-security` is released within 7 days; any other bump ships with the next normal release.
+
+**Why:** with no `apt` on the box, the lock is the only way a Debian security fix reaches the fleet, so its latency is ours. `dev` often holds work that is not ready to release, and a security fix should not wait for it. Re-running the bump on the hotfix branch, instead of cherry-picking `dev`'s lock, keeps the lock true to `main`'s package list. Until the A/B applier lands (#561 to #564), such a release reaches only new boxes.
+
+**Affected docs:** `docs/dev/contributing.md` # Release model; `BUILD.md` # 1b # The OS package lock; `NEXT.md` # A/B OS image (point 6 resolved).
+
+## 2026-10-01 — Stream A is an A/B OS image, built with RAUC and GRUB, on both profiles (#486)
+
+**Previously:** stream A (Debian base, kernel, firmware, `host-agent`) was realized by `apt`: `unattended-upgrades` security-only for Debian, our own apt repo for `host-agent`. An A/B image was the end state, deferred to v2 (`UPDATES.md` # 1, # 2; `DECISIONS.md` 2026-08-11). `BUILD.md` # 2 left the update engine open on purpose.
+
+**Now:** stream A is an **A/B OS image** on both profiles, and `apt` is not on the update path at all. The box writes the next image into its inactive slot, reboots into it in the window, and goes back to the previous slot on its own if the new one never reports healthy. The engine is **RAUC**, with **GRUB** as the boot loader under both UEFI and legacy BIOS. A slot holds a whole root. Everything the box writes that must survive a slot swap lives on a **state partition** on the same drive: `/etc` is an overlay with its upper layer there, and a short **pinned** list (`daemon.json`, `subuid`, `subgid`, `login.defs`) is copied up at first boot and never follows the image again. Nothing a user installs goes on the host. Curated Tier-2 packages (`SERVICE_PROVISIONING.md` # Tier 2) are baked into the image, each with its specced run state, and updated with the OS, since nothing can be apt-installed at runtime. A control-plane floor (`minimum_host_agent`) never holds back an OS update, because the OS update is how a box gets above it.
+
+**Why:**
+
+- **The host could never be patched.** The hosted image has no `apt` and `host-agent` is a bare binary, so a box kept the kernel, OpenSSL, Docker and sshd it was built with for life. An apt-based fix would bring back the "no rollback for stream A" hole that `UPDATES.md` # Rollback summary already names.
+- **RAUC is the only candidate with automatic rollback under legacy BIOS.** Hetzner CX boots legacy BIOS (#277). systemd-sysupdate's rollback rests on systemd-boot, which is UEFI-only, and UEFI-only server types cost about 3.5 times as much (CPX22 €19.49 against CX23 €5.49 a month). The spike proved all four proofs for RAUC under both firmwares, from one `grub.cfg` (`../progress/ab-update-engine-spike.md`).
+- **RAUC is a Debian package; sysupdate is not.** Debian builds systemd without sysupdate, so moose would build and patch it itself. The spike also hit a silent failure in the part Debian does ship (`systemd-import` writes a `.zst` through unpacked and reports success).
+- **The pinned list keeps the userns-remap rule from #486.** The spike showed a box keeps its remap setting across the swap even when the new image ships it off.
+
+**The trade-off:** an extra tool beside mkosi, an X.509 CA for bundle signatures, a GRUB script moose owns, and no UKI. The hosted UEFI path moves from systemd-boot to GRUB.
+
+**Affected docs:** `UPDATES.md` # What this doc covers, # 1, # 2, # 7, # 8.4, # Locked decisions; `BUILD.md` # 1b (new), # 2, # 4, # User-namespace remap, # 6, # Locked decisions; `STORAGE.md` # OS drive; `ENVIRONMENT.md` # Storage (hosted), # Boot (hosted), # Updates (hosted); `RELEASE_MANIFEST.md`; `SERVICE_PROVISIONING.md` # Tier 2; `HEALTH.md` (`reboot-required`); `NOTIFICATIONS.md` # Updates; `SPEC.md` # OS update model; `CONTROL_PLANE.md` # host-agent; `docs/architecture.md`; `NEXT.md` (# OS major-version upgrade commitment resolved, # A/B OS image added).
+
+## 2026-10-01 — Appliance OS updates apply automatically and reboot in the window
+
+**Previously:** on the appliance, Debian security patches applied silently through `unattended-upgrades`, but a reboot was **never forced**. A pending reboot only raised a dashboard nag after 7 days (`UPDATES.md` # Reboots).
+
+**Now:** on both profiles, an OS update is downloaded ahead of the window, then the box switches slots and reboots inside the 03:00 to 04:00 window, with no prompt. If the new slot does not come up healthy, the box goes back to the old one on its own. Admins are told afterwards, as hosted already does.
+
+**Why:** an A/B update only takes effect after a reboot, so "never force a reboot" would mean "never apply the patch" on a box whose admin does not click. That is the pantry-laptop failure `SPEC.md` warns about. `UPDATES.md` held auto-apply back because there was no rollback for the OS. The A/B image is that rollback.
+
+**Affected docs:** `UPDATES.md` # 1, # Reboots, # Locked decisions; `NEXT.md` # Reboot scheduling UX.
+
+## 2026-10-01 — A moose release is the OS release; the control plane has its own version
+
+**Previously:** one repo version for everything (`DECISIONS.md` 2026-07-16). `VERSION` at the repo root named one `vX.Y.Z` that `host-agent`, the brain, the UI and the disk image all carried, and every release was one dev->main PR.
+
+**Now:** **two version lines, one per update stream.**
+
+- **moose `X.Y.Z` is the OS release:** Debian, kernel, firmware, `host-agent` and the OS package lock, as one A/B image. It keeps the repo-root `VERSION` file and the `vX.Y.Z` tags. A Debian security fix becomes an OS patch release.
+- **The control plane (`moose-brain` + `moose-ui`) has its own semver**, in a `CONTROL_PLANE_VERSION` file at the repo root, tagged `control-plane-vX.Y.Z`. It can ship as often as needed and never needs a new OS.
+- **The two meet at one check:** a control-plane build declares the oldest moose version it runs on. That is today's `minimumAgentVersion` and `minimum_host_agent`, with no wire change, because `host-agent` now carries the moose version.
+
+**Why:** the two streams have different physics (`DECISIONS.md` 2026-08-11). A brain fix should not wait for an OS release and a reboot, and an OpenSSL fix should not need a brain release that changes nothing. "A box is described by two numbers" becomes literally true. The 2026-07-16 decision was against a counter per *component*; two lines per *stream* keeps its point: there are still no per-component counters.
+
+**Built in #559** (`../progress/control-plane-version-line.md`). `control-plane-vX.Y.Z` is the git tag and the GitHub Release. The ghcr images keep the `vX.Y.Z` image tag shape, with the control-plane number, because the private control plane resolves digests by that tag.
+
+**Affected docs:** `BUILD.md` # 6, # Versioning, # Locked decisions; `UPDATES.md` # 3, # Compatibility matrix; `RELEASE_MANIFEST.md`. Flips both 2026-07-16 versioning entries in part: the image still inherits the moose version, but the control plane no longer does.
+
+---
+
 ## 2026-09-30 — The box hides apps it cannot run, on top of the server-side environment filter (#544)
 
 **Previously:** the environment filter is the catalog service's (`?env=`), and the box "runs no second visibility pass" (`APP_STORE.md`, #434). Every app the box received was shown.

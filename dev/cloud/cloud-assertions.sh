@@ -151,7 +151,65 @@ fail() {
     # serial diag, then kill it and keep the run artifacts.
     exit 1
 }
+# Every file in the /etc upper layer must be one a Debian-major tidy-up knows
+# (BUILD.md # 1b, rule 4): on the keep list (/usr/lib/moose/etc-keep.list, and
+# this lane's own list in etc-keep.d/), an account file, a pinned file, or a
+# link sshd's run state makes, which host-agent makes again at start. A file
+# none of these covers would be lost at a major without anyone choosing that,
+# so it fails the boot here first.
+etc_upper_check() {
+    local up=/state/etc/upper pats p pat hit bad="" f
+    pats="$(cat /usr/lib/moose/etc-keep.list /usr/lib/moose/etc-keep.d/*.list 2>/dev/null | sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d')"
+    pats="$pats
+passwd
+group
+shadow
+gshadow
+passwd-
+group-
+shadow-
+gshadow-
+subuid-
+subgid-
+.pwd.lock
+docker/daemon.json
+login.defs
+systemd/system/multi-user.target.wants/ssh.service
+systemd/system/sshd.service
+rc[0-6S].d/[SK][0-9][0-9]ssh"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        hit=""
+        while IFS= read -r pat; do
+            # shellcheck disable=SC2053
+            if [[ $p == $pat || $p == $pat/* ]]; then hit=1; break; fi
+        done <<<"$pats"
+        [ -n "$hit" ] || bad="$bad $p"
+    done < <(cd "$up" && find . -mindepth 1 ! -type d -printf '%P\n' 2>/dev/null)
+    [ -z "$bad" ] || fail "the /etc upper layer holds files no tidy-up rule covers (add them to /usr/lib/moose/etc-keep.list or give them a rule):$bad"
+    # Every account and group the image made is on the box, with the image's
+    # id (BUILD.md # 1b, rule 3; systemd-sysusers adds a missing one at boot).
+    f=/usr/lib/sysusers.d/moose-image-accounts.conf
+    [ -s "$f" ] || fail "no $f in the slot"
+    while read -r kind name id _; do
+        case "$kind" in
+        u) [ "$(getent passwd "$name" | cut -d: -f3)" = "${id%%:*}" ] || bad="$bad user:$name(${id%%:*}/$(getent passwd "$name" | cut -d: -f3))" ;;
+        g) [ "$(getent group "$name" | cut -d: -f3)" = "$id" ] || bad="$bad group:$name($id/$(getent group "$name" | cut -d: -f3))" ;;
+        esac
+    done < "$f"
+    [ -z "$bad" ] || fail "accounts the image made are missing on the box or have another id (image/box):$bad"
+    echo "cloud-assertions: /etc upper layer: $(cd "$up" && find . -mindepth 1 ! -type d | wc -l) files, all covered by a tidy-up rule; the image's $(grep -c '^[ug] ' "$f") accounts and groups are on the box with their ids"
+}
 ok() {
+    etc_upper_check
+    # Last gate, every boot (#561): the slot is read-only, so anything that
+    # still writes to it fails. Catch it whether it failed a unit or only
+    # logged. Container logs are left out: an app's own read-only filesystem
+    # is not the slot.
+    failed_units="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+    [ -z "${failed_units// /}" ] || fail "failed units at the end of the boot: $failed_units"
+    rofs="$(journalctl -b --no-pager -o json 2>/dev/null | grep -v '"CONTAINER_NAME"' | grep -i 'read-only file system' | head -n 5 | cut -c1-600)"
+    [ -z "$rofs" ] || fail "something tried to write to the read-only slot: $rofs"
     emit "PASS"
     # Clean poweroff so the brain's SQLite writes (the persisted box-id) flush to
     # the qcow2 overlay before the harness boots the next scenario over it. --no-block
@@ -161,6 +219,44 @@ ok() {
 }
 
 echo "cloud-assertions: starting boot-proof checks (mode=${MODE})"
+
+# The slot GRUB booted (#563). Every boot but the OS update boots runs on slot A;
+# those two move the box between slots, one stage per boot, and keep the stage
+# on the state partition.
+BOOTED="$(sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline)"
+OS_STATE_DIR=/var/lib/moose/test/os
+os_stage() { cat "$OS_STATE_DIR/stage" 2>/dev/null || echo 1; }
+set_os_stage() { mkdir -p "$OS_STATE_DIR" && echo "$1" > "$OS_STATE_DIR/stage" && sync; }
+case "$MODE" in
+os-update|os-revert) ;;
+*) [ "$BOOTED" = A ] || fail "layout: booted slot '$BOOTED', want A (only the OS update boots leave slot A)" ;;
+esac
+
+# The broken slot of the os-revert boot (#563). host-agent is kept from starting
+# on it (a drop-in the first stage planted), which is the case where nothing but
+# the image's own safety net can take the box back. So this stage checks only
+# that, and waits: every other check of this script would fail on a box with no
+# host-agent, which is the point of the scenario. moose-os-trial.timer (90 s in
+# this image) must reboot the box; the next stage runs on slot A.
+if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
+    [ "$BOOTED" = B ] || fail "os-revert: stage 2 should boot slot B, booted '$BOOTED' (did GRUB skip the new slot?)"
+    boot_env="$(journalctl -u moose-test-grubenv.service -b --no-pager -o cat 2>/dev/null | grep 'grubenv at boot' | tail -1)"
+    grep -qw B_TRY=1 <<<"$boot_env" || fail "os-revert: GRUB did not save B_TRY=1 for the trial boot of slot B (${boot_env:-no grubenv at boot line})"
+    [ -e /var/lib/moose/os-update/trial-B ] || fail "os-revert: no trial marker for slot B on its trial boot"
+    for _ in $(seq 1 20); do systemctl is-active -q host-agent.service && break; sleep 1; done
+    systemctl is-active -q host-agent.service && fail "os-revert: host-agent runs on the slot it was meant to be kept off"
+    systemctl list-timers --all --no-pager 2>/dev/null | grep -q moose-os-trial.timer || fail "os-revert: moose-os-trial.timer is not scheduled on the trial boot"
+    echo "cloud-assertions: os-revert: on slot B, host-agent cannot start, trial marker present; grubenv: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' '); waiting for the safety net to reboot the box"
+    # The revert direction of a Debian-major tidy-up (BUILD.md # 1b, rule 4):
+    # record a major one above this slot's, as a newer major would have, so
+    # slot A must tidy the upper layer when the safety net takes the box back.
+    rec_major="$(( $( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" ) + 1 ))"
+    echo "$rec_major" > /state/etc/.moose-debian-major && sync
+    echo "cloud-assertions: os-revert: recorded Debian $rec_major on the state partition before the revert"
+    set_os_stage 3
+    sleep 300
+    fail "os-revert: the safety net never rebooted the box off the broken slot. $boot_env. grubenv now: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ') timer: $(systemctl list-timers --all --no-pager 2>&1 | grep moose-os-trial) service: $(journalctl -u moose-os-trial.service -b --no-pager 2>&1 | tail -5 | tr '\n' ' ')"
+fi
 
 # --- 1. no control-plane unit has failed.
 # NOTE: we deliberately do NOT gate on `systemctl is-system-running == running`:
@@ -175,26 +271,161 @@ for u in docker.service systemd-networkd.service host-agent.service moose-load-i
     grep -qx "$u" <<<"$failed" && fail "control-plane unit failed: $u (failed: $(tr '\n' ' ' <<<"$failed"))"
 done
 
-# --- 1b. root grown to fill the provider disk. moose-grow-root.service runs
-# systemd-repart at boot to extend the baked 8 GiB root partition to the whole
-# disk, then runs systemd-growfs directly to grow the ext4 inside it (issue: a
-# hosted box left on 8 GiB has docker image storage + the brain's SQLite store
-# sharing that volume, so one app install fills it and 500s login). This QEMU
-# boot-proof disk is fixed-size with no spare space, so both steps are a no-op
-# here — but the unit must still complete cleanly, which proves systemd-repart
-# and systemd-growfs are present in the lean image and the unit is wired. Real
-# full-disk growth (partition AND filesystem) can only be proven on a live
-# provider box (the cloud on-ramp), not this lane — a prior version of this unit
-# passed this exact boot-proof while only growing the partition and leaving the
-# filesystem at 8 GiB, because the growfs step was missing.
-command -v systemd-repart >/dev/null 2>&1 || fail "systemd-repart missing from the lean image — moose-grow-root cannot grow the root disk"
-[ -x /usr/lib/systemd/systemd-growfs ] || fail "systemd-growfs missing from the lean image — moose-grow-root cannot grow the root filesystem"
-grow_state="$(systemctl is-active moose-grow-root.service 2>&1 || true)"
-# Assert the unit actually completed (active, held by RemainAfterExit) — not merely
-# "not failed". An inactive/unknown state means the .wants symlink was dropped or the
-# unit was skipped, i.e. the grow never ran; that must fail the proof, not pass it.
-[ "$grow_state" = active ] || fail "moose-grow-root.service did not complete successfully (state=$grow_state): $(journalctl -u moose-grow-root.service -b --no-pager 2>/dev/null | tail -10)"
-echo "cloud-assertions: root-grow unit ok (state=$grow_state; systemd-repart + systemd-growfs present and wired — this lane cannot prove real growth, only that both steps ran)"
+# --- 1b. the A/B layout (#561, BUILD.md # 1b). Every boot, both firmwares.
+# The image carries 3 partitions (ESP 128 MiB, BIOS boot, slot A: a 1 GiB
+# squashfs); the initramfs (state-setup, via the
+# initramfs-tools hook) made slot B and the state partition at first boot,
+# grew the state partition to fill the disk (the harness gives the box a disk
+# far bigger than the image), and set up the /etc overlay, the pinned files and
+# the bind mounts before systemd started. The slot is read-only.
+layout_fail() { fail "layout: $*"; }
+root_src="$(findmnt -no SOURCE / 2>/dev/null)"
+root_disk="/dev/$(lsblk -no PKNAME "$root_src" 2>/dev/null | head -n1)"
+[ -b "$root_disk" ] || layout_fail "cannot find the disk under / (source '$root_src')"
+nparts="$(lsblk -nr -o TYPE "$root_disk" | grep -c '^part$')"
+[ "$nparts" = 5 ] || layout_fail "$root_disk has $nparts partitions, want 5 (ESP, BIOS boot, slot A, slot B, state): $(lsblk -nr -o NAME,SIZE,PARTLABEL "$root_disk" | tr '\n' ';')"
+for pair in "1:esp" "3:moose-slot-a" "4:moose-slot-b" "5:moose-state"; do
+    n="${pair%%:*}"; want="${pair#*:}"
+    got="$(lsblk -nr -o PARTN,PARTLABEL "$root_disk" | awk -v n="$n" '$1==n{print $2}')"
+    [ "$got" = "$want" ] || layout_fail "partition $n is labelled '$got', want '$want'"
+done
+esp_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==1{print $2}')"
+slot_a_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==3{print $2}')"
+slot_b_bytes="$(lsblk -bnr -o PARTN,SIZE "$root_disk" | awk '$1==4{print $2}')"
+[ "$esp_bytes" = 134217728 ] || layout_fail "the ESP is $esp_bytes bytes, want 128 MiB"
+[ "$slot_a_bytes" = 1073741824 ] && [ "$slot_b_bytes" = 1073741824 ] \
+    || layout_fail "slots are A=$slot_a_bytes B=$slot_b_bytes bytes, want 1 GiB each"
+if [ "$BOOTED" = B ]; then booted_uuid=21212121-2121-4121-8121-212121212121; booted_idx=1; else booted_uuid=20202020-2020-4020-8020-202020202020; booted_idx=0; fi
+[ "$root_src" = "/dev/disk/by-partuuid/$booted_uuid" ] || [ "$(lsblk -no PARTUUID "$root_src")" = "$booted_uuid" ] \
+    || layout_fail "/ is $root_src, not slot $BOOTED"
+# Grown: the state partition reaches the end of the disk, and its ext4 fills it.
+disk_bytes="$(lsblk -bdn -o SIZE "$root_disk")"
+state_dev="$(findmnt -no SOURCE /state 2>/dev/null)"
+[ -n "$state_dev" ] || layout_fail "/state is not mounted"
+state_part_bytes="$(lsblk -bdn -o SIZE "$state_dev")"
+state_fs_bytes="$(df -B1 --output=size /state | tail -n1 | tr -d ' ')"
+# ESP 128 MiB + BIOS 1 MiB + two 1 GiB slots + GPT and alignment.
+used_before_state=$(( (128 + 1 + 2048 + 4) * 1024 * 1024 ))
+[ "$state_part_bytes" -ge $(( disk_bytes - used_before_state )) ] \
+    || layout_fail "state partition is $state_part_bytes bytes on a $disk_bytes byte disk: it did not grow to the end"
+# ext4 reserves its metadata and journal, so the filesystem is a little smaller.
+[ "$state_fs_bytes" -ge $(( state_part_bytes * 95 / 100 )) ] \
+    || layout_fail "state ext4 is $state_fs_bytes bytes in a $state_part_bytes byte partition: it was not grown"
+echo "cloud-assertions: layout: $nparts partitions on $root_disk (${disk_bytes} bytes), ESP 128 MiB, slots 1 GiB each, state partition $state_dev ${state_part_bytes} bytes with ext4 ${state_fs_bytes} bytes"
+# The slot is a read-only squashfs, and it is the slot GRUB chose.
+findmnt -no OPTIONS / | tr ',' '\n' | grep -qx ro || layout_fail "/ is not mounted read-only: $(findmnt -no OPTIONS /)"
+[ "$(findmnt -no FSTYPE /)" = squashfs ] || layout_fail "/ is $(findmnt -no FSTYPE /), want squashfs"
+# A squashfs keeps file owners as the build saw them. If the build had mapped
+# them wrong, sudo would be neither root's nor setuid.
+[ "$(stat -c '%u %a' /usr/bin/sudo)" = "0 4755" ] || layout_fail "/usr/bin/sudo is $(stat -c '%u %a' /usr/bin/sudo), want root-owned 4755"
+# The measured numbers for the disk budget (BUILD.md # 1b # Disk budget): the
+# squashfs's own size from its superblock (bytes_used, offset 40), the ESP's
+# use, and the state partition's use at this point of the boot.
+slot_a_dev=/dev/disk/by-partuuid/20202020-2020-4020-8020-202020202020
+sq_bytes="$(dd if="$slot_a_dev" bs=96 count=1 2>/dev/null | od -An -t u8 -j 40 -N 8 | tr -d ' ')"
+[ -n "$sq_bytes" ] && [ "$sq_bytes" -gt 0 ] || layout_fail "cannot read the squashfs size from slot A's superblock"
+esp_used="$(df -B1 --output=used /efi | tail -n1 | tr -d ' ')"
+state_used="$(df -B1 --output=used /state | tail -n1 | tr -d ' ')"
+echo "cloud-assertions: layout: measured: squashfs ${sq_bytes} bytes ($(( sq_bytes * 1000 / slot_a_bytes / 10 )).$(( sq_bytes * 1000 / slot_a_bytes % 10 ))% of the slot), ESP used ${esp_used} of ${esp_bytes} bytes, state partition used ${state_used} of ${state_fs_bytes} bytes"
+cmdline="$(cat /proc/cmdline)"
+for w in "rauc.slot=$BOOTED" panic=10 ro psi=1 BOOT_IMAGE=/usr/lib/moose/boot/vmlinuz; do
+    grep -qw -- "$w" <<<"$cmdline" || layout_fail "kernel command line lacks '$w': $cmdline"
+done
+echo "cloud-assertions: layout: / is slot $BOOTED read-only, booted by GRUB from the slot's own kernel ($cmdline)"
+# The slot's initramfs can find a provider's disk. Hetzner Cloud presents the
+# boot disk as virtio-SCSI, which needs virtio_scsi and the SCSI disk driver
+# sd_mod; without sd_mod no /dev/sda appears and the boot hangs in the
+# initramfs (diagnosed once on a live Hetzner box, when mkosi built the
+# initrd). Debian's initramfs-tools (MODULES=most) carries them; this lane
+# boots virtio-blk, so only this check would notice them gone.
+initrd_mods="$(lsinitramfs /usr/lib/moose/boot/initrd.img 2>/dev/null)" || layout_fail "lsinitramfs cannot read /usr/lib/moose/boot/initrd.img"
+for m in sd_mod virtio_scsi virtio_blk squashfs overlay ext4; do
+    grep -qE "/${m}\.ko(\.[a-z]+)?$" <<<"$initrd_mods" || layout_fail "the slot's initramfs has no ${m} module"
+done
+echo "cloud-assertions: layout: the slot's initramfs carries sd_mod, virtio_scsi, virtio_blk, squashfs, overlay and ext4"
+# /etc is an overlay with its upper layer on the state partition.
+etc_opts="$(findmnt -no FSTYPE,OPTIONS /etc)"
+grep -q '^overlay' <<<"$etc_opts" && grep -q 'upperdir=/state/etc/upper' <<<"$etc_opts" \
+    || layout_fail "/etc is not the overlay on /state: $etc_opts"
+# Every bind mount is the state partition.
+state_devno="$(stat -c %d /state)"
+for d in /home /var/lib/docker /var/lib/containerd /var/lib/moose /var/log /var/lib/systemd /var/lib/rauc /var/lib/sudo /srv/moose; do
+    [ "$(stat -c %d "$d")" = "$state_devno" ] || layout_fail "$d is not on the state partition ($(findmnt -no SOURCE,TARGET "$d" | tr '\n' ' '))"
+done
+# User files live under /srv/moose, as on the appliance; the databases have
+# their own bind mounts and never sit under it (ENVIRONMENT.md # Storage
+# (hosted)).
+findmnt -no SOURCE /home | grep -q '\[/srv/moose/home\]$' || layout_fail "/home is not bound from the state partition's srv/moose/home: $(findmnt -no SOURCE /home)"
+findmnt -no SOURCE /var/lib/moose | grep -q '\[/var/lib/moose\]$' || layout_fail "/var/lib/moose is not its own bind mount: $(findmnt -no SOURCE /var/lib/moose)"
+findmnt -no FSTYPE /var/tmp | grep -qx tmpfs || layout_fail "/var/tmp is not a tmpfs"
+echo "cloud-assertions: layout: /etc overlay and the bind mounts are on the state partition, /var/tmp is a tmpfs"
+# The per-box state is on the state partition: the four pinned files (the
+# userns-remap), the SSH host keys and machine-id, all in the upper layer.
+up=/state/etc/upper
+for f in docker/daemon.json subuid subgid login.defs; do
+    [ -s "$up/$f" ] || layout_fail "pinned file /etc/$f is not in the upper layer"
+done
+grep -q '"userns-remap": "moose-remap"' "$up/docker/daemon.json" || layout_fail "pinned daemon.json lost the remap"
+grep -q '^moose-remap:' "$up/subuid" && grep -q '^moose-remap:' "$up/subgid" || layout_fail "pinned subuid/subgid lost the moose-remap range"
+[ -e /state/etc/.moose-pinned ] || layout_fail "no pin marker on the state partition"
+for _ in $(seq 1 30); do [ -s "$up/ssh/ssh_host_ed25519_key" ] && break; sleep 1; done
+for k in ssh_host_ed25519_key ssh_host_ecdsa_key ssh_host_rsa_key; do
+    [ -s "$up/ssh/$k" ] || layout_fail "SSH host key $k is not on the state partition"
+done
+[ -s "$up/machine-id" ] && [ "$(cat "$up/machine-id")" = "$(cat /etc/machine-id)" ] \
+    || layout_fail "machine-id is not on the state partition (upper '$(cat "$up/machine-id" 2>/dev/null)', /etc '$(cat /etc/machine-id)')"
+echo "cloud-assertions: layout: pinned daemon.json/subuid/subgid/login.defs, SSH host keys and machine-id ($(cat /etc/machine-id)) are on the state partition"
+# The bootloader side: RAUC reads the slot config and the grubenv, and the
+# box reboots rather than waits in emergency or rescue mode.
+rauc_out="$(rauc status 2>&1)" || layout_fail "rauc status failed: $(tail -n3 <<<"$rauc_out" | tr '\n' ' ')"
+grep -qi "booted from: *rootfs.${booted_idx} (${BOOTED})" <<<"$rauc_out" || layout_fail "rauc does not see slot $BOOTED as booted: $(tr '\n' ' ' <<<"$rauc_out")"
+# The keyring a bundle must chain to (#562) comes from the slot, never from the
+# state partition: a new image's keyring must reach the box, so the box never
+# writes it into the /etc upper layer.
+[ -s /etc/rauc/keyring.pem ] || layout_fail "no /etc/rauc/keyring.pem: rauc install would refuse every bundle"
+[ ! -e "$up/rauc/keyring.pem" ] || layout_fail "/etc/rauc/keyring.pem is in the /etc upper layer, so it no longer follows the image"
+grep -qx 'check-purpose=codesign' /etc/rauc/system.conf || layout_fail "/etc/rauc/system.conf does not ask for check-purpose=codesign"
+echo "cloud-assertions: layout: rauc keyring from the slot: $(openssl x509 -in /etc/rauc/keyring.pem -noout -subject 2>/dev/null || head -c 40 /etc/rauc/keyring.pem)"
+# Read once, then match: `grub-editenv list | grep -q` under pipefail fails
+# when grep exits before grub-editenv has written everything (run 37063254219).
+grubenv_now="$(grub-editenv /efi/grub/grubenv list 2>&1)"
+grep -qx "${BOOTED}_OK=1" <<<"$grubenv_now" || layout_fail "grubenv does not mark slot $BOOTED good: $(tr '\n' ' ' <<<"$grubenv_now")"
+for u in emergency.service rescue.service; do
+    systemctl cat "$u" 2>/dev/null | grep -q 'systemctl --no-block reboot' || layout_fail "$u has no reboot drop-in"
+done
+# A slot that hangs (#486 point 3, BUILD.md # 1b # As built): systemd feeds a
+# hardware watchdog, so a hung PID 1 or kernel resets the box. This lane is
+# QEMU q35, like a Hetzner Cloud VM, so it has the ICH9 TCO watchdog
+# (iTCO_wdt) that a real box has.
+wd_dev="$(systemctl show -p WatchdogDevice --value)"
+wd_sec="$(systemctl show -p RuntimeWatchdogUSec --value)"
+[ -n "$wd_dev" ] && [ -e /sys/class/watchdog/watchdog0 ] \
+    || layout_fail "no hardware watchdog in use (WatchdogDevice='$wd_dev', /sys/class/watchdog: $(ls /sys/class/watchdog 2>/dev/null | tr '\n' ' '))"
+[ "$wd_sec" = 1min ] || layout_fail "RuntimeWatchdogUSec is '$wd_sec', want 1min"
+# systemd logs this before journald runs, so it is in the kernel log (the
+# probe of run 37358065628 found it there and not under _PID=1).
+wd_log="$(dmesg 2>/dev/null; journalctl -k -b --no-pager -o cat 2>/dev/null; journalctl -b _PID=1 --no-pager -o cat 2>/dev/null)"
+grep -q 'Using hardware watchdog' <<<"$wd_log" \
+    || layout_fail "systemd does not feed the hardware watchdog (no 'Using hardware watchdog' in the boot's log)"
+echo "cloud-assertions: layout: systemd feeds the hardware watchdog $wd_dev ($(cat /sys/class/watchdog/watchdog0/identity 2>/dev/null)) with a $wd_sec timeout"
+dmesg 2>/dev/null | grep -q 'moose-state: bind mounts done' || journalctl -k -b --no-pager 2>/dev/null | grep -q 'moose-state: bind mounts done' \
+    || layout_fail "no 'moose-state: bind mounts done' in the kernel log"
+# state-setup looked for the state partition on the boot disk only.
+journalctl -k -b --no-pager 2>/dev/null | grep -q "moose-state: boot disk is $root_disk " \
+    || dmesg 2>/dev/null | grep -q "moose-state: boot disk is $root_disk " \
+    || layout_fail "state-setup did not report $root_disk as the boot disk"
+[ "$(lsblk -no PKNAME "$state_dev")" = "$(basename "$root_disk")" ] || layout_fail "the state partition $state_dev is not on the boot disk $root_disk"
+echo "cloud-assertions: layout: rauc sees slot $BOOTED booted, grubenv has ${BOOTED}_OK=1, emergency and rescue reboot"
+boot_env="$(journalctl -u moose-test-grubenv.service -b --no-pager -o cat 2>/dev/null | grep 'grubenv at boot' | tail -1)"
+echo "cloud-assertions: layout: $boot_env"
+# GRUB saved the booted slot's try flag before it booted it (#575), under both
+# firmwares. This is what skips a slot that dies before userspace.
+grep -qw "${BOOTED}_TRY=1" <<<"$boot_env" || layout_fail "GRUB did not save ${BOOTED}_TRY=1 for the slot it booted (${boot_env:-no grubenv at boot line})"
+# No firmware wrote the ESP (#575). OVMF without a writable VARS store saves
+# its variables to an NvVars file there, and that write undid GRUB's.
+mountpoint -q /efi || layout_fail "ESP not mounted at /efi, so the NvVars check would prove nothing"
+[ ! -e /efi/NvVars ] || layout_fail "the firmware wrote /efi/NvVars: the harness gave OVMF no writable VARS store, and that write undoes GRUB's grubenv save"
+echo "cloud-assertions: layout: GRUB saved ${BOOTED}_TRY=1 before booting slot $BOOTED; no NvVars on the ESP"
 
 # --- 1c. the baked host-agent carries a real build stamp (BUILD.md # Versioning:
 # "every build stamps two fields"). An unstamped build reports internal/version's
@@ -260,6 +491,30 @@ done
 for c in $want; do
     grep -qw "$c" <<<"$running" || fail "control-plane container '$c' not running after 120s (have: $running)"
 done
+
+# --- 5a. the brain and UI that run are the ones the image baked (#566). The
+# build records which control plane it baked, and the image ID each one loads
+# as (dev/control-plane/bundle-record.sh): a build of this commit, or the last
+# released pair pulled from ghcr by digest. Checking the RUNNING containers, not
+# only the loaded images, is what makes this boot proof a proof of those bytes.
+# Docker's image ID here is the sha256 of the image config, because the remap
+# keeps Docker on its classic store (BUILD.md # 1).
+cp_record=/usr/lib/moose/control-plane.env
+[ -f "$cp_record" ] || fail "no ${cp_record}: the image does not say which control plane it baked"
+baked_source="$(. "$cp_record"; echo "${MOOSE_BAKED_CP_SOURCE:-}")"
+baked_version="$(. "$cp_record"; echo "${MOOSE_BAKED_CP_VERSION:-}")"
+for pair in "moose-brain:$(. "$cp_record"; echo "${MOOSE_BAKED_BRAIN_ID:-}")" "moose-ui:$(. "$cp_record"; echo "${MOOSE_BAKED_UI_ID:-}")"; do
+    c="${pair%%:*}"; want_id="${pair#*:}"
+    [ -n "$want_id" ] || fail "${cp_record} names no image ID for ${c}"
+    img_id="$(docker image inspect -f '{{.Id}}' "${c}:dev" 2>/dev/null || true)"
+    run_id="$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null || true)"
+    [ "$img_id" = "$want_id" ] || fail "baked ${c}:dev loaded as '${img_id}', but the image recorded ${want_id} (${baked_source} ${baked_version})"
+    [ "$run_id" = "$want_id" ] || fail "container ${c} runs image '${run_id}', not the baked ${want_id} (${baked_source} ${baked_version})"
+done
+echo "cloud-assertions: control plane baked: ${baked_source} ${baked_version}; moose-brain and moose-ui run the recorded images"
+case "$baked_source" in
+    released) echo "layout: control plane baked from ghcr: $(. "$cp_record"; echo "${MOOSE_BAKED_BRAIN_REF} ${MOOSE_BAKED_UI_REF}")" ;;
+esac
 
 # --- 5b. container stdout is readable through journald by CONTAINER_NAME — the
 # EXACT query host-agent-real's per-app log tail runs
@@ -517,6 +772,7 @@ access)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 update)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 ssh)      DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 remap|remap-reboot) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+os-update|os-revert) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 esac
 echo "cloud-assertions: probing control plane at Host=$DASH_HOST (mode=$MODE)"
 
@@ -1273,7 +1529,7 @@ ssh)
     echo "cloud-assertions: enabling SSH with no key refused (422), :22 still closed"
 
     # --- 4. add a key and turn SSH on, in one save.
-    KEYFILE=/root/.moose-ssh-lane
+    KEYFILE=/run/moose-ssh-lane  # /run, because the OS slot is read-only (BUILD.md # 1b)
     rm -f "$KEYFILE" "${KEYFILE}.pub"
     ssh-keygen -t ed25519 -N '' -C 'moose-cloud-lane' -f "$KEYFILE" >/dev/null 2>&1 \
         || fail "ssh: ssh-keygen failed (is openssh-client in the image?)"
@@ -1925,7 +2181,7 @@ remap|remap-reboot)
     # checks on what came back. The ids the second boot needs are left in
     # REMAP_STATE on the overlay. Each boot signs in with its own single-use
     # owner assertion, so no session crosses the reboot.
-    REMAP_STATE=/var/lib/moose-remap-test/state
+    REMAP_STATE=/var/lib/moose/test/remap-state  # on the state partition, so it survives the reboot
     [ -f "$SEED" ] || fail "remap: $MODE mode but $SEED absent (seed materializer did not run?)"
     box_id="$(json_str "$SEED" box_id)"
     [ -n "$box_id" ] || fail "remap: could not read box_id from $SEED"
@@ -2181,6 +2437,337 @@ remap|remap-reboot)
         remap_checks
         [ "$RS_TOKEN_NOW" = "$rs_token" ] || fail "remap-reboot: rootsetup lost its data on a reboot: token '$rs_token' became '$RS_TOKEN_NOW'"
         echo "cloud-assertions: remap-reboot: every tier checked again after a real reboot of the same disk; the caps-tier app kept its data (token $rs_token)"
+    fi
+    ;;
+os-update|os-revert)
+    # THE A/B OS UPDATE (#563, UPDATES.md # 1). host-agent reads an OS target
+    # from its update-target source, downloads the bundle, checks its sha256
+    # against the target, has RAUC install it into slot B, switches in the
+    # window, and on the next boot keeps or gives up the new slot. The bundle
+    # is the boot-proof slot repacked with a host-agent one patch release up
+    # (dev/cloud/test/build-os-test-bundle.sh), on a read-only second disk, and
+    # served to host-agent by a file server inside the guest. One stage per
+    # boot; the stage is on the state partition, so it survives the reboots.
+    #   os-update: 1 (slot A) wrong digest refused, install ahead of the
+    #              window, switch; 2 (slot B) marked good, everything intact.
+    #   os-revert: 1 (slot A) install and switch, host-agent kept off slot B;
+    #              2 (slot B) handled at the top of this script; 3 (slot A)
+    #              reverted on its own, everything intact, then slot B made
+    #              active again with a kernel panic planted for it (#575);
+    #              4 (slot A) GRUB skipped slot B after it panicked.
+    [ -f "$SEED" ] || fail "$MODE mode but $SEED absent"
+    box_id="$(json_str "$SEED" box_id)"
+    apex="${box_id}.onmoose.io"
+    os_cred="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.os_test" 2>/dev/null || true)"
+    IFS=: read -r os_mode os_ver os_sum <<<"$os_cred"
+    [ -n "$os_ver" ] && [ -n "$os_sum" ] || fail "$MODE: moose.os_test credential missing or malformed ('$os_cred')"
+    base_ver="$(/usr/lib/moose/host-agent-real --version | awk '{print $2}')"
+    stage="$(os_stage)"
+    target_dir=/var/lib/moose/test-target
+    ha_log() { journalctl -u host-agent.service -b --no-pager -o short-unix 2>&1; }
+    wait_ha() { # PATTERN SECONDS WHAT
+        for _i in $(seq 1 "$2"); do ha_log | grep -q -- "$1" && return 0; sleep 1; done
+        fail "$MODE: $3 within $2 s: $(ha_log | grep -i 'os update\|update target' | tail -8 | cut -c1-400 | tr '\n' ' ')"
+    }
+    # The admin read of what host-agent decided (BRAIN_UI_PROTOCOL: admin-only).
+    os_read() { sed '1,/^\r*$/d' <<<"$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)" | tr -d '\r'; }
+    os_field() { grep -o "\"os\":{.*" <<<"$1" | json_str_of "$(cat)" "$2"; }
+    rauc_slot_version() { rauc status --detailed --output-format=json 2>/dev/null | grep -o "\"bootname\":\"$1\"[^]]*" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4; }
+    grubvar() { grub-editenv /efi/grub/grubenv list | sed -n "s/^$1=//p"; }
+    boot_gate() {
+        local fu ro
+        fu="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+        [ -z "${fu// /}" ] || fail "$MODE: failed units before the switch: $fu"
+        ro="$(journalctl -b --no-pager -o json 2>/dev/null | grep -v '"CONTAINER_NAME"' | grep -i 'read-only file system' | head -n 3 | cut -c1-400)"
+        [ -z "$ro" ] || fail "$MODE: something tried to write to the read-only slot: $ro"
+    }
+    write_os_target() { # SHA256 WINDOW
+        printf '{"version":"os-test","window":"%s","os":[{"version":"%s","bundle_url":"http://127.0.0.1:5001/bundles/os-test.raucb","bundle_sha256":"%s"}]}\n' \
+            "$2" "$os_ver" "$1" > "$target_dir/target.json"
+    }
+    facts() { # the per-box state an OS update must not touch
+        echo "shadow=$(grep "^${owner}:" /etc/shadow | cut -d: -f1-2)"
+        echo "hostkey=$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null | awk '{print $2}')"
+        echo "machineid=$(cat /etc/machine-id)"
+        echo "data=$(cat "/home/${owner}/os-update-data.txt" 2>/dev/null)"
+        echo "groups=$(id -nG "$owner" 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ')"
+    }
+
+    # 4. os-revert, last stage: slot B died before userspace (#575). The
+    #    test initramfs hook crashed the kernel on slot B (dev/cloud/test/
+    #    bootstrap.sh), panic=10 rebooted, and GRUB skipped slot B because
+    #    it had saved B_TRY=1 before booting it. Without that save, slot B
+    #    would boot again and panic again for ever, and no verdict would come.
+    if [ "$MODE" = os-revert ] && [ "$stage" = 4 ]; then
+        [ "$BOOTED" = A ] || fail "os-revert: stage 4 booted slot '$BOOTED', want A: GRUB did not skip slot B after it panicked"
+        [ -e /state/moose-test/panicked-slot-B ] || fail "os-revert: no panic note from slot B, so slot B never ran its initramfs: GRUB did not boot it"
+        [ "$(grubvar B_OK)" = 1 ] && [ "$(grubvar B_TRY)" = 1 ] \
+            || fail "os-revert: after the panic the grubenv should still have B_OK=1 B_TRY=1: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
+        rm -f /state/moose-test/panic-slot-B /state/moose-test/panicked-slot-B
+        echo "cloud-assertions: os-revert: PANIC SKIP OK (slot B panicked in its initramfs, panic=10 rebooted, GRUB skipped slot B with B_TRY=1 and booted slot A)"
+        boot_gate
+        ok
+    fi
+
+    if [ "$stage" = 1 ]; then
+        [ "$BOOTED" = A ] || fail "$MODE: the first boot is on slot '$BOOTED', want A"
+        sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token" 2>/dev/null || true)"
+        [ -n "$sso_token" ] || fail "$MODE: moose.sso_token credential missing"
+        sso_resp="$(full_get "/_moose/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
+        grep -q ' 303' <<<"$(status_of "$sso_resp")" || fail "$MODE: SSO landing did not 303: status='$(status_of "$sso_resp")'"
+        session_cookie="$(cookie_val "$sso_resp" moose_session)"
+        [ -n "$session_cookie" ] || fail "$MODE: no moose_session cookie from the SSO landing"
+        owner="$(json_str_of "$(full_get /api/v1/me "$apex" "$session_cookie" 2>/dev/null || true)" username)"
+        [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1 || fail "$MODE: the SSO owner '$owner' has no host account"
+        if :; then
+            # SSH on for the owner, so the faked major below must bring sshd
+            # back on slot B (BUILD.md # 1b, rule 4: the tidy-up keeps the
+            # drop-in, drops the enable links, and host-agent enables sshd once).
+            # A known password first, for the elevation gate, as the ssh boot
+            # does (harness setup, not a product path).
+            printf '%s:%s\n' "$owner" 'moose-cloud-lane-owner-pw' | chpasswd || fail "$MODE: could not set a known password for '$owner'"
+            el="$(full_send POST /api/v1/auth/elevate "$apex" "$session_cookie" '{"password":"moose-cloud-lane-owner-pw"}' 2>/dev/null)"
+            grep -q ' 200' <<<"$(status_of "$el")" || fail "$MODE: elevate as the owner failed: status='$(status_of "$el")'"
+            rm -f /run/moose-os-update-key /run/moose-os-update-key.pub
+            ssh-keygen -t ed25519 -N '' -C 'moose-os-update' -f /run/moose-os-update-key >/dev/null 2>&1 || fail "$MODE: ssh-keygen failed"
+            on="$(full_send PUT /api/v1/me/ssh "$apex" "$session_cookie" \
+                "{\"enabled\":true,\"keys\":[{\"public_key\":\"$(tr -d '\n' < /run/moose-os-update-key.pub)\",\"label\":\"os-update\"}]}" 2>/dev/null)"
+            grep -q ' 200' <<<"$(status_of "$on")" || fail "$MODE: turning SSH on for the owner failed: status='$(status_of "$on")'"
+            [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] || fail "$MODE: ssh.service is not enabled after the owner turned SSH on"
+            if [ "$MODE" = os-revert ]; then
+                # An admin turns sshd off by hand while the owner keeps SSH on
+                # in the drop-in. The tidy-up on the way back must not turn it
+                # on again (no marker for host-agent).
+                systemctl disable --now ssh.service >/dev/null 2>&1 || fail "$MODE: could not turn sshd off by hand"
+                [ "$(systemctl is-enabled ssh.service 2>/dev/null)" != enabled ] || fail "$MODE: ssh.service still enabled after disable"
+                echo "cloud-assertions: $MODE: SSH on for '$owner' in the drop-in, sshd turned off by hand before the faked major"
+            else
+                echo "cloud-assertions: $MODE: SSH on for '$owner' (ssh.service enabled) before the faked major"
+            fi
+        fi
+        head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "/home/${owner}/os-update-data.txt"
+        chown "$owner" "/home/${owner}/os-update-data.txt"
+        mkdir -p "$OS_STATE_DIR" && chmod 700 "$OS_STATE_DIR"
+        app_id=""
+        if [ "$MODE" = os-update ] && [ "$os_mode" = full ]; then
+            # An app, so "apps intact" means a container that comes back.
+            resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"whoami","scope":"personal"}' 2>/dev/null)"
+            job="$(json_str_of "$resp" job_id)"
+            [ -n "$job" ] || fail "$MODE: install whoami did not start: status='$(status_of "$resp")'"
+            st=""; jr=""
+            for _i in $(seq 1 300); do
+                jr="$(full_get "/api/v1/jobs/${job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+                st="$(json_str_of "$jr" status)"
+                case "$st" in completed|failed|cancelled|stalled) break ;; esac
+                sleep 1
+            done
+            [ "$st" = completed ] || fail "$MODE: install whoami ended '$st'"
+            app_id="$(json_str_of "$jr" instance_id)"
+            docker ps --filter "label=moose.instance_id=${app_id}" --filter status=running --format '{{.Names}}' | grep -q . \
+                || fail "$MODE: whoami has no running container"
+        fi
+        printf 'session_cookie=%q\nowner=%q\napp_id=%q\nbase_ver=%q\n' "$session_cookie" "$owner" "$app_id" "$base_ver" > "$OS_STATE_DIR/before"
+        facts > "$OS_STATE_DIR/facts"
+        echo "cloud-assertions: $MODE: owner '$owner' signed in, data written${app_id:+, whoami installed ($app_id)}; running OS $base_ver on slot A"
+
+        # The bundle disk, the in-guest source, and host-agent pointed at it.
+        mkdir -p "$target_dir/bundles"
+        bdev="$(blkid -L moose-os-test 2>/dev/null || true)"
+        [ -n "$bdev" ] || fail "$MODE: no disk labelled moose-os-test (the harness's bundle disk)"
+        mount -o ro "$bdev" "$target_dir/bundles" || fail "$MODE: cannot mount the bundle disk $bdev"
+        [ "$(sha256sum "$target_dir/bundles/os-test.raucb" | cut -d' ' -f1)" = "$os_sum" ] || fail "$MODE: the bundle on the disk is not the one the harness named"
+        mkdir -p /etc/systemd/system/host-agent.service.d
+        cat > /etc/systemd/system/host-agent.service.d/30-os-update-test.conf <<'UNIT'
+[Service]
+Environment=MOOSE_UPDATE_OS_URL_PREFIX=http://127.0.0.1:5001/
+UNIT
+        if [ "$MODE" = os-revert ]; then
+            # The broken slot: host-agent is kept from starting on slot B
+            # only, so the old slot still runs it after the revert.
+            cat > /etc/systemd/system/host-agent.service.d/90-os-revert-test.conf <<'UNIT'
+[Service]
+ExecStartPre=/bin/sh -c 'if grep -qw rauc.slot=B /proc/cmdline; then echo "os-revert test: host-agent is kept off slot B"; exit 1; fi'
+UNIT
+        fi
+        systemctl daemon-reload
+        caddy_image="$(docker inspect -f '{{.Config.Image}}' moose-caddy 2>/dev/null || true)"
+        docker rm -f moose-test-target >/dev/null 2>&1 || true
+        # A shut window: twelve hours from now, one minute wide.
+        shut="$(printf '%02d:00-%02d:01' $(( (10#$(date +%H) + 12) % 24 )) $(( (10#$(date +%H) + 12) % 24 )))"
+        write_os_target "$(printf '%064d' 0)" "$shut"
+        # --restart: the box reads its target again after each reboot, and the
+        # last stage checks what it decided then.
+        docker run -d --restart unless-stopped --name moose-test-target -p 127.0.0.1:5001:80 -v "$target_dir":/srv:ro "$caddy_image" \
+            caddy file-server --root /srv --listen :80 >/dev/null 2>&1 || fail "$MODE: could not start the in-guest file server"
+        for _i in $(seq 1 60); do grep -q ' 200' <<<"$(http_status_addr 127.0.0.1 5001 /target.json 2>/dev/null)" && break; sleep 1; done
+
+        if [ "$MODE" = os-update ]; then
+            # 1a. A WRONG DIGEST. The signature would pass; the digest the
+            #     target names does not, so RAUC never sees the bundle.
+            systemctl restart host-agent.service || fail "$MODE: could not restart host-agent"
+            wait_ha "update target names; refusing it" 180 "host-agent did not refuse a bundle whose digest the target does not name"
+            [ -z "$(rauc_slot_version B)" ] || fail "$MODE: slot B holds '$(rauc_slot_version B)' after a refused download"
+            # host-agent logs the refusal just before it writes the state, so
+            # one read can still see 'installing'. Poll, as 1b does.
+            st=""; for _i in $(seq 1 30); do st="$(os_field "$(os_read)" state)"; [ "$st" = failed ] && break; sleep 1; done
+            [ "$st" = failed ] || fail "$MODE: the update-target read says os.state '$st' after a wrong digest, want failed"
+            echo "cloud-assertions: os-update: WRONG DIGEST OK (refused before RAUC saw it; slot B untouched; os.state=failed)"
+
+            if [ "$os_mode" = refuse ]; then
+                # 1b-refuse. A run that publishes the OS: the image trusts only
+                #     the release root, so the throwaway-signed bundle must be
+                #     refused by RAUC even with the right digest.
+                write_os_target "$os_sum" "$shut"
+                systemctl restart host-agent.service
+                wait_ha 'install failed.*rauc install' 300 "RAUC did not refuse the throwaway-signed bundle"
+                [ -z "$(rauc_slot_version B)" ] || fail "$MODE: an image with the release keyring INSTALLED a throwaway-signed bundle"
+                echo "cloud-assertions: os-update: RELEASE KEYRING OK (the right digest, but RAUC refused the throwaway signature; slot B untouched)"
+                boot_gate
+                ok
+            fi
+        fi
+
+        # 1b. INSTALL AHEAD OF THE WINDOW. The right digest and a shut
+        #     window: the bundle goes into slot B, and the boot order stays.
+        write_os_target "$os_sum" "$shut"
+        systemctl restart host-agent.service
+        wait_ha "installed into the other slot" 300 "the bundle was not installed into slot B"
+        [ "$(rauc_slot_version B)" = "$os_ver" ] || fail "$MODE: slot B holds '$(rauc_slot_version B)', want $os_ver"
+        [ "$(grubvar ORDER)" = "A B" ] || fail "$MODE: the boot order moved outside the window: ORDER='$(grubvar ORDER)'"
+        for _i in $(seq 1 30); do [ "$(os_field "$(os_read)" state)" = installed ] && break; sleep 1; done
+        [ "$(os_field "$(os_read)" state)" = installed ] || fail "$MODE: os.state is '$(os_field "$(os_read)" state)', want installed"
+        t_dl="$(ha_log | grep 'downloading the bundle' | tail -1 | awk '{print $1}')"
+        t_got="$(ha_log | grep 'bundle downloaded and its digest matches' | tail -1 | awk '{print $1}')"
+        t_in="$(ha_log | grep 'installed into the other slot' | tail -1 | awk '{print $1}')"
+        echo "cloud-assertions: $MODE: INSTALL AHEAD OK (slot B holds $os_ver, ORDER still 'A B', os.state=installed); measured: download+digest $(awk -v a="$t_dl" -v b="$t_got" 'BEGIN{printf "%.1f", b-a}') s, rauc install $(awk -v a="$t_got" -v b="$t_in" 'BEGIN{printf "%.1f", b-a}') s, bundle $(stat -c %s "$target_dir/bundles/os-test.raucb") bytes"
+
+        # 1c. THE SWITCH. An open window: host-agent puts slot B first and
+        #     reboots. The next stage runs on slot B.
+        boot_gate
+        if [ "$MODE" = os-update ]; then
+            # A faked Debian major (BUILD.md # 1b, rule 4): the state partition
+            # says the box last ran Debian 12, so slot B must tidy the /etc
+            # upper layer before it mounts it. An admin's own edit goes to the
+            # attic; the owner, the password hash, the host keys, machine-id and
+            # the sudo membership must come through (stage 2 checks them).
+            echo 12 > /state/etc/.moose-debian-major
+            echo "# an admin's own edit (os-update boot)" > /etc/moose-test-hand-edit.conf
+            sync
+        fi
+        date +%s > "$OS_STATE_DIR/switch-at"
+        set_os_stage 2
+        write_os_target "$os_sum" "00:00-23:59"
+        systemctl restart host-agent.service
+        echo "cloud-assertions: $MODE: window open; waiting for host-agent to switch to slot B and reboot"
+        sleep 900
+        fail "$MODE: host-agent never switched slots and rebooted: $(ha_log | grep -i 'os update' | tail -6 | tr '\n' ' ')"
+    fi
+
+    # The last stage: back on a slot that must be healthy and marked good.
+    # shellcheck disable=SC1090
+    . "$OS_STATE_DIR/before"
+    if [ "$MODE" = os-update ]; then
+        [ "$stage" = 2 ] && [ "$BOOTED" = B ] || fail "os-update: stage $stage booted slot '$BOOTED', want stage 2 on slot B"
+        wait_ha "the new slot is healthy and marked good" 300 "host-agent did not mark the new slot good"
+        [ ! -e /var/lib/moose/os-update/trial-B ] || fail "os-update: the trial marker for slot B is still there"
+        [ "$(grubvar ORDER)" = "B A" ] && [ "$(grubvar B_OK)" = 1 ] && [ "$(grubvar B_TRY)" = 0 ] \
+            || fail "os-update: grubenv after mark-good: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
+        [ "$(/usr/lib/moose/host-agent-real --version | awk '{print $2}')" = "$os_ver" ] || fail "os-update: slot B's host-agent is not $os_ver"
+        want_outcome=good; want_state=current; want_ver="$os_ver"
+        t_good="$(ha_log | grep 'the new slot is healthy and marked good' | tail -1 | awk '{print $1}')"
+        slot_major="$( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" )"
+        [ "$(cat /state/etc/.moose-debian-major 2>/dev/null)" = "$slot_major" ] \
+            || fail "os-update: the state partition records Debian '$(cat /state/etc/.moose-debian-major 2>/dev/null)', want $slot_major after the tidy-up"
+        # dmesg first, as the layout checks read the moose-state lines: the
+        # journal's kernel log was empty here once (run 37374562648).
+        tidy_log="$(dmesg 2>/dev/null; journalctl -k -b --no-pager -o cat 2>/dev/null)"
+        grep -q "moose-state: tidied /etc for Debian 12 to $slot_major" <<<"$tidy_log" \
+            || fail "os-update: slot B did not tidy the /etc upper layer for the faked major: $(grep 'moose-state' <<<"$tidy_log" | tail -5 | tr '\n' ' ')"
+        [ ! -e /etc/moose-test-hand-edit.conf ] || fail "os-update: the admin's own /etc edit survived the faked major"
+        attic_edit="$(ls -d /state/etc/attic/*-debian-12-to-"$slot_major"/moose-test-hand-edit.conf 2>/dev/null | head -1)"
+        [ -n "$attic_edit" ] || fail "os-update: the admin's own /etc edit is not in the attic: $(ls /state/etc/attic 2>&1 | tr '\n' ' ')"
+        # sshd comes back: the drop-in was kept, its enable links were not, and
+        # host-agent enabled the unit once because of the tidy-up marker.
+        grep -qE "^AllowUsers .*\b${owner}\b" /etc/ssh/sshd_config.d/moose-allowed.conf 2>/dev/null \
+            || fail "os-update: the sshd drop-in does not name '$owner' after the faked major: $(cat /etc/ssh/sshd_config.d/moose-allowed.conf 2>&1 | tr '\n' ' ')"
+        for _i in $(seq 1 60); do [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] && break; sleep 1; done
+        [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] \
+            || fail "os-update: ssh.service is '$(systemctl is-enabled ssh.service 2>&1)' after the faked major, want enabled: $(ha_log | grep -i 'sshd\|tidy' | tail -3 | tr '\n' ' ')"
+        ha_log | grep -q "sshd turned on after a Debian-major tidy-up" || fail "os-update: host-agent did not log turning sshd on after the tidy-up"
+        [ ! -e /state/etc/.moose-major-tidied ] || fail "os-update: host-agent did not remove the tidy-up marker"
+        echo "cloud-assertions: os-update: SSHD BACK OK (drop-in names '$owner', ssh.service enabled again by host-agent after the tidy-up, marker removed)"
+        echo "cloud-assertions: os-update: MAJOR TIDY OK (faked Debian 12 to $slot_major: the upper layer was rebuilt, the admin's edit is in $(dirname "$attic_edit"), $(grep -o 'kept [0-9]* files' <<<"$tidy_log" | tail -1))"
+        echo "cloud-assertions: os-update: SWITCH OK (booted slot B, marked good, grubenv ORDER='B A' B_OK=1 B_TRY=0); measured: switch to marked good $(awk -v a="$(cat "$OS_STATE_DIR/switch-at")" -v b="$t_good" 'BEGIN{printf "%.0f", b-a}') s, the reboot included"
+        note_pat="updated its system to $os_ver"
+    else
+        [ "$stage" = 3 ] && [ "$BOOTED" = A ] || fail "os-revert: stage $stage booted slot '$BOOTED', want stage 3 back on slot A"
+        wait_ha "the box went back to the old slot" 120 "host-agent did not record the revert"
+        # And it was the image's safety net that did it, the case under test.
+        wait_ha "the image's safety net rebooted the new slot" 10 "the revert was not made by moose-os-trial.timer"
+        [ ! -e /var/lib/moose/os-update/trial-B ] || fail "os-revert: the trial marker for slot B is still there"
+        [ "$(grubvar B_OK)" = 0 ] && [ "$(grubvar A_OK)" = 1 ] || fail "os-revert: grubenv after the revert: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
+        [ "$(/usr/lib/moose/host-agent-real --version | awk '{print $2}')" = "$base_ver" ] || fail "os-revert: back on slot A, host-agent is not $base_ver"
+        want_outcome=reverted; want_state=held; want_ver="$base_ver"
+        # The revert direction of the tidy-up: slot B recorded a newer major,
+        # so slot A tidied the upper layer on the way back.
+        slot_major="$( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" )"
+        [ "$(cat /state/etc/.moose-debian-major 2>/dev/null)" = "$slot_major" ] \
+            || fail "os-revert: the state partition records Debian '$(cat /state/etc/.moose-debian-major 2>/dev/null)' back on slot A, want $slot_major"
+        tidy_log="$(dmesg 2>/dev/null; journalctl -k -b --no-pager -o cat 2>/dev/null)"
+        grep -q "moose-state: tidied /etc for Debian $(( slot_major + 1 )) to $slot_major: .* sshd was off" <<<"$tidy_log" \
+            || fail "os-revert: slot A did not tidy the upper layer on the way back (or saw sshd on): $(grep 'moose-state' <<<"$tidy_log" | tail -4 | tr '\n' ' ')"
+        ls -d /state/etc/attic/*-debian-$(( slot_major + 1 ))-to-"$slot_major" >/dev/null 2>&1 || fail "os-revert: no attic entry for the tidy-up on the way back"
+        # sshd was off by hand, so no marker, and host-agent left it off.
+        [ ! -e /state/etc/.moose-major-tidied ] || fail "os-revert: the tidy-up left the sshd marker although sshd was off"
+        grep -qE "^AllowUsers .*\b${owner}\b" /etc/ssh/sshd_config.d/moose-allowed.conf 2>/dev/null || fail "os-revert: the sshd drop-in lost '$owner' on the way back"
+        sleep 5
+        [ "$(systemctl is-enabled ssh.service 2>/dev/null)" != enabled ] || fail "os-revert: ssh.service is enabled again after the tidy-up, but the admin had turned it off"
+        echo "cloud-assertions: os-revert: MAJOR TIDY BACK OK (Debian $(( slot_major + 1 )) to $slot_major on slot A, attic entry made, sshd left off as the admin set it)"
+        echo "cloud-assertions: os-revert: REVERT OK (slot B never came up; back on slot A, B marked bad, A good); measured: switch to back on slot A $(( $(date +%s) - $(cat "$OS_STATE_DIR/switch-at") )) s, two reboots and the safety net included"
+        note_pat="did not work, so moose went back"
+    fi
+    # What the brain reports, and what the box kept.
+    me=""
+    for _i in $(seq 1 90); do me="$(status_of "$(full_get /api/v1/me "$apex" "$session_cookie" 2>/dev/null || true)")"; grep -q ' 200' <<<"$me" && break; sleep 1; done
+    grep -q ' 200' <<<"$me" || fail "$MODE: the owner's session does not work after the OS move (status '$me')"
+    ver_body="$(full_get /api/v1/system/version "$apex" "$session_cookie" 2>/dev/null || true)"
+    [ "$(json_str_of "$ver_body" os_version)" = "$want_ver" ] && [ "$(json_str_of "$ver_body" os_slot)" = "$BOOTED" ] \
+        || fail "$MODE: /api/v1/system/version reports os_version '$(json_str_of "$ver_body" os_version)' os_slot '$(json_str_of "$ver_body" os_slot)', want $want_ver $BOOTED"
+    rd=""; for _i in $(seq 1 60); do rd="$(os_read)"; [ "$(os_field "$rd" state)" = "$want_state" ] && break; sleep 2; done
+    [ "$(os_field "$rd" state)" = "$want_state" ] && [ "$(os_field "$rd" outcome)" = "$want_outcome" ] \
+        || fail "$MODE: the update-target read says os.state '$(os_field "$rd" state)' outcome '$(os_field "$rd" outcome)', want $want_state $want_outcome: $(grep -o '"os":{.*' <<<"$rd" | cut -c1-400)"
+    now_facts="$(facts)"
+    [ "$now_facts" = "$(cat "$OS_STATE_DIR/facts")" ] \
+        || fail "$MODE: per-box state changed across the OS move: before [$(tr '\n' ' ' < "$OS_STATE_DIR/facts")] now [$(tr '\n' ' ' <<<"$now_facts")]"
+    if [ -n "$app_id" ]; then
+        for _i in $(seq 1 180); do docker ps --filter "label=moose.instance_id=${app_id}" --filter status=running --format '{{.Names}}' | grep -q . && break; sleep 1; done
+        docker ps --filter "label=moose.instance_id=${app_id}" --filter status=running --format '{{.Names}}' | grep -q . \
+            || fail "$MODE: the whoami app did not come back after the OS move"
+    fi
+    echo "cloud-assertions: $MODE: INTACT OK (owner '$owner', session, password hash, SSH host key, machine-id, data file${app_id:+ and the whoami app} unchanged; os_version $want_ver on slot $BOOTED; os.state=$want_state, last outcome $want_outcome)"
+    nb=""
+    for _i in $(seq 1 150); do nb="$(full_get /api/v1/notifications "$apex" "$session_cookie" 2>/dev/null || true)"; grep -q "$note_pat" <<<"$nb" && break; sleep 2; done
+    grep -q "$note_pat" <<<"$nb" || fail "$MODE: no admin notification '$note_pat': $(sed '1,/^\r*$/d' <<<"$nb" | cut -c1-400)"
+    echo "cloud-assertions: $MODE: NOTIFY OK (admins were told: '$note_pat')"
+    if [ "$MODE" = os-revert ]; then
+        # 3b. A SLOT THAT DIES BEFORE USERSPACE (#575). Make slot B active
+        #     again (RAUC sets B_OK=1 B_TRY=0 and puts it first) and plant
+        #     a kernel panic for it. The next stage must come up on slot A.
+        #     Slot A must be marked good first, or GRUB would have no slot
+        #     to fall back to but the fallback rule.
+        for _i in $(seq 1 60); do [ "$(grubvar A_TRY)" = 0 ] && break; sleep 1; done
+        [ "$(grubvar A_OK)" = 1 ] && [ "$(grubvar A_TRY)" = 0 ] || fail "os-revert: slot A is not marked good before the panic test: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
+        mkdir -p /state/moose-test
+        rm -f /state/moose-test/panicked-slot-B
+        touch /state/moose-test/panic-slot-B
+        rauc status mark-active other >/dev/null 2>&1 || fail "os-revert: rauc status mark-active other failed"
+        [ "$(grubvar ORDER)" = "B A" ] && [ "$(grubvar B_OK)" = 1 ] && [ "$(grubvar B_TRY)" = 0 ] \
+            || fail "os-revert: after mark-active the grubenv is $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
+        set_os_stage 4
+        echo "cloud-assertions: os-revert: slot B is active again with a kernel panic planted for it; rebooting"
+        systemctl reboot
+        sleep 600
+        fail "os-revert: the box did not reboot into the panic test"
     fi
     ;;
 *)

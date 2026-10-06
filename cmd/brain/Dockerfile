@@ -21,13 +21,15 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# Build identity (BUILD.md # Versioning): VERSION is in the build context (repo
-# root), but .git is excluded (.dockerignore — never ship dev/VCS state into the
+# Build identity (BUILD.md # Versioning): the brain is on the control-plane
+# line, so it is stamped from CONTROL_PLANE_VERSION, not from VERSION (which is
+# the moose OS release and stamps host-agent). The file is in the build context
+# (repo root), but .git is excluded (.dockerignore — never ship dev/VCS state into the
 # image), so the commit can't be resolved with `git rev-parse` in here. The
 # Makefile's brain-image target passes it in as a build-arg instead.
 ARG MOOSE_COMMIT=unknown
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w \
-      -X github.com/onmoose/os/internal/version.Version=$(cat VERSION) \
+      -X github.com/onmoose/os/internal/version.Version=$(cat CONTROL_PLANE_VERSION) \
       -X github.com/onmoose/os/internal/version.Commit=${MOOSE_COMMIT}" \
       -o /out/moose-brain ./cmd/brain
 
@@ -53,6 +55,14 @@ RUN set -eux; \
 # Must equal internal/protocol.Major; bump both together with the /v<N> URL
 # prefix.
 LABEL moose.protocol.major="1"
+# The control-plane release this image belongs to, and its commit, as standard
+# OCI labels, so `docker inspect` answers "which build is this" without running
+# it. `make brain-image` passes both from the same CONTROL_PLANE_VERSION file and
+# commit the binary above is stamped with.
+ARG CONTROL_PLANE_VERSION=unknown
+ARG MOOSE_COMMIT=unknown
+LABEL org.opencontainers.image.version="${CONTROL_PLANE_VERSION}" \
+      org.opencontainers.image.revision="${MOOSE_COMMIT}"
 COPY --from=build /out/moose-brain /usr/local/bin/moose-brain
 # State dir and catalog are bind-mounts the supervisor provides at runtime; the
 # brain reads its config from MOOSE_* env (cmd/brain/main.go # loadConfig).
