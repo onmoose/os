@@ -278,3 +278,19 @@ ln -sf /etc/machine-id /var/lib/dbus/machine-id
 #     journal catalog) run on every boot, which is what an image that can swap
 #     under /etc needs anyway.
 systemctl --root=/ mask systemd-repart.service ldconfig.service systemd-update-done.service >/dev/null
+
+# Every account and group the image's packages made, as a sysusers.d file
+# (BUILD.md # 1b, rule 3). The box's /etc/passwd and /etc/group are in the
+# /etc upper layer and hide the slot's, so an account a later image's packages
+# make at build time would be missing on the box. systemd-sysusers runs on
+# every boot (systemd-update-done is masked above) and adds any of these the
+# box lacks, with the image's ids. It changes nothing on a box that has them.
+# The build checks the ids against dev/os-lock/cloud-accounts.lock
+# (dev/cloud/build-bundle.sh), because a box keeps an account's id for life.
+{
+    echo "# Generated at build time from the image's /etc/group and /etc/passwd"
+    echo "# (dev/cloud/mkosi.postinst.chroot). Do not edit."
+    awk -F: '{ printf "g %s %s\n", $1, $3 }' /etc/group
+    awk -F: '{ printf "u %s %s:%s %s %s %s\n", $1, $3, $4, ($5 == "" ? "-" : "\"" $5 "\""), $6, $7 }' /etc/passwd
+    awk -F: '$4 != "" { n = split($4, m, ","); for (i = 1; i <= n; i++) printf "m %s %s\n", m[i], $1 }' /etc/group
+} > /usr/lib/sysusers.d/moose-image-accounts.conf

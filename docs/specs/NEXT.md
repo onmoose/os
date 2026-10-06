@@ -156,13 +156,13 @@ The shape is decided (`BUILD.md` # 1b, `UPDATES.md` # 1, `DECISIONS.md` 2026-10-
 
 1. **Secure Boot on the appliance.** shim plus Debian's signed GRUB limits which modules and files GRUB may load. The `grub.cfg` uses `regexp`, `loadenv`, `test`, `squash4` and `xzio`, and reads the kernel from a slot's squashfs (xz), which is how the hosted image boots since #561. Prove it, or find the shape that works.
 2. **dm-verity for the slots**, set up in the initrd for the booted slot, with the root hash carried where the signed boot chain can vouch for it.
-3. **A slot that hangs.** Narrowed by #561: the hosted image reboots on emergency and rescue, sets `panic=10` (which also reboots a failed initramfs), and sets `RuntimeWatchdogSec=60s` (`BUILD.md` # 1b # As built). Still open: whether Hetzner VMs expose a watchdog device, so a hang in a running system that neither panics nor reaches emergency mode is covered.
+3. **A slot that hangs.** *Resolved for hosted 2026-10-05.* Hetzner Cloud VMs have a hardware watchdog (the ICH9 TCO timer of QEMU's `q35` machine), the image's generic kernel drives it, and a VM whose PID 1 froze reset itself after 118 s (`../progress/ab-hang-and-major.md`). Two gaps are written down in `BUILD.md` # 1b # As built: the reset comes after about twice `RuntimeWatchdogSec`, and a hang in GRUB or the initramfs is not covered. The appliance falls back to `softdog` where a machine has no hardware watchdog (#564).
 4. **A replaced OS drive (appliance).** The state partition now holds users, password hashes and host keys, and the OS drive was sold as replaceable (`STORAGE.md` # OS drive). Decide how they come back: from the off-box backup, or by rebuilding them from the brain's records.
-5. **A Debian major across the overlay.** A file in the `/etc` upper layer stays at the old major's version under a new major's packages. Decide whether a major release resets the upper layer to a known list, or ships a migration step.
+5. **A Debian major across the overlay.** *Resolved 2026-10-05 (`DECISIONS.md` 2026-10-05).* When the booted slot's Debian major differs from the one the state partition records, in either direction, the initramfs tidies the `/etc` upper layer: moose's known files are kept, the account files are merged, the pinned files are taken again from the slot when that keeps the box's remap, and everything else moves to an attic (`BUILD.md` # 1b, rule 4). It must ship in a Debian 13 release before the first Debian 14 release.
 6. **How OS patch releases are cut.** *Resolved 2026-10-01 (#560, `DECISIONS.md` 2026-10-01).* A lock-only release is cut from `main` on a `hotfix/X.Y.Z` branch: the bump is re-run against it, `VERSION` is bumped there, the PR goes into `main`, and `main` is then carried into `dev` as after every release. A bump that changes any package from `trixie-security` is released within 7 days; any other bump ships with the next normal release (`docs/dev/contributing.md` # OS patch releases from a lock bump).
 
 **Context:** `BUILD.md` # 1b, `UPDATES.md` # 1, `STORAGE.md` # OS drive, `RELEASE_MANIFEST.md`, #486.
-**Why Tier 2:** none of it blocks the hosted build, which has no Secure Boot, no verity and no replaceable drive. Points 1, 2 and 4 block the appliance build; 3 blocks shipping either.
+**Why Tier 2:** none of it blocks the hosted build, which has no Secure Boot, no verity and no replaceable drive. Points 1, 2 and 4 block the appliance build.
 
 ## Tier 3 — Defer-able, but pin the shape
 
@@ -198,7 +198,7 @@ App-level and managed-service migration are well-specced (`SERVICE_PROVISIONING.
 
 ### OS major-version upgrade commitment
 
-**Resolved 2026-10-01.** The commitment: **nobody reinstalls to get a new Debian major.** The mechanism: a Debian major is a new A/B OS image like any other (`UPDATES.md` # 1, `DECISIONS.md` 2026-10-01), with the same automatic revert. What is left is one risk, tracked in # A/B OS image below: files the box copied into the `/etc` upper layer stay at the old major's version.
+**Resolved 2026-10-01.** The commitment: **nobody reinstalls to get a new Debian major.** The mechanism: a Debian major is a new A/B OS image like any other (`UPDATES.md` # 1, `DECISIONS.md` 2026-10-01), with the same automatic revert. The one risk left, files in the `/etc` upper layer staying at the old major's version, was resolved on 2026-10-05: a Debian major tidies the upper layer (# A/B OS image, point 5).
 
 ### Outgoing mail — what stays deferred past BYO (`SERVICE_PROVISIONING.md` # BYO outgoing mail)
 

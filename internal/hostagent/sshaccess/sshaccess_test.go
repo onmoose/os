@@ -693,3 +693,51 @@ func TestFailedFirstEnableStillStopsTheDaemon(t *testing.T) {
 		t.Errorf("the daemon was left running after a failed first enable, so :22 stays open; ran = %v", ran)
 	}
 }
+
+// At start, sshd is turned on only when the drop-in names an account and the
+// unit is not enabled (the links a Debian-major tidy-up drops), and it is never
+// turned off.
+func TestEnsureOnAtStart(t *testing.T) {
+	cases := map[string]struct {
+		account bool
+		enabled string
+		wantOn  bool
+	}{
+		"no drop-in":              {false, "disabled", false},
+		"accounts, unit disabled": {true, "disabled", true},
+		"accounts, unit missing":  {true, "not-found", true},
+		"accounts, unit enabled":  {true, "enabled", false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			m, ran := newManager(t, t.TempDir())
+			if c.account {
+				mustSet(t, m, protocol.SetSSHAccessRequest{User: "alex", Enabled: true, AuthorizedKeys: []string{testKey}})
+			}
+			*ran = nil
+			inner := m.Runner
+			m.Runner = func(name string, args ...string) ([]byte, error) {
+				if name == "systemctl" && len(args) > 0 && args[0] == "is-enabled" {
+					*ran = append(*ran, name+" "+strings.Join(args, " "))
+					return []byte(c.enabled + "\n"), nil
+				}
+				return inner(name, args...)
+			}
+			on, err := m.EnsureOnAtStart()
+			if err != nil {
+				t.Fatalf("EnsureOnAtStart: %v", err)
+			}
+			if on != c.wantOn {
+				t.Fatalf("turned on = %v, want %v (ran %v)", on, c.wantOn, *ran)
+			}
+			for _, cmd := range *ran {
+				if strings.HasPrefix(cmd, "systemctl disable") {
+					t.Fatalf("EnsureOnAtStart turned sshd off: %v", *ran)
+				}
+				if !c.wantOn && strings.HasPrefix(cmd, "systemctl enable") {
+					t.Fatalf("EnsureOnAtStart enabled sshd when it should not: %v", *ran)
+				}
+			}
+		})
+	}
+}

@@ -151,7 +151,57 @@ fail() {
     # serial diag, then kill it and keep the run artifacts.
     exit 1
 }
+# Every file in the /etc upper layer must be one a Debian-major tidy-up knows
+# (BUILD.md # 1b, rule 4): on the keep list (/usr/lib/moose/etc-keep.list, and
+# this lane's own list in etc-keep.d/), an account file, a pinned file, or a
+# link sshd's run state makes, which host-agent makes again at start. A file
+# none of these covers would be lost at a major without anyone choosing that,
+# so it fails the boot here first.
+etc_upper_check() {
+    local up=/state/etc/upper pats p pat hit bad="" f
+    pats="$(cat /usr/lib/moose/etc-keep.list /usr/lib/moose/etc-keep.d/*.list 2>/dev/null | sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d')"
+    pats="$pats
+passwd
+group
+shadow
+gshadow
+passwd-
+group-
+shadow-
+gshadow-
+subuid-
+subgid-
+.pwd.lock
+docker/daemon.json
+login.defs
+systemd/system/multi-user.target.wants/ssh.service
+systemd/system/sshd.service
+rc[0-6S].d/[SK][0-9][0-9]ssh"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        hit=""
+        while IFS= read -r pat; do
+            # shellcheck disable=SC2053
+            if [[ $p == $pat || $p == $pat/* ]]; then hit=1; break; fi
+        done <<<"$pats"
+        [ -n "$hit" ] || bad="$bad $p"
+    done < <(cd "$up" && find . -mindepth 1 ! -type d -printf '%P\n' 2>/dev/null)
+    [ -z "$bad" ] || fail "the /etc upper layer holds files no tidy-up rule covers (add them to /usr/lib/moose/etc-keep.list or give them a rule):$bad"
+    # Every account and group the image made is on the box, with the image's
+    # id (BUILD.md # 1b, rule 3; systemd-sysusers adds a missing one at boot).
+    f=/usr/lib/sysusers.d/moose-image-accounts.conf
+    [ -s "$f" ] || fail "no $f in the slot"
+    while read -r kind name id _; do
+        case "$kind" in
+        u) [ "$(getent passwd "$name" | cut -d: -f3)" = "${id%%:*}" ] || bad="$bad user:$name(${id%%:*}/$(getent passwd "$name" | cut -d: -f3))" ;;
+        g) [ "$(getent group "$name" | cut -d: -f3)" = "$id" ] || bad="$bad group:$name($id/$(getent group "$name" | cut -d: -f3))" ;;
+        esac
+    done < "$f"
+    [ -z "$bad" ] || fail "accounts the image made are missing on the box or have another id (image/box):$bad"
+    echo "cloud-assertions: /etc upper layer: $(cd "$up" && find . -mindepth 1 ! -type d | wc -l) files, all covered by a tidy-up rule; the image's $(grep -c '^[ug] ' "$f") accounts and groups are on the box with their ids"
+}
 ok() {
+    etc_upper_check
     # Last gate, every boot (#561): the slot is read-only, so anything that
     # still writes to it fails. Catch it whether it failed a unit or only
     # logged. Container logs are left out: an app's own read-only filesystem
@@ -197,6 +247,12 @@ if [ "$MODE" = os-revert ] && [ "$(os_stage)" = 2 ]; then
     systemctl is-active -q host-agent.service && fail "os-revert: host-agent runs on the slot it was meant to be kept off"
     systemctl list-timers --all --no-pager 2>/dev/null | grep -q moose-os-trial.timer || fail "os-revert: moose-os-trial.timer is not scheduled on the trial boot"
     echo "cloud-assertions: os-revert: on slot B, host-agent cannot start, trial marker present; grubenv: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' '); waiting for the safety net to reboot the box"
+    # The revert direction of a Debian-major tidy-up (BUILD.md # 1b, rule 4):
+    # record a major one above this slot's, as a newer major would have, so
+    # slot A must tidy the upper layer when the safety net takes the box back.
+    rec_major="$(( $( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" ) + 1 ))"
+    echo "$rec_major" > /state/etc/.moose-debian-major && sync
+    echo "cloud-assertions: os-revert: recorded Debian $rec_major on the state partition before the revert"
     set_os_stage 3
     sleep 300
     fail "os-revert: the safety net never rebooted the box off the broken slot. $boot_env. grubenv now: $(grub-editenv /efi/grub/grubenv list 2>&1 | tr '\n' ' ') timer: $(systemctl list-timers --all --no-pager 2>&1 | grep moose-os-trial) service: $(journalctl -u moose-os-trial.service -b --no-pager 2>&1 | tail -5 | tr '\n' ' ')"
@@ -337,6 +393,21 @@ grep -qx "${BOOTED}_OK=1" <<<"$grubenv_now" || layout_fail "grubenv does not mar
 for u in emergency.service rescue.service; do
     systemctl cat "$u" 2>/dev/null | grep -q 'systemctl --no-block reboot' || layout_fail "$u has no reboot drop-in"
 done
+# A slot that hangs (#486 point 3, BUILD.md # 1b # As built): systemd feeds a
+# hardware watchdog, so a hung PID 1 or kernel resets the box. This lane is
+# QEMU q35, like a Hetzner Cloud VM, so it has the ICH9 TCO watchdog
+# (iTCO_wdt) that a real box has.
+wd_dev="$(systemctl show -p WatchdogDevice --value)"
+wd_sec="$(systemctl show -p RuntimeWatchdogUSec --value)"
+[ -n "$wd_dev" ] && [ -e /sys/class/watchdog/watchdog0 ] \
+    || layout_fail "no hardware watchdog in use (WatchdogDevice='$wd_dev', /sys/class/watchdog: $(ls /sys/class/watchdog 2>/dev/null | tr '\n' ' '))"
+[ "$wd_sec" = 1min ] || layout_fail "RuntimeWatchdogUSec is '$wd_sec', want 1min"
+# systemd logs this before journald runs, so it is in the kernel log (the
+# probe of run 37358065628 found it there and not under _PID=1).
+wd_log="$(dmesg 2>/dev/null; journalctl -k -b --no-pager -o cat 2>/dev/null; journalctl -b _PID=1 --no-pager -o cat 2>/dev/null)"
+grep -q 'Using hardware watchdog' <<<"$wd_log" \
+    || layout_fail "systemd does not feed the hardware watchdog (no 'Using hardware watchdog' in the boot's log)"
+echo "cloud-assertions: layout: systemd feeds the hardware watchdog $wd_dev ($(cat /sys/class/watchdog/watchdog0/identity 2>/dev/null)) with a $wd_sec timeout"
 dmesg 2>/dev/null | grep -q 'moose-state: bind mounts done' || journalctl -k -b --no-pager 2>/dev/null | grep -q 'moose-state: bind mounts done' \
     || layout_fail "no 'moose-state: bind mounts done' in the kernel log"
 # state-setup looked for the state partition on the boot disk only.
@@ -2419,6 +2490,7 @@ os-update|os-revert)
         echo "hostkey=$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null | awk '{print $2}')"
         echo "machineid=$(cat /etc/machine-id)"
         echo "data=$(cat "/home/${owner}/os-update-data.txt" 2>/dev/null)"
+        echo "groups=$(id -nG "$owner" 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ')"
     }
 
     # 4. os-revert, last stage: slot B died before userspace (#575). The
@@ -2447,6 +2519,32 @@ os-update|os-revert)
         [ -n "$session_cookie" ] || fail "$MODE: no moose_session cookie from the SSO landing"
         owner="$(json_str_of "$(full_get /api/v1/me "$apex" "$session_cookie" 2>/dev/null || true)" username)"
         [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1 || fail "$MODE: the SSO owner '$owner' has no host account"
+        if :; then
+            # SSH on for the owner, so the faked major below must bring sshd
+            # back on slot B (BUILD.md # 1b, rule 4: the tidy-up keeps the
+            # drop-in, drops the enable links, and host-agent enables sshd once).
+            # A known password first, for the elevation gate, as the ssh boot
+            # does (harness setup, not a product path).
+            printf '%s:%s\n' "$owner" 'moose-cloud-lane-owner-pw' | chpasswd || fail "$MODE: could not set a known password for '$owner'"
+            el="$(full_send POST /api/v1/auth/elevate "$apex" "$session_cookie" '{"password":"moose-cloud-lane-owner-pw"}' 2>/dev/null)"
+            grep -q ' 200' <<<"$(status_of "$el")" || fail "$MODE: elevate as the owner failed: status='$(status_of "$el")'"
+            rm -f /run/moose-os-update-key /run/moose-os-update-key.pub
+            ssh-keygen -t ed25519 -N '' -C 'moose-os-update' -f /run/moose-os-update-key >/dev/null 2>&1 || fail "$MODE: ssh-keygen failed"
+            on="$(full_send PUT /api/v1/me/ssh "$apex" "$session_cookie" \
+                "{\"enabled\":true,\"keys\":[{\"public_key\":\"$(tr -d '\n' < /run/moose-os-update-key.pub)\",\"label\":\"os-update\"}]}" 2>/dev/null)"
+            grep -q ' 200' <<<"$(status_of "$on")" || fail "$MODE: turning SSH on for the owner failed: status='$(status_of "$on")'"
+            [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] || fail "$MODE: ssh.service is not enabled after the owner turned SSH on"
+            if [ "$MODE" = os-revert ]; then
+                # An admin turns sshd off by hand while the owner keeps SSH on
+                # in the drop-in. The tidy-up on the way back must not turn it
+                # on again (no marker for host-agent).
+                systemctl disable --now ssh.service >/dev/null 2>&1 || fail "$MODE: could not turn sshd off by hand"
+                [ "$(systemctl is-enabled ssh.service 2>/dev/null)" != enabled ] || fail "$MODE: ssh.service still enabled after disable"
+                echo "cloud-assertions: $MODE: SSH on for '$owner' in the drop-in, sshd turned off by hand before the faked major"
+            else
+                echo "cloud-assertions: $MODE: SSH on for '$owner' (ssh.service enabled) before the faked major"
+            fi
+        fi
         head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "/home/${owner}/os-update-data.txt"
         chown "$owner" "/home/${owner}/os-update-data.txt"
         mkdir -p "$OS_STATE_DIR" && chmod 700 "$OS_STATE_DIR"
@@ -2546,6 +2644,16 @@ UNIT
         # 1c. THE SWITCH. An open window: host-agent puts slot B first and
         #     reboots. The next stage runs on slot B.
         boot_gate
+        if [ "$MODE" = os-update ]; then
+            # A faked Debian major (BUILD.md # 1b, rule 4): the state partition
+            # says the box last ran Debian 12, so slot B must tidy the /etc
+            # upper layer before it mounts it. An admin's own edit goes to the
+            # attic; the owner, the password hash, the host keys, machine-id and
+            # the sudo membership must come through (stage 2 checks them).
+            echo 12 > /state/etc/.moose-debian-major
+            echo "# an admin's own edit (os-update boot)" > /etc/moose-test-hand-edit.conf
+            sync
+        fi
         date +%s > "$OS_STATE_DIR/switch-at"
         set_os_stage 2
         write_os_target "$os_sum" "00:00-23:59"
@@ -2567,6 +2675,28 @@ UNIT
         [ "$(/usr/lib/moose/host-agent-real --version | awk '{print $2}')" = "$os_ver" ] || fail "os-update: slot B's host-agent is not $os_ver"
         want_outcome=good; want_state=current; want_ver="$os_ver"
         t_good="$(ha_log | grep 'the new slot is healthy and marked good' | tail -1 | awk '{print $1}')"
+        slot_major="$( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" )"
+        [ "$(cat /state/etc/.moose-debian-major 2>/dev/null)" = "$slot_major" ] \
+            || fail "os-update: the state partition records Debian '$(cat /state/etc/.moose-debian-major 2>/dev/null)', want $slot_major after the tidy-up"
+        # dmesg first, as the layout checks read the moose-state lines: the
+        # journal's kernel log was empty here once (run 37374562648).
+        tidy_log="$(dmesg 2>/dev/null; journalctl -k -b --no-pager -o cat 2>/dev/null)"
+        grep -q "moose-state: tidied /etc for Debian 12 to $slot_major" <<<"$tidy_log" \
+            || fail "os-update: slot B did not tidy the /etc upper layer for the faked major: $(grep 'moose-state' <<<"$tidy_log" | tail -5 | tr '\n' ' ')"
+        [ ! -e /etc/moose-test-hand-edit.conf ] || fail "os-update: the admin's own /etc edit survived the faked major"
+        attic_edit="$(ls -d /state/etc/attic/*-debian-12-to-"$slot_major"/moose-test-hand-edit.conf 2>/dev/null | head -1)"
+        [ -n "$attic_edit" ] || fail "os-update: the admin's own /etc edit is not in the attic: $(ls /state/etc/attic 2>&1 | tr '\n' ' ')"
+        # sshd comes back: the drop-in was kept, its enable links were not, and
+        # host-agent enabled the unit once because of the tidy-up marker.
+        grep -qE "^AllowUsers .*\b${owner}\b" /etc/ssh/sshd_config.d/moose-allowed.conf 2>/dev/null \
+            || fail "os-update: the sshd drop-in does not name '$owner' after the faked major: $(cat /etc/ssh/sshd_config.d/moose-allowed.conf 2>&1 | tr '\n' ' ')"
+        for _i in $(seq 1 60); do [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] && break; sleep 1; done
+        [ "$(systemctl is-enabled ssh.service 2>/dev/null)" = enabled ] \
+            || fail "os-update: ssh.service is '$(systemctl is-enabled ssh.service 2>&1)' after the faked major, want enabled: $(ha_log | grep -i 'sshd\|tidy' | tail -3 | tr '\n' ' ')"
+        ha_log | grep -q "sshd turned on after a Debian-major tidy-up" || fail "os-update: host-agent did not log turning sshd on after the tidy-up"
+        [ ! -e /state/etc/.moose-major-tidied ] || fail "os-update: host-agent did not remove the tidy-up marker"
+        echo "cloud-assertions: os-update: SSHD BACK OK (drop-in names '$owner', ssh.service enabled again by host-agent after the tidy-up, marker removed)"
+        echo "cloud-assertions: os-update: MAJOR TIDY OK (faked Debian 12 to $slot_major: the upper layer was rebuilt, the admin's edit is in $(dirname "$attic_edit"), $(grep -o 'kept [0-9]* files' <<<"$tidy_log" | tail -1))"
         echo "cloud-assertions: os-update: SWITCH OK (booted slot B, marked good, grubenv ORDER='B A' B_OK=1 B_TRY=0); measured: switch to marked good $(awk -v a="$(cat "$OS_STATE_DIR/switch-at")" -v b="$t_good" 'BEGIN{printf "%.0f", b-a}') s, the reboot included"
         note_pat="updated its system to $os_ver"
     else
@@ -2578,6 +2708,21 @@ UNIT
         [ "$(grubvar B_OK)" = 0 ] && [ "$(grubvar A_OK)" = 1 ] || fail "os-revert: grubenv after the revert: $(grub-editenv /efi/grub/grubenv list | tr '\n' ' ')"
         [ "$(/usr/lib/moose/host-agent-real --version | awk '{print $2}')" = "$base_ver" ] || fail "os-revert: back on slot A, host-agent is not $base_ver"
         want_outcome=reverted; want_state=held; want_ver="$base_ver"
+        # The revert direction of the tidy-up: slot B recorded a newer major,
+        # so slot A tidied the upper layer on the way back.
+        slot_major="$( . /usr/lib/os-release && echo "${VERSION_ID%%.*}" )"
+        [ "$(cat /state/etc/.moose-debian-major 2>/dev/null)" = "$slot_major" ] \
+            || fail "os-revert: the state partition records Debian '$(cat /state/etc/.moose-debian-major 2>/dev/null)' back on slot A, want $slot_major"
+        tidy_log="$(dmesg 2>/dev/null; journalctl -k -b --no-pager -o cat 2>/dev/null)"
+        grep -q "moose-state: tidied /etc for Debian $(( slot_major + 1 )) to $slot_major: .* sshd was off" <<<"$tidy_log" \
+            || fail "os-revert: slot A did not tidy the upper layer on the way back (or saw sshd on): $(grep 'moose-state' <<<"$tidy_log" | tail -4 | tr '\n' ' ')"
+        ls -d /state/etc/attic/*-debian-$(( slot_major + 1 ))-to-"$slot_major" >/dev/null 2>&1 || fail "os-revert: no attic entry for the tidy-up on the way back"
+        # sshd was off by hand, so no marker, and host-agent left it off.
+        [ ! -e /state/etc/.moose-major-tidied ] || fail "os-revert: the tidy-up left the sshd marker although sshd was off"
+        grep -qE "^AllowUsers .*\b${owner}\b" /etc/ssh/sshd_config.d/moose-allowed.conf 2>/dev/null || fail "os-revert: the sshd drop-in lost '$owner' on the way back"
+        sleep 5
+        [ "$(systemctl is-enabled ssh.service 2>/dev/null)" != enabled ] || fail "os-revert: ssh.service is enabled again after the tidy-up, but the admin had turned it off"
+        echo "cloud-assertions: os-revert: MAJOR TIDY BACK OK (Debian $(( slot_major + 1 )) to $slot_major on slot A, attic entry made, sshd left off as the admin set it)"
         echo "cloud-assertions: os-revert: REVERT OK (slot B never came up; back on slot A, B marked bad, A good); measured: switch to back on slot A $(( $(date +%s) - $(cat "$OS_STATE_DIR/switch-at") )) s, two reboots and the safety net included"
         note_pat="did not work, so moose went back"
     fi

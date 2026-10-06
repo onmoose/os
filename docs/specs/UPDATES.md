@@ -56,7 +56,7 @@ The OS underneath us: kernel, libc, OpenSSL, firmware, Docker itself, and `host-
 
 **Which boots are on trial** (the maintainer's call, #563). Only the **first boot after an OS switch** is on trial: it is marked good once the brain answers, or given up. Every other boot is marked good as soon as `host-agent` starts. So a problem that has nothing to do with the OS (a broken control-plane update, a slow app) never moves a box back to its older OS, and a box with only one good slot never loops through reboots.
 
-**A slot that hangs must still revert.** Boot counting only helps a slot that reboots. The spike saw a slot stop in the initrd's emergency shell and wait for ever. So the image reboots on emergency and rescue, sets `panic=` on the kernel command line, and runs a watchdog where the machine has one (`NEXT.md` # A/B OS image).
+**A slot that hangs must still revert.** Boot counting only helps a slot that reboots. The spike saw a slot stop in the initrd's emergency shell and wait for ever. So the image reboots on emergency and rescue, sets `panic=` on the kernel command line, and has systemd feed a hardware watchdog. Hetzner Cloud VMs have one, and a hung box resets about 2 minutes after systemd last fed it. A hang in GRUB or the initramfs, before systemd, is not covered: only a crash there reboots (`BUILD.md` # 1b # As built).
 
 ### As built (#563), on hosted
 

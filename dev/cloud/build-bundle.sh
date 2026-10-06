@@ -26,7 +26,9 @@
 #      never trust the throwaway signer;
 #   4. a wrong key: a bundle-shaped check against an unrelated CA is refused;
 #   5. a rehearsal of dev/release/sign-bundle.sh with a throwaway "release" CA,
-#      so the sign job's script runs on every build, not only on a release.
+#      so the sign job's script runs on every build, not only on a release;
+#   6. the image's account and group ids, read from the sysusers.d file the
+#      build generates, match dev/os-lock/cloud-accounts.lock.
 #
 # Writes to OUTDIR: moose-cloud.raucb, image-etc/{system.conf,keyring.pem} and
 # bundle-info.txt, and a size table to $GITHUB_STEP_SUMMARY when set.
@@ -96,6 +98,7 @@ rauc_run "$out" '
     # The image'"'"'s own RAUC config and keyring, read back out of the slot.
     unsquashfs -cat bundle/rootfs.img etc/rauc/system.conf > image-etc/system.conf
     unsquashfs -cat bundle/rootfs.img etc/rauc/keyring.pem > image-etc/keyring.pem
+    unsquashfs -cat bundle/rootfs.img usr/lib/sysusers.d/moose-image-accounts.conf > image-etc/accounts.conf
     compatible="$(sed -n "s/^compatible=//p" image-etc/system.conf | head -n1)"
     [ -n "$compatible" ] || { echo "the slot'"'"'s /etc/rauc/system.conf names no compatible" >&2; exit 1; }
     grep -qx "check-purpose=codesign" image-etc/system.conf || { echo "the slot'"'"'s system.conf does not ask for check-purpose=codesign" >&2; exit 1; }
@@ -144,6 +147,23 @@ echo "bundle container: $(( $(date +%s) - t0 )) s"
 echo "check 1: the slot carries the keyring this build staged (${mode})"
 cmp -s "$out/image-etc/keyring.pem" "$staged" || { echo "the slot's /etc/rauc/keyring.pem is not the ${mode} keyring this build staged" >&2; exit 1; }
 echo "ok: $(openssl x509 -in "$out/image-etc/keyring.pem" -noout -subject)"
+
+echo "check 6: the image's account ids match dev/os-lock/cloud-accounts.lock"
+# A box keeps an account's uid and gid for life: its /etc/passwd is in the
+# /etc upper layer, and its files on the state partition are owned by number.
+# So an image whose packages gave an account another id would leave a box's
+# files owned by the wrong account (BUILD.md # 1b, rule 3). The lock is edited
+# by hand: a new account is added, a changed id is a bug to fix in the build.
+awk '$1 == "g" { print "g", $2, $3 } $1 == "u" { split($3, id, ":"); print "u", $2, id[1], id[2] }' \
+    "$out/image-etc/accounts.conf" | LC_ALL=C sort > "$out/image-etc/cloud-accounts.lock"
+lock="${REPO_ROOT}/dev/os-lock/cloud-accounts.lock"
+if ! diff -u <(grep -v '^#' "$lock" 2>/dev/null | LC_ALL=C sort) "$out/image-etc/cloud-accounts.lock" > "$out/accounts.diff"; then
+    echo "the image's accounts differ from dev/os-lock/cloud-accounts.lock ('-' the lock, '+' the image):" >&2
+    cat "$out/accounts.diff" >&2
+    echo "A new account: add its line to the lock. A changed id: the image must keep the old id, because every box keeps it." >&2
+    exit 1
+fi
+echo "ok: $(grep -c . "$out/image-etc/cloud-accounts.lock") accounts and groups, ids as locked"
 
 echo "check 5: rehearse the sign job's signing with a throwaway release CA"
 mkdir -p "$out/rehearsal/image-etc"

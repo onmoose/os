@@ -21,6 +21,27 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-05 — A Debian major tidies the /etc upper layer, in both directions (#486)
+
+**Previously:** a Debian major was "a new A/B OS image like any other" (2026-10-01), with one risk left open: a file in the `/etc` upper layer stays at the old major's version under the new major's packages. The choice was between resetting the upper layer to a known list and shipping a migration step (`NEXT.md` # A/B OS image, point 5).
+
+**Now:** when the booted slot's Debian major is not the one recorded on the state partition, the initramfs rebuilds the upper layer before it mounts `/etc` (`BUILD.md` # 1b, rule 4):
+
+- moose's known files are kept as they are (`/usr/lib/moose/etc-keep.list`: identity, SSH access and keys, time zone, the remap range, and the appliance's secrets and network connections);
+- `passwd`, `group`, `shadow` and `gshadow` are merged: the slot's entries plus the box's own, the box's passwords, group members joined;
+- `daemon.json` and `login.defs` are taken again from the slot when that keeps the box's remap, and kept otherwise;
+- everything else, an admin's own edits included, moves to an attic on the state partition, where it can still be read.
+
+It runs in both directions, so a revert to the older major is tidied the same way. **It must ship in a Debian 13 release before the first Debian 14 release.** The build also writes every image account into a `sysusers.d` file and fails when an account's id differs from `dev/os-lock/cloud-accounts.lock`, so an account keeps its id for life.
+
+**Why:**
+
+- **A migration step cannot cover a revert.** The older slot boots its own code, which cannot know what the newer major's step changed. A tidy-up that only depends on "which major am I" works the same in both directions.
+- **A known list is checked on every boot, not once every two years.** The boot lane fails a boot whose upper layer holds a file no rule covers, and the `os-update` boot fakes a major in every full run. A migration step would run for real once per major, untested in between.
+- **An admin's hand edits are not part of the product.** SSH is rescue-only. Dropping them at a major (into an attic, not deleted) is the price of a `/etc` that follows the new major. Keeping only the known list on every boot (considered) would also drop a rescue edit at every reboot, and an older release would delete a file a newer one added to its list.
+
+**Affected docs:** `BUILD.md` # 1b (rules 3 and 4, # As built), `UPDATES.md` # 1, `NEXT.md` # A/B OS image (points 3 and 5) and # OS major-version upgrade commitment, `docs/dev/hosted-boot-proof.md`, `docs/architecture.md`.
+
 ## 2026-10-02 — Key custody for the OS bundle: an offline root CA and a CI-only signer (#562)
 
 **Previously:** the OS bundle was to be signed against "an X.509 CA baked into the image", and its key custody was left to release signing as a whole (`BUILD.md` # 1b # The bundle, `NEXT.md` # Build & distribution). Nothing signed a release artifact.
