@@ -23,7 +23,7 @@ The moose session does **not** govern:
 
 **Why not passkeys in v1:**
 
-- Passkeys are origin-bound by design. A passkey on `moose.local` doesn't work on `cindy-zx9.onmoose.io`. With the toggle that flips schemes, users would re-enroll per origin — terrible UX.
+- Passkeys are origin-bound by design. A passkey on `moose.local` doesn't work on `andrei.onmoose.io`. With the toggle that flips schemes, users would re-enroll per origin — terrible UX.
 - No email = no fallback recovery for a lost passkey. Password recovery still has to exist anyway.
 - WebAuthn ceremony + attestation + recovery flows is real complexity for a v1 audience that's tinkerers-then-households.
 
@@ -84,7 +84,7 @@ sessions:
 The cookie is scoped to the exact host. So:
 
 - On `moose.local`, the user has a `moose_session` cookie for `moose.local`.
-- On `cindy-zx9.onmoose.io`, they have a separate `moose_session` cookie for `cindy-zx9.onmoose.io`. Different cookie, different session row server-side.
+- On `andrei.onmoose.io`, they have a separate `moose_session` cookie for `andrei.onmoose.io`. Different cookie, different session row server-side.
 
 When the user flips the "Use secure URLs" toggle in Settings → Network (see `MOOSE_NETWORK.md`):
 

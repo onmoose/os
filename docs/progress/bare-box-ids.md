@@ -17,13 +17,12 @@ The box-id contract changed. It was a typed base plus a system-assigned suffix f
   - `internal/profile/appurl_test.go`: `TestHostedHostsAndURLs` and `TestCertSubjects` are now table tests over `andrei` and `cindy-fox` (dashboard host, app host, app URL, both cert subjects).
   - `internal/profile/seed_test.go`: a `"box_id":"andrei"` case in `TestReadSeed`, and `TestSeed_BareBoxIDRoundTrip`, which marshals a `Seed`, reads it back with `ReadSeed` and checks the derived hosts.
   - `internal/caddy/caddy_test.go`: a bare-id case in `TestSplitCertSubjects`.
-  - `internal/auth/forwardauth_test.go`: `TestIssueForwardAuthBareBoxIDDomain` checks the forward-auth cookie is scoped to `andrei.onmoose.io`.
   - The existing `cindy-fox` fixtures stay. They now cover the older shape.
 
 ## How it maps to the specs
 
 - `MOOSE_NETWORK.md` # Locked: pick the name at enrollment, no rename afterward still stands: the box-id is fixed for the life of the box.
-- `ENVIRONMENT.md` # Provisioning & first-boot is unchanged: `box_id` is still a required, opaque seed field. `ENVIRONMENT.md` and `APP_STORE.md` held no statement of the old shape, so they needed no edit.
+- `ENVIRONMENT.md` # Provisioning & first-boot is unchanged: `box_id` is still a required, opaque seed field. `ENVIRONMENT.md` and `APP_STORE.md` held no statement of the old shape, so they needed no edit. The suffix-shaped example hosts in `AUTH.md`, `FIRST_RUN.md` and `SPEC.md` now read `andrei.onmoose.io`.
 
 ## Known gaps & deviations
 

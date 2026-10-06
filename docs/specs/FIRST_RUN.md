@@ -119,7 +119,7 @@ This step is two coupled choices presented as one. Turning on **"Use secure (HTT
 
 > *"Use secure (HTTPS) URLs for your apps?"*
 >
-> *Some apps need HTTPS to work fully — cameras, password managers, app-like installs on your phone. We'll give your moose a name like `cindy-zx9.onmoose.io` and a real certificate, so your apps are reachable at HTTPS URLs on your home network. Your data never leaves your box; only DNS lookups go through our servers.*
+> *Some apps need HTTPS to work fully — cameras, password managers, app-like installs on your phone. We'll give your moose a name like `andrei.onmoose.io` and a real certificate, so your apps are reachable at HTTPS URLs on your home network. Your data never leaves your box; only DNS lookups go through our servers.*
 >
 > *Tip: **if anyone in your household uses an Android phone, you'll want this on.** Android can't open the default `.local` URLs from a browser; the secure URLs work everywhere.*
 >
@@ -214,7 +214,7 @@ What's *on* the dashboard at first arrival is an open question (see below) — e
 
 `moose.local` resolves out of the box on macOS, iOS, and Linux (with `nss-mdns`, almost universal). Two cases need help:
 
-- **Windows clients** need Apple's Bonjour service. Most Windows 10/11 installs do not have it. The "Add another device" / share-link surface in the dashboard detects a Windows User-Agent visiting for the first time and links to the Bonjour Print Services installer with a one-line explanation. If the household is using the secure-URL path, this is moot — `cindy-zx9.onmoose.io` resolves via public DNS on every OS.
+- **Windows clients** need Apple's Bonjour service. Most Windows 10/11 installs do not have it. The "Add another device" / share-link surface in the dashboard detects a Windows User-Agent visiting for the first time and links to the Bonjour Print Services installer with a one-line explanation. If the household is using the secure-URL path, this is moot — `andrei.onmoose.io` resolves via public DNS on every OS.
 - **Android browsers** do not resolve `.local` at all (see Step 5 above and `DISCOVERY.md`). The only path that works is the secure-URL scheme; the same share surface surfaces this for Android visitors when secure URLs are off.
 
 ## What v1 does not include
