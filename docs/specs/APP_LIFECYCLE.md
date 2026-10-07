@@ -168,7 +168,21 @@ The one hard failure left on this path is the catalog contradicting *itself*: a 
 
 **For custom (Door-2) apps, the brain falls back to TOFU**: pull, resolve the digest via `docker inspect`, write it into the override. No external authority to compare against; the user pasted the compose themselves.
 
-**A rate-limited pull is retried before the install fails.** A box pulls without logging in, so a registry counts its requests against a source IP that other traffic may share, and a short spike can answer 429 to one pull. When the pull error is a rate limit (`toomanyrequests`, or `429 Too Many Requests`), the brain waits and pulls again, with exponential backoff over about 30 seconds (#586). Any other pull error fails at once.
+**A rate-limited pull is retried before the install fails.** A box pulls without logging in, so a registry counts its requests against a source IP that other traffic may share, and a short spike can answer 429 to one pull. When the pull error is a rate limit (`toomanyrequests`, or `429 Too Many Requests`), the brain waits and pulls again, with exponential backoff over about 30 seconds: 2, 4, 8 and 16 seconds (#586).
+
+**When upstream fails, the brain tries the image's backup sources** (#588, `APP_STORE.md` # Backup image sources). A Door-1 image may list, next to its digest, an ordered list of other places that serve the same bytes. The pull step is, per image:
+
+1. Pull `<upstream repo>@<digest>`.
+2. On a rate limit, wait 2 seconds and pull upstream again. If it is still rate-limited, try each source in order, as `<source ref>@<digest>`. If every source fails, finish the backoff ladder on upstream.
+3. On any other error from the registry or the network (unreachable, DNS, timeout, a 5xx, `manifest unknown`, 401, 403), try the sources at once.
+4. Never move on a local error (the Docker daemon or its socket proxy is not reachable, the disk is full, the image store is read-only), on a cancelled install, or in offline mode. A source cannot fix these.
+5. When every source fails, the install fails with **upstream's** error. Each source failure is in the brain log.
+
+With no sources the step is the same as before: the backoff ladder on a rate limit, and any other error at once. Door-2 installs have no catalog entry and so no sources.
+
+**The override names the reference that was pulled.** Docker refuses to tag a digest reference under another name (`refusing to create a tag with a digest reference`), so after a source pull the image exists only under the source's name. The override then pins `image: <source ref>@sha256:…`, and the stored pin keeps that reference too, so uninstall removes the image under the right name. The digest is the same either way, so the bytes are the same.
+
+**Compose never pulls an app image by itself.** The override sets `pull_policy: never` on every service it pins. Compose's default (`missing`) would pull a missing image on `up` from the one reference in the override, which may be a source, with no upstream first and no backoff. Instead, before every `compose up` after install (start, the reconcile pass, and a recreate after a config or mail edit), the brain checks that each pinned image is in the local store and pulls any missing one through the same step as above. If the bytes then come from somewhere else (upstream is back, or a different source), it rewrites the override and the stored pin to that reference. Instances installed before #588 have no `pull_policy` in their override, so compose may still pull for them, but the brain pulls first anyway.
 
 Updates re-resolve (catalog for Door-1, fresh inspect for Door-2). The previous digest is kept in SQLite to power one-generation rollback.
 
