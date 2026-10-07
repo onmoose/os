@@ -3,8 +3,11 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
@@ -122,7 +125,7 @@ func pullAndResolve(ctx context.Context, docker DockerDriver, image, promised st
 	}
 	if promised != "" {
 		ref := repoOf(image) + "@" + promised
-		if err := docker.Pull(ctx, ref); err != nil {
+		if err := pullWithRetry(ctx, docker, ref); err != nil {
 			if offline {
 				return resolveOffline(ctx, docker, image, promised, err)
 			}
@@ -130,7 +133,7 @@ func pullAndResolve(ctx context.Context, docker DockerDriver, image, promised st
 		}
 		return promised, false, nil
 	}
-	if err := docker.Pull(ctx, image); err != nil {
+	if err := pullWithRetry(ctx, docker, image); err != nil {
 		if offline {
 			return resolveOffline(ctx, docker, image, "", err)
 		}
@@ -152,6 +155,50 @@ func pullAndResolve(ctx context.Context, docker DockerDriver, image, promised st
 	}
 	return "", false, fmt.Errorf("no RepoDigest for %s matched repo %s (got %v) — image may be local-only",
 		image, repo, repoDigests)
+}
+
+// pullRetryDelays is how long pullWithRetry waits before each retry: four
+// retries over about 30 seconds. A var so tests can shorten it.
+var pullRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+
+// pullWithRetry pulls ref, and retries with exponential backoff while the
+// registry answers with a rate limit (#586). A box pulls without logging in, so
+// ghcr and Docker Hub count its requests against a source IP that other traffic
+// may share, and a short spike answers 429 to one pull of a working install.
+// Every other pull error returns at once: an unreachable registry must still
+// fail fast, and the offline fallback must still engage without waiting. (A
+// rate limit means a registry answered, so an offline box retries it too.) If
+// the context ends during a wait, the error wraps ctx.Err() so a cancelled
+// install does not read as a rate limit.
+func pullWithRetry(ctx context.Context, docker DockerDriver, ref string) error {
+	err := docker.Pull(ctx, ref)
+	for _, delay := range pullRetryDelays {
+		if err == nil || !isRateLimited(err, ref) {
+			return err
+		}
+		slog.Warn("image pull rate-limited, retrying", "image", ref, "delay", delay, "err", err)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %w", ctx.Err(), err)
+		case <-time.After(delay):
+		}
+		err = docker.Pull(ctx, ref)
+	}
+	return err
+}
+
+// rateLimitError matches a registry rate limit in `docker pull` output: the OCI
+// error code `toomanyrequests` (ghcr and Docker Hub both send it, as
+// "toomanyrequests: <detail>") or the bare HTTP status some registries print.
+// An image reference has no spaces and no capitals, so neither form can match
+// inside one.
+var rateLimitError = regexp.MustCompile(`(^|\s)toomanyrequests: |429 Too Many Requests`)
+
+// isRateLimited reports whether a pull error is a registry rate limit. The CLI
+// driver starts its error with "pull <ref>: ", which is cut first so that an
+// untagged image called `toomanyrequests` is not read as a rate limit.
+func isRateLimited(err error, ref string) bool {
+	return rateLimitError.MatchString(strings.Replace(err.Error(), "pull "+ref+": ", "", 1))
 }
 
 // resolveOffline is the air-gapped fallback when a pull fails: there is no
