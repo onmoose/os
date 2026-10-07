@@ -26,7 +26,16 @@ Follows [pull-rate-limit-retry.md](pull-rate-limit-retry.md) (#586, #587). That 
 
 ## Hosted box test
 
-To be filled in by the run on a real hosted box.
+Run on 2026-10-07 on one real hosted box, provisioned through the deployed control plane with the smoke account (Hetzner `cx23`, the current hosted image, Docker 29.8.2, classic `overlay2` store, userns remap on), and deleted at the end: the portal answered 404 for the box, its name stopped resolving, and the Hetzner server list held no server for it.
+
+- **Getting the branch brain on the box.** An owner-created admin account with a password got SSH and `sudo`. The brain image built from this branch was `docker load`ed, and a host-agent drop-in set `MOOSE_BRAIN_IMAGE` to it, `MOOSE_CATALOG_FILE` to a one-app test snapshot, and `MOOSE_CATALOG_URL` to an unused local port so the remote sync could not replace the snapshot. Then `moose-brain` was removed and host-agent restarted, so host-agent launched the branch brain with its normal run spec, behind the normal docker socket proxy.
+- **The source** was a `registry:2` container on the box at `127.0.0.1:5000`, holding `traefik/whoami:v1.10.3` under `mirror/traefik/whoami` (pushed digest `sha256:c899…c38d`). The local copies were removed before the install.
+- **Upstream** was `registry.invalid/traefik/whoami:v1.10.3`, which cannot resolve.
+- **Install** through the brain API (`POST /api/v1/apps`) reached `running`. The brain logged the upstream DNS failure, then `image pulled from backup source`. The override held `image: 127.0.0.1:5000/mirror/traefik/whoami@sha256:c899…` and `pull_policy: never`, and the container ran that reference.
+- **`RepoDigests` on the classic store** after the source pull: `["127.0.0.1:5000/mirror/traefik/whoami@sha256:c899…"]`, and `RepoTags` empty. So the image exists only under the source's digest reference, and `docker image inspect <that ref>` finds it, which is what `ensureImages` relies on.
+- **Through the socket proxy:** every pull and inspect above went through the brain's `DOCKER_HOST` (the proxy), with no allowlist change.
+- **Missing image:** after stop, `docker rm` of the container and `docker rmi` of the image, `POST /api/v1/apps/{id}/start` reached `running`. The brain logged `image missing, pulling`, the upstream failure and the source pull.
+- **Uninstall** removed the instance, and the brain logged `reclaimed image` with the source reference. The image was gone from the store afterwards.
 
 ## How it maps to the specs
 
@@ -38,7 +47,9 @@ To be filled in by the run on a real hosted box.
 - **A source is tried once,** with no backoff of its own. A source that is itself rate-limited counts as failed.
 - **Which errors are local is a short text match.** An unknown error is treated as a registry error and tries the sources: the cost of a wrong guess is one failed pull.
 - **Older instances keep compose's default pull policy.** Their override has no `pull_policy` until they are reinstalled. The brain still pulls a missing image before `up`, so compose finds it present.
-- **`ensureImages` inspects every pinned image before each start, reconcile `up` and recreate.** It is one `docker image inspect` per distinct image.
+- **`ensureImages` inspects every pinned image before each start, reconcile `up` and recreate.** It is one `docker image inspect` per distinct image. A pull it needs runs inside the caller's budget, as compose's own pull did before: `Start` and a recreate use the health-wait budget.
+- **The reconcile pass at boot pulls a missing image with no backoff wait** (Greptile on #589). It shares one 30-second budget across every app, and the 2, 4, 8 and 16 second waits could use it all on one rate-limited registry, leaving later apps without their routes. On a rate limit it tries the sources at once and then gives up; the app is left for a later `Start`. A pin whose save failed on an earlier start is repaired on the next one, even when nothing is pulled (also Greptile on #589).
+- **The hosted run used a source on the box itself** (`127.0.0.1:5000`), not a remote registry. The pull path is the same; only the network distance differs.
 - **No login.** A source that needs one (`auth`) is skipped (#588 leaves login for later).
 
 ## What's next

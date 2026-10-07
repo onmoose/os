@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
@@ -385,4 +386,81 @@ func hasCall(d *fakeDocker, method, arg string) bool {
 		}
 	}
 	return false
+}
+
+// With no waits (the reconcile pass at boot), a rate limit tries the sources
+// at once and fails without sleeping when they fail too.
+func TestPullImageNoWaitsOnRateLimit(t *testing.T) {
+	old := pullRetryDelays
+	pullRetryDelays = []time.Duration{time.Hour}
+	t.Cleanup(func() { pullRetryDelays = old })
+	d := newFakeDocker()
+	d.pullErr[testUpstreamRef] = errRateLimited
+	d.pullErr[testSourceARef] = pullErrorText(testSourceARef, "manifest unknown")
+
+	start := time.Now()
+	_, err := pullImageWaits(context.Background(), d, testUpstreamRef, []string{testSourceARef}, nil)
+	if !errors.Is(err, errRateLimited) {
+		t.Fatalf("err = %v, want the upstream rate-limit error", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("pull waited %s, want no wait", time.Since(start))
+	}
+	if got, want := d.pulled(), []string{testUpstreamRef, testSourceARef}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("pulls = %v, want %v", got, want)
+	}
+}
+
+// The reconcile pass pulls a missing image with no backoff wait, so one
+// rate-limited registry cannot use up the boot budget every app shares.
+func TestReconcilePullsMissingImageWithoutWaiting(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiSourcesManifest(testSourceA))
+	inst := installCatalogWhoami(t, e)
+	old := pullRetryDelays
+	pullRetryDelays = []time.Duration{time.Hour}
+	t.Cleanup(func() { pullRetryDelays = old })
+	delete(e.docker.present, testUpstreamRef)
+	e.docker.pullErr[testUpstreamRef] = errRateLimited
+
+	done := make(chan error, 1)
+	go func() { done <- e.m.ensureImages(context.Background(), inst.ID, nil) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ensureImages: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ensureImages waited on the backoff ladder")
+	}
+	if got := overridePin(t, e.stateDir, inst.ID, "whoami"); got != testSourceARef {
+		t.Fatalf("override image = %q, want %q", got, testSourceARef)
+	}
+}
+
+// A stored pin that missed an earlier save is repaired on the next start, even
+// when the image is present and nothing is pulled.
+func TestStartRepairsStalePin(t *testing.T) {
+	e := newTestEnv(t)
+	e.writeCatalogApp(t, "whoami", whoamiCompose, whoamiSourcesManifest(testSourceA))
+	e.docker.pullErr[testUpstreamRef] = pullErrorText(testUpstreamRef, "manifest unknown")
+	inst := installCatalogWhoami(t, e)
+	if err := e.m.Stop(context.Background(), inst.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	// The override names the source; the store lost it, as after a failed save.
+	if err := e.store.SetInstanceImages(inst.ID, []store.InstanceImage{{Service: "whoami", Image: testImage, Digest: testDigest}}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(e.docker.pulled())
+	if err := e.m.Start(context.Background(), inst.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if got := len(e.docker.pulled()) - before; got != 0 {
+		t.Fatalf("start pulled %d times, want 0", got)
+	}
+	pins, _ := e.store.GetInstanceImages(inst.ID)
+	if len(pins) != 1 || pins[0].Ref != testSourceARef {
+		t.Fatalf("stored pins = %+v, want ref %q", pins, testSourceARef)
+	}
 }

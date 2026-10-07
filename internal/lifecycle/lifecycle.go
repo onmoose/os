@@ -1162,7 +1162,7 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	// on the health poll. Worst-case wall time is therefore ~2×healthWait — the
 	// same as install, deliberately so the two paths behave identically.
 	upCtx, cancelUp := context.WithTimeout(ctx, m.healthWait)
-	out, upErr := m.composeUpInstance(upCtx, id)
+	out, upErr := m.composeUpInstance(upCtx, id, pullRetryDelays)
 	cancelUp()
 	if upErr != nil {
 		return m.startFailed(ctx, inst, host, man.Name, fmt.Errorf("compose up: %w\n%s", upErr, out))
@@ -1394,7 +1394,7 @@ func (m *Manager) teardown(ctx context.Context, inst store.Instance, removeDir b
 func (m *Manager) recreateRunning(ctx context.Context, inst store.Instance) error {
 	upCtx, cancel := context.WithTimeout(ctx, m.healthWait)
 	defer cancel()
-	if out, err := m.composeUpInstance(upCtx, inst.ID); err != nil {
+	if out, err := m.composeUpInstance(upCtx, inst.ID, pullRetryDelays); err != nil {
 		if !inst.PendingRecreate {
 			if serr := m.store.SetInstancePendingRecreate(inst.ID, true); serr != nil {
 				slog.Warn("mark pending recreate", "instance_id", inst.ID, "err", serr)
@@ -1500,7 +1500,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				}
 				slog.Info("reconcile: starting drifted instance",
 					"instance_id", inst.ID, "reason", "no containers")
-				if out, err := m.composeUpInstance(ctx, inst.ID); err != nil {
+				if out, err := m.composeUpInstance(ctx, inst.ID, nil); err != nil {
 					slog.Warn("reconcile: compose up",
 						"instance_id", inst.ID, "err", err, "output", out)
 					continue
@@ -1525,7 +1525,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 					slog.Info("reconcile: recreating drifted running instance",
 						"instance_id", inst.ID,
 						"resource_drift", changed, "pending_recreate", inst.PendingRecreate)
-					if out, err := m.composeUpInstance(ctx, inst.ID); err != nil {
+					if out, err := m.composeUpInstance(ctx, inst.ID, nil); err != nil {
 						slog.Warn("reconcile: compose up",
 							"instance_id", inst.ID, "err", err, "output", out)
 						// ComposeUp failed. Rewind any resource-stanza patch so the

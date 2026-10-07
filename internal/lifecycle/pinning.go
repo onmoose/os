@@ -214,6 +214,13 @@ func pullWithRetry(ctx context.Context, docker DockerDriver, ref string) error {
 // can act on. Each source failure is logged. If the context ends during a wait,
 // the error wraps ctx.Err() so a cancelled install does not read as a rate limit.
 func pullImage(ctx context.Context, docker DockerDriver, upstream string, sources []string) (string, error) {
+	return pullImageWaits(ctx, docker, upstream, sources, pullRetryDelays)
+}
+
+// pullImageWaits is pullImage with its own backoff ladder. With no waits, a
+// rate limit tries the sources at once and then fails: the reconcile pass at
+// boot uses that, because it shares one short budget across every app.
+func pullImageWaits(ctx context.Context, docker DockerDriver, upstream string, sources []string, waits []time.Duration) (string, error) {
 	err := docker.Pull(ctx, upstream)
 	if err == nil {
 		return upstream, nil
@@ -230,17 +237,17 @@ func pullImage(ctx context.Context, docker DockerDriver, upstream string, source
 		}
 		// On a rate limit, sources come after the first wait; on any other
 		// registry or network error, at once.
-		if !triedSources && (!limited || step >= 1) {
+		if !triedSources && (!limited || step >= 1 || len(waits) == 0) {
 			triedSources = true
 			if ref, ok := pullFromSources(ctx, docker, upstream, sources, err); ok {
 				return ref, nil
 			}
 			continue // re-check the context, then finish the ladder
 		}
-		if !limited || step >= len(pullRetryDelays) {
+		if !limited || step >= len(waits) {
 			return "", err
 		}
-		delay := pullRetryDelays[step]
+		delay := waits[step]
 		step++
 		slog.Warn("image pull rate-limited, retrying", "image", upstream, "delay", delay, "err", err)
 		select {
@@ -399,12 +406,18 @@ func digestOf(image string) (string, bool) {
 func toInstanceImages(pins []servicePin) []store.InstanceImage {
 	out := make([]store.InstanceImage, len(pins))
 	for i, p := range pins {
-		out[i] = store.InstanceImage{Service: p.Service, Image: p.Image, Digest: p.Digest}
-		if strings.Contains(p.ref, "@") && p.ref != repoOf(p.Image)+"@"+p.Digest {
-			out[i].Ref = p.ref
-		}
+		out[i] = store.InstanceImage{Service: p.Service, Image: p.Image, Digest: p.Digest, Ref: pinRef(p.Image, p.Digest, p.ref)}
 	}
 	return out
+}
+
+// pinRef is the Ref to store for an image pulled under ref: ref itself when it
+// is a digest reference other than `name@sha256:…`, else "".
+func pinRef(image, digest, ref string) string {
+	if strings.Contains(ref, "@") && ref != repoOf(image)+"@"+digest {
+		return ref
+	}
+	return ""
 }
 
 // storedRef is the local reference of a stored pin: the backup source it was
@@ -420,8 +433,12 @@ func storedRef(img store.InstanceImage) string {
 // brain has made sure every image is here (ensureImages). Every `up` after
 // install goes through it: the override sets `pull_policy: never`, so compose
 // no longer pulls a missing image by itself (#588).
-func (m *Manager) composeUpInstance(ctx context.Context, id string) (string, error) {
-	if err := m.ensureImages(ctx, id); err != nil {
+//
+// waits is the rate-limit backoff for a missing image: pullRetryDelays for a
+// start or a recreate, nil for the reconcile pass at boot, which shares one
+// short budget across every app and must not spend it waiting on one registry.
+func (m *Manager) composeUpInstance(ctx context.Context, id string, waits []time.Duration) (string, error) {
+	if err := m.ensureImages(ctx, id, waits); err != nil {
 		return "", err
 	}
 	return m.docker.ComposeUp(ctx, m.instanceDir(id), "moose-"+id)
@@ -437,7 +454,7 @@ func (m *Manager) composeUpInstance(ctx context.Context, id string) (string, err
 //
 // An override without an `image:` for a service, or a pin with no digest, is
 // left for compose to report, as before.
-func (m *Manager) ensureImages(ctx context.Context, id string) error {
+func (m *Manager) ensureImages(ctx context.Context, id string, waits []time.Duration) error {
 	pins, err := m.store.GetInstanceImages(id)
 	if err != nil {
 		return fmt.Errorf("read image pins: %w", err)
@@ -464,7 +481,7 @@ func (m *Manager) ensureImages(ctx context.Context, id string) error {
 	var sources map[string]manifest.ImageRef
 	loaded := false
 	pulled := map[string]string{} // override ref → the ref it is now
-	changed := false
+	changed, pinsChanged := false, false
 	for i, pin := range pins {
 		svc, _ := services[pin.Service].(map[string]any)
 		ref, _ := svc["image"].(string)
@@ -488,7 +505,7 @@ func (m *Manager) ensureImages(ctx context.Context, id string) error {
 					backups = sourceRefs(pin.Image, sources[pin.Image].Sources, pin.Digest)
 				}
 				slog.Info("image missing, pulling", "instance_id", id, "service", pin.Service, "image", pin.Image)
-				if now, err = pullImage(ctx, m.docker, repoOf(pin.Image)+"@"+pin.Digest, backups); err != nil {
+				if now, err = pullImageWaits(ctx, m.docker, repoOf(pin.Image)+"@"+pin.Digest, backups, waits); err != nil {
 					return fmt.Errorf("pull image for service %q: %w", pin.Service, err)
 				}
 			}
@@ -496,22 +513,26 @@ func (m *Manager) ensureImages(ctx context.Context, id string) error {
 		}
 		if now != ref {
 			svc["image"] = now
-			pins[i].Ref = ""
-			if now != repoOf(pin.Image)+"@"+pin.Digest {
-				pins[i].Ref = now
-			}
 			changed = true
 		}
+		// The stored pin follows the override, even when nothing was pulled: a
+		// save that failed on an earlier start is repaired here.
+		if want := pinRef(pin.Image, pin.Digest, now); want != pin.Ref {
+			pins[i].Ref = want
+			pinsChanged = true
+		}
 	}
-	if !changed {
+	if changed {
+		out, err := yaml.Marshal(doc)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(ovPath, out, 0o644); err != nil {
+			return fmt.Errorf("write override: %w", err)
+		}
+	}
+	if !pinsChanged {
 		return nil
-	}
-	out, err := yaml.Marshal(doc)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(ovPath, out, 0o644); err != nil {
-		return fmt.Errorf("write override: %w", err)
 	}
 	if err := m.store.SetInstanceImages(id, pins); err != nil {
 		return fmt.Errorf("persist image pins: %w", err)
