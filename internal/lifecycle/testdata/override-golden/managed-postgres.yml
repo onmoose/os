@@ -21,6 +21,7 @@ services:
                 aliases:
                     - moose-INSTANCE-app
             moose-svc-postgres-15: null
+        pull_policy: never
         restart: unless-stopped
         security_opt:
             - no-new-privileges:true

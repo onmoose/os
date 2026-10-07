@@ -14,6 +14,7 @@ services:
             moose.manifest_id: MANIFEST
         networks:
             moose-app-INSTANCE: null
+        pull_policy: never
         security_opt:
             - no-new-privileges:true
         user: EUID:EGID
@@ -27,6 +28,7 @@ services:
             moose.manifest_id: MANIFEST
         networks:
             moose-app-INSTANCE: null
+        pull_policy: never
         security_opt:
             - no-new-privileges:true
         user: EUID:EGID
@@ -48,6 +50,7 @@ services:
             moose-ingress:
                 aliases:
                     - moose-INSTANCE-web
+        pull_policy: never
         restart: unless-stopped
         security_opt:
             - no-new-privileges:true

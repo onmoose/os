@@ -276,10 +276,25 @@ type Links struct {
 // and DiskBytes (sum of its uncompressed layer sizes, deduped within the app's
 // own image set) are advisory and gate nothing — a size that drifts from
 // reality is a cosmetic bug, not an integrity failure.
+//
+// Sources is the optional, ordered list of other places to pull the same bytes
+// from when upstream fails (#588, APP_STORE.md # Catalog schema). The catalog
+// publisher writes it; an author never does. Every source serves the image
+// under Digest, so a source cannot change what runs.
 type ImageRef struct {
-	Digest        string `yaml:"digest" json:"digest"`
-	DownloadBytes int64  `yaml:"download_bytes,omitempty" json:"download_bytes,omitempty"`
-	DiskBytes     int64  `yaml:"disk_bytes,omitempty" json:"disk_bytes,omitempty"`
+	Digest        string        `yaml:"digest" json:"digest"`
+	DownloadBytes int64         `yaml:"download_bytes,omitempty" json:"download_bytes,omitempty"`
+	DiskBytes     int64         `yaml:"disk_bytes,omitempty" json:"disk_bytes,omitempty"`
+	Sources       []ImageSource `yaml:"sources,omitempty" json:"sources,omitempty"`
+}
+
+// ImageSource is one backup place to pull an image from. Ref is a repository
+// with no tag and no digest (`registry.example.com/mirror/ghcr.io/example/app`);
+// the box pulls `<Ref>@<digest>`. Auth is room for a login a later box may
+// understand. This box knows no login, so it skips any source that sets it.
+type ImageSource struct {
+	Ref  string `yaml:"ref" json:"ref"`
+	Auth any    `yaml:"auth,omitempty" json:"auth,omitempty"`
 }
 
 // UnmarshalYAML accepts both the object form ({digest, download_bytes,

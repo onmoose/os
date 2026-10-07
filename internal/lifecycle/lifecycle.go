@@ -1162,7 +1162,7 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	// on the health poll. Worst-case wall time is therefore ~2×healthWait — the
 	// same as install, deliberately so the two paths behave identically.
 	upCtx, cancelUp := context.WithTimeout(ctx, m.healthWait)
-	out, upErr := m.docker.ComposeUp(upCtx, m.instanceDir(id), "moose-"+id)
+	out, upErr := m.composeUpInstance(upCtx, id)
 	cancelUp()
 	if upErr != nil {
 		return m.startFailed(ctx, inst, host, man.Name, fmt.Errorf("compose up: %w\n%s", upErr, out))
@@ -1329,7 +1329,7 @@ func (m *Manager) reclaimImages(ctx context.Context, instanceID string, images [
 	}
 	done := map[string]bool{}
 	for _, img := range images {
-		ref := repoOf(img.Image) + "@" + img.Digest
+		ref := storedRef(img)
 		if inUse[ref] || done[ref] {
 			continue
 		}
@@ -1356,7 +1356,7 @@ func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 			return nil, err
 		}
 		for _, img := range imgs {
-			refs[repoOf(img.Image)+"@"+img.Digest] = true
+			refs[storedRef(img)] = true
 		}
 	}
 	return refs, nil
@@ -1394,7 +1394,7 @@ func (m *Manager) teardown(ctx context.Context, inst store.Instance, removeDir b
 func (m *Manager) recreateRunning(ctx context.Context, inst store.Instance) error {
 	upCtx, cancel := context.WithTimeout(ctx, m.healthWait)
 	defer cancel()
-	if out, err := m.docker.ComposeUp(upCtx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
+	if out, err := m.composeUpInstance(upCtx, inst.ID); err != nil {
 		if !inst.PendingRecreate {
 			if serr := m.store.SetInstancePendingRecreate(inst.ID, true); serr != nil {
 				slog.Warn("mark pending recreate", "instance_id", inst.ID, "err", serr)
@@ -1500,7 +1500,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				}
 				slog.Info("reconcile: starting drifted instance",
 					"instance_id", inst.ID, "reason", "no containers")
-				if out, err := m.docker.ComposeUp(ctx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
+				if out, err := m.composeUpInstance(ctx, inst.ID); err != nil {
 					slog.Warn("reconcile: compose up",
 						"instance_id", inst.ID, "err", err, "output", out)
 					continue
@@ -1525,7 +1525,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 					slog.Info("reconcile: recreating drifted running instance",
 						"instance_id", inst.ID,
 						"resource_drift", changed, "pending_recreate", inst.PendingRecreate)
-					if out, err := m.docker.ComposeUp(ctx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
+					if out, err := m.composeUpInstance(ctx, inst.ID); err != nil {
 						slog.Warn("reconcile: compose up",
 							"instance_id", inst.ID, "err", err, "output", out)
 						// ComposeUp failed. Rewind any resource-stanza patch so the
@@ -1875,6 +1875,12 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		}
 		if ref, ok := pinBySvc[svc]; ok {
 			entry["image"] = ref
+			// Compose never pulls by itself (#588). Its default (`missing`)
+			// would pull a missing image on `up` from the one ref above, which
+			// may be a backup source, with no upstream first and no ladder. The
+			// brain pulls instead: resolveImages at install, ensureImages
+			// before every later `up`.
+			entry["pull_policy"] = "never"
 		}
 		// Run as the resolved runtime identity (every instance — folderless apps
 		// as the brain's euid). Folder apps additionally bind each declared folder
