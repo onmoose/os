@@ -165,7 +165,10 @@ var pullRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time
 // ghcr and Docker Hub count its requests against a source IP that other traffic
 // may share, and a short spike answers 429 to one pull of a working install.
 // Every other pull error returns at once: an unreachable registry must still
-// fail fast, and the offline fallback must still engage without waiting.
+// fail fast, and the offline fallback must still engage without waiting. (A
+// rate limit means a registry answered, so an offline box retries it too.) If
+// the context ends during a wait, the error wraps ctx.Err() so a cancelled
+// install does not read as a rate limit.
 func pullWithRetry(ctx context.Context, docker DockerDriver, ref string) error {
 	err := docker.Pull(ctx, ref)
 	for _, delay := range pullRetryDelays {
@@ -175,7 +178,7 @@ func pullWithRetry(ctx context.Context, docker DockerDriver, ref string) error {
 		slog.Warn("image pull rate-limited, retrying", "image", ref, "delay", delay, "err", err)
 		select {
 		case <-ctx.Done():
-			return err
+			return fmt.Errorf("%w: %w", ctx.Err(), err)
 		case <-time.After(delay):
 		}
 		err = docker.Pull(ctx, ref)

@@ -70,7 +70,8 @@ func TestPullWithRetrySkipsOtherErrors(t *testing.T) {
 	}
 }
 
-// A cancelled install stops waiting and returns the last pull error.
+// A cancelled install stops waiting, and its error says it was cancelled as
+// well as carrying the last pull error.
 func TestPullWithRetryStopsOnCancel(t *testing.T) {
 	d := newFakeDocker()
 	d.pullFails = 100
@@ -78,8 +79,9 @@ func TestPullWithRetryStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := pullWithRetry(ctx, d, "ghcr.io/x/y@sha256:abc"); !errors.Is(err, errRateLimited) {
-		t.Fatalf("err = %v, want the rate-limit error", err)
+	err := pullWithRetry(ctx, d, "ghcr.io/x/y@sha256:abc")
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, errRateLimited) {
+		t.Fatalf("err = %v, want both context.Canceled and the rate-limit error", err)
 	}
 	if got := len(d.pulled()); got != 1 {
 		t.Fatalf("Pull called %d times, want 1", got)
