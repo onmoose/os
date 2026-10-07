@@ -51,6 +51,10 @@ Run on 2026-10-07 on one real hosted box, provisioned through the deployed contr
 - **The reconcile pass at boot pulls a missing image with no backoff wait** (Greptile on #589). It shares one 30-second budget across every app, and the 2, 4, 8 and 16 second waits could use it all on one rate-limited registry, leaving later apps without their routes. On a rate limit it tries the sources at once and then gives up; the app is left for a later `Start`. A pin whose save failed on an earlier start is repaired on the next one, even when nothing is pulled (also Greptile on #589).
 - **The hosted run used a source on the box itself** (`127.0.0.1:5000`), not a remote registry. The pull path is the same; only the network distance differs.
 - **No login.** A source that needs one (`auth`) is skipped (#588 leaves login for later).
+- **Second review on #589, points not acted on:**
+  - `ensureImages` treats any `ImageInspect` error as "image missing" and pulls. A Docker or proxy error then shows as `pull image for service ...`. The pull fails at once with Docker's own error, so only the wording is off. The CLI driver's inspect error does not carry Docker's message, so telling the two apart needs a driver change.
+  - A pin with an empty digest is not pulled, while the override says `pull_policy: never`. No code path writes an empty digest today (install, offline and Door-2 all store one).
+  - The install plan's `imagePresent` checks `repo@digest` only, so an image present only under a source name counts as a download.
 
 ## What's next
 
