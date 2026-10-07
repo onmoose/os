@@ -89,21 +89,25 @@ func TestPullWithRetryStopsOnCancel(t *testing.T) {
 }
 
 func TestIsRateLimited(t *testing.T) {
-	for msg, want := range map[string]bool{
-		"toomanyrequests: retry-after: 25.51µs":                    true,
-		"TOOMANYREQUESTS: You have reached your pull rate limit":   true,
-		"unexpected status code 429 Too Many Requests":             true,
-		"dial tcp: lookup ghcr.io: no such host":                   false,
-		"manifest unknown: manifest tagged by \"v1\" is not found": false,
+	for _, tc := range []struct {
+		ref, msg string
+		want     bool
+	}{
+		// The real ghcr failure (#586), and Docker Hub's form.
+		{"ghcr.io/x/y@sha256:abc", "pull ghcr.io/x/y@sha256:abc: exit status 1\nghcr.io/x/y@sha256:abc: Pulling from x/y\ntoomanyrequests: retry-after: 25.51µs, allowed: 44000/minute", true},
+		{"nginx:1", "pull nginx:1: exit status 1\nError response from daemon: toomanyrequests: You have reached your pull rate limit", true},
+		{"ghcr.io/x/y:1", "pull ghcr.io/x/y:1: exit status 1\nunexpected status code 429 Too Many Requests", true},
+		// A short image name that is part of the error text still matches.
+		{"requests", "pull requests: exit status 1\nError response from daemon: toomanyrequests: You have reached your pull rate limit", true},
+		{"many", "pull many: exit status 1\nunexpected status code 429 Too Many Requests", true},
+		// Other errors, and an image whose name is the error code.
+		{"ghcr.io/x/y:1", "pull ghcr.io/x/y:1: exit status 1\ndial tcp: lookup ghcr.io: no such host", false},
+		{"ghcr.io/org/toomanyrequests:latest", "pull ghcr.io/org/toomanyrequests:latest: exit status 1\nmanifest unknown", false},
+		{"toomanyrequests", "pull toomanyrequests: exit status 1\nError response from daemon: pull access denied for toomanyrequests", false},
 	} {
-		if got := isRateLimited(errors.New(msg), "ghcr.io/x/y@sha256:abc"); got != want {
-			t.Errorf("isRateLimited(%q) = %v, want %v", msg, got, want)
+		if got := isRateLimited(errors.New(tc.msg), tc.ref); got != tc.want {
+			t.Errorf("isRateLimited(%q, %q) = %v, want %v", tc.msg, tc.ref, got, tc.want)
 		}
-	}
-	// The image name is not the registry's answer.
-	const ref = "ghcr.io/org/toomanyrequests:latest"
-	if isRateLimited(fmt.Errorf("pull %s: exit status 1\nmanifest unknown", ref), ref) {
-		t.Errorf("an image named toomanyrequests must not read as a rate limit")
 	}
 }
 

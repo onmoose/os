@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -186,14 +187,18 @@ func pullWithRetry(ctx context.Context, docker DockerDriver, ref string) error {
 	return err
 }
 
+// rateLimitError matches a registry rate limit in `docker pull` output: the OCI
+// error code `toomanyrequests` (ghcr and Docker Hub both send it, as
+// "toomanyrequests: <detail>") or the bare HTTP status some registries print.
+// An image reference has no spaces and no capitals, so neither form can match
+// inside one.
+var rateLimitError = regexp.MustCompile(`(^|\s)toomanyrequests: |429 Too Many Requests`)
+
 // isRateLimited reports whether a pull error is a registry rate limit. The CLI
-// driver carries the `docker pull` output in the error: ghcr and Docker Hub both
-// answer with the OCI error code `toomanyrequests`, and some registries print
-// only the HTTP status. The error also names the image, so ref is cut out
-// first: an image called `toomanyrequests` is not a rate limit.
+// driver starts its error with "pull <ref>: ", which is cut first so that an
+// untagged image called `toomanyrequests` is not read as a rate limit.
 func isRateLimited(err error, ref string) bool {
-	msg := strings.ToLower(strings.ReplaceAll(err.Error(), ref, ""))
-	return strings.Contains(msg, "toomanyrequests") || strings.Contains(msg, "429 too many requests")
+	return rateLimitError.MatchString(strings.Replace(err.Error(), "pull "+ref+": ", "", 1))
 }
 
 // resolveOffline is the air-gapped fallback when a pull fails: there is no
