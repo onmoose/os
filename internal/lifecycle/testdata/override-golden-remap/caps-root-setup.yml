@@ -24,6 +24,7 @@ services:
             moose-ingress:
                 aliases:
                     - moose-INSTANCE-MANIFEST
+        pull_policy: never
         restart: unless-stopped
         security_opt:
             - no-new-privileges:true

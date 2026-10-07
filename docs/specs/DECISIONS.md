@@ -21,6 +21,21 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-07 — A box may pull an image from a backup source when upstream fails (#588)
+
+**Previously:** we did not host or mirror container images. A box pulled only from the author's registry, and image mirroring was a deferred, Tier-3 concern (`APP_STORE.md` # Locked decisions, the 2026-05-17 store entry below). A rate limit or a deleted upstream image failed the install; #586 added a 30-second backoff for short rate-limit spikes only.
+
+**Now:** the catalog may list, per image, an ordered set of backup `sources` that serve the same bytes. The box pulls from upstream first and tries the sources only when upstream fails: on a rate limit after the first backoff wait, and on any other registry or network error at once. Every pull is by the one published digest, which is now the `linux/amd64` digest so upstream and an `amd64`-only copy both serve it. The compose override names whichever reference was pulled, and compose no longer pulls app images by itself (`pull_policy: never`): the brain pulls before every `up`.
+
+**Why:**
+
+- **A box pulls without logging in.** Registries count logged-out pulls against a source IP that other traffic may share. A spike is handled by the backoff; a limit that lasts, or Docker Hub's low logged-out limit, is not.
+- **Upstream can disappear.** An author can delete a tag, a digest or a whole repository. A copy covers that case, which no retry can.
+- **The digest still decides what runs.** A source can only serve the digest the catalog promised, so it adds a place to fetch bytes, not a new authority over them.
+- **Upstream stays first.** The copy is a fallback, so a box with a working upstream behaves exactly as before, and a box with no sources at all is unchanged.
+
+**Affected docs:** `APP_STORE.md` (# Backup image sources, the `images` field, # Trust model, # Failure modes, # Locked decisions), `APP_LIFECYCLE.md` (# Locked: image digest pinning), `docs/progress/image-backup-sources.md`.
+
 ## 2026-10-06 — The box-id is the name the owner chose, with no suffix
 
 **Previously:** the box-id was a typed base plus a system-assigned suffix from a curated Nordic-nature word list, joined by a dash (`cindy-fox`). The suffix let two owners type the same base, and stopped names being squatted in series. The wizard offered a reshuffle for a different suffix, and a bare name (`larry.onmoose.io`) was considered as a paid upgrade and rejected (`MOOSE_NETWORK.md`, the section "Locked: box-id is base + curated suffix, joined by a dash").

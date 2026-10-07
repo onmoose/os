@@ -45,7 +45,10 @@ type fakeDocker struct {
 
 	digests map[string]string // image → digest returned by ImageInspect
 	loaded  map[string]bool   // image present locally with NO RepoDigest (docker-loaded)
-	pullErr map[string]error  // per-ref Pull error (nil = success)
+	// present holds the digest refs a Pull put in the local store, so
+	// ensureImages finds an installed app's images on a later start (#588).
+	present map[string]bool
+	pullErr map[string]error // per-ref Pull error (nil = success)
 	// pullErrAll fails Pull for every ref, tag or digest form alike. An
 	// unreachable registry is a property of the box, not of one ref — keying such
 	// a failure by ref would let a pull the code makes under a different ref
@@ -107,6 +110,7 @@ func newFakeDocker() *fakeDocker {
 	return &fakeDocker{
 		digests:   map[string]string{},
 		loaded:    map[string]bool{},
+		present:   map[string]bool{},
 		pullErr:   map[string]error{},
 		psManaged: map[string]bool{},
 	}
@@ -168,7 +172,15 @@ func (f *fakeDocker) Pull(_ context.Context, image string) error {
 	if f.pullErrAll != nil {
 		return f.pullErrAll
 	}
-	return f.pullErr[image]
+	if err := f.pullErr[image]; err != nil {
+		return err
+	}
+	if strings.Contains(image, "@") {
+		f.mu.Lock()
+		f.present[image] = true
+		f.mu.Unlock()
+	}
+	return nil
 }
 
 func (f *fakeDocker) ImageInspect(_ context.Context, image string) (RepoDigests, error) {
@@ -180,6 +192,13 @@ func (f *fakeDocker) ImageInspect(_ context.Context, image string) (RepoDigests,
 	// RepoDigest — inspect succeeds with an empty list, mirroring the CLI.
 	if f.loaded[image] {
 		return RepoDigests{}, nil
+	}
+	// Pulled by digest: the store names it under the ref it was pulled as.
+	f.mu.Lock()
+	present := f.present[image]
+	f.mu.Unlock()
+	if present {
+		return RepoDigests{image}, nil
 	}
 	// Absent: inspect errors, as `docker image inspect` does for a missing image.
 	return nil, fmt.Errorf("fakeDocker: image %q not present", image)

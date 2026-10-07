@@ -64,7 +64,7 @@ Fields per app:
 - **`icon_glyph`** — optional Lucide icon name (kebab-case, e.g. `notebook-pen`) the browse UI renders as the card/header icon when `icon_url` is absent, instead of a single generic glyph. Author-chosen fallback for apps that ship no logo; ignored when `icon_url` is present. The brain passes it through verbatim and only shape-validates it (kebab-case) — it can't confirm the name exists in the icon set, which lives in the UI, so an unknown-but-well-formed name degrades to the generic glyph client-side. Browse UI groups by category regardless of file shape; icon choice is likewise a UI concern.
 - **`manifest_url` / `manifest_hash`** — content-addressed pointer to the full manifest. On install, brain fetches and verifies the hash matches.
 - **`compose_url` / `compose_hash`** — same, for the compose file.
-- **`images`** — map of `image:tag` (as referenced in the compose) → `{ digest, download_bytes, disk_bytes }`. CI resolves all three at catalog-build time from the registry: `digest` (the pinned bytes — see Trust below; the brain pulls by digest, not by tag), `download_bytes` (sum of the image's compressed layer sizes — the bandwidth/time cost), and `disk_bytes` (sum of its uncompressed layer sizes, deduping layers shared *within this app's own image set* — the on-disk cost). Sizes are **display-only and advisory** (# Trust model); only `digest` gates the pull.
+- **`images`** — map of `image:tag` (as referenced in the compose) → `{ digest, download_bytes, disk_bytes }`. CI resolves all three at catalog-build time from the registry: `digest` (the pinned bytes, see Trust below; the brain pulls by digest, not by tag), `download_bytes` (sum of the image's compressed layer sizes — the bandwidth/time cost), and `disk_bytes` (sum of its uncompressed layer sizes, deduping layers shared *within this app's own image set* — the on-disk cost). Sizes are **display-only and advisory** (# Trust model); only `digest` gates the pull. An entry may also carry **`sources`**, an ordered list of backup places to pull the same bytes from (# Backup image sources).
 - **`footprint`** — per-app summary so the **browse grid renders the size without fetching the full manifest**: `{ image_download_bytes, image_disk_bytes, estimated_state }`. CI computes the two image totals by summing the `images` entries and hoists `estimated_state` verbatim from the manifest's `storage.estimated_size` (`APP_MANIFEST.md` # Storage; absent if the manifest omits it). The image totals are an **upper bound** — they assume nothing is cached locally; the install setup page shows a sharper, box-specific number that subtracts already-present images (`BRAIN_UI_PROTOCOL.md` # GET /api/v1/catalog/:id/install-plan). `estimated_state` is the **measured app-state baseline at install** (`DECISIONS.md` 2026-06-09), not a usage projection — the same value on the card and in the dialog.
 - **`files_first_class`** — true when the manifest declares `folders` and does not set `storage.app_managed_user_content`. Surfaces as a badge in the UI; not a gate.
 
@@ -96,7 +96,29 @@ Consequences:
 
 **What we don't sign:** individual manifests / compose files don't carry their own signature. Their integrity is bound to the catalog via the `manifest_hash` / `compose_hash` fields. One signed root, hash-chained leaves — same shape as the well-known package-manager pattern.
 
-**What we don't host:** container images live wherever the author publishes them. We don't mirror Docker Hub. The "your app keeps working if the original developer disappears" pitch is delivered by the **running box's local image cache**, not by us re-hosting upstream artifacts. Mirroring is a Tier-3 future concern.
+**What we don't host:** container images live wherever the author publishes them, and upstream stays the first place a box pulls from. The "your app keeps working if the original developer disappears" pitch is delivered by the **running box's local image cache**. Since #588 the catalog may also name **backup sources** for an image (# Backup image sources): copies a box uses only when upstream fails. They are a fallback, never the source of truth (`DECISIONS.md` 2026-10-07).
+
+### Backup image sources
+
+A box pulls without logging in, so a registry counts its requests against a source IP that other traffic may share. A rate limit that lasts, or an upstream that deleted an image, used to fail the install. The catalog can now list other places that serve the same bytes, per image, next to `digest`:
+
+```yaml
+images:
+  ghcr.io/example/app:v1.2.3:
+    digest: sha256:…          # the linux/amd64 digest, valid upstream and in every source
+    sources:
+      - ref: registry.example.com/mirror/ghcr.io/example/app
+```
+
+What the box does with it (`APP_LIFECYCLE.md` # Locked: image digest pinning has the full order):
+
+- **Every pull is `<ref>@<digest>`, with the one digest.** A source cannot change the bytes a box runs. The published digest is the `linux/amd64` image's own digest, not the multi-arch index digest, so upstream and a source that keeps only `amd64` serve the same digest.
+- **Upstream first.** A source is tried only when upstream fails with a registry or network error, or still answers a rate limit after the first backoff wait. A local error, a cancelled install and offline mode never move to a source. When every source fails, the install reports upstream's error.
+- **`ref` is a plain repository**, with no tag and no digest. A source whose `ref` is not one is skipped.
+- **`auth` is reserved.** A later catalog may add an optional `auth` field to a source, for a source that needs a login. This box knows no login, so it skips any source that sets `auth`.
+- **No `sources`, no change.** The box behaves exactly as before.
+
+**A stored pin may hold the older index digest.** A box that installed an app before the catalog switched to `amd64` digests stored the index digest. Nothing on the box compares a stored pin with the published one today: install pulls what the manifest promises, and an uninstall removes what the instance stored. When app update checks land (`UPDATES.md` # 4), they must not read that switch as a new version. They should compare by catalog version, or treat an index digest and the `amd64` entry inside it as the same image.
 
 ## Verification lives in the brain
 
@@ -212,7 +234,7 @@ Browse UI groups by category regardless of file shape — the grouping is a UI c
 - **Install payload can't be fetched:** the install fails with a plain error and writes no state. A `404` on the document route reads as "no such app" (the store no longer serves this app's payload); anything else reads as a reachability failure. Browsing is unaffected — it never touches those routes.
 - **An installed app leaves the box's surface (or leaves the catalog):** the app keeps working. Its manifest and compose were written next to the installation at install time, so every routine path — the route builder, the mail picker, the resource limits — reads the box's own copy and never the catalog. What degrades is only the catalog-supplied display metadata: `GET /catalog?env=` no longer carries a record for that app, so its card falls back to the instance row's own name and version with no icon. This is the accepted trade of moving environment filtering to the server (#434); the alternative, persisting a copy of the display record too, buys a card icon and a second thing to keep fresh.
 - **Image pull fails at install time:** standard install failure, surfaced per `APP_LIFECYCLE.md` # install transaction.
-- **Image digest changes upstream between catalog publish and box pull:** the box pulls by digest, so the upstream's new bytes don't affect it. The box installs the bytes the catalog promised. If the digest was *deleted* from the upstream registry (rare — most registries keep digests addressable), the install fails with a registry-side error.
+- **Image digest changes upstream between catalog publish and box pull:** the box pulls by digest, so the upstream's new bytes don't affect it. The box installs the bytes the catalog promised. If the digest was *deleted* from the upstream registry (rare: most registries keep digests addressable), the box tries the image's backup sources (# Backup image sources); with none, or when they fail too, the install fails with the upstream registry's error.
 
 ## What we run
 
@@ -307,7 +329,7 @@ _(Updated for the shipped design — `DECISIONS.md` 2026-07-02, #62. The earlier
 - **Authors declare image versions; CI resolves digests into the published catalog.** The brain pulls by digest — the resolved `@sha256:…` lives in each app's `images:` block inside the verbatim manifest the box fetches and re-parses. Tag mutation on upstream registries can't ship malicious code to a box.
 - **The manifest + compose are fetched per app, at install time,** and then **persisted next to the installation**. That is what keeps routine box operation off the catalog service and keeps an installed app's manifest alive after the app is unpublished. There are no per-app hash-chained files: the documents are plain `application/yaml` behind TLS.
 - **Verification happens in the brain** (not host-agent). The brain owns app lifecycle and re-parses each manifest with its own `manifest.Parse`, staying the sole enforcer of the manifest contract.
-- **We don't host container images.** Authors publish to their own registries. The box's local image cache delivers the "app keeps working if the developer disappears" property. Image mirroring is deferred.
+- **Upstream hosts container images; backup sources are a fallback.** Authors publish to their own registries, and a box pulls from there first. The box's local image cache delivers the "app keeps working if the developer disappears" property. Since #588 the catalog may name backup sources a box uses only when upstream fails (# Backup image sources, `DECISIONS.md` 2026-10-07).
 - **v1 catalog is hand-curated by moose.** Every manifest is moose-authored. Third-party authorship (PRs against the store) lands later.
 - **No baked catalog in the box image.** Every box — appliance and hosted — is a thin client of the catalog service (`DECISIONS.md` 2026-07-02).
 - **Promotion is a PR against the store repo.** CI validates schema, admission rules, image reachability, and digests; merge is the publish action: the publisher rebuilds the published tree and the catalog service serves it. The published tree is never committed, because its source sits beside it in the same repo.
