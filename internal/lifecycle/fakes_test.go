@@ -52,6 +52,10 @@ type fakeDocker struct {
 	// (Door-1 pulls `name@sha256:…`, never the tag) succeed against a registry the
 	// test says is gone.
 	pullErrAll error
+	// pullFails makes the next N Pull calls fail with pullFailErr, the way a
+	// registry answers a short rate-limit spike (#586).
+	pullFails   int
+	pullFailErr error
 
 	composeUp func(ctx context.Context, dir, project string) (string, error)
 	inspect   func(id, mainService string) (running bool, health string, err error)
@@ -154,6 +158,13 @@ func (f *fakeDocker) called(method string) bool {
 
 func (f *fakeDocker) Pull(_ context.Context, image string) error {
 	f.record("Pull", image)
+	f.mu.Lock()
+	if f.pullFails > 0 {
+		f.pullFails--
+		f.mu.Unlock()
+		return f.pullFailErr
+	}
+	f.mu.Unlock()
 	if f.pullErrAll != nil {
 		return f.pullErrAll
 	}
