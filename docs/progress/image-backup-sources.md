@@ -55,6 +55,7 @@ Run on 2026-10-07 on one real hosted box, provisioned through the deployed contr
   - `ensureImages` treats any `ImageInspect` error as "image missing" and pulls. A Docker or proxy error then shows as `pull image for service ...`. The pull fails at once with Docker's own error, so only the wording is off. The CLI driver's inspect error does not carry Docker's message, so telling the two apart needs a driver change.
   - A pin with an empty digest is not pulled, while the override says `pull_policy: never`. No code path writes an empty digest today (install, offline and Door-2 all store one).
   - The install plan's `imagePresent` checks `repo@digest` only, so an image present only under a source name counts as a download.
+- **A missing image is still downloaded inside the boot reconcile's 30-second budget** (Greptile's third review on #589). That is not new: before this change, `compose up` downloaded it inside the same budget. A large download can still use the budget up and leave later apps without routes until a `Start`. A separate budget, or restoring routes before any download, changes boot ordering and needs its own issue.
 
 ## What's next
 
