@@ -96,8 +96,42 @@ func TestIsRateLimited(t *testing.T) {
 		"dial tcp: lookup ghcr.io: no such host":                   false,
 		"manifest unknown: manifest tagged by \"v1\" is not found": false,
 	} {
-		if got := isRateLimited(errors.New(msg)); got != want {
+		if got := isRateLimited(errors.New(msg), "ghcr.io/x/y@sha256:abc"); got != want {
 			t.Errorf("isRateLimited(%q) = %v, want %v", msg, got, want)
 		}
+	}
+	// The image name is not the registry's answer.
+	const ref = "ghcr.io/org/toomanyrequests:latest"
+	if isRateLimited(fmt.Errorf("pull %s: exit status 1\nmanifest unknown", ref), ref) {
+		t.Errorf("an image named toomanyrequests must not read as a rate limit")
+	}
+}
+
+// Cancelling the install during a backoff wait ends the wait at once, with no
+// further pull.
+func TestPullWithRetryCancelDuringWait(t *testing.T) {
+	old := pullRetryDelays
+	pullRetryDelays = []time.Duration{time.Hour}
+	t.Cleanup(func() { pullRetryDelays = old })
+	d := newFakeDocker()
+	d.pullFails = 100
+	d.pullFailErr = errRateLimited
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() { done <- pullWithRetry(ctx, d, "ghcr.io/x/y@sha256:abc") }()
+	time.Sleep(20 * time.Millisecond) // let the first pull fail and the wait start
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pullWithRetry did not stop when the context was cancelled")
+	}
+	if got := len(d.pulled()); got != 1 {
+		t.Fatalf("Pull called %d times, want 1", got)
 	}
 }

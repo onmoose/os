@@ -172,7 +172,7 @@ var pullRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time
 func pullWithRetry(ctx context.Context, docker DockerDriver, ref string) error {
 	err := docker.Pull(ctx, ref)
 	for _, delay := range pullRetryDelays {
-		if err == nil || !isRateLimited(err) {
+		if err == nil || !isRateLimited(err, ref) {
 			return err
 		}
 		slog.Warn("image pull rate-limited, retrying", "image", ref, "delay", delay, "err", err)
@@ -189,9 +189,10 @@ func pullWithRetry(ctx context.Context, docker DockerDriver, ref string) error {
 // isRateLimited reports whether a pull error is a registry rate limit. The CLI
 // driver carries the `docker pull` output in the error: ghcr and Docker Hub both
 // answer with the OCI error code `toomanyrequests`, and some registries print
-// only the HTTP status.
-func isRateLimited(err error) bool {
-	msg := strings.ToLower(err.Error())
+// only the HTTP status. The error also names the image, so ref is cut out
+// first: an image called `toomanyrequests` is not a rate limit.
+func isRateLimited(err error, ref string) bool {
+	msg := strings.ToLower(strings.ReplaceAll(err.Error(), ref, ""))
 	return strings.Contains(msg, "toomanyrequests") || strings.Contains(msg, "429 too many requests")
 }
 
