@@ -103,7 +103,7 @@ libkrb5-3 1.21.3-5+deb13u1 amd64
 libkrb5support0 1.21.3-5+deb13u1 amd64
 liblastlog2-2 2.41.5-0+deb13u1 amd64
 libldap2 2.6.10+dfsg-1 amd64
-liblzma5 5.8.1-1+deb13u1 amd64
+liblzma5 5.8.1-1+deb13u2 amd64
 libmd0 1.1.0-2+b1 amd64
 libmnl0 1.0.5-3 amd64
 libmount1 2.41.5-0+deb13u1 amd64
