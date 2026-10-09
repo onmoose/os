@@ -4,7 +4,7 @@
 // surface does so the box's landing and the control plane's landing read the
 // same way. Kept as a small pure helper (no Vue) so the packing itself is a
 // plain function the view calls, not logic buried in the template.
-import type { CatalogEntry, HomeGroupView } from "../api";
+import type { CatalogEntry, CatalogSlide, HomeGroupView } from "../api";
 
 // Group is HomeGroupView with apps normalized to a plain array — the generated
 // OpenAPI type allows apps to be null (an omitted/empty JSON array round-trips
@@ -87,4 +87,46 @@ export function groupSpan(apps: CatalogEntry[]): string {
 }
 export function groupCols(apps: CatalogEntry[]): string {
   return COLS_CLASSES[clampToRow(apps.length)];
+}
+
+// SlidePage is one page of the landing's discover carousel: a lead slide drawn
+// large, and up to two side slides beside it.
+export interface SlidePage {
+  hero: CatalogSlide;
+  sides: CatalogSlide[];
+}
+
+// slidePages groups the discover slides into carousel pages of one hero and up
+// to two side slides, in authored order. A side slide joins the hero before it
+// (or, at the start, the next one); a page with no hero promotes its first side
+// slide, so every page has a lead. The other store surface pages its slides
+// the same way.
+export function slidePages(slides: CatalogSlide[]): SlidePage[] {
+  type Draft = { hero: CatalogSlide | null; sides: CatalogSlide[] };
+  const drafts: Draft[] = [];
+  let cur: Draft | null = null;
+  for (const s of slides) {
+    if (s.size === "hero") {
+      if (cur?.hero) {
+        drafts.push(cur);
+        cur = null;
+      }
+      cur ??= { hero: null, sides: [] };
+      cur.hero = s;
+      continue;
+    }
+    cur ??= { hero: null, sides: [] };
+    if (cur.sides.length === 2) {
+      drafts.push(cur);
+      cur = { hero: null, sides: [] };
+    }
+    cur.sides.push(s);
+  }
+  if (cur) drafts.push(cur);
+  const pages: SlidePage[] = [];
+  for (const d of drafts) {
+    const hero = d.hero ?? d.sides.shift();
+    if (hero) pages.push({ hero, sides: d.sides });
+  }
+  return pages;
 }

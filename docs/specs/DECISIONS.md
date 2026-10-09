@@ -21,6 +21,36 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-07 — A box may pull an image from a backup source when upstream fails (#588)
+
+**Previously:** we did not host or mirror container images. A box pulled only from the author's registry, and image mirroring was a deferred, Tier-3 concern (`APP_STORE.md` # Locked decisions, the 2026-05-17 store entry below). A rate limit or a deleted upstream image failed the install; #586 added a 30-second backoff for short rate-limit spikes only.
+
+**Now:** the catalog may list, per image, an ordered set of backup `sources` that serve the same bytes. The box pulls from upstream first and tries the sources only when upstream fails: on a rate limit after the first backoff wait, and on any other registry or network error at once. Every pull is by the one published digest, which is now the `linux/amd64` digest so upstream and an `amd64`-only copy both serve it. The compose override names whichever reference was pulled, and compose no longer pulls app images by itself (`pull_policy: never`): the brain pulls before every `up`.
+
+**Why:**
+
+- **A box pulls without logging in.** Registries count logged-out pulls against a source IP that other traffic may share. A spike is handled by the backoff; a limit that lasts, or Docker Hub's low logged-out limit, is not.
+- **Upstream can disappear.** An author can delete a tag, a digest or a whole repository. A copy covers that case, which no retry can.
+- **The digest still decides what runs.** A source can only serve the digest the catalog promised, so it adds a place to fetch bytes, not a new authority over them.
+- **Upstream stays first.** The copy is a fallback, so a box with a working upstream behaves exactly as before, and a box with no sources at all is unchanged.
+
+**Affected docs:** `APP_STORE.md` (# Backup image sources, the `images` field, # Trust model, # Failure modes, # Locked decisions), `APP_LIFECYCLE.md` (# Locked: image digest pinning), `docs/progress/image-backup-sources.md`.
+
+## 2026-10-06 — The box-id is the name the owner chose, with no suffix
+
+**Previously:** the box-id was a typed base plus a system-assigned suffix from a curated Nordic-nature word list, joined by a dash (`cindy-fox`). The suffix let two owners type the same base, and stopped names being squatted in series. The wizard offered a reshuffle for a different suffix, and a bare name (`larry.onmoose.io`) was considered as a paid upgrade and rejected (`MOOSE_NETWORK.md`, the section "Locked: box-id is base + curated suffix, joined by a dash").
+
+**Now:** the box-id is the name the owner types, used as given: `andrei` gives `andrei.onmoose.io` and `<slug>.andrei.onmoose.io`. A new id is 4 to 30 characters of lowercase letters and digits with single dashes inside (`^[a-z0-9]+(-[a-z0-9]+)*$`), not on the reserved list, and not taken. A taken name is refused, with no suffix, reroll or reshuffle. The reserved list covers every name that has its own record under the fleet domain, because a bare box-id is a direct sibling of those records. A destroyed box's name is held for its former owner for one year before anyone else can take it. Ids issued under the old shape stay valid and unchanged. The box-id is still fixed for the life of the box, and the box still treats `box_id` as an opaque string: it does not check the shape.
+
+**Why:**
+
+- **Friendlier addresses.** A bare name is easier to say, type and remember, and every word in it is one the owner chose.
+- **The suffix's job is covered another way.** Refusing a taken name handles two owners wanting the same name, as usernames and domains do. The one-year hold handles a name passing to a new owner while old links still point at it, which would otherwise send those links to a stranger's box.
+- **The paid-upgrade argument has nothing left to act on.** It was about whether owners would pay to drop the suffix. With no suffix for anyone, it does not apply.
+- **The box needs no change in behavior.** It already used the id only as an opaque DNS label, so new bare ids and older dashed ids work the same. Adding a shape check on the box would only risk refusing an id the issuing service sent.
+
+**Affected docs:** `MOOSE_NETWORK.md` (the box-id section rewritten as "Locked: the box-id is the name the owner chose"; enrollment flow steps 2 to 4; examples), `FIRST_RUN.md` (step 5 naming), `NEXT.md` (the box-id allocation item resolved).
+
 ## 2026-10-05 — A Debian major tidies the /etc upper layer, in both directions (#486)
 
 **Previously:** a Debian major was "a new A/B OS image like any other" (2026-10-01), with one risk left open: a file in the `/etc` upper layer stays at the old major's version under the new major's packages. The choice was between resetting the upper layer to a known list and shipping a migration step (`NEXT.md` # A/B OS image, point 5).

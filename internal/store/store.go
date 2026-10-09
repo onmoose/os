@@ -464,6 +464,9 @@ func (s *Store) migrate() error {
 		// The model ids an OpenAI-compatible account serves (aiaccounts.go).
 		// '{}' on rows from before it: the account has none yet.
 		{"ai_accounts", "models", "ALTER TABLE ai_accounts ADD COLUMN models TEXT NOT NULL DEFAULT '{}'"},
+		// The backup source an image was pulled from (#588). '' on rows from
+		// before it, and on every upstream pull: the image is then repo@digest.
+		{"instance_images", "ref", "ALTER TABLE instance_images ADD COLUMN ref TEXT NOT NULL DEFAULT ''"},
 	} {
 		has, hErr := s.hasColumn(col.table, col.name)
 		if hErr != nil {
@@ -624,6 +627,10 @@ type InstanceImage struct {
 	Service string
 	Image   string // original `image:tag` reference from the author's compose
 	Digest  string // `sha256:…`
+	// Ref is the reference the image was pulled under when that was a backup
+	// source (`<source>@sha256:…`, #588). Empty for an upstream pull: the image
+	// is then `<repo of Image>@<Digest>`.
+	Ref string
 }
 
 // SetInstanceImages replaces the pinned images for an instance in one
@@ -640,8 +647,8 @@ func (s *Store) SetInstanceImages(instanceID string, images []InstanceImage) err
 	}
 	for _, img := range images {
 		if _, err := tx.Exec(
-			`INSERT INTO instance_images (instance_id, service, image, digest) VALUES (?,?,?,?)`,
-			instanceID, img.Service, img.Image, img.Digest); err != nil {
+			`INSERT INTO instance_images (instance_id, service, image, digest, ref) VALUES (?,?,?,?,?)`,
+			instanceID, img.Service, img.Image, img.Digest, img.Ref); err != nil {
 			return err
 		}
 	}
@@ -652,7 +659,7 @@ func (s *Store) SetInstanceImages(instanceID string, images []InstanceImage) err
 // service name.
 func (s *Store) GetInstanceImages(instanceID string) ([]InstanceImage, error) {
 	rows, err := s.db.Query(
-		`SELECT service, image, digest FROM instance_images
+		`SELECT service, image, digest, ref FROM instance_images
 		 WHERE instance_id=? ORDER BY service`, instanceID)
 	if err != nil {
 		return nil, err
@@ -661,7 +668,7 @@ func (s *Store) GetInstanceImages(instanceID string) ([]InstanceImage, error) {
 	var out []InstanceImage
 	for rows.Next() {
 		var i InstanceImage
-		if err := rows.Scan(&i.Service, &i.Image, &i.Digest); err != nil {
+		if err := rows.Scan(&i.Service, &i.Image, &i.Digest, &i.Ref); err != nil {
 			return nil, err
 		}
 		out = append(out, i)

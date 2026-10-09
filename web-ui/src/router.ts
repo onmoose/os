@@ -16,6 +16,9 @@ const routes: RouteRecordRaw[] = [
   // Declared before /store/:id; Vue Router also ranks the static segment higher,
   // so "custom" never matches the app-detail param.
   { path: "/store/custom", name: "store-custom", component: () => import("@/views/CustomInstallView.vue") },
+  // Pack page: one pack's apps, each with its own Install button. A pack never
+  // installs in one step (APP_STORE.md # Landing page).
+  { path: "/store/packs/:id", name: "store-pack", component: () => import("@/views/StorePackView.vue") },
   // App detail page (APP_STORE.md # Catalog schema) — the browse grid links here;
   // it's where the description, screenshots, and the Install flow live.
   { path: "/store/:id", name: "store-app", component: () => import("@/views/AppDetailView.vue") },

@@ -280,26 +280,26 @@ func TestSearchMatchesAndFiltersEnv(t *testing.T) {
 	appliance := syncedCatalog(t, segApps(), "appliance")
 
 	// A blank query returns nothing — search narrows, it does not dump the catalog.
-	if got, _ := appliance.Search("   "); got != nil {
-		t.Fatalf("blank Search = %v, want nil", got)
+	if got, _ := appliance.Search("   "); got.Apps != nil || got.Packs != nil {
+		t.Fatalf("blank Search = %+v, want nothing", got)
 	}
 
 	// Name match.
-	if got, _ := appliance.Search("alpha"); !reflect.DeepEqual(ids(got), []string{"alpha"}) {
-		t.Fatalf("Search(alpha) = %v, want [alpha]", ids(got))
+	if got, _ := appliance.Search("alpha"); !reflect.DeepEqual(ids(got.Apps), []string{"alpha"}) {
+		t.Fatalf("Search(alpha) = %v, want [alpha]", ids(got.Apps))
 	}
 
 	// Category match: "media" hits alpha via its category (gamma is tools-only).
-	if got, _ := appliance.Search("MEDIA"); !reflect.DeepEqual(ids(got), []string{"alpha"}) {
-		t.Fatalf("Search(MEDIA) = %v, want [alpha] (category match, case-insensitive)", ids(got))
+	if got, _ := appliance.Search("MEDIA"); !reflect.DeepEqual(ids(got.Apps), []string{"alpha"}) {
+		t.Fatalf("Search(MEDIA) = %v, want [alpha] (category match, case-insensitive)", ids(got.Apps))
 	}
 
 	// Env filter: "beta" is hosted-only, so an appliance search never surfaces it.
-	if got, _ := appliance.Search("beta"); got != nil {
-		t.Fatalf("appliance Search(beta) = %v, want nil (hosted-only)", ids(got))
+	if got, _ := appliance.Search("beta"); got.Apps != nil {
+		t.Fatalf("appliance Search(beta) = %v, want nil (hosted-only)", ids(got.Apps))
 	}
-	if got, _ := syncedCatalog(t, segApps(), "hosted").Search("beta"); !reflect.DeepEqual(ids(got), []string{"beta"}) {
-		t.Fatalf("hosted Search(beta) = %v, want [beta]", ids(got))
+	if got, _ := syncedCatalog(t, segApps(), "hosted").Search("beta"); !reflect.DeepEqual(ids(got.Apps), []string{"beta"}) {
+		t.Fatalf("hosted Search(beta) = %v, want [beta]", ids(got.Apps))
 	}
 }
 
@@ -317,8 +317,8 @@ func TestSegmentedEmptyStoreNoError(t *testing.T) {
 	if _, err := c.Category("tools"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("empty Category = %v, want ErrNotFound", err)
 	}
-	if got, _ := c.Search("x"); got != nil {
-		t.Fatalf("empty Search = %v, want nil", got)
+	if got, _ := c.Search("x"); got.Apps != nil || got.Packs != nil {
+		t.Fatalf("empty Search = %+v, want nothing", got)
 	}
 }
 

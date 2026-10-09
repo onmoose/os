@@ -16,10 +16,13 @@ package catalog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/onmoose/os/internal/manifest"
 )
@@ -72,6 +75,17 @@ type source interface {
 	// its dark variant, to a local file, the way IconPath does for an app.
 	aiProviders() ([]AIProvider, error)
 	aiProviderLogoPath(id string, dark bool) (string, error)
+	// sections returns the authored landing sections, resolved against the
+	// apps and packs the source holds, in authored order (APP_STORE.md #
+	// Landing page). packs returns every pack the source can show, in
+	// authored order. Group labels are left empty: the facade fills them from
+	// the vocabulary. Both are nil for a source with no curation.
+	sections() ([]HomeSection, error)
+	packs() ([]Pack, error)
+	// illustrationPath resolves a slide or pack illustration, by the key in its
+	// brain URL (illustrationURL), to a local file, the way IconPath does for
+	// an app icon.
+	illustrationPath(key string) (string, error)
 }
 
 // Catalog is the brain-facing catalog handle. It is a thin facade over a source;
@@ -122,6 +136,60 @@ type Home struct {
 	// apps are all hidden on this surface is dropped rather than rendered empty.
 	Groups   []HomeGroupView `json:"groups,omitempty"`
 	Featured []Entry         `json:"featured,omitempty"`
+	// Sections is the authored landing page, in the order it renders: search,
+	// discover, intents, packs and categories. When it is empty the UI draws
+	// the older landing from Spotlight, Groups and Featured.
+	Sections []HomeSection `json:"sections,omitempty"`
+}
+
+// The landing section types the box knows. A section of any other type is
+// dropped when the snapshot is resolved, so the store can publish a new one
+// before the box can draw it.
+const (
+	SectionSearch     = "search"
+	SectionDiscover   = "discover"
+	SectionIntents    = "intents"
+	SectionPacks      = "packs"
+	SectionCategories = "categories"
+)
+
+// HomeSection is one resolved landing section. Which fields it uses depends on
+// Type: search has Suggestions, discover has Slides, intents and packs have
+// Packs, and categories has Groups. Every app is a full Entry and every pack a
+// full Pack, so the UI needs no second request to draw the page.
+type HomeSection struct {
+	Type        string          `json:"type"`
+	Title       string          `json:"title,omitempty"`
+	Suggestions []string        `json:"suggestions,omitempty"`
+	Slides      []Slide         `json:"slides,omitempty"`
+	Packs       []Pack          `json:"packs,omitempty"`
+	Groups      []HomeGroupView `json:"groups,omitempty"`
+}
+
+// Slide is one discover slide. Size is "hero" or "side". Headline and Blurb
+// are the authored text, empty when the slide uses the app's own name and
+// tagline. IllustrationURL is the brain's own route for the art, empty when
+// the slide has none.
+type Slide struct {
+	App             Entry  `json:"app"`
+	Size            string `json:"size"`
+	Headline        string `json:"headline,omitempty"`
+	Blurb           string `json:"blurb,omitempty"`
+	IllustrationURL string `json:"illustration_url,omitempty"`
+}
+
+// Pack is a named set of apps that meet one need. A pack never installs in one
+// step: its page lists the apps, and the user installs each one on its own.
+// Keywords are what search matches the pack on, next to its title.
+// IllustrationURL is the brain's own route for the art, empty when the pack
+// has none.
+type Pack struct {
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Description     string   `json:"description,omitempty"`
+	IllustrationURL string   `json:"illustration_url,omitempty"`
+	Apps            []Entry  `json:"apps"`
+	Keywords        []string `json:"keywords,omitempty"`
 }
 
 // HomeGroupView is one rendered category row of the landing page. Label is the
@@ -187,7 +255,37 @@ func (c *Catalog) Home() (Home, error) {
 	for i := range groups {
 		groups[i].Label = labelFor(vocab, groups[i].Category)
 	}
-	return Home{Categories: cats, Spotlight: spotlight, Groups: groups, Featured: feat}, nil
+	sections, err := c.src.sections()
+	if err != nil {
+		return Home{}, err
+	}
+	for i := range sections {
+		for j := range sections[i].Groups {
+			sections[i].Groups[j].Label = labelFor(vocab, sections[i].Groups[j].Category)
+		}
+	}
+	return Home{Categories: cats, Spotlight: spotlight, Groups: groups, Featured: feat, Sections: sections}, nil
+}
+
+// Pack returns one pack by id. ErrNotFound when this box cannot show it: the
+// catalog does not carry it, or one of its apps is not on this box.
+func (c *Catalog) Pack(id string) (Pack, error) {
+	packs, err := c.src.packs()
+	if err != nil {
+		return Pack{}, err
+	}
+	for _, p := range packs {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return Pack{}, fmt.Errorf("%w: pack %q", ErrNotFound, id)
+}
+
+// IllustrationPath returns a local file path to a slide or pack illustration,
+// by the key in its brain URL. ErrNotFound when the snapshot names no such art.
+func (c *Catalog) IllustrationPath(key string) (string, error) {
+	return c.src.illustrationPath(key)
 }
 
 // presentCategories returns the vocabulary entries for the categories actually
@@ -269,26 +367,102 @@ func (c *Catalog) Category(cat string) (CategoryPage, error) {
 	return CategoryPage{Category: cat, Label: labelFor(vocab, cat), Apps: out, Featured: feat}, nil
 }
 
-// Search returns the browsable apps whose name, short description, or categories
-// contain q (case-insensitive substring). A blank query returns nothing rather than
-// the whole catalog — search narrows, browse is for everything.
-func (c *Catalog) Search(q string) ([]Entry, error) {
+// SearchResult is what a store search finds: the matching apps, then the
+// matching packs. The UI shows them in that order.
+type SearchResult struct {
+	Apps  []Entry `json:"apps"`
+	Packs []Pack  `json:"packs"`
+}
+
+// Search returns the packs whose title or keywords match q (matchesPack) and
+// the apps that match: first the apps of the matching packs, because a pack is
+// the authored answer to a described need ("back up my photos"), then the
+// browsable apps whose name, short description, or categories contain q
+// (case-insensitive substring). Each app appears once. A blank query returns
+// nothing rather than the whole catalog: search narrows, browse is for
+// everything.
+func (c *Catalog) Search(q string) (SearchResult, error) {
 	q = strings.TrimSpace(strings.ToLower(q))
 	if q == "" {
-		return nil, nil
+		return SearchResult{}, nil
 	}
 	apps, err := c.src.List()
 	if err != nil {
-		return nil, err
+		return SearchResult{}, err
 	}
-	var out []Entry
+	packs, err := c.src.packs()
+	if err != nil {
+		return SearchResult{}, err
+	}
+	var out SearchResult
+	seen := map[string]bool{}
+	for _, p := range packs {
+		if !matchesPack(p, q) {
+			continue
+		}
+		out.Packs = append(out.Packs, p)
+		for _, a := range p.Apps {
+			if !seen[a.ID] {
+				seen[a.ID] = true
+				out.Apps = append(out.Apps, a)
+			}
+		}
+	}
 	for _, a := range apps {
+		if seen[a.ID] {
+			continue
+		}
 		hay := strings.ToLower(strings.Join(append([]string{a.Name, a.ShortDescription}, a.Categories...), "\n"))
 		if strings.Contains(hay, q) {
-			out = append(out, a)
+			seen[a.ID] = true
+			out.Apps = append(out.Apps, a)
 		}
 	}
 	return out, nil
+}
+
+// matchesPack reports whether a query matches a pack's title or one of its
+// keywords, as phrases: the query starts a word of the phrase ("phot" matches
+// "Back up photos"), or the query holds the whole phrase ("back up my photos"
+// matches the keyword "photos"). Both sides are normalized first, so case and
+// punctuation do not matter. A query shorter than two characters matches no
+// pack, so the first keystroke does not list every pack. The other store
+// surface matches packs the same way.
+func matchesPack(p Pack, q string) bool {
+	words := normalizePhrase(q)
+	if len([]rune(words)) < 2 {
+		return false
+	}
+	for _, phrase := range append([]string{p.Title}, p.Keywords...) {
+		phrase = normalizePhrase(phrase)
+		if phrase == "" {
+			continue
+		}
+		if strings.Contains(" "+phrase, " "+words) || strings.Contains(" "+words+" ", " "+phrase+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizePhrase lowercases s and turns every run of characters that are not
+// letters or digits into one space, so "Back up my photos!" and "back up my
+// photos" are the same phrase.
+func normalizePhrase(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if space && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			space = false
+			b.WriteRune(r)
+			continue
+		}
+		space = true
+	}
+	return b.String()
 }
 
 // containsFold reports whether needle equals any of haystack, case-insensitively —
@@ -386,6 +560,21 @@ type Detail struct {
 // published asset behind them), so the UI's hard-coded route shapes never
 // change. Kept here so the URL shape lives next to the types that carry it.
 func iconURL(id string) string { return "/api/v1/catalog/" + id + "/icon" }
+
+// illustrationURL is the brain-served route for a slide or pack illustration.
+// The art has no id of its own, so the route takes a key made from its
+// published URL (illustrationKey). The key is a query value, not a path
+// segment, because /api/v1/catalog/<x>/<y> paths would clash with the
+// /api/v1/catalog/{id}/icon and /install-plan routes in net/http's mux.
+func illustrationURL(key string) string { return "/api/v1/catalog/illustration?key=" + key }
+
+// illustrationKey names an illustration by a short hash of its published URL.
+// The same URL always gets the same key, and new art at a new URL gets a new
+// key, so a browser cache never shows old art under a new name.
+func illustrationKey(ref string) string {
+	sum := sha256.Sum256([]byte(ref))
+	return hex.EncodeToString(sum[:8])
+}
 func screenshotURL(id string, i int) string {
 	return fmt.Sprintf("/api/v1/catalog/%s/screenshots/%d", id, i)
 }

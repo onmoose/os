@@ -600,6 +600,12 @@ func TestSplitCertSubjects(t *testing.T) {
 			wantBase:     "cindy-fox.onmoose.io",
 		},
 		{
+			name:         "bare box-id",
+			subjects:     []string{"andrei.onmoose.io", "*.andrei.onmoose.io"},
+			wantWildcard: "*.andrei.onmoose.io",
+			wantBase:     "andrei.onmoose.io",
+		},
+		{
 			name:     "no wildcard",
 			subjects: []string{"cindy-fox.onmoose.io"},
 			wantErr:  true,

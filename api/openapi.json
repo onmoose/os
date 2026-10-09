@@ -726,33 +726,6 @@
         },
         "type": "object"
       },
-      "Catalog-searchResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/Catalog-searchResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "apps": {
-            "items": {
-              "$ref": "#/components/schemas/Entry"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "apps"
-        ],
-        "type": "object"
-      },
       "Category": {
         "additionalProperties": false,
         "properties": {
@@ -1472,6 +1445,15 @@
               "null"
             ]
           },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/HomeSection"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "spotlight": {
             "$ref": "#/components/schemas/Entry"
           }
@@ -1504,6 +1486,57 @@
           "category",
           "label",
           "apps"
+        ],
+        "type": "object"
+      },
+      "HomeSection": {
+        "additionalProperties": false,
+        "properties": {
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/HomeGroupView"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "packs": {
+            "items": {
+              "$ref": "#/components/schemas/Pack"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "slides": {
+            "items": {
+              "$ref": "#/components/schemas/Slide"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
         ],
         "type": "object"
       },
@@ -2978,6 +3011,56 @@
         ],
         "type": "object"
       },
+      "Pack": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/Pack.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "apps": {
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "illustration_url": {
+            "type": "string"
+          },
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "apps"
+        ],
+        "type": "object"
+      },
       "Parse-custom-overlayRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3256,6 +3339,43 @@
         },
         "type": "object"
       },
+      "SearchResult": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/SearchResult.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "apps": {
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "packs": {
+            "items": {
+              "$ref": "#/components/schemas/Pack"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "apps",
+          "packs"
+        ],
+        "type": "object"
+      },
       "Set-app-exposureRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3470,6 +3590,31 @@
         "required": [
           "user",
           "recovery_code"
+        ],
+        "type": "object"
+      },
+      "Slide": {
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "$ref": "#/components/schemas/Entry"
+          },
+          "blurb": {
+            "type": "string"
+          },
+          "headline": {
+            "type": "string"
+          },
+          "illustration_url": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "size"
         ],
         "type": "object"
       },
@@ -4932,7 +5077,45 @@
             "description": "Error"
           }
         },
-        "summary": "Store landing: available categories + featured apps"
+        "summary": "Store landing: the authored sections, categories and featured apps"
+      }
+    },
+    "/api/v1/catalog/pack": {
+      "get": {
+        "operationId": "catalog-pack",
+        "parameters": [
+          {
+            "explode": false,
+            "in": "query",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pack"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "One pack and its apps, selected by ?id="
       }
     },
     "/api/v1/catalog/search": {
@@ -4953,7 +5136,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Catalog-searchResponse"
+                  "$ref": "#/components/schemas/SearchResult"
                 }
               }
             },
@@ -4970,7 +5153,7 @@
             "description": "Error"
           }
         },
-        "summary": "Search the catalog by ?q= (name, tagline, categories)"
+        "summary": "Search the catalog by ?q=: apps (name, tagline, categories) and packs (title, keywords)"
       }
     },
     "/api/v1/catalog/{id}": {
