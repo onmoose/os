@@ -260,6 +260,59 @@ func TestNoUnmodeledFields(t *testing.T) {
 		}
 	}
 
+	// home, its sections, and the packs are objects of their own too, so their
+	// keys are checked the same way: a key the box does not model there would
+	// otherwise reach a box and vanish with no test noticing.
+	checkObj := func(label string, obj map[string]any, known map[string]bool) {
+		for key := range obj {
+			if !known[key] {
+				t.Errorf("%s has key %q that its wire type (internal/catalog/wire.go) does not model: "+
+					"add the field, or record why it's ignored", label, key)
+			}
+		}
+	}
+	objects := func(v any) []map[string]any {
+		list, _ := v.([]any)
+		var out []map[string]any
+		for _, o := range list {
+			if m, ok := o.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	knownGroup := jsonKeys(reflect.TypeOf(wireHomeGroup{}))
+	home, ok := raw["home"].(map[string]any)
+	if !ok {
+		t.Fatal("the pinned fixture: \"home\" is missing or not an object")
+	}
+	checkObj("home", home, jsonKeys(reflect.TypeOf(wireHomePage{})))
+	for _, g := range objects(home["groups"]) {
+		checkObj("a home group", g, knownGroup)
+	}
+	sections := objects(home["sections"])
+	if len(sections) == 0 {
+		t.Error("the pinned fixture: home carries no sections, so the guard cannot check their keys")
+	}
+	for _, sec := range sections {
+		typ, _ := sec["type"].(string)
+		checkObj("home section "+typ, sec, jsonKeys(reflect.TypeOf(wireSection{})))
+		for _, sl := range objects(sec["slides"]) {
+			checkObj("a slide of section "+typ, sl, jsonKeys(reflect.TypeOf(wireSlide{})))
+		}
+		for _, g := range objects(sec["groups"]) {
+			checkObj("a group of section "+typ, g, knownGroup)
+		}
+	}
+	packs := objects(raw["packs"])
+	if len(packs) == 0 {
+		t.Error("the pinned fixture: carries no packs, so the guard cannot check their keys")
+	}
+	for _, p := range packs {
+		id, _ := p["id"].(string)
+		checkObj("pack "+id, p, jsonKeys(reflect.TypeOf(wirePack{})))
+	}
+
 	// ai_providers is a list of objects of its own, so its keys are checked
 	// the same way as an app's. defaults is keyed by model type, which is data,
 	// not shape, so its keys are not checked.

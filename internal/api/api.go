@@ -196,6 +196,7 @@ func (s *Server) Handler() http.Handler {
 	// directly in <img> tags (APP_STORE.md # Catalog schema).
 	mux.HandleFunc("GET /api/v1/catalog/{id}/icon", s.catalogIcon)
 	mux.HandleFunc("GET /api/v1/catalog/{id}/screenshots/{n}", s.catalogScreenshot)
+	mux.HandleFunc("GET /api/v1/catalog/illustration", s.catalogIllustration)
 	// AI provider logos, the same way: proxied and cached like an app icon.
 	mux.HandleFunc("GET /api/v1/ai-providers/{id}/logo", s.aiProviderLogo)
 	mux.HandleFunc("GET /api/v1/ai-providers/{id}/logo-dark", s.aiProviderLogoDark)
@@ -281,8 +282,13 @@ func (s *Server) register(api huma.API) {
 	// /catalog/{id}/install-plan route under net/http's mux precedence.
 	huma.Register(api, huma.Operation{
 		OperationID: "catalog-home", Method: "GET", Path: "/api/v1/catalog/home",
-		Summary: "Store landing: available categories + featured apps",
+		Summary: "Store landing: the authored sections, categories and featured apps",
 	}, s.catalogHome)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "catalog-pack", Method: "GET", Path: "/api/v1/catalog/pack",
+		Summary: "One pack and its apps, selected by ?id=",
+	}, s.catalogPack)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "catalog-category", Method: "GET", Path: "/api/v1/catalog/category",
@@ -291,7 +297,7 @@ func (s *Server) register(api huma.API) {
 
 	huma.Register(api, huma.Operation{
 		OperationID: "catalog-search", Method: "GET", Path: "/api/v1/catalog/search",
-		Summary: "Search the catalog by ?q= (name, tagline, categories)",
+		Summary: "Search the catalog by ?q=: apps (name, tagline, categories) and packs (title, keywords)",
 	}, s.catalogSearch)
 
 	huma.Register(api, huma.Operation{
@@ -524,27 +530,37 @@ func (s *Server) catalogCategory(ctx context.Context, in *struct {
 	return &struct{ Body catalog.CategoryPage }{Body: c}, nil
 }
 
-// catalogSearch serves the apps matching ?q= over name, tagline, and categories. A
-// blank query returns an empty list (search narrows; browse is the whole store), so
-// the field clears back to no results rather than dumping the catalog.
+// catalogSearch serves what matches ?q=: the apps (name, tagline, categories,
+// and the apps of matching packs), then the packs whose title or keywords
+// match. A blank query returns empty lists (search narrows; browse is the
+// whole store), so the field clears back to no results rather than dumping
+// the catalog.
 func (s *Server) catalogSearch(ctx context.Context, in *struct {
 	Q string `query:"q"`
-}) (*struct {
-	Body struct {
-		Apps []catalog.Entry `json:"apps"`
-	}
-}, error) {
-	apps, err := s.storeCatalog(ctx).Search(in.Q)
+}) (*struct{ Body catalog.SearchResult }, error) {
+	res, err := s.storeCatalog(ctx).Search(in.Q)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
 	}
-	out := &struct {
-		Body struct {
-			Apps []catalog.Entry `json:"apps"`
-		}
-	}{}
-	out.Body.Apps = apps
-	return out, nil
+	return &struct{ Body catalog.SearchResult }{Body: res}, nil
+}
+
+// catalogPack serves one pack's page, selected by ?id=. A pack this box
+// cannot show is a 404: the catalog does not carry it, or one of its apps
+// cannot run here. Like category, it takes a query value rather than a
+// /catalog/packs/{id} path, because that path would clash with
+// /catalog/{id}/install-plan in net/http's mux.
+func (s *Server) catalogPack(ctx context.Context, in *struct {
+	ID string `query:"id"`
+}) (*struct{ Body catalog.Pack }, error) {
+	p, err := s.storeCatalog(ctx).Pack(in.ID)
+	if errors.Is(err, catalog.ErrNotFound) {
+		return nil, huma.Error404NotFound("no such pack")
+	}
+	if err != nil {
+		return nil, huma.Error500InternalServerError("catalog read failed", err)
+	}
+	return &struct{ Body catalog.Pack }{Body: p}, nil
 }
 
 // catalogIcon and catalogScreenshot serve an app's raw image bytes from the
@@ -553,6 +569,17 @@ func (s *Server) catalogSearch(ctx context.Context, in *struct {
 // content-type and handles range/conditional requests.
 func (s *Server) catalogIcon(w http.ResponseWriter, r *http.Request) {
 	path, err := s.catalog.IconPath(r.PathValue("id"))
+	if s.serveAsset(w, r, path, err) {
+		http.ServeFile(w, r, path)
+	}
+}
+
+// catalogIllustration serves a landing slide's or a pack's art, by the key in
+// the URL the home and pack payloads carry. It goes through the brain's asset
+// cache like an icon, so the dashboard stays same-origin and the art survives
+// a short network drop.
+func (s *Server) catalogIllustration(w http.ResponseWriter, r *http.Request) {
+	path, err := s.catalog.IllustrationPath(r.URL.Query().Get("key"))
 	if s.serveAsset(w, r, path, err) {
 		http.ServeFile(w, r, path)
 	}

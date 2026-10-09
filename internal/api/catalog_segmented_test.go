@@ -119,6 +119,8 @@ func TestCatalogSegmentedRequiresAuth(t *testing.T) {
 		"/api/v1/catalog/home",
 		"/api/v1/catalog/category?name=media",
 		"/api/v1/catalog/search?q=rich",
+		"/api/v1/catalog/pack?id=any",
+		"/api/v1/catalog/illustration?key=any",
 	} {
 		resp := h.do("GET", path, nil)
 		if resp.StatusCode != http.StatusUnauthorized {

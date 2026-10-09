@@ -75,6 +75,23 @@ type catalogFile struct {
 	// page. readAIProviders decodes it leniently when the snapshot is loaded.
 	// Absent on an older catalog, which reads as an empty list.
 	AIProviders json.RawMessage `json:"ai_providers,omitempty"`
+	// Packs are the authored packs every one of whose apps the payload carries,
+	// in authored order, with the apps named by id. A landing section names
+	// packs by id into this list. Absent on an older catalog.
+	Packs []wirePack `json:"packs,omitempty"`
+}
+
+// wirePack is one pack as the snapshot carries it: a named set of apps that
+// meet one need ("Back up my photos"). Apps are ids into the payload's apps.
+// Keywords are extra phrases the store search matches the pack on, next to its
+// title. IllustrationURL is opaque, like every published URL.
+type wirePack struct {
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Description     string   `json:"description"`
+	IllustrationURL string   `json:"illustration_url,omitempty"`
+	Apps            []string `json:"apps"`
+	Keywords        []string `json:"keywords,omitempty"`
 }
 
 // wireAIProvider is one AI provider as the catalog service publishes it. Only
@@ -118,9 +135,39 @@ type wireCategory struct {
 
 // wireHomePage / wireHomeGroup mirror the catalog service's own HomePage / HomeGroup
 // shapes, so the box re-parses exactly what the sync tool published.
+//
+// Sections is the landing page itself, in the order it renders. Spotlight and
+// Groups are the older shape: the publisher derives them from the sections and
+// still sends them, and the box store falls back to them when a catalog sends
+// no sections (APP_STORE.md # Landing page).
 type wireHomePage struct {
+	Sections  []wireSection   `json:"sections,omitempty"`
 	Spotlight string          `json:"spotlight"`
 	Groups    []wireHomeGroup `json:"groups"`
+}
+
+// wireSection is one landing section, with apps and packs named by id. Which
+// fields it uses depends on Type: search has Suggestions, discover has Slides,
+// intents and packs have Packs, and categories has Groups. Title is optional
+// on every type but search.
+type wireSection struct {
+	Type        string          `json:"type"`
+	Title       string          `json:"title,omitempty"`
+	Suggestions []string        `json:"suggestions,omitempty"`
+	Slides      []wireSlide     `json:"slides,omitempty"`
+	Packs       []string        `json:"packs,omitempty"`
+	Groups      []wireHomeGroup `json:"groups,omitempty"`
+}
+
+// wireSlide is one discover slide: an app id, its size on the carousel ("hero"
+// or "side"), and optional authored text and art that replace the app's own
+// name and tagline on the slide.
+type wireSlide struct {
+	App             string `json:"app"`
+	Size            string `json:"size"`
+	Headline        string `json:"headline,omitempty"`
+	Blurb           string `json:"blurb,omitempty"`
+	IllustrationURL string `json:"illustration_url,omitempty"`
 }
 
 // wireHomeGroup is one category's row on the landing page, in authored order.
