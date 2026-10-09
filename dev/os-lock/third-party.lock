@@ -11,7 +11,7 @@
 # The scheduled bump (.github/workflows/os-lock-bump.yml) moves each pin to the
 # newest version within its current major. A move to a new major is a manual
 # edit here, in its own PR. Keep the four Docker packages on one release train.
-containerd.io=2.3.6-1~debian.13~trixie
-docker-ce=5:29.8.2-1~debian.13~trixie
-docker-ce-cli=5:29.8.2-1~debian.13~trixie
+containerd.io=2.4.1-2~debian.13~trixie
+docker-ce=5:29.9.0-1~debian.13~trixie
+docker-ce-cli=5:29.9.0-1~debian.13~trixie
 docker-compose-plugin=5.6.0-1~debian.13~trixie
