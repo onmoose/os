@@ -1,58 +1,68 @@
 <script setup lang="ts">
-// Store — browse the catalog through the control plane's *segmented* model
-// (issue #63, cloud specs/CATALOG.md # Serve) rather than loading the whole
-// catalog and filtering client-side. The box never pulls the entire catalog up
-// front: the landing asks the brain for /catalog/home (the categories present on
-// this box, the curated spotlight + category groups authored in a curated
-// home.yml, and a flat featured row), a category pill asks for
-// /catalog/category?name=…, and typing asks /catalog/search?q=…. Every request
-// stays same-origin on the brain, which serves these from its own synced snapshot
-// (so browse still works offline — step 3's last-good cache), never the public
-// control plane directly (AUTH_AND_ACCESS.md — the box UI stays box-identity-gated).
+// Store: browse the catalog through the brain's segmented store routes
+// rather than loading the whole catalog and filtering client-side. The landing
+// asks the brain for /catalog/home (the categories present on this box, the
+// authored landing sections, and the older spotlight, groups and featured
+// row), a category pill asks for /catalog/category?name=…, and typing asks
+// /catalog/search?q=…. Every request stays same-origin on the brain, which
+// serves these from the snapshot it holds, never the public catalog service
+// directly (AUTH_AND_ACCESS.md: the box UI stays box-identity-gated).
 //
 // The three views are mutually exclusive entry points: a non-empty search box wins
 // over a selected category, which wins over the landing. Selecting a pill clears
 // the search, and vice versa, so the grid always reflects exactly one of them.
-// Category and search are both *filtered* views — the curated Featured row is a
-// landing-only concept and never appears under a pill or a search (mirrors how
-// the control plane's own store surface renders a category; `catalog.Category`
-// still carries `Featured` on the wire, for parity, but the box UI does not
-// render it there).
+// Category and search are both *filtered* views (components/StoreResults.vue);
+// the landing's sections and the curated Featured row never appear under a
+// pill or a search.
 //
-// The landing itself falls back in three steps so it is never empty
-// (docs/specs/APP_STORE.md # Landing page): the authored home (spotlight banner +
-// packed category-group rows, mirroring the control plane's own row-packing) →
-// the flat featured row → a plain "pick a category or search" line.
+// The landing (docs/specs/APP_STORE.md # Landing page) is drawn from the
+// authored sections, in the order the catalog sends them:
+//   - search: the search box and suggestion chips that fill it;
+//   - discover: a carousel of hero and side slides (StoreDiscover);
+//   - intents and packs: pack cards that open the pack page (StorePackCard);
+//   - categories: the category groups, packed into rows (lib/storeLayout.ts).
+// A search or category view shows right under the search section, and the
+// other sections hide while it shows, so the search box never moves while the
+// user types. With no search section, the filtered view goes first and the
+// search box sits in the page heading.
+//
+// A catalog with no sections gets the older landing, in three steps so it is
+// never blank: the spotlight banner and packed category groups, then the flat
+// Featured row, then a plain "pick a category or search" line.
 //
 // Door 2 (custom-container install) is admin-only and sits as a "Custom app" link
-// beside the search, never in the browse grid (DASHBOARD.md # Door-2). Members
+// beside the heading, never in the browse grid (DASHBOARD.md # Door-2). Members
 // never see it.
 //
-// The layout follows the Oatmeal-skinned Tailwind Plus application-UI patterns: a
-// page heading with an inline search, pill tabs for categories, section headings
-// for the featured/browse rows, a grid list of cards, and empty-state blocks. All
-// colour flows from the olive semantic tokens (style.css).
+// All colour flows from the olive semantic tokens (style.css).
 import { computed, onUnmounted, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
-import { Search, SearchX, PackageOpen, Sparkles } from "lucide-vue-next";
+import { Search, PackageOpen, Sparkles } from "lucide-vue-next";
 import { useAuth } from "../auth";
-import { api, type CatalogEntry, type CatalogHome, type CatalogCategory } from "../api";
+import {
+  api,
+  type CatalogEntry,
+  type CatalogHome,
+  type CatalogCategory,
+  type CatalogSearchResult,
+  type HomeSection,
+} from "../api";
 import StoreAppCard from "../components/StoreAppCard.vue";
 import StoreSpotlight from "../components/StoreSpotlight.vue";
+import StoreDiscover from "../components/StoreDiscover.vue";
+import StorePackCard from "../components/StorePackCard.vue";
+import StoreResults from "../components/StoreResults.vue";
 import Heading from "@/components/ui/Heading.vue";
-import { packRows, groupSpan, groupCols } from "../lib/storeLayout";
 import Button from "@/components/ui/Button.vue";
+import { packRows, groupSpan, groupCols } from "../lib/storeLayout";
 
 const { currentUser } = useAuth();
 const isAdmin = computed(() => currentUser.value?.role === "admin");
 
-// Free-text query and the active category pill ("recommended" = the curated
-// landing, mirroring the control plane's own store surface). They are exclusive:
-// selecting a pill clears the search, so mode() resolves to one view.
-// "recommended" is never a user-visible pill — the landing is the default view,
-// not a pill — and it can't collide with a real category id: the catalog's
-// category ids today are productivity, developer-tools, media, documents, ai,
-// personal, security, automation.
+// Free-text query and the active category pill ("recommended" = the landing).
+// They are exclusive: selecting a pill clears the search, so mode() resolves
+// to one view. "recommended" is never a user-visible pill, and it can't
+// collide with a real category id.
 const query = ref("");
 const activeCategory = ref("recommended");
 
@@ -62,18 +72,15 @@ const activeCategory = ref("recommended");
 const searchTerm = ref("");
 let debounce: ReturnType<typeof setTimeout> | undefined;
 watch(query, (q) => {
-  // Typing is the "vice versa" of selectCategory: it drops the active pill
-  // immediately (not debounced — mode() already switches to "search" on the same
-  // tick), so a category never lingers underneath a cleared search box and then
-  // pop back in once the query empties out again.
+  // Typing drops the active pill immediately (not debounced: mode() already
+  // switches to "search" on the same tick), so a category never lingers under
+  // a cleared search box and pops back in once the query empties out again.
   if (q.trim() !== "") activeCategory.value = "recommended";
   clearTimeout(debounce);
   debounce = setTimeout(() => {
     searchTerm.value = q.trim();
   }, 200);
 });
-// Cancel a pending debounce if the view unmounts mid-keystroke, so the timer
-// doesn't fire against a torn-down component.
 onUnmounted(() => clearTimeout(debounce));
 
 const mode = computed<"home" | "category" | "search">(() => {
@@ -82,15 +89,14 @@ const mode = computed<"home" | "category" | "search">(() => {
   return "home";
 });
 
-// Landing: categories + featured. Always enabled — it backs the pill row in every
-// mode, so it is the one request the store cannot render without.
+// Landing. Always enabled: it backs the pill row in every mode, so it is the
+// one request the store cannot render without.
 const home = useQuery({
   queryKey: ["catalog", "home"],
   queryFn: () => api.get<CatalogHome>("/catalog/home"),
 });
 
-// One category's apps (+ featured). Fetched only while a pill is active; the
-// reactive key re-fetches when the pill changes.
+// One category's apps. Fetched only while a pill is active.
 const category = useQuery({
   queryKey: ["catalog", "category", activeCategory],
   queryFn: () =>
@@ -98,86 +104,92 @@ const category = useQuery({
   enabled: computed(() => mode.value === "category"),
 });
 
-// Search results. Fetched only once the debounced term is non-empty.
+// Search results: apps, then packs. Fetched once the debounced term is non-empty.
 const search = useQuery({
   queryKey: ["catalog", "search", searchTerm],
   queryFn: () =>
-    api.get<{ apps: CatalogEntry[] }>(`/catalog/search?q=${encodeURIComponent(searchTerm.value)}`),
+    api.get<CatalogSearchResult>(`/catalog/search?q=${encodeURIComponent(searchTerm.value)}`),
   enabled: computed(() => mode.value === "search" && searchTerm.value !== ""),
 });
 
-// Pills: the categories the landing advertised for this box, and nothing else —
-// the curated landing is the default view, not a pill (mirrors the control
-// plane's own store surface). Sorted by the brain, so a new catalog category
-// appears without a UI change.
+// Pills: the categories the landing advertised for this box, in authored order.
 const categories = computed(() => home.data.value?.categories ?? []);
 
-// The authored landing (a curated home.yml, carried through /catalog/home): a
-// spotlight app and its category groups. Both are already environment-filtered
-// by the brain, so an app not advertised on this box simply doesn't appear.
-// Only meaningful in "home" mode — a category or search view never shows them.
+// --- the sectioned landing ---------------------------------------------------
+
+// The authored sections, minus any after the first search section: one search
+// box per page.
+const sections = computed<HomeSection[]>(() => {
+  const out: HomeSection[] = [];
+  let searchSeen = false;
+  for (const s of home.data.value?.sections ?? []) {
+    if (s.type === "search") {
+      if (searchSeen) continue;
+      searchSeen = true;
+    }
+    out.push(s);
+  }
+  return out;
+});
+const hasSections = computed(() => sections.value.length > 0);
+const hasSearchSection = computed(() => sections.value.some((s) => s.type === "search"));
+
+function packHeading(s: HomeSection) {
+  return s.title || (s.type === "intents" ? "I want to…" : "Starter packs");
+}
+function packGrid(s: HomeSection) {
+  return s.type === "intents"
+    ? "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
+    : "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3";
+}
+
+// A suggestion chip fills the search box and searches at once, with no debounce.
+function suggest(s: string) {
+  query.value = s;
+  clearTimeout(debounce);
+  searchTerm.value = s.trim();
+}
+
+// --- the older landing -------------------------------------------------------
+
+// The spotlight app and its category groups, for a catalog with no sections.
+// Only meaningful in "home" mode.
 const spotlight = computed<CatalogEntry | undefined>(() =>
   mode.value === "home" ? (home.data.value?.spotlight ?? undefined) : undefined,
 );
 const homeGroups = computed(() => (mode.value === "home" ? (home.data.value?.groups ?? []) : []));
 const hasCuratedHome = computed(() => !!spotlight.value || homeGroups.value.length > 0);
-// Packed two-or-more to a row, mirroring the control plane's own store surface
-// (lib/storeLayout.ts).
 const packedGroupRows = computed(() => packRows(homeGroups.value));
 
-// Featured row: landing-only, and only as a fallback when nothing is authored in
-// home.yml (the curated spotlight/groups take its place there —
-// docs/specs/APP_STORE.md # Landing page). Never on a category or search view —
-// both are filtered views, and the curated row is a landing-only concept, the
-// same posture the control plane's own store surface takes for a category (its
-// category view renders only the heading + that category's grid, never a
-// featured row), even though catalog.Category still carries `Featured` on the
-// wire for parity.
+// Featured row: landing-only, and only as a fallback when the older landing
+// has no spotlight or groups either.
 const featured = computed<CatalogEntry[]>(() => {
   if (mode.value === "home" && !hasCuratedHome.value) return home.data.value?.featured ?? [];
   return [];
 });
 
-// The main browse grid below the featured row: the category's apps, or the search
-// results. The landing has no full grid — featured + pills are the whole entry point.
-const browseApps = computed<CatalogEntry[]>(() => {
+// --- the filtered views ------------------------------------------------------
+
+const resultsMode = computed(() => (mode.value === "search" ? "search" : "category"));
+const resultApps = computed<CatalogEntry[]>(() => {
   if (mode.value === "category") return category.data.value?.apps ?? [];
   if (mode.value === "search") return search.data.value?.apps ?? [];
   return [];
 });
+const resultPacks = computed(() => (mode.value === "search" ? (search.data.value?.packs ?? []) : []));
 
-// searchPending covers the debounce gap (query typed, term not yet caught up) and
-// the in-flight fetch, so the browse region shows "Loading…" instead of flashing
+// resultsLoading covers the debounce gap (query typed, term not yet caught up)
+// and the in-flight fetch, so the results show "Loading…" instead of flashing
 // the no-matches state for a keystroke.
-const searchPending = computed(
-  () =>
-    mode.value === "search" &&
-    (searchTerm.value !== query.value.trim() || search.isFetching.value),
-);
-
-const isLoading = computed(() => {
-  if (mode.value === "search") return searchPending.value;
+const resultsLoading = computed(() => {
+  if (mode.value === "search") return searchTerm.value !== query.value.trim() || search.isFetching.value;
   if (mode.value === "category") return category.isLoading.value;
-  return home.isLoading.value;
+  return false;
 });
-
-// A failed landing fetch takes down the whole store (no pills); a failed
-// category/search fetch only takes down the browse region.
-const isError = computed(
-  () =>
-    home.isError.value ||
-    (mode.value === "category" && category.isError.value) ||
-    (mode.value === "search" && search.isError.value),
-);
-// Mirrors isError's mode-scoping: a stale error left over on a query that isn't
-// the current mode's (e.g. a failed category fetch from before the user switched
-// to search) must never outrank the error actually driving isError.
-const errorMessage = computed(() => {
-  const e =
-    (home.error.value as Error) ??
-    (mode.value === "category" ? (category.error.value as Error) : undefined) ??
-    (mode.value === "search" ? (search.error.value as Error) : undefined);
-  return e?.message ?? "";
+const resultsError = computed<string | null>(() => {
+  const q = mode.value === "search" ? search : mode.value === "category" ? category : null;
+  if (!q?.isError.value) return null;
+  return (q.error.value as Error)?.message ?? "";
 });
 
 // The catalog is genuinely empty (never synced, or nothing published for this box)
@@ -199,26 +211,21 @@ const activeCategoryLabel = computed(
     activeCategory.value,
 );
 
-// pillActive reports whether c is the pill currently shown as selected — used
-// both for styling and to decide the click's toggle direction, so the two never
-// disagree. A search in progress de-selects every pill (mirrors the control
-// plane's own store surface).
+// pillActive reports whether a pill shows as selected. A search in progress
+// de-selects every pill.
 function pillActive(id: string): boolean {
   return activeCategory.value === id && mode.value !== "search";
 }
 
 // Clicking a pill selects it; clicking the already-active pill toggles back to
-// the landing (mirrors the control plane's own store surface: "the recommended
-// landing is the default view, not a pill — clicking the active category
-// toggles back to it").
+// the landing. Picking a pill drops the search.
 function selectCategory(id: string) {
   activeCategory.value = pillActive(id) ? "recommended" : id;
-  // Pills and search are exclusive entry points — picking a pill drops the search.
   query.value = "";
   searchTerm.value = "";
 }
 
-// Reset both filters back to the landing — surfaced from the no-results empty state.
+// Reset both filters back to the landing.
 function clearFilters() {
   query.value = "";
   searchTerm.value = "";
@@ -229,18 +236,12 @@ function clearFilters() {
 <template>
   <div class="space-y-10 pt-2">
     <section class="space-y-6">
-      <!-- Page heading: title + description on the left, the search input-group
-           inline on the right (stacks above the pills on narrow screens). -->
+      <!-- Page heading, with the admin-only "Custom app" link (Door 2) and,
+           when the landing has no search section, the search box. -->
       <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <Heading :level="2">Store</Heading>
-          <p class="mt-1 text-sm text-muted-foreground">Browse apps to run on your moose.</p>
-        </div>
+        <Heading :level="2">Store</Heading>
 
-        <!-- Right cluster: the admin-only "Custom app" link (Door 2) sits to the
-             left of the page-wide search. -->
         <div class="flex items-center gap-3">
-          <!-- Door 2: custom-container install, as a plain text link. -->
           <RouterLink
             v-if="isAdmin"
             to="/store/custom"
@@ -249,9 +250,7 @@ function clearFilters() {
             Custom app
           </RouterLink>
 
-          <!-- Page-wide search: queries the catalog over name, tagline, and
-               categories. Leading-icon input-group, pill-shaped to match the idiom. -->
-          <div class="relative w-full sm:w-64">
+          <div v-if="!hasSearchSection" class="relative w-full sm:w-64">
             <Search
               class="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden="true"
@@ -267,10 +266,9 @@ function clearFilters() {
         </div>
       </div>
 
-      <!-- Category pills: the catalog's own categories only — the curated landing
-           is the default view, not a pill. Highlighted only when browsing that
-           category (a search de-selects the pills); clicking the active pill
-           toggles back to the landing. -->
+      <!-- Category pills: the catalog's own categories only. Highlighted only
+           when browsing that category; clicking the active pill toggles back to
+           the landing. -->
       <div v-if="categories.length > 0" class="flex flex-wrap gap-2">
         <button
           v-for="c in categories"
@@ -288,11 +286,9 @@ function clearFilters() {
         </button>
       </div>
 
-      <!-- Transient states stay as a quiet line; content-absence states get a
-           proper empty-state block below. -->
-      <p v-if="isLoading" class="text-sm text-muted-foreground">Loading…</p>
-      <p v-else-if="isError" class="text-sm text-destructive">
-        Couldn't load the catalog. {{ errorMessage }}
+      <p v-if="home.isLoading.value" class="text-sm text-muted-foreground">Loading…</p>
+      <p v-else-if="home.isError.value" class="text-sm text-destructive">
+        Couldn't load the catalog. {{ (home.error.value as Error)?.message }}
       </p>
 
       <!-- Empty catalog: nothing to browse yet (never synced / nothing published). -->
@@ -305,58 +301,125 @@ function clearFilters() {
         <p class="mt-1 text-sm text-muted-foreground">Check back soon — the catalog is still filling out.</p>
       </div>
 
+      <!-- The sectioned landing. -->
+      <div v-else-if="hasSections" class="flex flex-col gap-16 pt-4">
+        <StoreResults
+          v-if="!hasSearchSection && mode !== 'home'"
+          :mode="resultsMode"
+          :apps="resultApps"
+          :packs="resultPacks"
+          :label="activeCategoryLabel"
+          :loading="resultsLoading"
+          :error="resultsError"
+          @clear="clearFilters"
+        />
+
+        <template v-for="(sec, i) in sections" :key="i">
+          <!-- Search: the search box and the authored suggestions. The
+               filtered view shows right under it. -->
+          <template v-if="sec.type === 'search'">
+            <div class="flex flex-col gap-3">
+              <form
+                role="search"
+                class="relative flex items-center rounded-full border border-border bg-card p-1.5 pl-11 focus-within:border-accent"
+                @submit.prevent="suggest(query)"
+              >
+                <Search
+                  class="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <input
+                  v-model="query"
+                  type="search"
+                  placeholder="Search apps, or describe what you need"
+                  aria-label="Search apps"
+                  class="min-w-0 flex-1 bg-transparent py-2 pr-2 text-base text-foreground outline-none placeholder:text-muted-foreground"
+                />
+                <Button type="submit">Search</Button>
+              </form>
+              <div
+                v-if="sec.suggestions?.length"
+                class="flex flex-wrap items-center gap-2 px-4 text-sm text-muted-foreground"
+              >
+                <span>Try:</span>
+                <button
+                  v-for="s in sec.suggestions"
+                  :key="s"
+                  type="button"
+                  class="cursor-pointer rounded-full border border-border bg-card px-3 py-0.5 text-sm text-foreground transition-colors hover:bg-muted"
+                  @click="suggest(s)"
+                >
+                  {{ s }}
+                </button>
+              </div>
+            </div>
+            <StoreResults
+              v-if="mode !== 'home'"
+              :mode="resultsMode"
+              :apps="resultApps"
+              :packs="resultPacks"
+              :label="activeCategoryLabel"
+              :loading="resultsLoading"
+              :error="resultsError"
+              @clear="clearFilters"
+            />
+          </template>
+
+          <StoreDiscover
+            v-else-if="sec.type === 'discover'"
+            v-show="mode === 'home'"
+            :section="sec"
+            :visible="mode === 'home'"
+          />
+
+          <!-- Intents and packs: pack cards that open the pack page. -->
+          <section
+            v-else-if="sec.type === 'intents' || sec.type === 'packs'"
+            v-show="mode === 'home'"
+            class="flex flex-col gap-6"
+          >
+            <Heading :level="2">{{ packHeading(sec) }}</Heading>
+            <div :class="packGrid(sec)">
+              <StorePackCard v-for="p in sec.packs ?? []" :key="p.id" :pack="p" />
+            </div>
+          </section>
+
+          <!-- Categories: the groups, packed into rows. -->
+          <section
+            v-else-if="sec.type === 'categories'"
+            v-show="mode === 'home'"
+            class="flex flex-col gap-6"
+          >
+            <Heading :level="2">{{ sec.title || "Categories" }}</Heading>
+            <div class="flex flex-col gap-12">
+              <div v-for="(row, r) in packRows(sec.groups ?? [])" :key="r" class="grid gap-x-6 gap-y-10 sm:grid-cols-4">
+                <div v-for="g in row" :key="g.category" class="flex flex-col gap-4" :class="groupSpan(g.apps)">
+                  <h3 class="text-base font-semibold text-foreground">{{ g.label }}</h3>
+                  <div class="grid grid-cols-2 gap-x-6 gap-y-8" :class="groupCols(g.apps)">
+                    <StoreAppCard v-for="c in g.apps" :key="c.id" :app="c" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </template>
+      </div>
+
+      <!-- The older landing, for a catalog with no sections. -->
       <template v-else>
-        <!-- Featured row: landing-only fallback (see the `featured` computed) —
-             never shown on a category or search view. -->
-        <section v-if="featured.length" class="space-y-4">
-          <h3 class="flex items-center gap-2 text-base font-semibold text-foreground">
-            <Sparkles class="size-4 text-accent" aria-hidden="true" />
-            Featured
-          </h3>
-          <div class="grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-4">
-            <StoreAppCard v-for="c in featured" :key="c.id" :app="c" />
-          </div>
-        </section>
+        <StoreResults
+          v-if="mode !== 'home'"
+          :mode="resultsMode"
+          :apps="resultApps"
+          :packs="resultPacks"
+          :label="activeCategoryLabel"
+          :loading="resultsLoading"
+          :error="resultsError"
+          @clear="clearFilters"
+        />
 
-        <!-- Category view: that category's apps under a section heading. -->
-        <section v-if="mode === 'category'" class="space-y-4">
-          <h3 class="text-base font-semibold text-foreground">{{ activeCategoryLabel }}</h3>
-          <div
-            v-if="browseApps.length"
-            class="grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-4"
-          >
-            <StoreAppCard v-for="c in browseApps" :key="c.id" :app="c" />
-          </div>
-          <div v-else class="rounded-2xl border border-dashed border-border py-16 text-center">
-            <SearchX class="mx-auto size-8 text-muted-foreground" aria-hidden="true" />
-            <h3 class="mt-3 text-sm font-semibold text-foreground">No apps in this category</h3>
-            <Button variant="secondary" size="sm" class="mt-4" @click="clearFilters">Back to recommended</Button>
-          </div>
-        </section>
-
-        <!-- Search view: results for the current query, or a one-click reset. -->
-        <section v-else-if="mode === 'search'" class="space-y-4">
-          <div
-            v-if="browseApps.length"
-            class="grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-4"
-          >
-            <StoreAppCard v-for="c in browseApps" :key="c.id" :app="c" />
-          </div>
-          <div v-else class="rounded-2xl border border-dashed border-border py-16 text-center">
-            <SearchX class="mx-auto size-8 text-muted-foreground" aria-hidden="true" />
-            <h3 class="mt-3 text-sm font-semibold text-foreground">No apps match your search</h3>
-            <p class="mt-1 text-sm text-muted-foreground">Try a different search term or category.</p>
-            <Button variant="secondary" size="sm" class="mt-4" @click="clearFilters">Clear search</Button>
-          </div>
-        </section>
-
-        <!-- Landing, authored home: the spotlight banner, then the category
-             groups from a curated home.yml, packed two-or-more to a row
-             (lib/storeLayout.ts packRows). Rows sit in their own container so the
-             gap between two packed rows is wider than the gap between a group's
-             heading and its cards — without it the rows read as one
-             undifferentiated field of icons (mirrors the control plane's own
-             store surface). -->
+        <!-- The spotlight banner, then the category groups, packed two or more
+             to a row (lib/storeLayout.ts packRows). -->
         <section v-else-if="hasCuratedHome" class="space-y-10">
           <StoreSpotlight v-if="spotlight" :app="spotlight" />
           <div v-if="packedGroupRows.length" class="flex flex-col gap-12">
@@ -371,11 +434,18 @@ function clearFilters() {
           </div>
         </section>
 
-        <!-- Landing with no authored home and no featured row: point the user at
-             the pills / search. -->
-        <p v-else-if="!featured.length" class="text-sm text-muted-foreground">
-          Pick a category or search to browse apps.
-        </p>
+        <!-- Featured row: the fallback when there is no spotlight and no group. -->
+        <section v-else-if="featured.length" class="space-y-4">
+          <h3 class="flex items-center gap-2 text-base font-semibold text-foreground">
+            <Sparkles class="size-4 text-accent" aria-hidden="true" />
+            Featured
+          </h3>
+          <div class="grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-4">
+            <StoreAppCard v-for="c in featured" :key="c.id" :app="c" />
+          </div>
+        </section>
+
+        <p v-else class="text-sm text-muted-foreground">Pick a category or search to browse apps.</p>
       </template>
     </section>
   </div>

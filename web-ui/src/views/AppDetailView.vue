@@ -5,32 +5,32 @@
 // charges plus the third-party costs the manifest declares. Both are imported
 // from the marketing store's app page (cloud internal/web/templates/pages/app.html)
 // so the two store surfaces show one catalog the same way. This is
-// where Install starts (the browse grid only navigates here). For an app that
-// asks nothing and has nothing to warn about, Install starts the install at
-// once and goes to the progress page. Any other app goes to the install pages
-// (/store/:id/install). The household item of the split button follows the
-// same rule with ?scope=household. Which copies the caller already has, and so
+// where Install starts (the browse grid only navigates here; the pack page has
+// the same button). For an app that asks nothing and has nothing to warn
+// about, Install starts the install at once and goes to the progress page. Any
+// other app goes to the install pages (/store/:id/install). That rule lives in
+// useStartInstall. The household item of the split button follows the same
+// rule with ?scope=household. Which copies the caller already has, and so
 // whether the button reads Install, Open, or "Installing…", comes from
 // useAppInstances.
 //
 // The long description is author markdown rendered to HTML and sanitized before
 // it touches the DOM (catalog text is author-controlled; sanitize anyway).
 import { computed, onUnmounted, ref, watch } from "vue";
-import { useRoute, useRouter, RouterLink } from "vue-router";
+import { useRoute, RouterLink } from "vue-router";
 import { useQuery } from "@tanstack/vue-query";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { ChevronLeft, ChevronRight, Cpu, Folder, Globe, HardDrive, Info, Network, X } from "lucide-vue-next";
-import { api, type CatalogDetail, type CatalogHome, type InstallPlan } from "../api";
-import { useAppInstances, useInstallSubmit } from "../useInstall";
-import { defaultFieldValues, installWarnings, needsNoPages, permissionLines, unavailableText, type PermissionLine } from "../installSteps";
+import { api, type CatalogDetail, type CatalogHome } from "../api";
+import { useAppInstances, useStartInstall } from "../useInstall";
+import { permissionLines, type PermissionLine } from "../installSteps";
 import { formatSize, safeExternalUrl } from "../utils";
 import AppGlyph from "../components/AppGlyph.vue";
 import SplitButton from "../components/SplitButton.vue";
 import HealthGated from "../components/HealthGated.vue";
 
 const route = useRoute();
-const router = useRouter();
 // The route param is the manifest id; keep it reactive so navigating between two
 // detail pages without unmounting re-drives the queries.
 const manifestId = computed(() => String(route.params.id));
@@ -61,20 +61,9 @@ const categoryLabels = computed(() => {
 
 const { householdInstance, ownPersonalInstance, installing, canInstallHousehold } = useAppInstances(manifestId);
 
-// The install plan, the same query the install pages read. It decides
-// whether Install needs the install pages at all, and feeds the Permissions
-// group in the right column.
-const planQuery = useQuery({
-  queryKey: computed(() => ["install-plan", manifestId.value]),
-  queryFn: () => api.get<InstallPlan>(`/catalog/${encodeURIComponent(manifestId.value)}/install-plan`),
-  refetchOnWindowFocus: false,
-});
-const plan = computed(() => planQuery.data.value ?? null);
-
-// Set when this box cannot install the app at all, as one plain sentence. The
-// page then shows the sentence in place of the Install button. The store lists
-// already leave such an app out, so this is the direct-link case.
-const unavailable = computed(() => unavailableText(plan.value));
+// The install plan and what Install does (useStartInstall). The plan also
+// feeds the Permissions group in the right column.
+const { planQuery, plan, unavailable, goInstall, pending } = useStartInstall(manifestId);
 
 // The Permissions group in the right column, in the install flow's words.
 const permissions = computed(() => (plan.value ? permissionLines(plan.value.permissions) : []));
@@ -85,55 +74,6 @@ const permissionIcons: Record<PermissionLine["kind"], unknown> = {
   device: HardDrive,
   folder: Folder,
 };
-
-const { submit, submitError, submitLocation, duplicateInfo, pending } = useInstallSubmit(manifestId);
-const directScope = ref<"personal" | "household">("personal");
-
-function pagesPath(household: boolean) {
-  return {
-    path: `/store/${encodeURIComponent(manifestId.value)}/install`,
-    query: household ? { scope: "household" } : undefined,
-  };
-}
-
-// goInstall starts the install at once for an app that asks nothing and has
-// nothing to warn about (INSTALL_STEPS.md # Build rules, rule 8): the 202
-// goes straight to the progress page. Anything else opens the install
-// pages. The button waits for the plan. If the plan fails, it opens the pages.
-function goInstall(household = false) {
-  const p = plan.value;
-  if (pending.value) return;
-  // A plan that failed to load: the install pages show the error and a retry.
-  if (!p) {
-    if (planQuery.isError.value) router.push(pagesPath(household));
-    return;
-  }
-  const scope = household ? "household" : "personal";
-  if (!needsNoPages(p) || installWarnings(p)) {
-    router.push(pagesPath(household));
-    return;
-  }
-  directScope.value = scope;
-  // Optional plain fields have no step, so they go with their defaults, as
-  // they would from the install pages.
-  const fields = defaultFieldValues(p);
-  submit({
-    manifest_id: p.manifest_id,
-    scope,
-    config: { folders: [], ...(Object.keys(fields).length > 0 ? { fields } : {}) },
-  });
-}
-
-// A direct install that fails opens the install pages with the error there, so
-// the user is never left here with nothing. A 409 (a copy made after the
-// plan was read) shows the duplicate box there.
-watch([submitError, duplicateInfo], ([err, dup]) => {
-  if (!err && !dup) return;
-  router.push({
-    ...pagesPath(directScope.value === "household"),
-    state: { installError: err ?? undefined, installErrorLocation: submitLocation.value, installDuplicate: dup ?? undefined },
-  });
-});
 
 // The split button's menu. Only admins outside single-user mode get the
 // household item; everyone else gets a plain Install button.
