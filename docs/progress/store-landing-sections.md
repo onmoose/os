@@ -30,6 +30,8 @@ The box snapshot now carries the authored landing page as typed sections (`home.
 
 ## Known gaps & deviations
 
+- **Greptile on #592:** the "No apps in the catalog yet" check looked only at categories and the featured row, so a catalog whose apps carry no categories but does send sections would hide them and the search box. The check now counts sections, the spotlight and the groups too. Fixed on the same branch. The agent review found nothing.
+
 - **The pack route is `/api/v1/catalog/pack?id=`, not `/api/v1/catalog/packs/{id}`.** Go's `net/http` mux refuses to register `/catalog/packs/{id}` next to `/catalog/{id}/install-plan`: both match `/catalog/packs/install-plan` and neither is more specific, so the brain would panic at start. The category route takes `?name=` for the same reason, and the art route takes `?key=`. The UI path is `/store/packs/:id` as planned.
 - **The search box stays where the search section is, but a search or category view always shows under it.** If a catalog placed the search section after other sections, those sections hide during a search and the results still show under the search box.
 - **The box searches every pack the snapshot carries,** not only the packs on the landing. The other store surface searches only the packs its page shows. Today every published pack is on the page.

@@ -193,13 +193,20 @@ const resultsError = computed<string | null>(() => {
 });
 
 // The catalog is genuinely empty (never synced, or nothing published for this box)
-// when the landing carries neither categories nor featured apps.
-const catalogEmpty = computed(
-  () =>
+// when the landing carries nothing to draw: no categories, no sections, no
+// spotlight, no groups and no featured apps. Apps with no categories can still
+// fill sections, so categories alone do not say the store is empty.
+const catalogEmpty = computed(() => {
+  const h = home.data.value;
+  return (
     !home.isLoading.value &&
-    (home.data.value?.categories?.length ?? 0) === 0 &&
-    (home.data.value?.featured?.length ?? 0) === 0,
-);
+    (h?.categories?.length ?? 0) === 0 &&
+    (h?.sections?.length ?? 0) === 0 &&
+    !h?.spotlight &&
+    (h?.groups?.length ?? 0) === 0 &&
+    (h?.featured?.length ?? 0) === 0
+  );
+});
 
 // activeCategoryLabel is the heading for the category view. The category payload
 // carries its own authored label, so this prefers that and only falls back to the
