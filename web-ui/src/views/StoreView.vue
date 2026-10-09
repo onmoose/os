@@ -257,7 +257,7 @@ function clearFilters() {
             Custom app
           </RouterLink>
 
-          <div v-if="!hasSearchSection" class="relative w-full sm:w-64">
+          <div v-if="!home.isLoading.value && !hasSearchSection" class="relative w-full sm:w-64">
             <Search
               class="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden="true"
