@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // StorePackCard: one pack on the store landing and in search results: its
-// art, title and description, then the apps' icons and one "Install pack"
+// art, title and description, then the apps' icons and one "View pack"
 // button. The art, the title and the button all open the pack page
 // (/store/packs/:id). A pack never installs in one step: the pack page lists
 // its apps, each with its own Install button. The art link repeats the title's
@@ -37,7 +37,7 @@ const apps = computed(() => props.pack.apps ?? []);
         </div>
         <!-- Every card's button reads the same, so name the pack for a screen
              reader's list of links. -->
-        <Button :as="RouterLink" :to="to" size="sm" :aria-label="`Install pack: ${pack.title}`">Install pack</Button>
+        <Button :as="RouterLink" :to="to" size="sm" :aria-label="`View pack: ${pack.title}`">View pack</Button>
       </div>
     </div>
   </div>

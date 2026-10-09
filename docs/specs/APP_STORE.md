@@ -288,12 +288,12 @@ The store draws the sections in the order the catalog sends them:
 
 - **search:** a large search box, and the suggestions as chips. A chip fills the search box and searches at once. While a search or a category is showing, its results show right under the search box and every other section hides, so the box never moves while the user types.
 - **discover:** pages of one hero slide and up to two side slides, scrolled sideways with dots and the arrow keys. A side slide joins the hero before it; a page with no hero promotes its first side slide. Each slide has one button, **Install**, which opens the app page (`/store/<id>`), where the install starts. The hero's headline and its art link to the app page too; the art repeats the headline's link, so it is out of the tab order and hidden from screen readers.
-- **intents and packs:** pack cards (art, title, description, the apps' icons, and one **Install pack** button). The art, the title and the button open the pack page.
+- **intents and packs:** pack cards (art, title, description, the apps' icons, and one **View pack** button). The art, the title and the button open the pack page.
 - **categories:** the groups, packed two or more to a row, the same packing the older landing uses.
 
 There are no badges anywhere on the page, and slide headlines and pack titles are not underlined on hover.
 
-**A pack never installs in one step.** "Install pack" opens the pack page at `/store/packs/<id>`. That page lists the pack's apps, and each app has its own Install button, which runs that app's normal install flow, the same as Install on the app page. The user installs a pack one app at a time and answers each app's own install steps. `GET /api/v1/catalog/pack?id=<id>` serves the page and returns 404 for a pack this box cannot show.
+**A pack never installs in one step.** "View pack" opens the pack page at `/store/packs/<id>`. That page lists the pack's apps, and each app has its own Install button, which runs that app's normal install flow, the same as Install on the app page. The user installs a pack one app at a time and answers each app's own install steps. `GET /api/v1/catalog/pack?id=<id>` serves the page and returns 404 for a pack this box cannot show.
 
 **Search shows apps first, then packs.** A pack matches when the query starts a word of its title or of one of its keywords, or when the query holds a whole keyword ("back up my photos" holds the keyword "photos"). Case and punctuation do not count, and a query shorter than two characters matches no pack. The apps of a matching pack come first among the apps, then the apps whose name, tagline or categories hold the query, each once. The "Apps" and "Packs" headings show only when both have results.
 
