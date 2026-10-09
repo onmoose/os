@@ -20,7 +20,10 @@
 //   - search: the search box and suggestion chips that fill it;
 //   - discover: a carousel of hero and side slides (StoreDiscover);
 //   - intents and packs: pack cards that open the pack page (StorePackCard);
-//   - categories: the category groups, packed into rows (lib/storeLayout.ts).
+//   - categories: one tab per group, picked apps first, then "Show more"
+//     (StoreCategories).
+// The sectioned landing has no category pills at the top: like the other store
+// surface, it starts with the search box and browses categories at the bottom.
 // A search or category view shows right under the search section, and the
 // other sections hide while it shows, so the search box never moves while the
 // user types. With no search section, the filtered view goes first and the
@@ -52,6 +55,7 @@ import StoreSpotlight from "../components/StoreSpotlight.vue";
 import StoreDiscover from "../components/StoreDiscover.vue";
 import StorePackCard from "../components/StorePackCard.vue";
 import StoreResults from "../components/StoreResults.vue";
+import StoreCategories from "../components/StoreCategories.vue";
 import Heading from "@/components/ui/Heading.vue";
 import Button from "@/components/ui/Button.vue";
 import { packRows, groupSpan, groupCols } from "../lib/storeLayout";
@@ -113,6 +117,8 @@ const search = useQuery({
 });
 
 // Pills: the categories the landing advertised for this box, in authored order.
+// Only the older landing shows them; the sectioned landing browses categories
+// in its categories section, as the other store surface does.
 const categories = computed(() => home.data.value?.categories ?? []);
 
 // --- the sectioned landing ---------------------------------------------------
@@ -133,6 +139,17 @@ const sections = computed<HomeSection[]>(() => {
 });
 const hasSections = computed(() => sections.value.length > 0);
 const hasSearchSection = computed(() => sections.value.some((s) => s.type === "search"));
+const showPills = computed(() => !home.isLoading.value && !hasSections.value && categories.value.length > 0);
+
+// Every app the store lists, for a categories section: a tab shows the
+// group's picked apps first, then the category's other apps. Fetched only
+// when the landing has such a section.
+const allAppsQuery = useQuery({
+  queryKey: ["catalog", "list"],
+  queryFn: () => api.get<{ apps: CatalogEntry[] }>("/catalog"),
+  enabled: computed(() => sections.value.some((s) => s.type === "categories")),
+});
+const allApps = computed(() => allAppsQuery.data.value?.apps ?? []);
 
 function packHeading(s: HomeSection) {
   return s.title || (s.type === "intents" ? "I want to…" : "Starter packs");
@@ -273,10 +290,10 @@ function clearFilters() {
         </div>
       </div>
 
-      <!-- Category pills: the catalog's own categories only. Highlighted only
-           when browsing that category; clicking the active pill toggles back to
-           the landing. -->
-      <div v-if="categories.length > 0" class="flex flex-wrap gap-2">
+      <!-- Category pills, on the older landing only: the catalog's own
+           categories. Highlighted only when browsing that category; clicking
+           the active pill toggles back to the landing. -->
+      <div v-if="showPills" class="flex flex-wrap gap-2">
         <button
           v-for="c in categories"
           :key="c.id"
@@ -391,24 +408,13 @@ function clearFilters() {
             </div>
           </section>
 
-          <!-- Categories: the groups, packed into rows. -->
-          <section
+          <!-- Categories: one tab per group, as on the other store surface. -->
+          <StoreCategories
             v-else-if="sec.type === 'categories'"
             v-show="mode === 'home'"
-            class="flex flex-col gap-6"
-          >
-            <Heading :level="2">{{ sec.title || "Categories" }}</Heading>
-            <div class="flex flex-col gap-12">
-              <div v-for="(row, r) in packRows(sec.groups ?? [])" :key="r" class="grid gap-x-6 gap-y-10 sm:grid-cols-4">
-                <div v-for="g in row" :key="g.category" class="flex flex-col gap-4" :class="groupSpan(g.apps)">
-                  <h3 class="text-base font-semibold text-foreground">{{ g.label }}</h3>
-                  <div class="grid grid-cols-2 gap-x-6 gap-y-8" :class="groupCols(g.apps)">
-                    <StoreAppCard v-for="c in g.apps" :key="c.id" :app="c" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
+            :section="sec"
+            :apps="allApps"
+          />
         </template>
       </div>
 
