@@ -414,6 +414,8 @@ function clearFilters() {
             v-show="mode === 'home'"
             :section="sec"
             :apps="allApps"
+            :apps-error="allAppsQuery.isError.value"
+            @retry="allAppsQuery.refetch()"
           />
         </template>
       </div>

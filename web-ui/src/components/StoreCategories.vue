@@ -18,7 +18,11 @@ const props = defineProps<{
   // apps is every app the store lists (GET /catalog), for the category's apps
   // beyond the hand-picked ones. Empty while it loads: the picked apps show.
   apps: CatalogEntry[];
+  // appsError is set when that list failed to load, so the tab says it is
+  // showing only the picked apps, with a retry.
+  appsError: boolean;
 }>();
+defineEmits<{ retry: [] }>();
 
 const groups = computed(() => (props.section.groups ?? []).filter((g) => (g.apps ?? []).length > 0));
 const activeId = ref<string | null>(null);
@@ -38,7 +42,9 @@ const ordered = computed<CatalogEntry[]>(() => {
   if (!g) return [];
   const picked = g.apps ?? [];
   const ids = new Set(picked.map((a) => a.id));
-  const rest = props.apps.filter((a) => !ids.has(a.id) && (a.categories ?? []).includes(g.category));
+  // Case-insensitive, like the brain's own category match (containsFold).
+  const cat = g.category.toLowerCase();
+  const rest = props.apps.filter((a) => !ids.has(a.id) && (a.categories ?? []).some((c) => c.toLowerCase() === cat));
   return [...picked, ...rest];
 });
 const shown = computed(() =>
@@ -76,6 +82,10 @@ const showToggle = computed(
       <Button v-if="showToggle" variant="secondary" size="sm" @click="all = !all">
         {{ all ? "Show less" : "Show more" }}
       </Button>
+      <p v-else-if="appsError" class="text-sm text-muted-foreground">
+        Couldn't load the other apps in this category.
+        <button type="button" class="cursor-pointer font-medium text-foreground underline" @click="$emit('retry')">Try again</button>
+      </p>
     </div>
   </section>
 </template>
