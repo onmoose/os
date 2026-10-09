@@ -188,7 +188,7 @@ This is a **curation control, not access control**: it's box-wide, not per-user 
 
 Some apps need a feature of the box itself, not only of the catalog. Today the one case is the daemon-wide Docker userns-remap: an app whose manifest sets `root_setup` or `image_user` (`APP_MANIFEST.md` # B) runs only on a remapped daemon (`APP_ISOLATION.md` # User-namespace tiers). A box built before #530, and the native dev loop, run no remap, and the brain refuses such an install there. The environment filter cannot help: it is per surface, and two boxes on the same surface can differ, because a box's remap is fixed when its image is built. So the box itself leaves these apps out, like this:
 
-- **The store lists leave them out.** On a box with no remap the browse list (`GET /api/v1/catalog`), search, the landing page (spotlight, groups, featured row) and the category pages omit an app that needs the remap. A category left with no app loses its pill, and a group left empty is dropped, the same way the environment filter empties them. The box reads the two fields from the browse record, as optional booleans `root_setup` and `image_user` copied from the manifest (`internal/catalog/wire.go`). The box models them from #544; they take effect once the catalog service publishes them on each record. A catalog that does not send them reads as false, so the app shows in the lists, and the direct-link rule below still holds.
+- **The store lists leave them out.** On a box with no remap the browse list (`GET /api/v1/catalog`), search, the landing page (its sections, and the spotlight, groups and featured row) and the category pages omit an app that needs the remap. A category left with no app loses its pill, and a group, slide list or section left empty is dropped, the same way the environment filter empties them. A pack holding such an app drops whole, and its page returns 404 (# Landing page). The box reads the two fields from the browse record, as optional booleans `root_setup` and `image_user` copied from the manifest (`internal/catalog/wire.go`). The box models them from #544; they take effect once the catalog service publishes them on each record. A catalog that does not send them reads as false, so the app shows in the lists, and the direct-link rule below still holds.
 - **A direct link still loads.** The detail page (`GET /api/v1/catalog/:id`) is not filtered, so a link someone kept still works. Its install plan reads the manifest itself and carries `unavailable: "needs-remap"` (`BRAIN_UI_PROTOCOL.md` # install-plan). The page then shows one plain sentence in place of Install, and so do the install pages. The sentence names no mechanism: it says the app needs a safety feature that only boxes set up with a newer version of moose have.
 - **The install path refuses on its own**, as before (`ErrRootSetupNeedsRemap`, `ErrImageUserNeedsRemap`). The store view is a convenience; the install check is the gate.
 - **The box never hides an app on a guess.** It reads the remap the same way the install does: host-agent's `remap_base` and Docker's `name=userns` must agree. Only a known "no remap" hides anything. When host-agent or Docker cannot be read, or they disagree, every app shows, because hiding apps on a box that might be remapped would take them away for no reason, and the install path refuses every install in that state anyway, with its own plain message. The answer is cached (ten minutes when known, thirty seconds when not), so a store request does not call host-agent and `docker info` each time (`lifecycle.Manager.RemapState`).
@@ -250,11 +250,56 @@ Trust is **TLS to the catalog service** — there is no signing keypair, no pubk
 
 ## Landing page
 
-The store's front page — the box's landing view and the moose website's store pages at `mooseos.com/store` alike — is authored whole in a curated `home.yml`, not derived from any app's own metadata: a single `spotlight:` app id rendered as a banner, plus an ordered list of `groups:` (a `category:` id from the catalog's category list and 1-4 app ids) rendered as packed rows below it. Editing the front page is editing that one file; importing a new app or reordering a manifest's `categories:` never reshuffles it, because the page's shape isn't computed from categories at all.
+The store's front page is authored whole in the store's curation source, not derived from any app's own metadata. Editing the front page is editing that curation; importing a new app or reordering a manifest's `categories:` never reshuffles it, because the page's shape is not computed from categories at all. The box's landing view and the moose website's store pages render the same authored page.
 
-The catalog service publishes the block **verbatim** on the snapshot (`CatalogFile.Home`) — carried, not derived, so the curation decision stays with the store curation source, not with a projection the service or a box could drift out of step with. The same one filter applies at serve time: an app the block names that isn't advertised on the requesting surface (`Environments`, # Catalog schema above) drops out of its slot — the spotlight goes unset, or the app is skipped within its group — and a group left with no advertised apps is dropped entirely rather than rendered empty. **The environment filter itself is the catalog service's**, applied to the `?env=` the box sends (#434): a box receives only apps its surface may show, so it applies no second pass for the environment. It does drop an app that needs a feature this box lacks, from the spotlight and the groups too (# Apps this box cannot run). What the box still does locally is resolve the home block against the apps it received — an id the response does not carry drops out of its slot, and an emptied group is dropped — because it renders its landing from the payload it holds in memory (`internal/catalog/remote.go`).
+### What the snapshot carries
 
-The box derives nothing else from the block: it does not compute rank and does not re-sort groups. Group headings use the authored category label carried on the snapshot (# Category labels), not text derived from the id. If a synced snapshot carries no home block (an older catalog service, or a curation publish with an empty `home.yml`), the box's landing has no spotlight and no groups; the view falls back to the flat curated Featured row, and if that's empty too, to a plain "pick a category or search" prompt — the landing is never blank, but an empty home block is not the same as "nothing curated."
+The browse payload (`GET /catalog?env=`) carries the page as **sections**, in the order they render, with every app and pack named by id. Each section has a `type`:
+
+| Type | Fields | What it is |
+|---|---|---|
+| `search` | `suggestions` | The search box, with suggested searches under it. |
+| `discover` | `title`, `slides` | A carousel. Each slide names an `app` and a `size` (`hero` or `side`), with an optional `headline`, `blurb` and `illustration_url` that replace the app's own name, tagline and icon on the slide. |
+| `intents` | `title`, `packs` | Pack cards for a described need ("I want to..."). |
+| `packs` | `title`, `packs` | Pack cards for starter packs. |
+| `categories` | `title`, `groups` | Category groups: each a `category` id and its apps. |
+
+Next to the sections, the payload carries a top-level `packs` list. A **pack** is a named set of apps that meet one need: an `id`, a `title`, a `description`, an optional `illustration_url`, its `apps` as ids, and optional `keywords`, which search matches next to the title. A section's `packs` are ids into this list.
+
+The older shape is still on the snapshot: one `spotlight` app id and a list of category `groups`. The publisher derives them from the sections (the first hero slide's app, and the first categories section's groups) and sends them for boxes that read only them. When the store may stop publishing them is open (`NEXT.md` # Tier 4, "When the store stops publishing the older landing shape").
+
+### What the box does with it
+
+**The environment filter is the catalog service's**, applied to the `?env=` the box sends (#434): a box receives only apps its surface may show, and only packs whose every app it receives. The box applies no second pass for the environment. It does resolve the page against the apps it received, because it renders from the payload it holds in memory (`internal/catalog/remote.go`):
+
+- **An id that is not there drops out of its slot.** A slide whose app is missing goes. An app missing from a group goes. A pack id that names no pack goes.
+- **A pack is a promise of all its apps.** A pack with any app missing drops whole, never just that app.
+- **Empty things drop whole.** A slide list, a group or a section left empty is dropped rather than drawn empty. A search section has nothing to resolve and always stays: it is the search box.
+- **A section type the box does not know is dropped,** so the store can publish a new type before the box can draw it.
+- **An app this box cannot run** (# Apps this box cannot run) drops from slides and groups, and a pack holding one drops whole: from the pack list, from the pack page, from search, and from every section that names it.
+
+`GET /api/v1/catalog/home` returns the resolved sections, with every app as a full `Entry` and every pack as a full pack record, so the UI draws the page from one request. Group headings use the authored category label (# Category labels). The box derives nothing else: it does not compute rank and does not re-sort sections, slides, packs or groups.
+
+**Art goes through the box.** A slide's and a pack's `illustration_url` is opaque, like every published URL (# What we run). The brain proxies and caches it like an app icon, behind its own `GET /api/v1/catalog/illustration?key=<key>`, where the key is a short hash of the published URL. So the dashboard stays same-origin, and the art keeps working through a short network drop. The route serves only art the payload names: any other key is a 404.
+
+### How the box store draws it
+
+The store draws the sections in the order the catalog sends them:
+
+- **search:** a large search box, and the suggestions as chips. A chip fills the search box and searches at once. While a search or a category is showing, its results show right under the search box and every other section hides, so the box never moves while the user types.
+- **discover:** pages of one hero slide and up to two side slides, scrolled sideways with dots and the arrow keys. A side slide joins the hero before it; a page with no hero promotes its first side slide. Each slide has one button, **Install**, which opens the app page (`/store/<id>`), where the install starts. The hero's headline and its art link to the app page too; the art repeats the headline's link, so it is out of the tab order and hidden from screen readers.
+- **intents and packs:** pack cards (art, title, description, the apps' icons, and one **Install pack** button). The art, the title and the button open the pack page.
+- **categories:** the groups, packed two or more to a row, the same packing the older landing uses.
+
+There are no badges anywhere on the page, and slide headlines and pack titles are not underlined on hover.
+
+**A pack never installs in one step.** "Install pack" opens the pack page at `/store/packs/<id>`. That page lists the pack's apps, and each app has its own Install button, which runs that app's normal install flow, the same as Install on the app page. The user installs a pack one app at a time and answers each app's own install steps. `GET /api/v1/catalog/pack?id=<id>` serves the page and returns 404 for a pack this box cannot show.
+
+**Search shows apps first, then packs.** A pack matches when the query starts a word of its title or of one of its keywords, or when the query holds a whole keyword ("back up my photos" holds the keyword "photos"). Case and punctuation do not count, and a query shorter than two characters matches no pack. The apps of a matching pack come first among the apps, then the apps whose name, tagline or categories hold the query, each once. The "Apps" and "Packs" headings show only when both have results.
+
+The category pills and the category view are unchanged: a pill shows that category's apps, and a search clears the pill.
+
+**When the catalog sends no sections** (an older catalog service), the box draws the older landing: the spotlight banner and the packed category groups, then the flat curated Featured row if there is neither, then a plain "pick a category or search" line. The landing is never blank, but an empty page is not the same as "nothing curated."
 
 ## Category labels
 
@@ -334,7 +379,7 @@ _(Updated for the shipped design — `DECISIONS.md` 2026-07-02, #62. The earlier
 - **No baked catalog in the box image.** Every box — appliance and hosted — is a thin client of the catalog service (`DECISIONS.md` 2026-07-02).
 - **Promotion is a PR against the store repo.** CI validates schema, admission rules, image reachability, and digests; merge is the publish action: the publisher rebuilds the published tree and the catalog service serves it. The published tree is never committed, because its source sits beside it in the same repo.
 - **Category display text is authored, never derived.** The snapshot carries a `categories` vocabulary (id + `label`, in authored order); the box renders the label on pills, group headings, the category page, and the app detail panel (# Category labels). Deriving display text from the id is what made two store surfaces disagree about the same category.
-- **The landing page (spotlight + category groups) is authored whole in a curated `home.yml`, carried verbatim on the snapshot, and filtered by environment at serve time** — never derived from an app's own `categories:` or computed by either consumer (# Landing page). Both the box and the website's store pages render the same authored shape.
+- **The landing page is authored whole in the store's curation source, carried on the snapshot as typed sections with apps and packs named by id, and filtered by environment at serve time.** It is never derived from an app's own `categories:` or computed by either consumer (# Landing page). Both the box and the website's store pages render the same authored sections. A pack never installs in one step: its page lists its apps, each with its own Install.
 
 ## Open questions
 
