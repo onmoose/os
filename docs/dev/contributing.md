@@ -180,6 +180,25 @@ Feature work always branches off `dev` and PRs into `dev` — that's covered abo
 
 Contributors never push directly to `main`; the tags and the GitHub Releases are created automatically by `release.yml`, not by hand. **The one exception is a one-time step** for the control-plane line's first tag. `CONTROL_PLANE_VERSION` starts at `0.15.0`, and the `v0.15.0` images on ghcr were built at the `v0.15.0` commit. So tag that commit `control-plane-v0.15.0` once, before the first dev->main merge after #559 lands: `git tag control-plane-v0.15.0 v0.15.0 && git push origin control-plane-v0.15.0`. Until that tag exists, `release.yml` refuses on every push to `main`, because the `v0.15.0` image tag is already published.
 
+### Deciding the version bump
+
+When the maintainer asks for a release, or asks what a release would need, work out the bump first and **stop there**. Do not create a branch, edit a version file, or open a PR until the maintainer has agreed to the numbers and asked for that step.
+
+1. **List what is unreleased.** `git fetch origin && git log origin/main..origin/dev`, grouped by PR. Read each PR's file list (`gh pr view <N> --json files`).
+2. **Put each PR on a line, by the files it changes.** A PR can be on both lines, or on none.
+   - **OS (`VERSION`):** `dev/os-lock/`, the image build (`mkosi`, `dev/release/`), `cmd/host-agent-real/`, `internal/hostagent/`, and anything else baked into the image outside the brain and UI containers.
+   - **Control plane (`CONTROL_PLANE_VERSION`):** `cmd/brain/`, the rest of `internal/`, and `web-ui/`.
+   - **None:** a PR that only changes docs, specs, tests or comments. It ships with whatever comes next and needs no bump of its own.
+   - A shared package such as `internal/profile` or `internal/protocol` is on a line only if code that the line builds changed, not just its comments or tests.
+3. **Choose the number for each line that has changes.**
+   - **OS patch:** a lock bump or a fix. A patch never changes an on-disk format (`../specs/UPDATES.md` # 1).
+   - **OS minor:** any change to an on-disk format, or any new host-side feature. A box never skips a minor, so a minor is a step every box must take.
+   - **Control-plane minor:** any one of these: a new feature users can see, a new or changed API route, a database migration, a manifest schema change, or a raised `minimumAgentVersion` in `cmd/brain/main.go`.
+   - **Control-plane patch:** fixes only, with none of the above.
+   - **A major bump on either line is the maintainer's call.** Never propose one on your own.
+4. **Check the two lines fit together.** If the new brain raises `minimumAgentVersion`, the OS release with that host-agent must ship first or in the same release. If the OS boot checks need brain code that is not released yet, bump both files together (# Release model above, the #566 rule). If a lock bump changed a `trixie-security` package, note the 7-day deadline (# OS patch releases from a lock bump).
+5. **Report and wait.** Give the maintainer a table of PR, line, and reason, then the proposed number for each line with a one-line reason, and any blocker (for example a missing `release-ca.pem`). Then wait. The steps below start only when the maintainer says so.
+
 ### Cutting a release, step by step
 
 The mechanics above say what happens automatically. This is the part a person does, and it is written down because `dev` and `main` drift apart between releases, so a plain `dev` -> `main` PR usually will not merge as-is.
