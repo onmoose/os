@@ -88,6 +88,10 @@ const (
 	// a fixed icon lands on its own, and long enough that browsing the store is
 	// not a stream of refetches.
 	assetTTL = 24 * time.Hour
+	// illustrationsDir is the asset cache subtree for slide and pack art. The
+	// files in it are named by URL hash, like every cached asset, so sharing
+	// the tree with an app's icons could never mix two files up.
+	illustrationsDir = "_illustrations"
 )
 
 // RemoteOptions configures the remote catalog client. BaseURL is the catalog
@@ -157,6 +161,14 @@ type snapshot struct {
 	// in authored order. providerByID indexes it for the logo routes.
 	providers    []wireAIProvider
 	providerByID map[string]*wireAIProvider
+	// packs is the authored pack list carried verbatim from the payload, and
+	// packByID indexes it for the landing sections, which name packs by id.
+	packs    []wirePack
+	packByID map[string]*wirePack
+	// art maps an illustration key (illustrationKey) to the published URL of
+	// a slide or pack illustration, so the brain's illustration route can only
+	// fetch art this payload names.
+	art map[string]string
 }
 
 // newSnapshot indexes one verified payload. It is also where the AI provider
@@ -164,14 +176,29 @@ type snapshot struct {
 // once per request.
 func newSnapshot(f catalogFile) *snapshot {
 	s := &snapshot{
-		apps: append([]wireApp(nil), f.Apps...),
-		byID: make(map[string]*wireApp, len(f.Apps)),
-		home: f.Home,
-		cats: f.Categories,
+		apps:     append([]wireApp(nil), f.Apps...),
+		byID:     make(map[string]*wireApp, len(f.Apps)),
+		home:     f.Home,
+		cats:     f.Categories,
+		packs:    f.Packs,
+		packByID: make(map[string]*wirePack, len(f.Packs)),
+		art:      map[string]string{},
 	}
 	sort.Slice(s.apps, func(i, j int) bool { return s.apps[i].Name < s.apps[j].Name })
 	for i := range s.apps {
 		s.byID[s.apps[i].ID] = &s.apps[i]
+	}
+	for i := range s.packs {
+		p := &s.packs[i]
+		if _, dup := s.packByID[p.ID]; !dup {
+			s.packByID[p.ID] = p
+		}
+		s.addArt(p.IllustrationURL)
+	}
+	for _, sec := range s.home.Sections {
+		for _, sl := range sec.Slides {
+			s.addArt(sl.IllustrationURL)
+		}
 	}
 	var dropped []string
 	s.providers, dropped = readAIProviders(f.AIProviders)
@@ -459,6 +486,143 @@ func (r *remoteSource) home() (*Entry, []HomeGroupView, error) {
 		}
 	}
 	return spotlight, groups, nil
+}
+
+// addArt records an illustration URL under its key, for the illustration route.
+func (s *snapshot) addArt(ref string) {
+	if ref != "" {
+		s.art[illustrationKey(ref)] = ref
+	}
+}
+
+// artURL is the brain's route for an illustration the payload names, or "" when
+// there is none.
+func artURL(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	return illustrationURL(illustrationKey(ref))
+}
+
+// pack resolves one pack against the apps the payload carries. A pack is a
+// promise of all its apps, so it resolves only when every app it names is
+// here: one missing app drops the whole pack, never just that app. A pack with
+// no apps does not resolve either.
+func (s *snapshot) pack(p *wirePack) (Pack, bool) {
+	if len(p.Apps) == 0 {
+		return Pack{}, false
+	}
+	apps := make([]Entry, 0, len(p.Apps))
+	for _, id := range p.Apps {
+		a, ok := s.byID[id]
+		if !ok {
+			return Pack{}, false
+		}
+		apps = append(apps, entryOfApp(a))
+	}
+	return Pack{
+		ID:              p.ID,
+		Title:           p.Title,
+		Description:     p.Description,
+		IllustrationURL: artURL(p.IllustrationURL),
+		Apps:            apps,
+		Keywords:        p.Keywords,
+	}, true
+}
+
+// packs returns every pack that resolves, in authored order.
+func (r *remoteSource) packs() ([]Pack, error) {
+	snap := r.current()
+	if snap == nil {
+		return nil, nil
+	}
+	var out []Pack
+	for i := range snap.packs {
+		if p, ok := snap.pack(&snap.packs[i]); ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// sections resolves the authored landing sections against the apps and packs
+// the payload carries. An id that is not here drops out of its slot: a slide
+// whose app is missing, a pack that does not resolve, an app missing from a
+// group. A slide list, group or section left empty drops whole, and so does a
+// section of a type the box does not know. A search section has nothing to
+// resolve and always stays: it is the search box.
+func (r *remoteSource) sections() ([]HomeSection, error) {
+	snap := r.current()
+	if snap == nil {
+		return nil, nil
+	}
+	var out []HomeSection
+	for _, sec := range snap.home.Sections {
+		v := HomeSection{Type: sec.Type, Title: sec.Title}
+		switch sec.Type {
+		case SectionSearch:
+			v.Suggestions = sec.Suggestions
+			out = append(out, v)
+			continue
+		case SectionDiscover:
+			for _, sl := range sec.Slides {
+				a, ok := snap.byID[sl.App]
+				if !ok {
+					continue
+				}
+				v.Slides = append(v.Slides, Slide{
+					App:             entryOfApp(a),
+					Size:            sl.Size,
+					Headline:        sl.Headline,
+					Blurb:           sl.Blurb,
+					IllustrationURL: artURL(sl.IllustrationURL),
+				})
+			}
+		case SectionIntents, SectionPacks:
+			for _, id := range sec.Packs {
+				wp, ok := snap.packByID[id]
+				if !ok {
+					continue
+				}
+				if p, ok := snap.pack(wp); ok {
+					v.Packs = append(v.Packs, p)
+				}
+			}
+		case SectionCategories:
+			for _, g := range sec.Groups {
+				var apps []Entry
+				for _, id := range g.Apps {
+					if a, ok := snap.byID[id]; ok {
+						apps = append(apps, entryOfApp(a))
+					}
+				}
+				if len(apps) > 0 {
+					v.Groups = append(v.Groups, HomeGroupView{Category: g.Category, Apps: apps})
+				}
+			}
+		default:
+			continue
+		}
+		if len(v.Slides)+len(v.Packs)+len(v.Groups) > 0 {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
+// illustrationPath returns a local file path to a slide or pack illustration,
+// proxied and cached like an app icon. ErrNotFound when the payload names no
+// art under that key, so the route cannot be used to fetch any other URL.
+func (r *remoteSource) illustrationPath(key string) (string, error) {
+	snap := r.current()
+	if snap == nil {
+		return "", fmt.Errorf("%w: illustration %q", ErrNotFound, key)
+	}
+	ref, ok := snap.art[key]
+	if !ok {
+		return "", fmt.Errorf("%w: illustration %q", ErrNotFound, key)
+	}
+	return r.cachedAsset(illustrationsDir, ref)
 }
 
 // categories returns the payload's authored category vocabulary in authored

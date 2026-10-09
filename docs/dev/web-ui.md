@@ -60,8 +60,10 @@ web-ui/
     │                       #   sessionStorage copy that survives a reload or the
     │                       #   hosted owner's portal confirm
     ├── useInstall.ts       # catalog-app install flow: which copies the caller has
-    │                       #   (detail-page button state) and the POST with its
-    │                       #   409/422 branches; see "Install flow" below
+    │                       #   (Install button state), what Install does
+    │                       #   (useStartInstall, shared by the detail and pack
+    │                       #   pages), and the POST with its 409/422 branches;
+    │                       #   see "Install flow" below
     ├── aiProviders.ts      # AI slots from manifest roles, provider tiles, model
     │                       #   pickers, bindings and the requires gate
     ├── installSteps.ts     # the install flow as pages: plan -> pages, AI needs,
@@ -70,7 +72,10 @@ web-ui/
     │
     ├── views/              # one component per route (lazy-loaded)
     │   ├── HomeView.vue        # installed-app grid
-    │   ├── StoreView.vue       # catalog browse grid (cards → detail page)
+    │   ├── StoreView.vue       # store landing, drawn from the catalog's sections
+    │   │                       #   (older spotlight + groups when it sends none),
+    │   │                       #   category pills, search
+    │   ├── StorePackView.vue   # /store/packs/:id: a pack's apps, each with Install
     │   ├── AppDetailView.vue   # /store/:id — app detail page; Install starts here
     │   ├── InstallSetupView.vue    # /store/:id/install?step=: the install flow's pages
     │   ├── InstallProgressView.vue # /store/:id/install/:jobId: install job progress
@@ -95,6 +100,12 @@ web-ui/
         ├── TopBar.vue, Dock.vue
         ├── AppTile.vue         # dashboard launcher tile (opens the app)
         ├── StoreAppCard.vue    # store browse card (links to the detail page)
+        ├── StoreDiscover.vue   # landing discover carousel: hero + side slides
+        ├── StorePackCard.vue   # pack card; opens the pack page
+        ├── StorePackApp.vue    # one app on the pack page, with its own Install
+        ├── StoreCategories.vue # landing categories section: tabs, Show more
+        ├── StoreResults.vue    # category view and search results (apps, then packs)
+        ├── StoreArt.vue, StoreAppChip.vue # slide/pack art, icon-chip fallback
         ├── AppGlyph.vue        # icon-less fallback: manifest icon_glyph → Lucide icon, else AppWindow
         ├── MailProviderLogo.vue # provider mark from assets/mail-providers/, by preset id
         │                        #   (that folder's README is the how-to for adding one)
@@ -141,13 +152,13 @@ A handful of top-level `.vue` files (`Login.vue`, `Setup.vue`, `NotificationBell
 
 `router.ts` is a flat lazy-imported table (history mode). Four primary destinations mirror the dock (`DASHBOARD.md` # global navigation): Home, Files, Store, Settings. Admin-only screens (`/store/custom`, `/settings/users`) **guard the role inside the view component** rather than via a router guard — follow the `CustomInstallView` pattern when adding another admin-only screen. Unknown paths redirect to `/` so the SPA never 404s its own chrome (production Caddy also serves `index.html` for unmatched routes).
 
-The Store is a **browse → detail** pair: `/store` (`StoreView`) is a grid of `StoreAppCard`s (logo + name) — filterable by a page-wide search and category pills — that link to `/store/:id` (`AppDetailView`), the app-store-style detail page where the description, screenshots, and the Install flow live. `/store/custom` is declared before `/store/:id` (and Vue Router ranks the static segment higher anyway, so `custom` never matches the `:id` param). Installing a catalog app adds two routes under the detail page: `/store/:id/install` (`InstallSetupView`, `?scope=household` for the household install) and `/store/:id/install/:jobId` (`InstallProgressView`).
+The Store is a **browse → detail** pair: `/store` (`StoreView`) is the landing, the category pills and search, and every app card links to `/store/:id` (`AppDetailView`), the app-store-style detail page where the description, screenshots, and the Install flow live. The landing is drawn from the authored sections `GET /catalog/home` carries, in their order (`docs/specs/APP_STORE.md` # Landing page): the search section is the search box with suggestion chips, `StoreDiscover` draws the discover carousel (pages from `slidePages` in `lib/storeLayout.ts`), `StorePackCard` draws the intent and pack cards, and `StoreCategories` draws the categories section as tabs with "Show more" (it reads `GET /catalog` for the category's apps beyond the picked ones). The sectioned landing shows no category pills at the top; only the older landing does. A category or search view (`StoreResults`) shows right under the search section while the other sections hide with `v-show`, so the search input never remounts while the user types. With no sections, `StoreView` draws the older spotlight + groups landing. A pack card opens `/store/packs/:id` (`StorePackView`), which lists the pack's apps as `StorePackApp` rows, each with its own Install. `/store/custom` and `/store/packs/:id` are declared before `/store/:id` (and Vue Router ranks the static segment higher anyway, so `custom` and `packs` never match the `:id` param). Installing a catalog app adds two routes under the detail page: `/store/:id/install` (`InstallSetupView`, `?scope=household` for the household install) and `/store/:id/install/:jobId` (`InstallProgressView`).
 
 When an app has no raster icon (`icon_url`), both the card and the detail header fall back via **`AppGlyph`**, which renders the Lucide icon named by the manifest's `icon_glyph` (kebab-case) or the generic `AppWindow`. `AppGlyph` imports the Lucide set with a lazy `import("lucide-vue-next")`, so the ~900 KB icon library is split into its own chunk that loads only when a glyph fallback is actually rendered — never on the main bundle. In a curated catalog most apps ship a real logo, so that chunk rarely loads; if glyph-fallback usage ever becomes common, switch `AppGlyph` to per-icon dynamic imports so only the few used glyphs load.
 
 ## Install flow
 
-A catalog install goes from the detail page's Install button (and the split button's household item) to the install flow at `/store/:id/install`, then to the progress page. The flow is one need per step (`docs/specs/INSTALL_STEPS.md`, `DASHBOARD.md` # Install authorization). The detail page fetches the install plan too: for an app with no steps and nothing to warn about (`needsNoPages`, `installWarnings`) Install sends `POST /apps` from there and goes straight to the progress page, and the plan also feeds the detail page's Permissions group (`permissionLines`). When the plan carries `unavailable` (this box cannot install the app, `unavailableText` gives the sentence), the detail page shows that sentence in place of Install, and the install pages show it with only a Back button. `InstallSetupView.vue` fetches `GET /catalog/:id/install-plan` and draws every step: a step is `?step=<name>`, and the bare path opens the first step (for an app with no steps it is the warning-only page). The last step's button is Install; it sends `POST /apps`, and a 202 replaces the URL with the progress page, which polls `GET /jobs/:id` with a `useQuery` `refetchInterval` until the job ends. Because the job id is in the URL, a reload resumes it. A 404 on the job (the brain restarted and forgot it) stops the polling and says so.
+A catalog install goes from the detail page's Install button (and the split button's household item), or the same button on a pack page row, to the install flow at `/store/:id/install`, then to the progress page. The flow is one need per step (`docs/specs/INSTALL_STEPS.md`, `DASHBOARD.md` # Install authorization). The button's page fetches the install plan too (`useStartInstall`): for an app with no steps and nothing to warn about (`needsNoPages`, `installWarnings`) Install sends `POST /apps` from there and goes straight to the progress page, and the plan also feeds the detail page's Permissions group (`permissionLines`). When the plan carries `unavailable` (this box cannot install the app, `unavailableText` gives the sentence), the detail page shows that sentence in place of Install, and the install pages show it with only a Back button. `InstallSetupView.vue` fetches `GET /catalog/:id/install-plan` and draws every step: a step is `?step=<name>`, and the bare path opens the first step (for an app with no steps it is the warning-only page). The last step's button is Install; it sends `POST /apps`, and a 202 replaces the URL with the progress page, which polls `GET /jobs/:id` with a `useQuery` `refetchInterval` until the job ends. Because the job id is in the URL, a reload resumes it. A 404 on the job (the brain restarted and forgot it) stops the polling and says so.
 
 `src/installSteps.ts` is the pure part. `planNeeds` sorts the plan into needs, and `stepList` gives the steps in order: each AI need, email, the "needs these to run" step, the folder step. `aiNeeds`, `needOfStep`, `usableAccounts`, `choiceFor` and `serverSlot`, `serverModels` and `missingModelTypes` (a My own server account's model names are saved on the account) handle the AI steps, one need at a time, one service per need; `stepForError` maps a 422's `location` to its step. The view keeps a draft (the answers, the picked services, the saved My own server account whose form is open, the declined optional steps) and writes it to `sessionStorage` under `moose.install.v3.<user>.<app>.<scope>`, without secret field values. The draft is removed after the install starts or on Cancel. Opening a step after a required step with no answer redirects to that step. Every step saves on Continue: a page-local copy for the settings, email and folder steps (the settings copy stays in memory only, never in the draft), and for a new AI key or email account the form component's `save()`, which the view calls from Continue (`AIKeyForm`, `MailAddForm`, exposed with `defineExpose`); after a save the user goes back to the step's list with the new account picked. No page has a Save of its own. Every page has two buttons at the bottom: Cancel on the first step's own page and the warning-only page, else Back, then Continue or Install (`leftIsCancel`). Back follows the browser history (the position Vue Router keeps in `history.state`). The seeding watch sits at the end of the view's setup, because with the plan cached it runs at once and must see every value declared.
 

@@ -98,11 +98,11 @@ func TestWithoutRemapAppsHidesFromLists(t *testing.T) {
 	if got := ids(media.Apps); !reflect.DeepEqual(got, []string{"alpha"}) {
 		t.Errorf("Category(media) = %v, want [alpha]", got)
 	}
-	if got, _ := c.Search("takes notes"); got != nil && len(got) != 0 {
-		t.Errorf("Search(takes notes) = %v, want nothing", ids(got))
+	if got, _ := c.Search("takes notes"); len(got.Apps) != 0 {
+		t.Errorf("Search(takes notes) = %v, want nothing", ids(got.Apps))
 	}
-	if got, _ := full.Search("takes notes"); !reflect.DeepEqual(ids(got), []string{"delta"}) {
-		t.Errorf("unfiltered Search = %v, want [delta]", ids(got))
+	if got, _ := full.Search("takes notes"); !reflect.DeepEqual(ids(got.Apps), []string{"delta"}) {
+		t.Errorf("unfiltered Search = %v, want [delta]", ids(got.Apps))
 	}
 }
 

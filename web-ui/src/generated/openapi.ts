@@ -390,8 +390,25 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Store landing: available categories + featured apps */
+        /** Store landing: the authored sections, categories and featured apps */
         get: operations["catalog-home"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalog/pack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One pack and its apps, selected by ?id= */
+        get: operations["catalog-pack"];
         put?: never;
         post?: never;
         delete?: never;
@@ -407,7 +424,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Search the catalog by ?q= (name, tagline, categories) */
+        /** Search the catalog by ?q=: apps (name, tagline, categories) and packs (title, keywords) */
         get: operations["catalog-search"];
         put?: never;
         post?: never;
@@ -1248,15 +1265,6 @@ export interface components {
             name?: string;
             url?: string;
         };
-        "Catalog-searchResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/Catalog-searchResponse.json
-             */
-            readonly $schema?: string;
-            apps: components["schemas"]["Entry"][] | null;
-        };
         Category: {
             id: string;
             label: string;
@@ -1494,12 +1502,21 @@ export interface components {
             categories: components["schemas"]["Category"][] | null;
             featured?: components["schemas"]["Entry"][] | null;
             groups?: components["schemas"]["HomeGroupView"][] | null;
+            sections?: components["schemas"]["HomeSection"][] | null;
             spotlight?: components["schemas"]["Entry"];
         };
         HomeGroupView: {
             apps: components["schemas"]["Entry"][] | null;
             category: string;
             label: string;
+        };
+        HomeSection: {
+            groups?: components["schemas"]["HomeGroupView"][] | null;
+            packs?: components["schemas"]["Pack"][] | null;
+            slides?: components["schemas"]["Slide"][] | null;
+            suggestions?: string[] | null;
+            title?: string;
+            type: string;
         };
         "Inspect-custom-appRequest": {
             /**
@@ -1942,6 +1959,20 @@ export interface components {
             state: "unsupported" | "none" | "refused" | "current" | "installing" | "installed" | "waiting" | "rebooting" | "held" | "failed";
             target?: components["schemas"]["OSReleaseDTO"];
         };
+        Pack: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Pack.json
+             */
+            readonly $schema?: string;
+            apps: components["schemas"]["Entry"][] | null;
+            description?: string;
+            id: string;
+            illustration_url?: string;
+            keywords?: string[] | null;
+            title: string;
+        };
         "Parse-custom-overlayRequest": {
             /**
              * Format: uri
@@ -2045,6 +2076,16 @@ export interface components {
             label?: string;
             public_key?: string;
         };
+        SearchResult: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SearchResult.json
+             */
+            readonly $schema?: string;
+            apps: components["schemas"]["Entry"][] | null;
+            packs: components["schemas"]["Pack"][] | null;
+        };
         "Set-app-exposureRequest": {
             /**
              * Format: uri
@@ -2131,6 +2172,13 @@ export interface components {
             readonly $schema?: string;
             recovery_code: string;
             user: components["schemas"]["UserDTO"];
+        };
+        Slide: {
+            app: components["schemas"]["Entry"];
+            blurb?: string;
+            headline?: string;
+            illustration_url?: string;
+            size: string;
         };
         SourceMenu: {
             default: string;
@@ -3201,6 +3249,37 @@ export interface operations {
             };
         };
     };
+    "catalog-pack": {
+        parameters: {
+            query?: {
+                id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Pack"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "catalog-search": {
         parameters: {
             query?: {
@@ -3218,7 +3297,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Catalog-searchResponse"];
+                    "application/json": components["schemas"]["SearchResult"];
                 };
             };
             /** @description Error */

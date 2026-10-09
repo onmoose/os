@@ -93,6 +93,14 @@ func (d *diskSource) categories() ([]Category, error) { return nil, nil }
 // fields as plain fields.
 func (d *diskSource) aiProviders() ([]AIProvider, error) { return nil, nil }
 
+// sections / packs / illustrationPath: the landing sections and the packs are
+// store curation carried on the published catalog, so a disk tree has none.
+func (d *diskSource) sections() ([]HomeSection, error) { return nil, nil }
+func (d *diskSource) packs() ([]Pack, error)           { return nil, nil }
+func (d *diskSource) illustrationPath(key string) (string, error) {
+	return "", fmt.Errorf("%w: illustration %q", ErrNotFound, key)
+}
+
 func (d *diskSource) aiProviderLogoPath(id string, _ bool) (string, error) {
 	return "", fmt.Errorf("%w: ai provider %q", ErrNotFound, id)
 }

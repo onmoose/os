@@ -88,6 +88,15 @@ export type CatalogHome = Schemas["Home"];
 // so the packing helper (lib/storeLayout.ts) can type against it directly.
 export type HomeGroupView = Schemas["HomeGroupView"];
 export type CatalogCategory = Schemas["CategoryPage"];
+// HomeSection is one authored landing section (search, discover, intents,
+// packs, categories), resolved by the brain: apps are full entries and packs
+// full pack records. CatalogSlide is one discover slide.
+export type HomeSection = Schemas["HomeSection"];
+export type CatalogSlide = Schemas["Slide"];
+// CatalogPack is a named set of apps that meet one need. It never installs in
+// one step: its page lists the apps, each with its own Install button.
+export type CatalogPack = Schemas["Pack"];
+export type CatalogSearchResult = Schemas["SearchResult"];
 // CatalogCategoryRef is one entry of the authored category vocabulary: a category
 // id with the display label the store renders. Carried on the landing payload.
 export type CatalogCategoryRef = Schemas["Category"];

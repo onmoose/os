@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "version": "a05be91ee2760cd6d9974872b07eb49751b196c331ab58f716f7f5e0c9f202e8",
+  "version": "2399740b383411ce99fa4c531c2c064b69d710c84376b9b64be0c4640e2b4d54",
   "generated_at": "2026-08-17T09:00:00Z",
   "store_ref": "0000000000000000000000000000000000000000",
   "apps": [
@@ -85,6 +85,64 @@
     }
   ],
   "home": {
+    "sections": [
+      {
+        "type": "search",
+        "suggestions": [
+          "synthetic notes",
+          "synthetic media"
+        ]
+      },
+      {
+        "type": "discover",
+        "slides": [
+          {
+            "app": "alpha-notes",
+            "size": "hero",
+            "headline": "Notes, but synthetic",
+            "blurb": "A slide that sets every key.",
+            "illustration_url": "https://assets.example.invalid/home/discover/alpha-notes.png"
+          },
+          {
+            "app": "beta-media",
+            "size": "side"
+          }
+        ]
+      },
+      {
+        "type": "intents",
+        "title": "I want to...",
+        "packs": [
+          "alpha-pack"
+        ]
+      },
+      {
+        "type": "packs",
+        "title": "Starter packs",
+        "packs": [
+          "alpha-pack"
+        ]
+      },
+      {
+        "type": "categories",
+        "title": "Browse by category",
+        "groups": [
+          {
+            "category": "notes",
+            "apps": [
+              "alpha-notes"
+            ]
+          },
+          {
+            "category": "media",
+            "apps": [
+              "beta-media",
+              "gamma-demo"
+            ]
+          }
+        ]
+      }
+    ],
     "spotlight": "alpha-notes",
     "groups": [
       {
@@ -102,6 +160,21 @@
       }
     ]
   },
+  "packs": [
+    {
+      "id": "alpha-pack",
+      "title": "Alpha pack",
+      "description": "A synthetic pack of two synthetic apps.",
+      "illustration_url": "https://assets.example.invalid/home/packs/alpha-pack.png",
+      "apps": [
+        "alpha-notes",
+        "beta-media"
+      ],
+      "keywords": [
+        "synthetic pack"
+      ]
+    }
+  ],
   "categories": [
     {
       "id": "notes",
