@@ -171,6 +171,9 @@ export type AppSecret = Schemas["AppSecretDTO"];
 // rule lives only in the brain (AUTH.md # Device access).
 export type SSHAccess = Schemas["SSHAccessDTO"];
 export type SSHKey = Schemas["SSHKeyDTO"];
+// SSHKeyCheck is the brain's answer to "is this a public key?": the key as Save
+// would store it, and its fingerprint. Asked at "Add key" (POST /me/ssh/check-key).
+export type SSHKeyCheck = Schemas["Check-my-ssh-keyResponse"];
 
 // Scope is a UI-side literal union, intentionally NOT generated. The brain
 // serves scope (like severity / status / state) as a free string — the huma

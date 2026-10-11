@@ -30,12 +30,13 @@ import { onBeforeRouteLeave } from "vue-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
 import { SwitchRoot, SwitchThumb } from "reka-ui";
 import { KeyRound, Lock, Trash2, Undo2, Upload } from "lucide-vue-next";
-import { api, ApiError, type SSHAccess } from "@/api";
+import { api, ApiError, type SSHAccess, type SSHKeyCheck } from "@/api";
 import { isLeavingForConfirm, withElevation } from "@/elevate";
 import { isHosted, isBoxOwner, useAuth } from "@/auth";
 import {
   buildSaveBody,
   clearStoredDraft,
+  dropHiddenChanges,
   emptyDraft,
   isDirty,
   keyBlob,
@@ -89,32 +90,32 @@ const passwordOn = computed(() => {
   return draft.value.requirePassword ?? box.value?.require_password ?? false;
 });
 
-// Hosted refuses an enable with no key, so the top switch stays off until the
-// draft holds one. The appliance always has the password behind it.
-const needsKeyFirst = computed(() => keyRequired.value && finalKeyCount.value === 0);
-
-// The one state Save refuses: hosted, SSH on, and no key left. Reachable by
-// removing every key from an account that has SSH on. Save is hidden while it
-// holds, and the reason is shown on the key card, which is the control that can
-// fix it.
-const invalidReason = computed(() =>
-  keyRequired.value && enabled.value && finalKeyCount.value === 0
-    ? "Keep at least one key while SSH is on. This box needs a key to let you in."
-    : "",
-);
-
-// Hidden while SSH is off, because a lock on a door nobody can open is noise.
-// Two exceptions: a hosted box with no key yet, where the key card is the only
-// way to reach the first key, and a draft with key changes in it, which must stay
-// in view until it is saved or cancelled.
-const showMethods = computed(() => enabled.value || needsKeyFirst.value || keysChanged.value);
-
 // The add form. Its text is part of the draft for Save and for "unsaved
 // changes", but it is not stored: a half-typed paste is not worth the risk of
 // writing whatever it is to sessionStorage.
 const showAddKey = ref(false);
 const keyText = ref("");
 const keyLabel = ref("");
+
+// Hosted refuses an enable with no key, and this is that case. The top switch
+// still moves, because it only changes the draft: the user turns SSH on, adds a
+// key, then saves once. The appliance always has the password behind it.
+const needsKeyFirst = computed(() => keyRequired.value && finalKeyCount.value === 0);
+
+// The one state Save refuses: hosted, SSH on, and no key. It is the normal first
+// step (SSH just turned on, no key yet) and also the state left by removing every
+// key. Save stays in view but disabled while it holds, with the reason next to
+// it. A key typed into the add form counts, because Save stages it first.
+const invalidReason = computed(() =>
+  keyRequired.value && enabled.value && finalKeyCount.value === 0 && keyText.value.trim() === ""
+    ? "Keep at least one key while SSH is on. This box needs a key to let you in."
+    : "",
+);
+
+// Hidden while SSH is off, because a lock on a door nobody can open is noise.
+// Turning SSH off drops the unsaved method changes (setEnabled), and every other
+// path to "off" does the same (dropHiddenChanges), so nothing hidden is saved.
+const showMethods = computed(() => enabled.value);
 const fileInput = ref<HTMLInputElement | null>(null);
 
 // A key is "in use" when the account would hold one. There is no separate flag
@@ -150,8 +151,22 @@ function clearErrors() {
 // ── editing ────────────────────────────────────────────────────────────────────
 // A switch set back to the box's value stops being a change, so turning something
 // on and off again leaves a clean draft and Save and Cancel go away again.
+//
+// Turning SSH on where the box needs a key and there is none opens the add form,
+// because that is the next step. Turning it off drops the unsaved method changes:
+// the methods are hidden then, and a change nobody can see must not be saved.
+// Saved keys stay on the account, so turning SSH on again brings them back.
 function setEnabled(on: boolean) {
   draft.value.enabled = on === box.value?.enabled ? null : on;
+  if (on) {
+    if (needsKeyFirst.value) showAddKey.value = true;
+    return;
+  }
+  cancelAddKey();
+  draft.value.added = [];
+  draft.value.removed = [];
+  draft.value.requirePassword = null;
+  pendingKeyErrors.value = {};
 }
 
 function setPassword(on: boolean) {
@@ -202,18 +217,45 @@ async function pickFile(event: Event) {
 }
 
 // stageKey moves the add form's key into the draft. It returns false when the key
-// is refused, so Save can stop there. Two checks happen here and not only in the
-// brain: a private key must never reach the draft, because the draft is written
-// to sessionStorage; and a key the list already shows is caught before it turns
-// into a refused Save.
-function stageKey(): boolean {
-  const text = keyText.value.trim();
-  if (!text) return true;
-  if (looksLikePrivateKey(text)) {
+// is refused, so Save can stop there. The key is checked when it is added, not
+// when it is saved: the brain's check-key route runs the same parse Save runs,
+// and its answer (the key as it will be stored, and its fingerprint) is what goes
+// into the draft. A private key is refused here before it is sent anywhere,
+// because the draft is written to sessionStorage. A key the list already shows
+// is caught here too, before it turns into a refused Save.
+const checkingKey = ref(false);
+
+// Each check carries a token. Anything that closes the form or changes the draft
+// under it (Cancel, turning SSH off, the form's own Cancel) bumps the token in
+// cancelAddKey, and a check that comes back to a new token is dropped. So a key
+// is never staged into a draft that moved on while it was being checked.
+let stageToken = 0;
+
+async function stageKey(): Promise<boolean> {
+  if (checkingKey.value) return false;
+  const raw = keyText.value.trim();
+  if (!raw) return true;
+  if (looksLikePrivateKey(raw)) {
     addKeyError.value =
       "That is a private key. Keep it secret and paste the matching .pub file instead.";
     return false;
   }
+  addKeyError.value = "";
+  const token = ++stageToken;
+  checkingKey.value = true;
+  let checked: SSHKeyCheck;
+  try {
+    checked = await api.post<SSHKeyCheck>("/me/ssh/check-key", {
+      public_key: raw,
+    });
+  } catch (e) {
+    if (token === stageToken) addKeyError.value = errorMessage(e);
+    return false;
+  } finally {
+    checkingKey.value = false;
+  }
+  if (token !== stageToken || !enabled.value) return false;
+  const text = checked.public_key;
   const blob = keyBlob(text);
   if (blob) {
     const held = heldKeys.value.find((k) => keyBlob(k.public_key) === blob);
@@ -232,6 +274,7 @@ function stageKey(): boolean {
     tempId: newTempId(),
     publicKey: text,
     label: keyLabel.value.trim(),
+    fingerprint: checked.fingerprint,
   });
   cancelAddKey();
   return true;
@@ -248,6 +291,7 @@ function newTempId(): string {
 }
 
 function cancelAddKey() {
+  stageToken += 1;
   showAddKey.value = false;
   keyText.value = "";
   keyLabel.value = "";
@@ -259,7 +303,6 @@ function cancelAddKey() {
 // hosted owner's portal confirm is the case that needs it most, but one path for
 // everyone is the path that keeps working, and it covers an accidental reload.
 const restored = ref(false);
-const restoredMoved = ref(false);
 // No write before the restore has run: the empty draft on first load would
 // otherwise clear the stored one before it could be read.
 const restoreChecked = ref(false);
@@ -275,7 +318,6 @@ watch(
     if (r) {
       draft.value = r.draft;
       restored.value = true;
-      restoredMoved.value = r.moved;
     }
   },
   { immediate: true },
@@ -292,6 +334,7 @@ watch(box, (b) => {
   if (d.removed.some((id) => !ids.has(id))) d.removed = d.removed.filter((id) => ids.has(id));
   if (d.enabled === b.enabled) d.enabled = null;
   if (d.requirePassword === b.require_password) d.requirePassword = null;
+  dropHiddenChanges(d, b);
 });
 
 function persist() {
@@ -307,7 +350,6 @@ function resetDraft() {
   cancelAddKey();
   clearErrors();
   restored.value = false;
-  restoredMoved.value = false;
   const userId = currentUser.value?.id;
   if (userId) clearStoredDraft(userId);
 }
@@ -332,9 +374,10 @@ const save = useMutation({
 // back to the pending key at fault.
 let savingKeptCount = 0;
 
-function submit() {
+async function submit() {
+  if (checkingKey.value || saving.value) return;
   clearErrors();
-  if (!box.value || !stageKey() || invalidReason.value) return;
+  if (!box.value || !(await stageKey()) || invalidReason.value) return;
   persist();
   const { body, keptCount } = buildSaveBody(draft.value, box.value, ownerHasNoPassword.value);
   savingKeptCount = keptCount;
@@ -381,8 +424,9 @@ function addedOn(seconds: number): string {
   return new Date(seconds * 1000).toLocaleDateString();
 }
 
-// A pending key has no fingerprint yet (the brain makes it on save), so its row
-// shows the key type and the comment, the two parts a person recognises.
+// A pending key from a draft stored before the key check existed has no
+// fingerprint, so its row shows the key type and the comment, the two parts a
+// person recognises.
 function pendingSummary(publicKey: string): string {
   const parts = publicKey.trim().split(/\s+/);
   const typeAt = parts.findIndex((p) => /^(ssh-|ecdsa-|sk-)/.test(p));
@@ -399,15 +443,11 @@ const saving = computed(() => save.isPending.value);
     <section class="space-y-3">
       <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">SSH</h2>
       <p class="text-sm text-muted-foreground">
-        SSH gives you a command line on this box from another computer. It is off until you turn it
-        on, and it only ever covers your own account.
+        SSH gives you a command line on this box from another computer. It is off by default.
       </p>
 
       <p v-if="restored" class="text-sm">
         Unsaved changes restored.
-        <template v-if="restoredMoved">
-          Your SSH settings also changed since then, so check them before you save.
-        </template>
         <button type="button" class="text-accent underline-offset-2 hover:underline" @click="discard">
           Discard
         </button>
@@ -425,27 +465,12 @@ const saving = computed(() => save.isPending.value);
         <div class="min-w-0">
           <div class="text-sm font-medium">Enable SSH for my account</div>
           <div class="text-xs text-muted-foreground">
-            <template v-if="needsKeyFirst && !enabled">
-              Add a public key below first. This box needs a key, and a password on its own is not
-              enough.
-            </template>
-            <template v-else-if="enabled && box?.enabled">
-              You can sign in from another computer as
-              <span class="font-mono">{{ currentUser?.username }}</span
-              >.
-            </template>
-            <template v-else-if="enabled">
-              Once you save, you can sign in from another computer as
-              <span class="font-mono">{{ currentUser?.username }}</span
-              >.
-            </template>
-            <template v-else-if="box?.enabled">SSH turns off for your account when you save.</template>
-            <template v-else>Nobody can reach your account over SSH while this is off.</template>
+            Turn on SSH to access the box externally.
           </div>
         </div>
         <SwitchRoot
           :model-value="enabled"
-          :disabled="saving || (needsKeyFirst && !enabled)"
+          :disabled="saving"
           aria-label="Enable SSH for my account"
           class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-border bg-muted outline-none transition-colors disabled:cursor-default disabled:opacity-60 data-[state=checked]:border-accent data-[state=checked]:bg-accent"
           @update:model-value="setEnabled"
@@ -467,8 +492,7 @@ const saving = computed(() => save.isPending.value);
         Authentication methods
       </h2>
       <p class="text-sm text-muted-foreground">
-        What you have to prove to get in. With both on you need both, so the second one is an extra
-        lock and never another way in.
+        There are 2 authentication methods: your account password and / or a public SSH key.
       </p>
 
       <!-- Password. Never called anything but "Password" here: there is one
@@ -480,17 +504,7 @@ const saving = computed(() => save.isPending.value);
             <div class="min-w-0">
               <div class="text-sm font-medium">Password</div>
               <div class="text-xs text-muted-foreground">
-                <template v-if="!keyRequired">
-                  Required by this box. It is the same password you sign in to the dashboard with.
-                </template>
-                <template v-else-if="ownerHasNoPassword">
-                  This box has no password for your account. You sign in through your moose account
-                  instead, so there is nothing here to type. Your key is what gets you in.
-                </template>
-                <template v-else>
-                  The same password you sign in to this box with. With this on, SSH asks for your key
-                  and then your password. Two locks, not two ways in.
-                </template>
+                Your account password. When both methods are on, SSH asks for both.
               </div>
             </div>
           </div>
@@ -516,15 +530,7 @@ const saving = computed(() => save.isPending.value);
             <div class="min-w-0">
               <div class="text-sm font-medium">Public key</div>
               <div class="text-xs text-muted-foreground">
-                <template v-if="needsKeyFirst">
-                  Required by this box. Add your first key to turn SSH on.
-                </template>
-                <template v-else-if="keyRequired">
-                  Required by this box. A key is a file your computer holds.
-                </template>
-                <template v-else>
-                  A key is a file your computer holds, and an extra lock on top of your password.
-                </template>
+                A key file on your computer that proves it is you when you connect over SSH.
               </div>
             </div>
           </div>
@@ -600,7 +606,7 @@ const saving = computed(() => save.isPending.value);
                 <div class="min-w-0">
                   <div class="truncate text-sm font-medium">{{ a.label || "New key" }}</div>
                   <div class="truncate font-mono text-xs text-muted-foreground">
-                    {{ pendingSummary(a.publicKey) }}
+                    {{ a.fingerprint || pendingSummary(a.publicKey) }}
                   </div>
                   <div class="text-xs text-muted-foreground">Will be added when you save</div>
                 </div>
@@ -622,8 +628,6 @@ const saving = computed(() => save.isPending.value);
           </ul>
           <p v-else-if="!showAddKey" class="text-sm text-muted-foreground">No keys yet.</p>
 
-          <p v-if="invalidReason" class="text-sm text-destructive">{{ invalidReason }}</p>
-
           <div v-if="!showAddKey">
             <Button variant="secondary" size="sm" :disabled="saving" @click="showAddKey = true">
               Add a key
@@ -635,6 +639,7 @@ const saving = computed(() => save.isPending.value);
               <span class="text-xs text-muted-foreground">Public key</span>
               <textarea
                 v-model="keyText"
+                :readonly="checkingKey"
                 rows="3"
                 required
                 spellcheck="false"
@@ -647,6 +652,7 @@ const saving = computed(() => save.isPending.value);
                 <span class="text-xs text-muted-foreground">Name it (optional)</span>
                 <input
                   v-model="keyLabel"
+                  :readonly="checkingKey"
                   type="text"
                   placeholder="Laptop"
                   class="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent"
@@ -667,7 +673,9 @@ const saving = computed(() => save.isPending.value);
             <p v-if="addKeyError" class="text-sm text-destructive">{{ addKeyError }}</p>
             <div class="flex justify-end gap-2">
               <Button type="button" variant="ghost" size="sm" @click="cancelAddKey">Cancel</Button>
-              <Button type="submit" size="sm" :disabled="!keyText.trim()">Add key</Button>
+              <Button type="submit" size="sm" :disabled="!keyText.trim() || checkingKey">
+                Add key
+              </Button>
             </div>
           </form>
         </div>
@@ -675,17 +683,20 @@ const saving = computed(() => save.isPending.value);
     </section>
 
     <!-- One Save for the whole screen: one request, one password prompt. Shown
-         only while there is something to save or cancel, and Save is left out
-         while the draft is invalid (the reason is on the key card). Both stay up
+         only while there is something to save or cancel, and Save is disabled
+         while the draft is invalid, with the reason beside it. Both stay up
          while a save is in flight, so the "Saving…" state has somewhere to show. -->
     <div
       v-if="!ssh.isLoading.value && !ssh.isError.value && (dirty || saving || saveError)"
       class="space-y-2 border-t border-border pt-4"
     >
       <p v-if="saveError" class="text-sm text-destructive">{{ saveError }}</p>
-      <div v-if="dirty || saving" class="flex justify-end gap-2">
+      <div v-if="dirty || saving" class="flex items-center justify-end gap-2">
+        <p v-if="invalidReason" class="mr-auto text-sm text-muted-foreground">
+          {{ invalidReason }}
+        </p>
         <Button variant="ghost" :disabled="saving" @click="discard">Cancel</Button>
-        <Button v-if="!invalidReason" :disabled="saving" @click="submit">
+        <Button :disabled="saving || checkingKey || !!invalidReason" @click="submit">
           {{ saving ? "Saving…" : "Save" }}
         </Button>
       </div>

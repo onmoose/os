@@ -572,6 +572,39 @@ components:
         - current_password
         - new_password
       type: object
+    Check-my-ssh-keyRequest:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/Check-my-ssh-keyRequest.json
+          format: uri
+          readOnly: true
+          type: string
+        public_key:
+          type: string
+      required:
+        - public_key
+      type: object
+    Check-my-ssh-keyResponse:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/Check-my-ssh-keyResponse.json
+          format: uri
+          readOnly: true
+          type: string
+        fingerprint:
+          type: string
+        public_key:
+          type: string
+      required:
+        - public_key
+        - fingerprint
+      type: object
     Complete-first-runResponse:
       additionalProperties: false
       properties:
@@ -3938,6 +3971,29 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: "Save my whole SSH state: on or off, the password choice, and the complete key set (auth required, elevation-class)"
+  /api/v1/me/ssh/check-key:
+    post:
+      operationId: check-my-ssh-key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Check-my-ssh-keyRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Check-my-ssh-keyResponse"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Check one public key the way Save will, without storing it (auth required)
   /api/v1/notifications:
     get:
       operationId: list-notifications
