@@ -50,6 +50,48 @@ func (s *Server) registerSSHRoutes(api huma.API) {
 		OperationID: "set-my-ssh", Method: "PUT", Path: "/api/v1/me/ssh",
 		Summary: "Save my whole SSH state: on or off, the password choice, and the complete key set (auth required, elevation-class)",
 	}, s.setMySSH)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "check-my-ssh-key", Method: "POST", Path: "/api/v1/me/ssh/check-key",
+		Summary: "Check one public key the way Save will, without storing it (auth required)",
+	}, s.checkMySSHKey)
+}
+
+// checkMySSHKey runs one pasted or uploaded key through parseSSHPublicKey, the
+// same check Save runs, and stores nothing. The SSH screen calls it when a key is
+// added to the draft, so a bad paste is refused at "Add key" and not at Save.
+// Save still checks every new key itself: this is for the user, not a gate.
+//
+// It is a pure read, so it is not audited and needs no elevation. Duplicates are
+// not checked here: the screen compares against the list it shows, and Save
+// refuses a duplicate against the store.
+func (s *Server) checkMySSHKey(ctx context.Context, in *struct {
+	Body struct {
+		PublicKey string `json:"public_key"`
+	}
+}) (*struct {
+	Body struct {
+		// The key as Save would store it: re-serialised, options dropped.
+		PublicKey   string `json:"public_key"`
+		Fingerprint string `json:"fingerprint"`
+	}
+}, error) {
+	if _, ok := auth.FromContext(ctx); !ok {
+		return nil, huma.Error401Unauthorized("unauthenticated")
+	}
+	line, fp, err := parseSSHPublicKey(in.Body.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	out := &struct {
+		Body struct {
+			PublicKey   string `json:"public_key"`
+			Fingerprint string `json:"fingerprint"`
+		}
+	}{}
+	out.Body.PublicKey = line
+	out.Body.Fingerprint = fp
+	return out, nil
 }
 
 // SSHKeyDTO is one stored key as the dashboard sees it. The key material is sent
