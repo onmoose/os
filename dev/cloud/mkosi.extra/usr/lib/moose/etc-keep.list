@@ -15,6 +15,10 @@ ssh/ssh_host_*
 # the time zone.
 ssh/sshd_config.d/moose-allowed.conf
 ssh/moose-authorized-keys
+# The hosted owner's sudo rule, present only while the owner has SSH on. It
+# follows the drop-in above, and host-agent removes it at start when the two
+# disagree (#602).
+sudoers.d/moose-owner
 localtime
 # The box's remap range, pinned at first boot (rule 2).
 subuid
