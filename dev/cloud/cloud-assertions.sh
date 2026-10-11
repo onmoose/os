@@ -1669,8 +1669,13 @@ ssh)
 
     # --- 8b. SSH off takes the sudo rule with it (#602).
     [ -e "$SUDOERS" ] && fail "ssh: $SUDOERS survived the owner turning SSH off: $(cat "$SUDOERS")"
-    runuser -u "$owner" -- sudo -n true >/dev/null 2>&1 \
+    # Assert the reason, not only the failure: `sudo -n` fails for many
+    # reasons, and only "a password is required" says the rule is gone.
+    osudo="$(runuser -u "$owner" -- sudo -n true 2>&1 && echo MOOSE_SUDO_OK)"
+    grep -q MOOSE_SUDO_OK <<<"$osudo" \
         && fail "ssh: the owner can still run sudo with no password after turning SSH off"
+    grep -qi 'password is required' <<<"$osudo" \
+        || fail "ssh: after SSH off the owner's sudo failed, but not by asking for a password: $osudo"
     echo "cloud-assertions: SSH off removed $SUDOERS, and the owner's sudo asks for a password again"
 
     # --- 8c. a host-agent restart removes a stale rule (#602).
