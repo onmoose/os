@@ -1423,6 +1423,9 @@ ssh)
 
     DROPIN=/etc/ssh/sshd_config.d/moose-allowed.conf
     KEYSDIR=/etc/ssh/moose-authorized-keys
+    # The hosted owner's prompt-free sudo rule (#602). It exists only while the
+    # owner has SSH on.
+    SUDOERS=/etc/sudoers.d/moose-owner
 
     # A TCP connect to :22, as the answer to "is the port open". /dev/tcp fails on a
     # closed port, which is exactly the signal — no ss/netstat parsing.
@@ -1449,6 +1452,7 @@ ssh)
     unit_active && fail "ssh: ssh.service is active at boot — the image enabled sshd; on hosted that leaves :22 open for the life of the box"
     port22_open && fail "ssh: :22 answers at boot with no account enabled"
     [ -f "$DROPIN" ] && fail "ssh: $DROPIN exists at boot — nothing should be rendered before an account opts in"
+    [ -e "$SUDOERS" ] && fail "ssh: $SUDOERS exists at boot, before any account turned SSH on"
 
     # Host keys are this box's own, not the image's. Debian's postinst generates
     # them at IMAGE BUILD time, so every box provisioned from one image would share
@@ -1593,6 +1597,23 @@ ssh)
         || fail "ssh: sshd does not offer publickey either: '$pw_methods'"
     echo "cloud-assertions: password-only login refused — sshd offers '${pw_methods#*continue: }' and nothing else"
 
+    # --- 5b. the owner can use sudo over SSH with no password (#602).
+    # The portal sign-in gives the owner a random password nobody knows, so a
+    # sudo prompt would be a dead end on the one account the rescue path is
+    # for. The harness set a password above only to pass the dashboard's
+    # re-auth; NOPASSWD must not need it, and `sudo -n` fails rather than
+    # prompts, so a success here means the rule did the work.
+    [ -f "$SUDOERS" ] || fail "ssh: the owner turned SSH on but $SUDOERS was not written"
+    [ "$(stat -c '%u %a' "$SUDOERS")" = "0 440" ] \
+        || fail "ssh: $SUDOERS is $(stat -c '%u %a' "$SUDOERS"), want root-owned 440 (sudo refuses a file anyone can write)"
+    grep -qx "${owner} ALL=(ALL) NOPASSWD: ALL" "$SUDOERS" \
+        || fail "ssh: $SUDOERS does not hold the owner's rule: $(cat "$SUDOERS")"
+    visudo -c >/dev/null 2>&1 || fail "ssh: the box's sudo config does not pass visudo -c with the owner's rule in it: $(visudo -c 2>&1 | tail -3)"
+    sudo_out="$(ssh $SSH_OPTS -i "$KEYFILE" "${owner}@127.0.0.1" 'sudo -n true && echo MOOSE_SUDO_OK' 2>&1)"
+    grep -q MOOSE_SUDO_OK <<<"$sudo_out" \
+        || fail "ssh: the owner could not run sudo without a password over SSH: $sudo_out"
+    echo "cloud-assertions: the owner, with SSH on, runs sudo over SSH with no password ($SUDOERS is root 440 and passes visudo)"
+
     # --- 6. the optional second factor makes the key alone insufficient.
     # The optional factor is a second lock, never a second door: AuthenticationMethods
     # becomes publickey,password, so sshd demands BOTH and neither alone gets in
@@ -1646,16 +1667,53 @@ ssh)
         && fail "ssh: the managed key file ${KEYSDIR}/${owner} survived the account being turned off"
     echo "cloud-assertions: SSH off — ssh.service stopped, :22 closed, managed key file removed"
 
+    # --- 8b. SSH off takes the sudo rule with it (#602).
+    [ -e "$SUDOERS" ] && fail "ssh: $SUDOERS survived the owner turning SSH off: $(cat "$SUDOERS")"
+    # Assert the reason, not only the failure: `sudo -n` fails for many
+    # reasons, and only "a password is required" says the rule is gone.
+    osudo="$(runuser -u "$owner" -- sudo -n true 2>&1 && echo MOOSE_SUDO_OK)"
+    grep -q MOOSE_SUDO_OK <<<"$osudo" \
+        && fail "ssh: the owner can still run sudo with no password after turning SSH off"
+    grep -qi 'password is required' <<<"$osudo" \
+        || fail "ssh: after SSH off the owner's sudo failed, but not by asking for a password: $osudo"
+    echo "cloud-assertions: SSH off removed $SUDOERS, and the owner's sudo asks for a password again"
+
+    # --- 8c. a host-agent restart removes a stale rule (#602).
+    # host-agent keeps no state, so at start it checks the rule against the
+    # sshd drop-in and removes it when the account it names does not have SSH
+    # on. This is what stops a crash between two steps, or an older /etc, from
+    # leaving root with no prompt behind. Plant the rule a crash would leave and
+    # restart.
+    printf '# planted by the boot lane\n%s ALL=(ALL) NOPASSWD: ALL\n' "$owner" > "$SUDOERS" \
+        && chmod 0440 "$SUDOERS" || fail "ssh: could not plant a stale $SUDOERS"
+    systemctl restart host-agent.service || fail "ssh: could not restart host-agent"
+    stale_gone=""
+    for _i in $(seq 1 60); do
+        if systemctl is-active -q host-agent.service && [ ! -e "$SUDOERS" ] && [ -S /run/moose/agent.sock ]; then
+            stale_gone=1; break
+        fi
+        sleep 1
+    done
+    [ -n "$stale_gone" ] \
+        || fail "ssh: after a host-agent restart the stale $SUDOERS is still there (the owner has SSH off): $(journalctl -u host-agent.service -b --no-pager 2>&1 | grep -i sudo | tail -5)"
+    # Give the brain a moment to see the new socket before the next API call.
+    sleep 5
+    echo "cloud-assertions: a host-agent restart removed a stale sudo rule for an account with SSH off"
+
     # --- 9. deleting a user who had SSH on takes their access with them.
     # This cleanup landed in #464 and nothing outside a booted box can check it: a
     # name left in AllowUsers or a key file left in ${KEYSDIR} is a credential for an
     # account that no longer exists. Needs a second account, because the owner cannot
     # delete itself.
+    #
+    # The second account is an admin, so it is in the sudo group and also proves
+    # the other half of #602: an account the owner creates has a real password and
+    # keeps the sudo prompt. Only the owner gets the rule.
     GONE_USER=sshgone
     GONE_PW='moose-cloud-lane-gone-pw'
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before creating the second account failed"
     mk="$(full_send POST /api/v1/users "$apex" "$owner_cookie" \
-        "{\"display_name\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"member\"}" 2>/dev/null)"
+        "{\"display_name\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"admin\"}" 2>/dev/null)"
     grep -qE ' (200|201)' <<<"$(status_of "$mk")" \
         || fail "ssh: could not create the second account: status='$(status_of "$mk")'"
     gone_id="$(json_str_of "$mk" id)"
@@ -1688,6 +1746,25 @@ ssh)
         || fail "ssh: drop-in does not name '$GONE_USER' after they turned SSH on: $(cat "$DROPIN")"
     [ -f "${KEYSDIR}/${GONE_USER}" ] || fail "ssh: no managed key file for '$GONE_USER'"
 
+    # A second admin with SSH on still gets the sudo prompt (#602). `sudo -n`
+    # fails instead of prompting, and says a password is required. Check the
+    # group first, or a refusal would only prove the account cannot sudo at all.
+    id -nG "$GONE_USER" | grep -qw sudo \
+        || fail "ssh: the second admin '$GONE_USER' is not in the sudo group ($(id -nG "$GONE_USER")), so the prompt check below would prove nothing"
+    [ -e "$SUDOERS" ] && fail "ssh: $SUDOERS exists while only the second admin has SSH on: $(cat "$SUDOERS")"
+    gsudo=""
+    for _i in $(seq 1 30); do
+        gsudo="$(ssh $SSH_OPTS -i "$KEYFILE" "${GONE_USER}@127.0.0.1" 'echo MOOSE_SSH_OK; sudo -n true && echo MOOSE_SUDO_OK' 2>&1)"
+        grep -q MOOSE_SSH_OK <<<"$gsudo" && break
+        sleep 1
+    done
+    grep -q MOOSE_SSH_OK <<<"$gsudo" || fail "ssh: key login as the second admin '$GONE_USER' failed: $gsudo"
+    grep -q MOOSE_SUDO_OK <<<"$gsudo" \
+        && fail "ssh: THE SECOND ADMIN GOT SUDO WITH NO PASSWORD, only the hosted owner may: $gsudo"
+    grep -qi 'password is required' <<<"$gsudo" \
+        || fail "ssh: the second admin's sudo did not ask for a password: $gsudo"
+    echo "cloud-assertions: a second admin with SSH on still gets the sudo password prompt"
+
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before deleting the second account failed"
     rmu="$(full_send DELETE "/api/v1/users/${gone_id}" "$apex" "$owner_cookie" '{}' 2>/dev/null)"
     grep -qE ' (204|200)' <<<"$(status_of "$rmu")" \
@@ -1704,7 +1781,7 @@ ssh)
         || fail "ssh: :22 still answers after the last enabled account was deleted"
     echo "cloud-assertions: deleting an account with SSH on removed its name, its key file, and closed :22"
 
-    echo "cloud-assertions: hosted SSH verified end-to-end (port opens and closes with the toggle, key required, second factor enforced, deleted account leaves nothing behind)"
+    echo "cloud-assertions: hosted SSH verified end-to-end (port opens and closes with the toggle, key required, second factor enforced, owner sudo with no password only while SSH is on, deleted account leaves nothing behind)"
     ;;
 update)
     # Control-plane update proof (#382): a REAL update and a REAL failed-update-

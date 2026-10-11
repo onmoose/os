@@ -81,6 +81,23 @@ func main() {
 	a, cleanup := buildAgent()
 	defer cleanup()
 
+	// The hosted owner's sudo rule exists only while that account has SSH on
+	// (sshaccess/sudoers.go). host-agent keeps no state of its own, so at every
+	// start the rule is checked against the sshd drop-in, which is the enabled
+	// set, and removed when it names an account that is not in it. That is what
+	// stops a crash or an older /etc from leaving root with no prompt behind.
+	// Both build profiles run it: on the appliance there is never a rule, so it
+	// finds nothing, and a file someone planted there goes too.
+	if sm, ok := a.SSH.(*sshaccess.Manager); ok {
+		removed, err := sm.ReconcileSudoAtStart()
+		if err != nil {
+			slog.Warn("could not fully check the owner's sudo rule against the SSH state", "service", "ssh", "err", err)
+		}
+		if removed {
+			slog.Info("removed a sudo rule for an account that does not have SSH on", "service", "ssh")
+		}
+	}
+
 	// After a Debian major the /etc tidy-up keeps the sshd drop-in but drops the
 	// unit's enable links (BUILD.md # 1b, rule 4), and leaves a marker. Only
 	// then is sshd turned back on for the accounts the drop-in names. On any

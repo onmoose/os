@@ -69,7 +69,10 @@ type harness struct {
 	// A request for sshFailUser makes the mock answer 500, so the host-502 and
 	// rollback paths are reachable.
 	sshCalls *[]protocol.SetSSHAccessRequest
-	apiSrv   *Server // the underlying api.Server, for direct method tests
+	// roles is the role the /v1/auth/set-role mock last set per username.
+	// Guarded by pmu. Lets a test check a rollback reached the host too.
+	roles  map[string]string
+	apiSrv *Server // the underlying api.Server, for direct method tests
 	// catalogDir is the root the harness's catalog reads from. catalog.Load
 	// hits the filesystem on each call, so tests write manifest fixtures into
 	// this dir *after* construction and the live server picks them up — no need
@@ -239,7 +242,7 @@ func newHarness(t *testing.T, opts ...func(*Server)) *harness {
 	t.Cleanup(ts.Close)
 
 	jar, _ := newJar()
-	return &harness{srv: ts, jar: jar, t: t, pwds: pwds, pmu: &pmu, st: st, deleteCalls: &deleteCalls, tzCalls: &tzCalls, sshCalls: &sshCalls, apiSrv: srv, catalogDir: catDir, stateDir: stateDir}
+	return &harness{srv: ts, jar: jar, t: t, pwds: pwds, pmu: &pmu, st: st, deleteCalls: &deleteCalls, tzCalls: &tzCalls, sshCalls: &sshCalls, roles: roles, apiSrv: srv, catalogDir: catDir, stateDir: stateDir}
 }
 
 func (h *harness) do(method, path string, body any) *http.Response {

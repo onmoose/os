@@ -3,13 +3,15 @@
 // sshd or systemd dependency; only cmd/host-agent-real imports it.
 //
 // The unit of work is one account's full desired state
-// (BRAIN_HOST_PROTOCOL.md # SSH access). Three things happen per call, in this
+// (BRAIN_HOST_PROTOCOL.md # SSH access). Four things happen per call, in this
 // order, and the order is the point:
 //
 //  1. The account's authorized_keys file is written (or removed).
 //  2. The sshd drop-in is re-rendered from the whole enabled set and validated
 //     with `sshd -t` before it is allowed to take effect.
-//  3. The daemon is started or stopped so that :22 is open exactly while at
+//  3. The sudo rule for the hosted owner is written or removed (sudoers.go),
+//     and a new rule is validated with `visudo -cf` before it is installed.
+//  4. The daemon is started or stopped so that :22 is open exactly while at
 //     least one account is enabled (BUILD.md # SSH).
 //
 // Keys are written before the config so that an account never becomes reachable
@@ -53,6 +55,9 @@ type Manager struct {
 	Runner func(name string, args ...string) ([]byte, error)
 	// KeysDir holds the root-owned per-account key files. Empty → ManagedKeysDir.
 	KeysDir string
+	// SudoersPath is the sudo rule for the hosted owner. Empty →
+	// DefaultSudoersPath. Present so the tests can keep it out of /etc.
+	SudoersPath string
 
 	// mu serialises SetAccess. Every call is a read-modify-write of one drop-in
 	// that holds the whole enabled set, so two concurrent calls could each render
@@ -134,6 +139,15 @@ func (m *Manager) SetAccess(req protocol.SetSSHAccessRequest) error {
 	if err != nil {
 		return err
 	}
+	// The sudo rule joins the same undo set, for the same reason: it is written
+	// after the drop-in and before the daemon call, so a failure at the daemon
+	// step must take it back too. Otherwise a failed enable would leave the
+	// owner with prompt-free root on an account the brain has just rolled back
+	// to "SSH off".
+	restoreSudo, err := m.snapshotSudoers()
+	if err != nil {
+		return err
+	}
 
 	if err := m.writeKeys(req.User, req.AuthorizedKeys, req.Enabled); err != nil {
 		return err
@@ -163,8 +177,18 @@ func (m *Manager) SetAccess(req protocol.SetSSHAccessRequest) error {
 		}
 		return err
 	}
+	// After the drop-in, so a rule is never live for an account sshd has not
+	// accepted yet. A refused or failed rule puts the two files above back: the
+	// brain rolls its row back on this error, and keys and a drop-in left in
+	// place would give the account SSH the brain no longer records.
+	if err := m.applySudoers(req.User, req.Enabled && req.PasswordlessSudo); err != nil {
+		if rErr := errors.Join(restoreSudo(), restoreDropIn(), restoreKeys()); rErr != nil {
+			return fmt.Errorf("%w (and the host could not be put back: %v)", err, rErr)
+		}
+		return err
+	}
 	if err := m.applyDaemon(len(next) > 0); err != nil {
-		if rErr := m.undo(restoreDropIn, restoreKeys, len(current) > 0); rErr != nil {
+		if rErr := m.undo(restoreDropIn, restoreKeys, restoreSudo, len(current) > 0); rErr != nil {
 			// The change failed and so did the undo. Say so plainly, as the two
 			// steps above do: the host is now in a state neither side asked for
 			// and a human has to look.
@@ -176,7 +200,7 @@ func (m *Manager) SetAccess(req protocol.SetSSHAccessRequest) error {
 }
 
 // undo puts the host back after a daemon call failed, in the reverse order of
-// the writes: drop-in, then key file, then the daemon itself.
+// the writes: sudo rule, drop-in, then key file, then the daemon itself.
 //
 // The daemon step is what makes it an undo rather than half of one. A failed
 // call can still have changed the run state — `enable --now` starts the unit
@@ -186,15 +210,19 @@ func (m *Manager) SetAccess(req protocol.SetSSHAccessRequest) error {
 // same full-state convergence SetAccess itself does, which is why it is safe to
 // run on a path where a systemctl call has just failed: it either succeeds or
 // it is reported.
-func (m *Manager) undo(restoreDropIn, restoreKeys func() error, wasRunning bool) error {
-	// The two files are separate paths and neither restore depends on the other,
-	// so both are attempted and the errors are collected. Returning at the first
-	// one would leave the other's write live for no reason, which makes an
+func (m *Manager) undo(restoreDropIn, restoreKeys, restoreSudo func() error, wasRunning bool) error {
+	// The files are separate paths and no restore depends on another, so all
+	// are attempted and the errors are collected. Returning at the first one
+	// would leave the other writes live for no reason, which makes an
 	// already-bad state worse than it needs to be.
+	sudoErr := restoreSudo()
 	dropInErr := restoreDropIn()
 	keysErr := restoreKeys()
 
 	var errs []error
+	if sudoErr != nil {
+		errs = append(errs, fmt.Errorf("restore the sudo rule: %w", sudoErr))
+	}
 	if dropInErr != nil {
 		errs = append(errs, fmt.Errorf("restore the drop-in: %w", dropInErr))
 	}
@@ -212,13 +240,14 @@ func (m *Manager) undo(restoreDropIn, restoreKeys func() error, wasRunning bool)
 	// what closes :22, which on hosted is the only control over the port there
 	// is (ENVIRONMENT.md # Access & files).
 	//
-	// Up is gated on **every** file being back, because enable and reload read
+	// Up is gated on both sshd files being back, because enable and reload read
 	// what is on disk. If either restore failed, what they would read is still
 	// this call's, so starting against it puts the failed change into effect —
 	// the opposite of an undo. The key file counts as much as the drop-in: a
 	// restored drop-in points at the very path a failed key restore has left
 	// holding the new key set, so a reload would make keys authenticate that
-	// this call has already reported as failed.
+	// this call has already reported as failed. The sudo rule does not gate it:
+	// sshd never reads that file, and a failed restore of it is reported above.
 	if !wasRunning || (dropInErr == nil && keysErr == nil) {
 		if err := m.applyDaemon(wasRunning); err != nil {
 			errs = append(errs, fmt.Errorf("reconcile the daemon: %w", err))
@@ -444,13 +473,19 @@ func (m *Manager) writeDropIn(accounts []account) error {
 
 // restore puts the drop-in back the way it was before a failed write.
 func restore(path string, previous []byte, hadPrevious bool) error {
+	return restoreMode(path, previous, hadPrevious, 0o644)
+}
+
+// restoreMode is restore for a file that needs another mode, such as the sudo
+// rule, which sudo refuses unless it is read-only.
+func restoreMode(path string, previous []byte, hadPrevious bool, perm os.FileMode) error {
 	if !hadPrevious {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
 	}
-	return writeFileAtomic(path, previous, 0o644, -1, -1)
+	return writeFileAtomic(path, previous, perm, -1, -1)
 }
 
 // applyDaemon brings sshd to the state the enabled set implies. With no enabled

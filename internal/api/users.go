@@ -218,6 +218,14 @@ func (s *Server) updateUserRole(ctx context.Context, in *struct {
 		return nil, huma.Error409Conflict("cannot demote yourself")
 	}
 
+	// The hosted owner's sudo rule follows their role (passwordlessSudo), so the
+	// role change and the SSH push below must not interleave with an SSH Save,
+	// which reads the role while it pushes. Taken before the target is read, so
+	// the role a rollback restores is the one this request saw, not one another
+	// role change has replaced since. Same lock as every SSH write.
+	s.sshWrites.Lock()
+	defer s.sshWrites.Unlock()
+
 	target, err := s.store.GetUser(targetID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, huma.Error404NotFound("no such user")
@@ -252,6 +260,22 @@ func (s *Server) updateUserRole(ctx context.Context, in *struct {
 		}
 		s.auditor.Record(ctx, audit.ActionUserRoleChange, tgt, meta, false)
 		return nil, huma.Error502BadGateway("host-agent set-role failed", err)
+	}
+
+	// A demoted hosted owner leaves the sudo group above, but the no-password
+	// rule names the account, not the group, so it has to go too. Pushing their
+	// SSH again sends the flag for the new role. If that push fails, host-agent
+	// has put its own state back, so the rule is as it was: undo the role on
+	// both sides, so a member is never left holding root.
+	if err := s.resyncOwnerSudo(ctx, targetID, target.Username); err != nil {
+		if rbErr := s.store.UpdateRole(targetID, target.Role); rbErr != nil {
+			slog.Error("rollback update role failed", "user_id", targetID, "err", rbErr)
+		}
+		if rbErr := s.host.SetRole(ctx, target.Username, target.Role); rbErr != nil {
+			slog.Error("rollback host role failed", "user_id", targetID, "username", target.Username, "role", target.Role, "err", rbErr)
+		}
+		s.auditor.Record(ctx, audit.ActionUserRoleChange, tgt, meta, false)
+		return nil, huma.Error502BadGateway("host-agent ssh set-access failed", err)
 	}
 
 	s.auditor.Record(ctx, audit.ActionUserRoleChange, tgt, meta, true)
@@ -367,14 +391,14 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 		if !access.Enabled {
 			return
 		}
-		if err := s.applySSH(ctx, target.Username, access.Enabled, access.RequirePassword, sshKeys); err != nil {
+		if err := s.applySSH(ctx, targetID, target.Username, access.Enabled, access.RequirePassword, sshKeys); err != nil {
 			slog.Error("ssh revoke rollback failed; the account is enabled in the brain but revoked on the host",
 				"user_id", targetID, "username", target.Username, "service", "ssh", "err", err)
 		}
 	}
 
 	if access.Enabled {
-		if err := s.applySSH(ctx, target.Username, false, false, nil); err != nil {
+		if err := s.applySSH(ctx, targetID, target.Username, false, false, nil); err != nil {
 			s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
 			return nil, huma.Error502BadGateway("host-agent ssh set-access failed", err)
 		}
