@@ -21,8 +21,9 @@ func newManager(t *testing.T, keysDir string) (*Manager, *[]string) {
 	t.Helper()
 	var ran []string
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
-		KeysDir:    keysDir,
+		SudoersPath: filepath.Join(t.TempDir(), "sudoers.d", "moose-owner"),
+		DropInPath:  filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
+		KeysDir:     keysDir,
 		Runner: func(name string, args ...string) ([]byte, error) {
 			ran = append(ran, name+" "+strings.Join(args, " "))
 			if name == "systemctl" && len(args) > 0 && args[0] == "is-active" {
@@ -165,7 +166,8 @@ func TestRunningDaemonIsReloadedNotRestarted(t *testing.T) {
 func TestBadRenderIsRefusedBeforeReload(t *testing.T) {
 	var ran []string
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "moose-allowed.conf"),
+		SudoersPath: filepath.Join(t.TempDir(), "sudoers.d", "moose-owner"),
+		DropInPath:  filepath.Join(t.TempDir(), "moose-allowed.conf"),
 		Runner: func(name string, args ...string) ([]byte, error) {
 			ran = append(ran, name+" "+strings.Join(args, " "))
 			if name == "sshd" {
@@ -196,7 +198,7 @@ func TestStateIsReadBackFromTheRenderedFile(t *testing.T) {
 		AuthorizedKeys: []string{"ssh-ed25519 AAAAKEY alex@laptop", "ssh-ed25519 AAAAKEY2 alex@desktop"},
 	})
 
-	fresh := &Manager{DropInPath: m.DropInPath, KeysDir: m.KeysDir, Runner: m.Runner}
+	fresh := &Manager{DropInPath: m.DropInPath, KeysDir: m.KeysDir, SudoersPath: m.SudoersPath, Runner: m.Runner}
 	st, err := fresh.State()
 	if err != nil {
 		t.Fatalf("State: %v", err)
@@ -221,7 +223,7 @@ func TestUnmanagedConfigIsRefused(t *testing.T) {
 	if err := os.WriteFile(path, []byte("AllowUsers someone\n"), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	m := &Manager{DropInPath: path, Runner: func(string, ...string) ([]byte, error) { return nil, nil }}
+	m := &Manager{DropInPath: path, SudoersPath: filepath.Join(dir, "moose-owner"), Runner: func(string, ...string) ([]byte, error) { return nil, nil }}
 	if err := m.SetAccess(protocol.SetSSHAccessRequest{User: "alex", Enabled: true, RequirePassword: true}); err == nil {
 		t.Fatal("SetAccess overwrote a config it did not write")
 	}
@@ -348,8 +350,9 @@ func containsCmd(ran []string, prefix string) bool {
 func TestRejectedRenderLeavesNoKeyFileBehind(t *testing.T) {
 	keys := t.TempDir()
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "moose-allowed.conf"),
-		KeysDir:    keys,
+		SudoersPath: filepath.Join(t.TempDir(), "sudoers.d", "moose-owner"),
+		DropInPath:  filepath.Join(t.TempDir(), "moose-allowed.conf"),
+		KeysDir:     keys,
 		Runner: func(name string, args ...string) ([]byte, error) {
 			if name == "sshd" {
 				return []byte("bad configuration option"), os.ErrInvalid
@@ -409,8 +412,9 @@ func failingSystemctl(t *testing.T) (*Manager, string) {
 	t.Helper()
 	keys := t.TempDir()
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
-		KeysDir:    keys,
+		SudoersPath: filepath.Join(t.TempDir(), "sudoers.d", "moose-owner"),
+		DropInPath:  filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
+		KeysDir:     keys,
 		Runner: func(name string, args ...string) ([]byte, error) {
 			if name == "systemctl" {
 				return []byte("Failed to start ssh.service"), os.ErrInvalid
@@ -481,8 +485,9 @@ func TestUndoReconcilesTheDaemonToThePreviousSet(t *testing.T) {
 	var ran []string
 	keys := t.TempDir()
 	m := &Manager{
-		DropInPath: filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
-		KeysDir:    keys,
+		SudoersPath: filepath.Join(t.TempDir(), "sudoers.d", "moose-owner"),
+		DropInPath:  filepath.Join(t.TempDir(), "sshd_config.d", "moose-allowed.conf"),
+		KeysDir:     keys,
 		Runner: func(name string, args ...string) ([]byte, error) {
 			ran = append(ran, name+" "+strings.Join(args, " "))
 			// Only the enable fails, so the undo's own systemctl call can run and

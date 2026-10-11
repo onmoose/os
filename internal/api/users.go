@@ -367,14 +367,14 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 		if !access.Enabled {
 			return
 		}
-		if err := s.applySSH(ctx, target.Username, access.Enabled, access.RequirePassword, sshKeys); err != nil {
+		if err := s.applySSH(ctx, targetID, target.Username, access.Enabled, access.RequirePassword, sshKeys); err != nil {
 			slog.Error("ssh revoke rollback failed; the account is enabled in the brain but revoked on the host",
 				"user_id", targetID, "username", target.Username, "service", "ssh", "err", err)
 		}
 	}
 
 	if access.Enabled {
-		if err := s.applySSH(ctx, target.Username, false, false, nil); err != nil {
+		if err := s.applySSH(ctx, targetID, target.Username, false, false, nil); err != nil {
 			s.auditor.Record(ctx, audit.ActionUserDelete, tgt, meta, false)
 			return nil, huma.Error502BadGateway("host-agent ssh set-access failed", err)
 		}

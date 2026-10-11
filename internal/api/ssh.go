@@ -304,7 +304,7 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 	// pushing its keys would write an authorized_keys file for an account sshd is
 	// not admitting, and would fail outright on a box with no sshd installed.
 	if in.Body.Enabled || prev.Enabled {
-		if err := s.applySSH(ctx, id.User.Username, in.Body.Enabled, requirePassword, plan.final); err != nil {
+		if err := s.applySSH(ctx, id.User.ID, id.User.Username, in.Body.Enabled, requirePassword, plan.final); err != nil {
 			// The inverse of the change above: the old access row back, the added
 			// keys out, the removed ones in with their original AddedAt so the list
 			// keeps its order.
@@ -468,17 +468,50 @@ func (s *Server) auditSSHChange(ctx context.Context, tgt audit.Target, meta map[
 }
 
 // applySSH sends one account's full desired state to host-agent.
-func (s *Server) applySSH(ctx context.Context, username string, enabled, requirePassword bool, keys []store.SSHKey) error {
+//
+// Every push goes through here, the Save, the delete's revoke and its
+// compensating re-push alike, so the sudo flag is worked out in one place and
+// each of them sends the right value without knowing about it.
+func (s *Server) applySSH(ctx context.Context, userID, username string, enabled, requirePassword bool, keys []store.SSHKey) error {
 	lines := make([]string, 0, len(keys))
 	for _, k := range keys {
 		lines = append(lines, k.PublicKey)
 	}
 	return s.host.SetSSHAccess(ctx, protocol.SetSSHAccessRequest{
-		User:            username,
-		Enabled:         enabled,
-		AuthorizedKeys:  lines,
-		RequirePassword: requirePassword,
+		User:             username,
+		Enabled:          enabled,
+		AuthorizedKeys:   lines,
+		RequirePassword:  requirePassword,
+		PasswordlessSudo: enabled && s.passwordlessSudo(userID),
 	})
+}
+
+// passwordlessSudo reports whether this account gets sudo with no password
+// prompt while it has SSH on. Only the hosted owner does (DECISIONS.md
+// 2026-10-11, USERS_AND_GROUPS.md # The hosted owner). The portal sign-in gave
+// that account a random password nobody knows, so a sudo prompt would be a dead
+// end on the one account the rescue path is for. The key the owner must have
+// for SSH on hosted is what admits them.
+//
+// Every other account answers false and keeps its password prompt: every
+// account on the appliance, and on hosted every account the owner creates,
+// since those have real passwords.
+//
+// It fails closed. If the owner cannot be read, the answer is false, which
+// removes the rule rather than leaving root with no prompt on a guess. The cost
+// is a prompt the owner cannot answer until their next SSH Save.
+func (s *Server) passwordlessSudo(userID string) bool {
+	if s.profile != profile.Hosted {
+		return false
+	}
+	ownerID, err := s.store.GetBoxMeta(store.BoxMetaOwnerUserID)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			slog.Error("ssh: owner lookup failed; sending no sudo rule", "user_id", userID, "service", "ssh", "err", err)
+		}
+		return false
+	}
+	return ownerID != "" && ownerID == userID
 }
 
 func (s *Server) sshAccessDTO(userID string) (SSHAccessDTO, error) {

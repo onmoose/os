@@ -232,11 +232,20 @@ type SetRoleRequest struct {
 // the appliance (AUTH.md # Device access) — and the brain refuses a hosted enable
 // with no key before calling here. host-agent does not know the profile, the same
 // division of labour as set-timezone, where the brain validates the zone.
+//
+// PasswordlessSudo asks host-agent to let this account run sudo with no
+// password prompt, for as long as the account is enabled. The brain sets it only
+// for the hosted owner, whose password is random and unknown, so sudo would
+// otherwise be a dead end (DECISIONS.md 2026-10-11). host-agent does not check
+// who the owner is or which profile it runs on: it renders what it is told, the
+// same split as RequirePassword. With Enabled false the flag is ignored and any
+// rule for this account is removed. An older host-agent ignores the field.
 type SetSSHAccessRequest struct {
-	User            string   `json:"user"`
-	Enabled         bool     `json:"enabled"`
-	AuthorizedKeys  []string `json:"authorized_keys"`
-	RequirePassword bool     `json:"require_password"`
+	User             string   `json:"user"`
+	Enabled          bool     `json:"enabled"`
+	AuthorizedKeys   []string `json:"authorized_keys"`
+	RequirePassword  bool     `json:"require_password"`
+	PasswordlessSudo bool     `json:"passwordless_sudo,omitempty"`
 }
 
 // SSHState is GET /v1/ssh/state — actual host state for the reconciler, read on
