@@ -487,19 +487,24 @@ func (s *Server) applySSH(ctx context.Context, userID, username string, enabled,
 }
 
 // passwordlessSudo reports whether this account gets sudo with no password
-// prompt while it has SSH on. Only the hosted owner does (DECISIONS.md
-// 2026-10-11, USERS_AND_GROUPS.md # The hosted owner). The portal sign-in gave
-// that account a random password nobody knows, so a sudo prompt would be a dead
-// end on the one account the rescue path is for. The key the owner must have
-// for SSH on hosted is what admits them.
+// prompt while it has SSH on. Only the hosted owner does, and only while they
+// are an admin (DECISIONS.md 2026-10-11, USERS_AND_GROUPS.md # The hosted
+// owner). The portal sign-in gave that account a random password nobody knows,
+// so a sudo prompt would be a dead end on the one account the rescue path is
+// for. The key the owner must have for SSH on hosted is what admits them.
+//
+// The role check matters because the rule names the account, not the sudo
+// group. Another admin can demote the owner, and a member must not keep root
+// through a file that does not care about groups. updateUserRole re-pushes the
+// owner's SSH on every role change so the rule follows.
 //
 // Every other account answers false and keeps its password prompt: every
 // account on the appliance, and on hosted every account the owner creates,
 // since those have real passwords.
 //
-// It fails closed. If the owner cannot be read, the answer is false, which
-// removes the rule rather than leaving root with no prompt on a guess. The cost
-// is a prompt the owner cannot answer until their next SSH Save.
+// It fails closed. If the owner or the account cannot be read, the answer is
+// false, which removes the rule rather than leaving root with no prompt on a
+// guess. The cost is a prompt the owner cannot answer until their next push.
 func (s *Server) passwordlessSudo(userID string) bool {
 	if s.profile != profile.Hosted {
 		return false
@@ -511,7 +516,48 @@ func (s *Server) passwordlessSudo(userID string) bool {
 		}
 		return false
 	}
-	return ownerID != "" && ownerID == userID
+	if ownerID == "" || ownerID != userID {
+		return false
+	}
+	u, err := s.store.GetUser(userID)
+	if err != nil {
+		slog.Error("ssh: owner account lookup failed; sending no sudo rule", "user_id", userID, "service", "ssh", "err", err)
+		return false
+	}
+	return u.Role == store.RoleAdmin
+}
+
+// resyncOwnerSudo pushes the hosted owner's SSH state again after their role
+// changed, so the sudo rule follows the role: a demotion removes it and a
+// promotion puts it back. It does nothing for any other account, on the
+// appliance, or while the owner has SSH off, because none of those can hold a
+// rule. The caller holds sshWrites.
+func (s *Server) resyncOwnerSudo(ctx context.Context, userID, username string) error {
+	if s.profile != profile.Hosted {
+		return nil
+	}
+	ownerID, err := s.store.GetBoxMeta(store.BoxMetaOwnerUserID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if ownerID != userID {
+		return nil
+	}
+	access, err := s.store.SSHAccessFor(userID)
+	if err != nil {
+		return err
+	}
+	if !access.Enabled {
+		return nil
+	}
+	keys, err := s.store.ListSSHKeys(userID)
+	if err != nil {
+		return err
+	}
+	return s.applySSH(ctx, userID, username, true, access.RequirePassword, keys)
 }
 
 func (s *Server) sshAccessDTO(userID string) (SSHAccessDTO, error) {

@@ -239,6 +239,12 @@ func (s *Server) updateUserRole(ctx context.Context, in *struct {
 		}
 	}
 
+	// The hosted owner's sudo rule follows their role (passwordlessSudo), so the
+	// role change and the SSH push below must not interleave with an SSH Save,
+	// which reads the role while it pushes. Same lock as every SSH write.
+	s.sshWrites.Lock()
+	defer s.sshWrites.Unlock()
+
 	// Brain commits first; on host failure we restore the previous role so the
 	// two sides stay aligned (USERS_AND_GROUPS.md: "if either side fails, both
 	// roll back"). Mirror of createUser's brain-commit-then-rollback pattern.
@@ -252,6 +258,22 @@ func (s *Server) updateUserRole(ctx context.Context, in *struct {
 		}
 		s.auditor.Record(ctx, audit.ActionUserRoleChange, tgt, meta, false)
 		return nil, huma.Error502BadGateway("host-agent set-role failed", err)
+	}
+
+	// A demoted hosted owner leaves the sudo group above, but the no-password
+	// rule names the account, not the group, so it has to go too. Pushing their
+	// SSH again sends the flag for the new role. If that push fails, host-agent
+	// has put its own state back, so the rule is as it was: undo the role on
+	// both sides, so a member is never left holding root.
+	if err := s.resyncOwnerSudo(ctx, targetID, target.Username); err != nil {
+		if rbErr := s.store.UpdateRole(targetID, target.Role); rbErr != nil {
+			slog.Error("rollback update role failed", "user_id", targetID, "err", rbErr)
+		}
+		if rbErr := s.host.SetRole(ctx, target.Username, target.Role); rbErr != nil {
+			slog.Error("rollback host role failed", "user_id", targetID, "username", target.Username, "role", target.Role, "err", rbErr)
+		}
+		s.auditor.Record(ctx, audit.ActionUserRoleChange, tgt, meta, false)
+		return nil, huma.Error502BadGateway("host-agent ssh set-access failed", err)
 	}
 
 	s.auditor.Record(ctx, audit.ActionUserRoleChange, tgt, meta, true)
