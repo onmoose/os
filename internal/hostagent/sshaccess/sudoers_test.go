@@ -256,6 +256,7 @@ func TestReconcileSudoAtStart(t *testing.T) {
 		"rule for an enabled account":      {enable: []string{"alex"}, rule: renderSudoers("alex"), wantFile: true},
 		"rule for an account with SSH off": {enable: []string{"bo"}, rule: renderSudoers("alex"), wantRemoved: true},
 		"rule and no account enabled":      {rule: renderSudoers("alex"), wantRemoved: true},
+		"moose's line plus another rule":   {enable: []string{"alex"}, rule: renderSudoers("alex") + "bo ALL=(ALL) NOPASSWD: ALL\n", wantRemoved: true},
 		"a file moose did not write":       {enable: []string{"alex"}, rule: "%sudo ALL=(ALL) NOPASSWD: ALL\n", wantRemoved: true},
 	}
 	for name, c := range cases {

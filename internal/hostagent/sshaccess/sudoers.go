@@ -62,9 +62,11 @@ func renderSudoers(username string) string {
 }
 
 // readSudoersUser returns the account the rule names, and whether the file
-// exists at all. A file that exists but holds no rule in moose's shape names
-// nobody: SetAccess then leaves it alone unless it is told to write one, and the
-// start reconcile removes it.
+// exists at all. Only a file with exactly one rule line, in moose's shape, names
+// an account. Anything else names nobody, even when its first line looks right:
+// a second line could grant something moose never wrote. SetAccess then leaves
+// such a file alone unless it is told to write one, and the start reconcile
+// removes it.
 func (m *Manager) readSudoersUser() (string, bool, error) {
 	path := m.sudoersPath()
 	b, err := os.ReadFile(path)
@@ -74,19 +76,28 @@ func (m *Manager) readSudoersUser() (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("sshaccess: read %s: %w", path, err)
 	}
+	var rules []string
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		name, ok := strings.CutSuffix(line, sudoersRuleSuffix)
-		if ok && sudoersUsername.MatchString(name) {
-			return name, true, nil
-		}
+		rules = append(rules, line)
+	}
+	// A line too long to scan is not a file moose wrote, so it names nobody
+	// too, and the reconcile removes it rather than trusting a partial read.
+	if sc.Err() != nil {
 		return "", true, nil
 	}
-	return "", true, nil
+	if len(rules) != 1 {
+		return "", true, nil
+	}
+	name, ok := strings.CutSuffix(rules[0], sudoersRuleSuffix)
+	if !ok || !sudoersUsername.MatchString(name) {
+		return "", true, nil
+	}
+	return name, true, nil
 }
 
 // snapshotSudoers reads the rule and returns a function that puts it back, the
