@@ -236,14 +236,16 @@ The LUKS recovery passphrase (shown at install, see `STORAGE.md`) recovers **dis
 
 **The mandatory factor is set by the profile.** SSH is the one place the one-password rule does not travel, and `DECISIONS.md` 2026-09-09 records why: that rule was a decision about a LAN, and hosted has none.
 
-| Profile | Mandatory | Optional second factor | Refused |
-|---|---|---|---|
-| Appliance | The moose password | A public key | — |
-| Hosted | A public key | The moose password | Enabling with no key |
+| Profile | Mandatory | Optional second factor | Refused | `sudo` once in |
+|---|---|---|---|---|
+| Appliance | The moose password | A public key | — | Admins: asks for the moose password |
+| Hosted | A public key | The moose password | Enabling with no key | The owner: no password while their SSH is on. Every other admin: asks for the moose password |
 
 The optional factor is a **second lock, never a second door**. Choosing it renders `AuthenticationMethods publickey,password` for that account, so sshd demands both and neither alone authenticates. Offering the other factor as an *alternative* would set the account's security by its weaker branch, which on hosted would discard the whole point of requiring a key.
 
 **Both rows are enforced in the brain, not in host-agent and not in the UI.** host-agent renders what it is told and deliberately does not know the profile, so it cannot be the place that decides which factor is mandatory. The brain refuses a hosted enable that has no key, and resolves the appliance's password to required no matter what the caller sent — so adding a key on the appliance adds a lock rather than swapping one out. Issue #477 fixed the appliance half, which the table described and nothing enforced.
+
+**The hosted owner's `sudo` asks for no password** (#602, `DECISIONS.md` 2026-10-11). The portal sign-in gives that account a random password nobody knows (`ENVIRONMENT.md` # Owner sign-in & seed ingestion), so a prompt would be one the owner can never answer, and SSH would be no use for rescue. So while the owner has SSH on, host-agent keeps a rule in `/etc/sudoers.d/moose-owner` that lets them run `sudo` with no prompt, and removes it when SSH goes off. The key the owner needs to get in is the factor that admits them. The brain decides who gets the rule and sends it on set-access; host-agent renders it, as it does `require_password`. The rule changes `sudo` only: the password, the key requirement and every other account stay as they are. Full posture and the security cost: `USERS_AND_GROUPS.md` # The hosted owner.
 
 **Losing a key is not a lockout.** The dashboard is reached through the portal on hosted and through the login screen on the appliance, never through SSH. A user who loses their key signs in as usual and pastes a new one. That is what makes the strict hosted posture affordable for a non-technical owner.
 

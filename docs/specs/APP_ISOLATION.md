@@ -195,6 +195,12 @@ Every Tier-3 instance runs as a **resolved, moose-managed UID/GID** (the compose
 | Folderless app, `service_user: true` | a **dedicated per-instance service identity** | the moose-reserved app-service band (below 3000, distinct from the fixed 2000/2001) |
 | Folderless app, `image_user: true`, remapped box only | the **image's own `USER`**, with no `user:` pin | the pulled image's `Config.User`, remapped into the range (# User-namespace tiers) |
 
+### Invariant: the owner's UID never runs app code outside a container
+
+**Nothing an app controls may run as the owner's UID outside a container, and no app may be granted the home directory itself or any dotfile in it.** A folder app runs as the owner's UID (the table above), but only inside its container, and it sees only the use-case folders it was granted (`/home/<user>/Photos/` and the like, # User content). It never sees `/home/<user>/` itself, `~/.ssh`, `~/.bashrc` or any other dotfile.
+
+This matters on hosted in particular. There the owner gets `sudo` with no password while their SSH is on (`USERS_AND_GROUPS.md` # The hosted owner, `DECISIONS.md` 2026-10-11). The rule covers every session of that account. So app code that could run as the owner on the host, or write a file the owner's shell runs at login, or add a key to `~/.ssh/authorized_keys`, would be root. Today none of these is possible: the container has no host `sudo` and no host `/etc/sudoers` to read, and the bind surface stops at the use-case folders. A future feature that widens it (a grant of the home itself, a dotfile, a host-side hook that runs as the user) breaks this invariant and needs its own decision first.
+
 ### `service_user` — a dedicated non-root identity for folderless apps
 
 The default folderless identity is the brain's euid, which is **root** in production. An image that writes its data as a **non-root** user — common in nginx+php-fpm and LinuxServer-style images — then cannot write that root-owned `data/` dir, and cannot chown it itself because `CAP_CHOWN` is stripped. `service_user: true` (`APP_MANIFEST.md` # B) is the author's declaration *"run me as a dedicated unprivileged account, and make my data writable by it."* When set, the brain:

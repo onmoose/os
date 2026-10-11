@@ -21,6 +21,33 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-11 — The hosted owner gets sudo with no password while SSH is on (#602)
+
+**Previously:** admins are in `sudo`, and `sudo` asks for their moose password (2026-05-15, "Admins get sudo; UI is the path, SSH is rescue"). That holds on both profiles and for every admin, the hosted owner included.
+
+**Now:** on a hosted box, the owner account gets `sudo` with no password prompt, for as long as that account has SSH on. host-agent writes `/etc/sudoers.d/moose-owner` (root, `0440`, one line: `<owner> ALL=(ALL) NOPASSWD: ALL`) when the owner turns SSH on and removes it when they turn it off or the account is deleted. The owner is the account the portal sign-in created (`box_meta` `sso_owner_user_id`). Nothing else changes: the appliance writes no rule, every account the owner creates keeps the password prompt, and the owner's password, the portal sign-in and the SSH key rule all stay as they were. The rule only makes `sudo` skip its prompt.
+
+**Why:**
+
+- **The prompt was a dead end.** The portal sign-in gives the owner a random password that is thrown away (`ENVIRONMENT.md` # Owner sign-in & seed ingestion), so nobody knows it. The portal confirm (#469) covers the dashboard and has nothing like it in a terminal. So the owner could SSH in with their key and then not run one command as root. The rescue path that 2026-05-15 gave admins SSH for did not exist on hosted. A real case: an app's backend hung for hours, and the owner could not run `docker logs` or `docker exec` to see why.
+- **The key already admits the owner.** SSH on hosted needs a public key (2026-09-09), and the owner has no password they can use, so the key is the factor that lets them in. A `sudo` password they cannot know adds no protection on top of it.
+- **It is scoped to the one account that needs it, and only while SSH is on.** An account the owner creates has a real password and keeps the prompt. SSH is off by default, and the rule exists only while it is on.
+
+**What apps can and cannot do with it.** Apps cannot use the rule. A container runs with `cap_drop: ALL`, `no-new-privileges` and its own filesystem, so the host's `sudo` and `/etc/sudoers` do not exist inside it. A folder app runs as the owner's UID, but it sees only the use-case folders it was granted, never the home directory itself or any dotfile, so it cannot plant shell code for the owner's next login or add an SSH key. `APP_ISOLATION.md` # Runtime identity & data ownership now states this as an invariant.
+
+**What does change:**
+
+1. **A stolen owner SSH key means root.** Before, it meant a shell as the owner. This is limited by SSH being off by default and the rule existing only while SSH is on.
+2. **A takeover of the owner's portal account means root,** because adding an SSH key is confirmed through the portal. Any password-based alternative to this rule would sit behind the same confirm, so it would not change this.
+3. **Code the owner runs in their own shell gets root with no prompt.** A `sudo` password is weak protection there anyway: code running as the user can wait for the next prompt.
+4. **Root can read the box's seed credentials.** They are scoped to this one box.
+
+**The rule covers every session of that account, not only SSH.** That is fine on hosted because the owner has no password they can use, so an SSH key is the only way in. Any future way to log in as the owner gets root with it and must protect itself. The web terminal (`NEXT.md` # Web terminal in the dashboard) is the known case: opening it as the owner needs the portal confirm (#469), and it ends when that elevation window ends.
+
+**How it is built:** the brain decides (hosted, and this account is the owner) and sends `passwordless_sudo` on `POST /v1/ssh/set-access`. host-agent does not know the profile or the owner and renders what it is told, the same split as `require_password`. It checks the rule with `visudo -cf` before it goes live, puts it in the same undo set as the keys and the drop-in, and at every start removes a rule whose account is not enabled in the sshd drop-in. Showing the owner's `sudo` use in Activity is the follow-up, #601.
+
+**Affected docs:** `USERS_AND_GROUPS.md` (# Roles map to Linux group membership, # The hosted owner, # Rescue path, # Locked decisions), `AUTH.md` # Device access (the profile table and the text below it), `ENVIRONMENT.md` # Access & files, `APP_ISOLATION.md` (the invariant), `BRAIN_HOST_PROTOCOL.md` # SSH access, `BUILD.md` # 1b (the keep list), `NEXT.md` # Web terminal in the dashboard, `docs/architecture.md`. Progress: `hosted-owner-sudo.md`.
+
 ## 2026-10-07 — A box may pull an image from a backup source when upstream fails (#588)
 
 **Previously:** we did not host or mirror container images. A box pulled only from the author's registry, and image mirroring was a deferred, Tier-3 concern (`APP_STORE.md` # Locked decisions, the 2026-05-17 store entry below). A rate limit or a deleted upstream image failed the install; #586 added a 30-second backoff for short rate-limit spikes only.

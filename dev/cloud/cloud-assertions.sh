@@ -1755,7 +1755,7 @@ ssh)
     done
     grep -q MOOSE_SSH_OK <<<"$gsudo" || fail "ssh: key login as the second admin '$GONE_USER' failed: $gsudo"
     grep -q MOOSE_SUDO_OK <<<"$gsudo" \
-        && fail "ssh: THE SECOND ADMIN GOT SUDO WITH NO PASSWORD — only the hosted owner may: $gsudo"
+        && fail "ssh: THE SECOND ADMIN GOT SUDO WITH NO PASSWORD, only the hosted owner may: $gsudo"
     grep -qi 'password is required' <<<"$gsudo" \
         || fail "ssh: the second admin's sudo did not ask for a password: $gsudo"
     echo "cloud-assertions: a second admin with SSH on still gets the sudo password prompt"

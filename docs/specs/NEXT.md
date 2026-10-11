@@ -325,6 +325,7 @@ A managed queue + worker that apps can fire background work into (overnight re-e
 `SPEC.md` # Local access promises a "virtual terminal in the web UI" — a shell without leaving the browser. Needs design across:
 - Protocol: WebSocket over the brain↔host-agent UNIX socket via HTTP upgrade (already locked in `BRAIN_HOST_PROTOCOL.md` Pattern D as the future shape).
 - Auth: root PTY = root on the host. Default to dropping to the dashboard-user's Linux account; explicit "open a root shell" gesture gated by re-typing the dashboard password.
+- The hosted owner's account already has `sudo` with no password while their SSH is on (`USERS_AND_GROUPS.md` # The hosted owner, `DECISIONS.md` 2026-10-11), so a shell as that account is root. A terminal for the owner must need the portal confirm (#469) to open and must end when that elevation window ends.
 - UX: where it lives in the dashboard, history persistence, multi-session behavior.
 
 **Context:** `BRAIN_HOST_PROTOCOL.md`, `AUTH.md`, `SPEC.md`.
