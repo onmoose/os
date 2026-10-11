@@ -218,6 +218,14 @@ func (s *Server) updateUserRole(ctx context.Context, in *struct {
 		return nil, huma.Error409Conflict("cannot demote yourself")
 	}
 
+	// The hosted owner's sudo rule follows their role (passwordlessSudo), so the
+	// role change and the SSH push below must not interleave with an SSH Save,
+	// which reads the role while it pushes. Taken before the target is read, so
+	// the role a rollback restores is the one this request saw, not one another
+	// role change has replaced since. Same lock as every SSH write.
+	s.sshWrites.Lock()
+	defer s.sshWrites.Unlock()
+
 	target, err := s.store.GetUser(targetID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, huma.Error404NotFound("no such user")
@@ -238,12 +246,6 @@ func (s *Server) updateUserRole(ctx context.Context, in *struct {
 			return nil, huma.Error409Conflict("cannot demote the last admin")
 		}
 	}
-
-	// The hosted owner's sudo rule follows their role (passwordlessSudo), so the
-	// role change and the SSH push below must not interleave with an SSH Save,
-	// which reads the role while it pushes. Same lock as every SSH write.
-	s.sshWrites.Lock()
-	defer s.sshWrites.Unlock()
 
 	// Brain commits first; on host failure we restore the previous role so the
 	// two sides stay aligned (USERS_AND_GROUPS.md: "if either side fails, both
