@@ -45,11 +45,11 @@ On a hosted box, the owner is the account the portal sign-in created (`ENVIRONME
 
 **So while the owner has SSH on, `sudo` does not ask them for a password** (#602, `DECISIONS.md` 2026-10-11). host-agent writes `/etc/sudoers.d/moose-owner`, root-owned, mode `0440`, holding `<owner> ALL=(ALL) NOPASSWD: ALL`. It writes it when the owner turns SSH on, and removes it when they turn SSH off or the account is deleted. At every start host-agent also removes it if the account it names does not have SSH on. SSH on hosted needs a public key (`AUTH.md` # Device access), so the key is what admits the owner, and a password they cannot know would add nothing.
 
-- **Only the owner.** Every account the owner creates has a real password and keeps the prompt, admins included. The appliance has no owner in this sense and never writes the rule.
+- **Only the owner, and only while they are an admin.** Every account the owner creates has a real password and keeps the prompt, admins included. The appliance has no owner in this sense and never writes the rule. The rule names the account, not the `sudo` group, so a role change pushes the owner's SSH again: if another admin demotes the owner, the rule goes with the group, and if that push fails the demotion is undone on both sides.
 - **Only while SSH is on.** SSH is off by default.
 - **The password is not touched.** `/etc/shadow`, the portal sign-in and the key requirement stay as they are. The rule only makes `sudo` skip its prompt.
 - **It covers every session of that account, not only SSH.** That is fine because an SSH key is the only way the owner can log in to the host. A future way in (a web terminal in the dashboard, `NEXT.md`) would get root with it, so it must protect itself: opening it as the owner needs the portal confirm, and it ends when that elevation window ends.
-- **Apps cannot use it.** Containers have no host `sudo`, and a folder app sees only its granted use-case folders, never the home directory or a dotfile (`APP_ISOLATION.md` # Invariant: the owner's UID never runs app code outside a container).
+- **Apps cannot use it.** Containers have no host `sudo`, and a folder app is meant to see only its granted use-case folders, never the home directory or a dotfile (`APP_ISOLATION.md` # Invariant: the owner's UID never runs app code outside a container). One known hole breaks that today: a symlink swapped into another app's folder source between two starts (#604).
 
 The cost is stated in `DECISIONS.md` 2026-10-11: a stolen owner SSH key, or a takeover of the owner's portal account, now means root. Showing the owner's `sudo` use in Activity is #601.
 
