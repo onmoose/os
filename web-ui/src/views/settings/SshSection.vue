@@ -210,7 +210,7 @@ async function pickFile(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = "";
-  if (!file) return;
+  if (!file || checkingKey.value) return;
   addKeyError.value = "";
   keyText.value = (await file.text()).trim();
   if (!keyLabel.value) keyLabel.value = file.name.replace(/\.pub$/, "");
@@ -254,7 +254,9 @@ async function stageKey(): Promise<boolean> {
   } finally {
     checkingKey.value = false;
   }
-  if (token !== stageToken || !enabled.value) return false;
+  // A key that changed under the check (typed, or a file picked) is not the key
+  // that was checked, so its answer is dropped too.
+  if (token !== stageToken || !enabled.value || keyText.value.trim() !== raw) return false;
   const text = checked.public_key;
   const blob = keyBlob(text);
   if (blob) {
@@ -335,6 +337,11 @@ watch(box, (b) => {
   if (d.enabled === b.enabled) d.enabled = null;
   if (d.requirePassword === b.require_password) d.requirePassword = null;
   dropHiddenChanges(d, b);
+  // The add form is part of the hidden change too: its text would keep Save up
+  // for a key nobody can see. Closing it also drops a check still in flight.
+  if (!(d.enabled ?? b.enabled) && (showAddKey.value || keyText.value.trim() !== "")) {
+    cancelAddKey();
+  }
 });
 
 function persist() {
@@ -658,7 +665,13 @@ const saving = computed(() => save.isPending.value);
                   class="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent"
                 />
               </label>
-              <Button type="button" variant="secondary" size="sm" @click="fileInput?.click()">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                :disabled="checkingKey"
+                @click="fileInput?.click()"
+              >
                 <Upload class="size-4" />
                 Choose a .pub file
               </Button>
