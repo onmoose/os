@@ -52,8 +52,8 @@ defineExpose({ open, close });
         <slot />
       </div>
       <div class="flex justify-end gap-2">
-        <Button variant="secondary" @click="close">{{ cancelLabel }}</Button>
-        <Button @click="confirm">{{ confirmLabel }}</Button>
+        <Button type="button" variant="secondary" @click="close">{{ cancelLabel }}</Button>
+        <Button type="button" @click="confirm">{{ confirmLabel }}</Button>
       </div>
     </div>
   </dialog>
