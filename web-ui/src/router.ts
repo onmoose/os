@@ -64,6 +64,7 @@ const routes: RouteRecordRaw[] = [
       { path: "mail", redirect: "/settings/email" },
       { path: "mail/add", redirect: "/settings/email/add" },
       { path: "mail/add/:preset", redirect: (to) => `/settings/email/add/${String(to.params.preset)}` },
+      { path: "system", name: "settings-system", component: () => import("@/views/settings/SystemSection.vue") },
       { path: "about", name: "settings-about", component: () => import("@/views/settings/AboutSection.vue") },
     ],
   },

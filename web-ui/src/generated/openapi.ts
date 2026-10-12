@@ -965,6 +965,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/update-target/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply the update this box already found, now, instead of in the window (admin only) */
+        post: operations["apply-system-update-target"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/update/{job_id}": {
         parameters: {
             query?: never;
@@ -1343,6 +1360,20 @@ export interface components {
             };
             folders?: components["schemas"]["FolderElection"][] | null;
             mail_provider_id?: string;
+        };
+        ControlPlaneOutcomeDTO: {
+            at: string;
+            brain_changed: boolean;
+            failure_mode?: string;
+            from?: string;
+            id: string;
+            /** @enum {string} */
+            outcome: "good" | "failed";
+            revert_error?: string;
+            reverted?: boolean;
+            started_at?: string;
+            ui_changed: boolean;
+            version?: string;
         };
         ControlPlanePairDTO: {
             brain?: string;
@@ -2318,6 +2349,7 @@ export interface components {
             checked_at?: string;
             detail?: string;
             from?: string;
+            last?: components["schemas"]["ControlPlaneOutcomeDTO"];
             os?: components["schemas"]["OSUpdateDTO"];
             profile?: string;
             running: components["schemas"]["ControlPlanePairDTO"];
@@ -2326,6 +2358,7 @@ export interface components {
             target?: components["schemas"]["UpdateTargetOfferDTO"];
             window?: string;
             window_from?: string;
+            zone?: string;
         };
         UpdateTargetOfferDTO: {
             brain_image: string;
@@ -4452,6 +4485,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpdateTargetDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "apply-system-update-target": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemUpdateJobDTO"];
                 };
             };
             /** @description Error */
