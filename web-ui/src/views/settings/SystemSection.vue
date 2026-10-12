@@ -73,8 +73,10 @@ type Pending = {
   // click). A switch that fails before the restart ends that job "failed",
   // with no new os.last, so this is how the wait learns of it.
   osJob?: string | null;
-  // at is when Update now was pressed, ms since the epoch.
+  // at is when Update now was pressed, ms since the epoch, and osAt when the
+  // OS part began (stream B done, or the click when there was none).
   at: number;
+  osAt?: number;
 };
 const pendingKey = "moose.system-update.pending";
 
@@ -378,7 +380,7 @@ async function poll() {
       if (!alive) return;
       if (job.status !== "running") {
         const uiChanged = job.status === "completed" && !!job.result?.ui_changed;
-        const next: Pending = { ...p, job: null, uiReloaded: p.uiReloaded || uiChanged };
+        const next: Pending = { ...p, job: null, uiReloaded: p.uiReloaded || uiChanged, osAt: Date.now() };
         if (!next.os) {
           if (uiChanged) {
             writePending(null);
@@ -422,8 +424,12 @@ async function poll() {
         return;
       }
       // A switch that never restarted the box leaves no outcome behind. Past
-      // the time limit, with the box no longer restarting, stop waiting.
-      if (Date.now() - p.at > osWaitLimit && s.os?.state !== "rebooting") {
+      // the time limit, counted from when the OS part began, stop waiting,
+      // but only while the box still runs its old release and is not
+      // restarting. A box on the new release may be on trial, and a trial
+      // always ends in an outcome (good, or a revert the old slot records).
+      const osStart = p.osAt ?? p.at;
+      if (Date.now() - osStart > osWaitLimit && s.os?.state !== "rebooting" && s.os?.running !== p.os) {
         await finish();
         return;
       }
@@ -441,7 +447,7 @@ async function poll() {
     // poll reads `last`, reloads when that update replaced the dashboard,
     // and follows the OS part if there is one.
     if (e instanceof ApiError && e.status === 404 && p.job) {
-      const next: Pending = { ...p, job: null };
+      const next: Pending = { ...p, job: null, osAt: Date.now() };
       writePending(next);
       pending.value = next;
     }
