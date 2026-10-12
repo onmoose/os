@@ -21,6 +21,16 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-12 — An admin can restart the box for an OS update now (#509)
+
+**Previously:** an OS update reboots only in the window, after stream B, with no prompt (2026-10-01, `UPDATES.md` # 7). How the admin sees the reboot was open (`NEXT.md` # Reboot scheduling UX). Update now (#488) covered only the control plane, which never restarts the box.
+
+**Now:** on a hosted box, Settings → System's Update now also covers an OS release that is already installed in the other slot. The box applies the control plane first, then switches slots and restarts at once, outside the window. The screen says before the click that the box restarts, and for how long. The window's two per-night guards are skipped, as for the control plane, and the switch counts as the coming night's one. The trial guard stays, and a slot that does not come up is still given up on its own.
+
+**Why:** the maintainer's call when #509 started. An admin who sees a waiting system update and a quiet moment should not have to wait for 03:00. The automatic revert makes a daytime restart as safe as a nightly one; what it costs is a few minutes offline that the admin chose and was told about. A release that is still downloading is not waited for, so the click never starts a long download it cannot show.
+
+**Affected docs:** `UPDATES.md` # 1, # 6, # 7, # 8.2, # 8.4; `NEXT.md` # Reboot scheduling UX (narrowed); `BRAIN_HOST_PROTOCOL.md`; `BRAIN_UI_PROTOCOL.md`; `docs/architecture.md`; `docs/dev/hosted-boot-proof.md`.
+
 ## 2026-10-11 — The hosted owner gets sudo with no password while SSH is on (#602)
 
 **Previously:** admins are in `sudo`, and `sudo` asks for their moose password (2026-05-15, "Admins get sudo; UI is the path, SSH is rescue"). That holds on both profiles and for every admin, the hosted owner included.
