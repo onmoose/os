@@ -974,7 +974,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Apply the update this box already found, now, instead of in the window (admin only) */
+        /** Apply the updates this box already found (control plane, and an installed OS release, which restarts the box), now instead of in the window (admin only) */
         post: operations["apply-system-update-target"];
         delete?: never;
         options?: never;
@@ -2025,6 +2025,7 @@ export interface components {
             /** @enum {string} */
             state: "unsupported" | "none" | "refused" | "current" | "installing" | "installed" | "waiting" | "rebooting" | "held" | "failed";
             target?: components["schemas"]["OSReleaseDTO"];
+            trial?: boolean;
         };
         Pack: {
             /**

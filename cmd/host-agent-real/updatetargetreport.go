@@ -78,6 +78,7 @@ type osFacts interface {
 	Running() (version, slot string)
 	Last() *protocol.OSOutcome
 	Peek(rel updatetarget.OSRelease) (state, detail string, ok bool)
+	OnTrial() bool
 }
 
 // osReporter returns the applier as osFacts, or a nil interface for a nil
@@ -95,7 +96,7 @@ func (r updateTargetReport) readOS() *protocol.OSUpdate {
 	if r.os == nil {
 		return &protocol.OSUpdate{State: protocol.OSUpdateUnsupported, Detail: "this host-agent cannot update the OS"}
 	}
-	out := &protocol.OSUpdate{State: protocol.OSUpdateNone, Last: r.os.Last()}
+	out := &protocol.OSUpdate{State: protocol.OSUpdateNone, Last: r.os.Last(), Trial: r.os.OnTrial()}
 	out.Running, out.Slot = r.os.Running()
 	if r.loop == nil {
 		out.Detail = "this box has no update loop, so it will not update its OS"

@@ -2790,8 +2790,10 @@ UNIT
         t_in="$(ha_log | grep 'installed into the other slot' | tail -1 | awk '{print $1}')"
         echo "cloud-assertions: $MODE: INSTALL AHEAD OK (slot B holds $os_ver, ORDER still 'A B', os.state=installed); measured: download+digest $(awk -v a="$t_dl" -v b="$t_got" 'BEGIN{printf "%.1f", b-a}') s, rauc install $(awk -v a="$t_got" -v b="$t_in" 'BEGIN{printf "%.1f", b-a}') s, bundle $(stat -c %s "$target_dir/bundles/os-test.raucb") bytes"
 
-        # 1c. THE SWITCH. An open window: host-agent puts slot B first and
-        #     reboots. The next stage runs on slot B.
+        # 1c. THE SWITCH. host-agent puts slot B first and reboots; the next
+        #     stage runs on slot B. os-update asks for it with Update now
+        #     while the window stays shut (#509); os-revert opens the window,
+        #     so both ways in are proven.
         boot_gate
         if [ "$MODE" = os-update ]; then
             # A faked Debian major (BUILD.md # 1b, rule 4): the state partition
@@ -2805,9 +2807,18 @@ UNIT
         fi
         date +%s > "$OS_STATE_DIR/switch-at"
         set_os_stage 2
-        write_os_target "$os_sum" "00:00-23:59"
-        systemctl restart host-agent.service
-        echo "cloud-assertions: $MODE: window open; waiting for host-agent to switch to slot B and reboot"
+        if [ "$MODE" = os-update ]; then
+            # The answer carries only an OS part, so stream B has nothing to
+            # do and Update now is the OS switch alone.
+            apply_resp="$(full_send POST /api/v1/system/update-target/apply "$apex" "$session_cookie" "" 2>/dev/null || true)"
+            grep -q ' 202' <<<"$(status_of "$apply_resp")" \
+                || fail "$MODE: Update now was not accepted with slot B installed: status='$(status_of "$apply_resp")' $(tail -1 <<<"$apply_resp")"
+            echo "cloud-assertions: $MODE: UPDATE NOW accepted with the window shut ($shut); waiting for host-agent to switch to slot B and reboot"
+        else
+            write_os_target "$os_sum" "00:00-23:59"
+            systemctl restart host-agent.service
+            echo "cloud-assertions: $MODE: window open; waiting for host-agent to switch to slot B and reboot"
+        fi
         sleep 900
         fail "$MODE: host-agent never switched slots and rebooted: $(ha_log | grep -i 'os update' | tail -6 | tr '\n' ' ')"
     fi

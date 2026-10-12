@@ -2199,6 +2199,8 @@ components:
           type: string
         target:
           $ref: "#/components/schemas/OSReleaseDTO"
+        trial:
+          type: boolean
       required:
         - state
       type: object
@@ -4374,7 +4376,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
-      summary: Apply the update this box already found, now, instead of in the window (admin only)
+      summary: Apply the updates this box already found (control plane, and an installed OS release, which restarts the box), now instead of in the window (admin only)
   /api/v1/system/update/{job_id}:
     get:
       operationId: get-system-update

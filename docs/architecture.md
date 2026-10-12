@@ -273,7 +273,10 @@ So this doc isn't read as a claim about the finished product:
   on disk in `last-update.json` beside the ledger) and **Update now**:
   `POST /api/v1/system/update-target/apply`, no body, which applies the target
   the loop already checked (`updatetarget.Loop.ApplyNow`) through
-  `POST /v1/jobs/system-update-target`. The `426` path is not built; the tab
+  `POST /v1/jobs/system-update-target`. Since #509 it also switches to an OS
+  release already installed in the other slot (`osupdate.Applier.SwitchNow`),
+  after the control plane, and the box restarts; the screen says so first and
+  follows the restart through `os.last`. The `426` path is not built; the tab
   that pressed Update now reloads itself when the UI changed.
 - **File manager.** `FILES.md` is written, and `/files` is a real top-level
   route. Nothing behind it is built. The brain registers no `/api/v1/files/*`

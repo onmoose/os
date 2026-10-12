@@ -362,7 +362,7 @@ The architecture and the install/wizard/add-drive/eject mechanics are locked (`S
 
 ### Reboot scheduling UX
 
-**Narrowed 2026-10-01.** The OS update now reboots by itself in the window on both profiles, with no prompt (`DECISIONS.md` 2026-10-01). What is still open is only how it is shown: whether the dashboard says beforehand that tonight's window will restart the box, and whether an admin can push one night's reboot back.
+**Narrowed 2026-10-01.** The OS update now reboots by itself in the window on both profiles, with no prompt (`DECISIONS.md` 2026-10-01). **Narrowed again 2026-10-12 (#509):** on hosted, Settings → System says beforehand that tonight's window restarts the box, and an admin can restart it now with Update now (`DECISIONS.md` 2026-10-12). What is still open is whether an admin can push one night's restart back, and the same screen on the appliance (#564, #400).
 
 **Context:** `UPDATES.md`.
 

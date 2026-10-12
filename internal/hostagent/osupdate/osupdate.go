@@ -360,6 +360,17 @@ func (a *Applier) Floor() string {
 	return strings.TrimSpace(string(b))
 }
 
+// OnTrial reports whether the booted slot is on trial: its trial marker is
+// there, so it was just switched to and is not marked good or given up yet.
+func (a *Applier) OnTrial() bool {
+	_, slot := a.Running()
+	if slot == "" {
+		return false
+	}
+	_, err := os.Stat(TrialMarker(a.dir(), slot))
+	return err == nil
+}
+
 // Last is the last recorded outcome, or nil.
 func (a *Applier) Last() *protocol.OSOutcome {
 	r, err := a.load()
@@ -623,6 +634,49 @@ func (a *Applier) Apply(rel updatetarget.OSRelease, open bool, night time.Time) 
 	}
 	return a.start(protocol.JobKindOSInstall, installMaxDuration, protocol.OSUpdateInstalling, func(ctx context.Context) error {
 		return a.doInstall(ctx, rel, night)
+	})
+}
+
+// SwitchNow switches to rel and reboots now, for an admin's Update now (#509).
+// It is the window's switch with the two per-night guards left out: an admin
+// who presses Update now after a failed night is choosing to retry, and the
+// trial reverts the box on its own if the new slot does not come up. What
+// stays is what keeps the box safe: rel must already be installed in the
+// other slot (nothing is downloaded here), and nothing moves while the booted
+// slot is on trial, because the other slot is then the way back.
+//
+// night is recorded as the switch's night, so the window of that night does
+// not switch to rel a second time after a revert.
+//
+// The state is rebooting when the switch started, waiting when the job lock is
+// held (the caller tries again), and anything else when there is nothing to
+// switch to.
+func (a *Applier) SwitchNow(rel updatetarget.OSRelease, night time.Time) updatetarget.OSDecision {
+	a.mu.Lock()
+	slot, running := a.slot, a.running
+	a.mu.Unlock()
+	// A job of ours already runs (the window's install or switch started it
+	// since the caller looked). That is a busy box, not a switch this call
+	// started: it has no job to hand back.
+	if running != "" {
+		return updatetarget.OSDecision{State: protocol.OSUpdateWaiting, Detail: "another OS update job is running"}
+	}
+	if slot == "" {
+		return updatetarget.OSDecision{State: protocol.OSUpdateUnsupported, Detail: "the booted slot is not known"}
+	}
+	if _, err := os.Stat(TrialMarker(a.dir(), slot)); err == nil {
+		return updatetarget.OSDecision{State: protocol.OSUpdateWaiting, Detail: "this boot is on trial; nothing moves until the new slot is marked good"}
+	}
+	r, err := a.load()
+	if err != nil {
+		return updatetarget.OSDecision{State: protocol.OSUpdateFailed, Detail: err.Error()}
+	}
+	if in := r.Installed; in == nil || in.Version != rel.Version || in.Digest != rel.BundleSHA256 || in.Slot != other(slot) {
+		return updatetarget.OSDecision{State: protocol.OSUpdateNone, Detail: "this release is not installed in the other slot"}
+	}
+	slog.Info("os update: switching now, as an admin asked", "os", rel.Version, "slot", other(slot))
+	return a.start(protocol.JobKindOSSwitch, switchMaxDuration, protocol.OSUpdateRebooting, func(ctx context.Context) error {
+		return a.doSwitch(ctx, rel, night)
 	})
 }
 

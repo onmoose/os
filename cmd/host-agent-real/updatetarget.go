@@ -172,5 +172,8 @@ func (ap loopApplier) ApplyTarget() (string, error) {
 	if errors.Is(err, updatetarget.ErrNothingToApply) || errors.Is(err, updatetarget.ErrManualApplyUnsupported) {
 		return "", errors.Join(hostagent.ErrNothingToApply, err)
 	}
+	if errors.Is(err, updatetarget.ErrBusy) {
+		return "", errors.Join(hostagent.ErrJobRunning, err)
+	}
 	return id, err
 }
