@@ -83,7 +83,14 @@ const target = useQuery({
 });
 const t = computed<UpdateTarget | undefined>(() => target.data.value);
 // The section is for a box that updates itself. The appliance waits for #400.
-const showUpdates = computed(() => isAdmin.value && t.value?.auto_apply === true);
+// A hosted box whose update settings are unusable reports auto_apply false
+// (nothing on it will apply anything), and that is exactly the state its admin
+// must see, so it is shown too.
+const showUpdates = computed(
+  () =>
+    isAdmin.value &&
+    (t.value?.auto_apply === true || (t.value?.state === "disabled" && t.value?.profile === "hosted")),
+);
 
 const windowStart = computed(() => t.value?.window?.split("-")[0] ?? "03:00");
 const windowEnd = computed(() => t.value?.window?.split("-")[1] ?? "04:00");
@@ -189,7 +196,13 @@ const starting = ref(false);
 const slow = ref(false);
 let slowTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
+// alive is false once the page is left. A request in flight then must not
+// schedule another poll or finish the wait: finish can reload, and that would
+// reload whatever page the user moved to. The marker stays in sessionStorage,
+// so coming back to this page picks the wait up again.
+let alive = true;
 onBeforeUnmount(() => {
+  alive = false;
   clearTimeout(slowTimer);
   clearTimeout(pollTimer);
 });
@@ -244,14 +257,16 @@ async function finish(job: SystemUpdateJob | null) {
 // up, so the read works again as soon as the new brain answers. A request that
 // fails while the brain restarts is expected and only means "ask again".
 async function poll(id: string) {
-  if (pendingJob.value !== id) return;
+  if (!alive || pendingJob.value !== id) return;
   try {
     const job = await api.get<SystemUpdateJob>(`/system/update/${encodeURIComponent(id)}`);
+    if (!alive) return;
     if (job.status !== "running") {
       await finish(job);
       return;
     }
   } catch (e) {
+    if (!alive) return;
     // 404: host-agent no longer knows the job (it restarted). The outcome on
     // disk is still the answer, so stop waiting and show it.
     if (e instanceof ApiError && e.status === 404) {

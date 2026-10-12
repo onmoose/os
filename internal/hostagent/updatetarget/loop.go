@@ -521,9 +521,13 @@ func nextNight(w Window, t time.Time) time.Time {
 	if w.Contains(t) {
 		return occurrenceNight(w, t)
 	}
-	start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Add(w.Start)
+	// Built from the wall-clock hour and minute, not midnight plus a
+	// duration: on the night the clocks go back, midnight plus three hours is
+	// the second 02:00, not 03:00.
+	h, m := int(w.Start/time.Hour), int(w.Start%time.Hour/time.Minute)
+	start := time.Date(t.Year(), t.Month(), t.Day(), h, m, 0, 0, t.Location())
 	if !start.After(t) {
-		start = start.AddDate(0, 0, 1)
+		start = time.Date(t.Year(), t.Month(), t.Day()+1, h, m, 0, 0, t.Location())
 	}
 	return time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
 }

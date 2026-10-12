@@ -43,6 +43,12 @@ Closes #488, the control-plane half (stream B) of the update screen. It builds o
 - **The cloud lane's `update` boot** gains two checks (`docs/dev/hosted-boot-proof.md`): after the revert, the read reports that failed job as `last` from disk with a `zone` (`LAST OK`); and Update now applies a gen-4 target whose window is twelve hours away, the new brain reports that job as a good `last`, and a second apply is `409` (`update-now — APPLY OK`). This boot runs on the PR in CI.
 - **The screen was not checked by looking at it.** It is covered by the typecheck and the build, and its data paths by the fake. The dashboard has no component tests.
 
+## Review
+
+- **The fresh review agent** found nothing at Block or Should level.
+- **Greptile** found three P2s, all fixed: a poll in flight when the admin left the page could still finish and reload the page they moved to (the page now stops its poll work once it is left; the marker stays, so coming back resumes the wait); a hosted box with unusable update settings reports `auto_apply: false`, so its `disabled` sentence never showed (it now shows for a hosted admin); and `nextNight` added hours to midnight, so on the night the clocks go back an apply at the second 02:30 counted for the next night instead of that one (it now builds the wall-clock time, with a test across the change in Europe/Stockholm).
+- **CI:** the cloud lane's `update` boot passed under both firmwares on the first push, with the new `LAST OK` and `update-now` checks.
+
 ## Known gaps & deviations
 
 - **Other open tabs are not told** that the UI changed. Only the tab that pressed Update now reloads. A tab left open across a scheduled update keeps the old bundle until it is reloaded. API minors only add fields, so it keeps working.

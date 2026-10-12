@@ -236,3 +236,21 @@ func TestNow_IsInTheBoxZone(t *testing.T) {
 		t.Fatalf("now() is in %v, want Asia/Tokyo", got)
 	}
 }
+
+// On the night the clocks go back, an apply at the second 02:30 counts for
+// that night's 03:00 window, not the next one (Greptile on #605).
+func TestNextNight_AcrossTheClockChange(t *testing.T) {
+	sto, err := time.LoadLocation("Europe/Stockholm")
+	if err != nil {
+		t.Skip("no tz database:", err)
+	}
+	// 2026-10-25 01:30 UTC is 02:30 CET, after 03:00 CEST became 02:00 CET.
+	second230 := time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC).In(sto)
+	if h, m, _ := second230.Clock(); h != 2 || m != 30 {
+		t.Fatalf("setup: %v is not 02:30", second230)
+	}
+	want := time.Date(2026, 10, 25, 0, 0, 0, 0, sto)
+	if got := nextNight(DefaultWindow, second230); !got.Equal(want) {
+		t.Fatalf("nextNight = %v, want %v", got, want)
+	}
+}
