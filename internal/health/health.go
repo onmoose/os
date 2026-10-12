@@ -580,11 +580,12 @@ func builtinDefinitions() []Definition {
 			Summary: "An app keeps crashing and restarting.",
 		},
 		// Version/app-runtime (HEALTH.md # Version). app-unresponsive is a locus-C
-		// brain check: for each steady-running instance that declares a
-		// health_probe (APP_MANIFEST.md # B), the brain GETs the probe path
-		// through the app's Caddy route and raises when it fails (cmd/brain
-		// appProbeDetector). Per-app — keyed by instance_id. Opt-in: an app with no
-		// health_probe is never probed and never raises this. The app is reachable
+		// brain check (cmd/brain appProbeDetector): for each steady-running
+		// instance it raises when Docker reports the main container "unhealthy",
+		// or when the app declares a health_probe (APP_MANIFEST.md # B) and the
+		// GET of the probe path through the app's Caddy route fails. Per-app,
+		// keyed by instance_id. An app with no health_probe and no image
+		// HEALTHCHECK never raises this. The app is reachable
 		// but not answering coherently, so we surface it rather than block; warning,
 		// Tier-2 (view logs / restart the app). The detector applies the
 		// cross-cutting 2-bad/1-good debounce itself (it calls Raise/Clear directly,

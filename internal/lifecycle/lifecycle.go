@@ -302,7 +302,7 @@ func (m *Manager) buildRouteConfig(inst store.Instance, man *manifest.Manifest, 
 			Upstream:    m.brainUpstream,
 			VerifyPath:  profile.ForwardAuthVerifyPath,
 			CopyHeaders: identityHeaders,
-			LoginURL:    "https://" + profile.HostedDashboardHost(m.boxID) + "/",
+			LoginURL:    profile.HostedLoginURL(m.boxID),
 		}
 		if man != nil {
 			cfg.PublicPaths = man.Access.PublicPaths
