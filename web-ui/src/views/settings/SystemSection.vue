@@ -63,6 +63,10 @@ type Pending = {
   // osLast the id of the last OS outcome before the click.
   os: string | null;
   osLast: string | null;
+  // osJob is the os-switch job when Update now started it at once (an OS-only
+  // click). A switch that fails before the restart ends that job "failed",
+  // with no new os.last, so this is how the wait learns of it.
+  osJob?: string | null;
   // at is when Update now was pressed, ms since the epoch.
   at: number;
 };
@@ -254,6 +258,8 @@ const osLastSentence = computed(() => {
 // ── Update now ─────────────────────────────────────────────────────────────
 const confirmDialog = ref<HTMLDialogElement | null>(null);
 const applyError = ref("");
+// waitError is set when a wait ends without the update happening.
+const waitError = ref("");
 const starting = ref(false);
 const slow = ref(false);
 let slowTimer: ReturnType<typeof setTimeout> | undefined;
@@ -293,7 +299,14 @@ async function applyNow() {
   const osLastBefore = t.value?.os?.last?.id ?? null;
   try {
     const job = await api.post<SystemUpdateJob>("/system/update-target/apply");
-    const p: Pending = { job: withCP ? job.job_id : null, os: withOS, osLast: osLastBefore, at: Date.now() };
+    const p: Pending = {
+      job: withCP ? job.job_id : null,
+      os: withOS,
+      osLast: osLastBefore,
+      osJob: !withCP && withOS ? job.job_id : null,
+      at: Date.now(),
+    };
+    waitError.value = "";
     writePending(p);
     pending.value = p;
   } catch (e) {
@@ -311,6 +324,10 @@ async function applyNow() {
     starting.value = false;
   }
 }
+
+// osWaitLimit is how long an OS switch may take: a restart, and up to 15
+// minutes for a new slot that does not come up to be given up.
+const osWaitLimit = 25 * 60_000;
 
 // finish ends the wait and reads the new state.
 async function finish() {
@@ -366,15 +383,39 @@ async function poll() {
         }
       }
     } else {
+      if (p.osJob) {
+        // The switch job ends "completed" just before the restart, or
+        // "failed" when it stopped first and the box never restarted. After
+        // the restart host-agent no longer knows it (404, caught below).
+        const job = await api.get<SystemUpdateJob>(`/system/update/${encodeURIComponent(p.osJob)}`);
+        if (!alive) return;
+        if (job.status === "failed") {
+          waitError.value = "The system update could not start, so your box did not restart. It tries again in the next window.";
+          await finish();
+          return;
+        }
+      }
       const s = await api.get<UpdateTarget>("/system/update-target");
       if (!alive) return;
       if (osDone(p, s)) {
         await finish();
         return;
       }
+      // A switch that never restarted the box leaves no outcome behind. Past
+      // the time limit, with the box no longer restarting, stop waiting.
+      if (Date.now() - p.at > osWaitLimit && s.os?.state !== "rebooting") {
+        await finish();
+        return;
+      }
     }
   } catch (e) {
     if (!alive) return;
+    // 404 on the switch job: the box restarted, so follow the read instead.
+    if (e instanceof ApiError && e.status === 404 && !p.job && p.osJob) {
+      const next: Pending = { ...p, osJob: null };
+      writePending(next);
+      pending.value = next;
+    }
     // 404 on the job: host-agent no longer knows it (it restarted). The
     // outcome on disk is still the answer, so move on.
     if (e instanceof ApiError && e.status === 404 && p.job) {
@@ -400,7 +441,7 @@ watch(
     // A control-plane update takes about a minute. An OS switch restarts the
     // box, and a new slot that does not come up is given up after up to 15
     // minutes. Past that, say so instead of spinning on.
-    const limit = pending.value?.os ? 25 * 60_000 : 10 * 60_000;
+    const limit = pending.value?.os ? osWaitLimit : 10 * 60_000;
     const left = Math.max(0, (pending.value?.at ?? Date.now()) + limit - Date.now());
     slowTimer = setTimeout(() => (slow.value = true), left);
     void poll();
@@ -514,6 +555,7 @@ watch(
           <Button :disabled="starting" @click="openConfirm">Update now</Button>
         </div>
         <p v-if="applyError" class="text-sm text-destructive">{{ applyError }}</p>
+        <p v-if="waitError" class="text-sm text-destructive">{{ waitError }}</p>
 
         <div v-if="last || osLast" class="space-y-1 border-t border-border pt-4">
           <p class="text-base font-medium">Last updates</p>

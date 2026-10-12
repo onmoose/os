@@ -32,6 +32,10 @@ With `MOOSE_FAKE_UPDATE_PROFILE=hosted` and `MOOSE_FAKE_OS_UPDATE=installed`, Up
 - **The cloud lane's `os-update` boot** now switches through Update now: the window in the answer stays shut, the owner's `POST /api/v1/system/update-target/apply` is accepted, and the box switches to slot B and comes up marked good, with every check the boot already made. `os-revert` still switches through the window, so both ways in are proven. This runs in the full CI list, not on a PR's default `update` boot.
 - **The screen was not checked by looking at it**, as for #488.
 
+## Review
+
+- **The fresh review agent** found no Block. Its one Should is fixed: an OS switch that fails before the restart (a RAUC check, the grubenv check, a refused reboot) leaves no `os.last`, so the page waited for ever. Now an OS-only click follows the `os-switch` job too, and a `failed` job ends the wait with "could not start, so your box did not restart"; and any OS wait ends once it is past 25 minutes while the box is no longer `rebooting`. Its Nit (a screen up to a minute old can miss that an OS release became installed, and the click then restarts the box without the page following it) is left as designed: Update now covers what is ready when it runs.
+
 ## Known gaps & deviations
 
 - **Both streams in one click are not proven on a booted box.** The `os-update` boot's answer carries only an OS part (by design, to prove the streams are judged apart), so its Update now is the OS switch alone. The B-then-A order is covered by the loop's tests and the fake.
