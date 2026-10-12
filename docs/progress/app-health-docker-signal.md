@@ -23,6 +23,7 @@ This fixes #609. The `app-unresponsive` detector came from the per-app health pr
 ## Known gaps & deviations
 
 - **"No sample" clears, like a good sample.** The issue describes `starting`, no healthcheck and the gate redirect as "not samples". The detector has no hold state: a tick either fails or it does not, and one that does not fail clears an active issue. This is how the detector already treated the start-period grace and a stopped container, and it is what the issue's "clears on the first tick it is no longer `unhealthy`" asks for. The visible result: an owner-only app on hosted with no image healthcheck is never flagged by the probe. That is the honest state until #610 lets the probe past the gate.
+- **Review disagreement: hold on "no sample".** The self-review asked that the gate's redirect leave the counter and an active issue as they are. Not done. On a gated route the probe never reaches the app, so only Docker can raise the issue there, and holding it would keep the issue open after Docker stops saying `unhealthy`. That breaks the issue's clear rule. A hold state would also need Docker `healthy` to count as good on an app with a probe, which the issue rules out.
 - **The appliance path is unchanged** except for the Docker signal and the redirect rule. There is no gate on the appliance.
 - **Not tried on a running box.** The `docker inspect` format was checked against real Docker; the detector itself is covered by unit tests with the fake Docker reader.
 
