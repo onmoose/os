@@ -73,7 +73,8 @@ Plus the **Docker daemon** on the host, which the brain drives with the
   `/v1/discovery/{publish,unpublish}`,
   `/v1/system/{status,resources,gpu,set-timezone}`,
   `/v1/health/system`, `/v1/journal/follow`, and the job routes
-  `/v1/jobs/system-update` + `/v1/jobs/{id}`. `specs/BRAIN_HOST_PROTOCOL.md`
+  `/v1/jobs/system-update`, `/v1/jobs/system-update-target` (#488) +
+  `/v1/jobs/{id}`. `specs/BRAIN_HOST_PROTOCOL.md`
   owns the wire and also lists the routes that are specced but not built yet
   (files, network, terminal, drive jobs).
 
@@ -256,16 +257,24 @@ So this doc isn't read as a claim about the finished product:
   manifest and does not poll — the deliberate inert state), **no digests in the
   manifest** (it names versions, so the appliance source can only refuse —
   `NEXT.md`), no per-box targeting or report-back on hosted (blocked on the
-  box↔cloud credential, `NEXT.md` Tier 1), no update notification, and no
-  dashboard surface beyond Settings → About reporting the running versions
-  (#393). **What the seam decided is now readable** (#443):
+  box↔cloud credential, `NEXT.md` Tier 1), and no notification for a
+  control-plane update (the OS update has one, #563). **What the seam decided
+  is now readable** (#443):
   `GET /v1/system/update-target` on the host socket, re-served admin-only as
   `GET /api/v1/system/update-target`, answering what the box runs, what it could
   run, where the target and the window came from, when it last checked and why
   the last check produced nothing. One `state` field carries the whole answer,
   and it keeps "nothing on offer", "could not ask", "answer refused" and "this
-  box has no update loop at all" apart. No UI reads it yet — it is what the
-  dashboard prompt will consume.
+  box has no update loop at all" apart. **Settings → System reads it**
+  (#488, `SystemSection.vue`): every user sees the moose (OS) version and the
+  control-plane version; an admin on a box that updates itself also sees the
+  window in the box's time zone (`zone`, read from `/etc/localtime` on every
+  tick), the state as a sentence, the last control-plane update (`last`, kept
+  on disk in `last-update.json` beside the ledger) and **Update now**:
+  `POST /api/v1/system/update-target/apply`, no body, which applies the target
+  the loop already checked (`updatetarget.Loop.ApplyNow`) through
+  `POST /v1/jobs/system-update-target`. The `426` path is not built; the tab
+  that pressed Update now reloads itself when the UI changed.
 - **File manager.** `FILES.md` is written, and `/files` is a real top-level
   route. Nothing behind it is built. The brain registers no `/api/v1/files/*`
   handlers, and host-agent implements none of the `/v1/files/*` ops the protocol

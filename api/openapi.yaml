@@ -642,6 +642,41 @@ components:
         mail_provider_id:
           type: string
       type: object
+    ControlPlaneOutcomeDTO:
+      additionalProperties: false
+      properties:
+        at:
+          type: string
+        brain_changed:
+          type: boolean
+        failure_mode:
+          type: string
+        from:
+          type: string
+        id:
+          type: string
+        outcome:
+          enum:
+            - good
+            - failed
+          type: string
+        revert_error:
+          type: string
+        reverted:
+          type: boolean
+        started_at:
+          type: string
+        ui_changed:
+          type: boolean
+        version:
+          type: string
+      required:
+        - id
+        - outcome
+        - at
+        - brain_changed
+        - ui_changed
+      type: object
     ControlPlanePairDTO:
       additionalProperties: false
       properties:
@@ -2796,6 +2831,8 @@ components:
           type: string
         from:
           type: string
+        last:
+          $ref: "#/components/schemas/ControlPlaneOutcomeDTO"
         os:
           $ref: "#/components/schemas/OSUpdateDTO"
         profile:
@@ -2817,6 +2854,8 @@ components:
         window:
           type: string
         window_from:
+          type: string
+        zone:
           type: string
       required:
         - state
@@ -4319,6 +4358,23 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: What this box could be running, and why it is not (admin only)
+  /api/v1/system/update-target/apply:
+    post:
+      operationId: apply-system-update-target
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemUpdateJobDTO"
+          description: Accepted
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Apply the update this box already found, now, instead of in the window (admin only)
   /api/v1/system/update/{job_id}:
     get:
       operationId: get-system-update

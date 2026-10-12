@@ -33,6 +33,16 @@
 //	                    plane to update, so the honest default is "nothing to
 //	                    offer"; the other values exist so the dashboard's update
 //	                    surfaces can be built against every state.
+//	MOOSE_FAKE_UPDATE_PROFILE — "hosted" makes that report a hosted box that
+//	                    applies its own target (auto_apply), so Settings →
+//	                    System shows its update section and Update now works:
+//	                    the fake "applies" an available target in a few
+//	                    seconds. Default "appliance", which shows none.
+//	MOOSE_FAKE_UPDATE_LAST — the last control-plane update outcome it reports:
+//	                    "good" or "failed" (a reverted health failure). Unset
+//	                    reports none, as on a box that never updated.
+//	MOOSE_FAKE_UPDATE_APPLY — "fail" makes Update now end in a reverted
+//	                    failure instead of a success.
 package main
 
 import (
@@ -149,7 +159,9 @@ func main() {
 	// keeps GET /v1/discovery/state's interfaces field stable regardless of
 	// the dev box's real network.
 	a.Net = hostagent.NewFakeNetState(netstate.LANInterface{Name: "eth0", Index: 2, IPv4: "192.168.1.20"})
-	a.UpdateTarget = hostagent.NewFakeUpdateTargetReporter(fakeUpdateTarget())
+	updateReport := hostagent.NewFakeUpdateTargetReporter(fakeUpdateTarget())
+	a.UpdateTarget = updateReport
+	a.TargetApplier = fakeTargetApplier{a: a, r: updateReport}
 
 	mux := http.NewServeMux()
 	a.Mount(mux)

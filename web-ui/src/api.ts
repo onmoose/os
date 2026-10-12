@@ -160,6 +160,14 @@ export type RequiresGroup = Schemas["RequiresGroupDTO"];
 export type MailPresetRegionOption = Schemas["MailPresetRegionOptionDTO"];
 export type SystemStorage = Schemas["SystemStorageDTO"];
 export type SystemVersion = Schemas["SystemVersionDTO"];
+// UpdateTarget is what the box's update loop last decided (GET
+// /system/update-target, admin only): the state, the window and its zone, and
+// last, the outcome of the last control-plane update.
+export type UpdateTarget = Schemas["UpdateTargetDTO"];
+export type ControlPlaneOutcome = Schemas["ControlPlaneOutcomeDTO"];
+// SystemUpdateJob is a host-agent update job, as Update now returns it and as
+// GET /system/update/{job_id} reads it.
+export type SystemUpdateJob = Schemas["SystemUpdateJobDTO"];
 export type DiskSpace = Schemas["DiskSpaceDTO"];
 export type AppSecrets = Schemas["AppSecretsDTO"];
 export type AppSecret = Schemas["AppSecretDTO"];

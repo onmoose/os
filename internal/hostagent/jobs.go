@@ -191,6 +191,14 @@ func (a *Agent) startSystemUpdate(w http.ResponseWriter, r *http.Request) {
 // second entry point that reached past this into cpupdate would step around
 // that lock, and the two updates would fight over the brain container.
 func (a *Agent) StartUpdate(brainRef, uiRef string) (protocol.Job, error) {
+	return a.StartUpdateTo(brainRef, uiRef, "")
+}
+
+// StartUpdateTo is StartUpdate with the version the target names, for the
+// outcome record when the images cannot say it themselves (a target that
+// never pulled has no label to read). The update-target loop knows it; the
+// explicit-refs route does not.
+func (a *Agent) StartUpdateTo(brainRef, uiRef, version string) (protocol.Job, error) {
 	if a.Updater == nil {
 		return protocol.Job{}, errNoUpdater
 	}
@@ -204,19 +212,20 @@ func (a *Agent) StartUpdate(brainRef, uiRef string) (protocol.Job, error) {
 	// The run outlives its caller, so it gets its own context — a client hanging
 	// up, or a poll tick returning, must not abort an update that is already
 	// changing the box. The only bound on it is MaxDuration.
-	go a.runSystemUpdate(job.ID, protocol.SystemUpdateRequest{BrainImage: brainRef, UIImage: uiRef})
+	go a.runSystemUpdate(job, protocol.SystemUpdateRequest{BrainImage: brainRef, UIImage: uiRef}, version)
 
 	return job, nil
 }
 
-func (a *Agent) runSystemUpdate(id string, req protocol.SystemUpdateRequest) {
+func (a *Agent) runSystemUpdate(job protocol.Job, req protocol.SystemUpdateRequest, version string) {
 	ctx, cancel := context.WithTimeout(context.Background(), systemUpdateMaxDuration)
 	defer cancel()
 
 	res, err := a.Updater.Update(ctx, req.BrainImage, req.UIImage)
 	if err == nil {
 		slog.Info("system-update finished", "step", "committed", "image", req.BrainImage)
-		a.jobs.finish(id, res, "", "")
+		a.saveOutcome(job, res, version, false)
+		a.jobs.finish(job.ID, res, "", "")
 		return
 	}
 	// Distinguish "it broke" from "it ran too long and we stopped it": the
@@ -227,7 +236,94 @@ func (a *Agent) runSystemUpdate(id string, req protocol.SystemUpdateRequest) {
 		code = protocol.JobErrorTimeout
 	}
 	slog.Error("system-update failed", "step", res.FailureMode, "err", err)
-	a.jobs.finish(id, res, code, err.Error())
+	a.saveOutcome(job, res, version, true)
+	a.jobs.finish(job.ID, res, code, err.Error())
+}
+
+// saveOutcome writes the update's outcome where it outlives the brain the
+// update replaced (#488). It is written before the job is closed, so a caller
+// that sees the job end can already read the outcome.
+//
+// An update that changed nothing (the box already ran the target) is not an
+// update, and leaves the last real outcome in place.
+func (a *Agent) saveOutcome(job protocol.Job, res protocol.SystemUpdateResult, version string, failed bool) {
+	if a.LastUpdate == nil || (!failed && !res.BrainChanged && !res.UIChanged) {
+		return
+	}
+	o := protocol.ControlPlaneOutcome{
+		ID:           job.ID,
+		Outcome:      protocol.ControlPlaneOutcomeGood,
+		Version:      res.ToVersion,
+		From:         res.FromVersion,
+		At:           a.jobs.now().UTC().Format(time.RFC3339),
+		StartedAt:    job.StartedAt,
+		BrainChanged: res.BrainChanged,
+		UIChanged:    res.UIChanged,
+		FailureMode:  res.FailureMode,
+		Reverted:     res.Reverted,
+		RevertError:  res.RevertError,
+	}
+	if o.Version == "" {
+		o.Version = version
+	}
+	if failed {
+		o.Outcome = protocol.ControlPlaneOutcomeFailed
+	}
+	if err := a.LastUpdate.Save(o); err != nil {
+		slog.Error("system-update: could not record the outcome; the dashboard will not show it", "job_id", job.ID, "err", err)
+	}
+}
+
+// ErrNothingToApply is what a TargetApplier returns when the update-target loop
+// has no target that differs from what the box runs. The handler maps it to 409.
+var ErrNothingToApply = errors.New("there is no update to apply")
+
+// TargetApplier applies the target the update-target loop already fetched and
+// checked, now rather than in the window (#488). Consumer-side; the provider is
+// the loop (updatetarget.Loop.ApplyNow), adapted in cmd/host-agent-real. It
+// returns the job id of the update it started.
+type TargetApplier interface {
+	ApplyTarget() (jobID string, err error)
+}
+
+// LastUpdateSaver keeps the outcome of the last control-plane update on disk
+// (controlplane.LastUpdate). Nil means the outcome is not kept.
+type LastUpdateSaver interface {
+	Save(protocol.ControlPlaneOutcome) error
+}
+
+// applyUpdateTarget answers POST /v1/jobs/system-update-target. **No body**:
+// the refs come from the loop, which checked them (digest-pinned, expected
+// repositories). A route that took refs from the caller would let whoever can
+// reach the brain pick the images; this one can only apply what the box's own
+// source named.
+func (a *Agent) applyUpdateTarget(w http.ResponseWriter, r *http.Request) {
+	if a.TargetApplier == nil {
+		writeErr(w, http.StatusNotImplemented, "update-unsupported", "this host-agent has no update target to apply")
+		return
+	}
+	id, err := a.TargetApplier.ApplyTarget()
+	switch {
+	case errors.Is(err, errJobRunning):
+		writeErr(w, http.StatusConflict, protocol.ErrCodeJobRunning, err.Error())
+		return
+	case errors.Is(err, ErrNothingToApply):
+		writeErr(w, http.StatusConflict, protocol.ErrCodeNothingToApply, err.Error())
+		return
+	case errors.Is(err, errNoUpdater):
+		writeErr(w, http.StatusNotImplemented, "update-unsupported", err.Error())
+		return
+	case err != nil:
+		slog.Error("system-update-target: could not start the update", "err", err)
+		writeErr(w, http.StatusInternalServerError, "update-failed", "could not start the update")
+		return
+	}
+	job, ok := a.jobs.get(id)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "update-failed", "the update started but its job is unknown")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job)
 }
 
 // jobStatus answers GET /v1/jobs/{id}. 404 for an id this host-agent has never

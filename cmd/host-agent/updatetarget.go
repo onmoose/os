@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"time"
 
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
 	"github.com/onmoose/os/internal/protocol"
 )
 
@@ -46,6 +49,20 @@ func fakeUpdateTarget() protocol.UpdateTarget {
 	}
 
 	out.OS = fakeOSUpdate()
+	// The dev machine's own zone, read the way the real loop reads it.
+	_, out.Zone = updatetarget.SystemZone()
+	if os.Getenv("MOOSE_FAKE_UPDATE_PROFILE") == "hosted" {
+		out.Profile, out.AutoApply = "hosted", true
+	}
+	switch os.Getenv("MOOSE_FAKE_UPDATE_LAST") {
+	case "":
+	case protocol.ControlPlaneOutcomeGood:
+		out.Last = fakeOutcome("j_fake0001", false)
+	case protocol.ControlPlaneOutcomeFailed:
+		out.Last = fakeOutcome("j_fake0001", true)
+	default:
+		slog.Warn("host-agent (fake): unknown MOOSE_FAKE_UPDATE_LAST; reporting none")
+	}
 
 	want := os.Getenv("MOOSE_FAKE_UPDATE_TARGET")
 	switch want {
@@ -105,4 +122,62 @@ func fakeOSUpdate() *protocol.OSUpdate {
 		out.Target = nil
 	}
 	return out
+}
+
+// fakeApplyTime is how long a fake Update now takes. Long enough to see the
+// dashboard's "Updating…" view, short enough not to wait for.
+const fakeApplyTime = 8 * time.Second
+
+// fakeOutcome is a canned control-plane outcome, from 0.17.0 to 0.18.0.
+func fakeOutcome(id string, failed bool) *protocol.ControlPlaneOutcome {
+	now := time.Now().UTC()
+	o := &protocol.ControlPlaneOutcome{
+		ID: id, Outcome: protocol.ControlPlaneOutcomeGood, Version: "0.18.0", From: "0.17.0",
+		StartedAt: now.Add(-fakeApplyTime).Format(time.RFC3339), At: now.Format(time.RFC3339),
+		BrainChanged: true, UIChanged: true,
+	}
+	if failed {
+		o.Outcome, o.FailureMode, o.Reverted = protocol.ControlPlaneOutcomeFailed, "health", true
+	}
+	return o
+}
+
+// fakeTargetApplier is the fake's Update now (#488): it takes the job lock
+// like the real one, waits a few seconds, then reports the box on the target
+// with a good outcome, or a reverted failure under MOOSE_FAKE_UPDATE_APPLY=fail.
+// Nothing restarts, so the dashboard's wait ends as soon as the outcome lands.
+type fakeTargetApplier struct {
+	a *hostagent.Agent
+	r *hostagent.FakeUpdateTargetReporter
+}
+
+func (f fakeTargetApplier) ApplyTarget() (string, error) {
+	cur := f.r.Read()
+	if !cur.AutoApply || cur.State != protocol.UpdateTargetAvailable {
+		return "", hostagent.ErrNothingToApply
+	}
+	fail := os.Getenv("MOOSE_FAKE_UPDATE_APPLY") == "fail"
+	idc := make(chan string, 1)
+	job, err := f.a.StartJob(protocol.JobKindSystemUpdate, time.Minute, func(ctx context.Context) error {
+		id := <-idc
+		select {
+		case <-time.After(fakeApplyTime):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		next := f.r.Read()
+		next.Last = fakeOutcome(id, fail)
+		if !fail && next.Target != nil {
+			next.State = protocol.UpdateTargetCurrent
+			next.Running = protocol.ControlPlanePair{Brain: next.Target.BrainImage, UI: next.Target.UIImage}
+		}
+		f.r.Set(next)
+		slog.Info("host-agent (fake) applied the update target", "job_id", id, "step", next.Last.Outcome)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	idc <- job.ID
+	return job.ID, nil
 }

@@ -31,6 +31,9 @@ type updateHarness struct {
 	// when non-zero, is a failure status it answers instead.
 	target       protocol.UpdateTarget
 	targetStatus int
+	// applyCode, when set, makes the fake apply route answer 409 with it.
+	applyCode string
+	applies   int
 }
 
 func newUpdateHarness(t *testing.T) *updateHarness {
@@ -77,6 +80,19 @@ func newUpdateHarness(t *testing.T) *updateHarness {
 			Result: &protocol.SystemUpdateResult{
 				BrainChanged: true, Reverted: true, FailureMode: "health",
 			},
+		})
+	})
+	mux.HandleFunc("POST "+protocol.SystemUpdateTargetApplyPath, func(w http.ResponseWriter, r *http.Request) {
+		h.applies++
+		if h.applyCode != "" {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: h.applyCode, Message: "no"})
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(protocol.Job{
+			ID: "j_apply1", Kind: protocol.JobKindSystemUpdate, Status: protocol.JobStatusRunning,
+			StartedAt: "2026-10-12T14:00:00Z",
 		})
 	})
 	mux.HandleFunc("GET /v1/system/update-target", func(w http.ResponseWriter, r *http.Request) {
@@ -402,5 +418,94 @@ func TestUpdateTarget_OSPart(t *testing.T) {
 	h.target.OS = nil
 	if out, _ := h.readTarget(adminCtx("u_admin")); out.Body.OS != nil {
 		t.Fatalf("no os part on the host must leave it out, got %+v", out.Body.OS)
+	}
+}
+
+func (h *updateHarness) apply(ctx context.Context) (*struct{ Body SystemUpdateJobDTO }, error) {
+	return h.srv.applySystemUpdateTarget(ctx, &struct{}{})
+}
+
+// Update now: host-agent starts the job, the brain hands back its id, and the
+// start is on the record as a success (#488).
+func TestApplyTarget_Accepted(t *testing.T) {
+	h := newUpdateHarness(t)
+	out, err := h.apply(adminCtx("u_admin"))
+	if err != nil {
+		t.Fatalf("applySystemUpdateTarget: %v", err)
+	}
+	if out.Body.JobID != "j_apply1" || out.Body.Status != protocol.JobStatusRunning {
+		t.Fatalf("job = %+v, want the running j_apply1", out.Body)
+	}
+	if rows := h.auditRows(t); len(rows) != 1 || !rows[0].Success {
+		t.Fatalf("audit rows = %+v, want one successful start", rows)
+	}
+}
+
+// A member is refused before host-agent is asked, and the attempt is on the
+// record: "did someone who may not update this box try to" is what Activity
+// answers.
+func TestApplyTarget_MemberForbidden(t *testing.T) {
+	h := newUpdateHarness(t)
+	_, err := h.apply(memberCtx("u_bob"))
+	assertStatus(t, err, http.StatusForbidden)
+	if h.applies != 0 {
+		t.Fatalf("host-agent was asked %d times, want 0", h.applies)
+	}
+	if rows := h.auditRows(t); len(rows) != 1 || rows[0].Success || rows[0].ActorUserID != "u_bob" {
+		t.Fatalf("audit rows = %+v, want one failed attempt by bob", rows)
+	}
+}
+
+// Both of host-agent's 409s stay 409s, and each is audited as a failure.
+func TestApplyTarget_Conflicts_409(t *testing.T) {
+	for _, code := range []string{protocol.ErrCodeJobRunning, protocol.ErrCodeNothingToApply} {
+		t.Run(code, func(t *testing.T) {
+			h := newUpdateHarness(t)
+			h.applyCode = code
+			_, err := h.apply(adminCtx("u_admin"))
+			assertStatus(t, err, http.StatusConflict)
+			if rows := h.auditRows(t); len(rows) != 1 || rows[0].Success {
+				t.Fatalf("audit rows = %+v, want one failed attempt", rows)
+			}
+		})
+	}
+}
+
+func TestApplyTarget_HostDown_502(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "api.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	seedUpdateUsers(t, st)
+	s := &Server{host: hostclient.New(filepath.Join(t.TempDir(), "absent.sock")), auditor: audit.New(st)}
+	_, err = s.applySystemUpdateTarget(adminCtx("u_admin"), &struct{}{})
+	assertStatus(t, err, http.StatusBadGateway)
+	rows, _ := st.ListAuditEvents(store.AuditFilter{Limit: 50})
+	if len(rows) != 1 || rows[0].Action != audit.ActionSystemUpdate || rows[0].Success {
+		t.Fatalf("audit rows = %+v, want one failed start", rows)
+	}
+}
+
+// The zone and the last outcome reach the dashboard unchanged.
+func TestUpdateTarget_ZoneAndLast(t *testing.T) {
+	h := newUpdateHarness(t)
+	h.target = protocol.UpdateTarget{
+		State: protocol.UpdateTargetCurrent, Zone: "Europe/Stockholm",
+		Last: &protocol.ControlPlaneOutcome{
+			ID: "j_1", Outcome: protocol.ControlPlaneOutcomeFailed, Version: "0.18.0", From: "0.17.0",
+			At: "2026-10-12T03:04:00Z", BrainChanged: true, FailureMode: "health", Reverted: true,
+		},
+	}
+	out, err := h.readTarget(adminCtx("u_admin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := out.Body
+	if b.Zone != "Europe/Stockholm" {
+		t.Errorf("zone = %q, want Europe/Stockholm", b.Zone)
+	}
+	if b.Last == nil || b.Last.ID != "j_1" || b.Last.Outcome != "failed" || b.Last.FailureMode != "health" || !b.Last.Reverted || b.Last.From != "0.17.0" {
+		t.Errorf("last = %+v, want the reverted health failure", b.Last)
 	}
 }

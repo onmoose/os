@@ -17,7 +17,7 @@
 // (components/Dock.vue), so this doesn't duplicate that with a second slide-over.
 import { computed } from "vue";
 import { RouterLink, RouterView } from "vue-router";
-import { User, Bell, LayoutGrid, Mail, ScrollText, Sparkles, Terminal, Users, Info, type LucideIcon } from "lucide-vue-next";
+import { User, Bell, LayoutGrid, Mail, ScrollText, Server, Sparkles, Terminal, Users, Info, type LucideIcon } from "lucide-vue-next";
 import { useAuth } from "@/auth";
 
 const { currentUser } = useAuth();
@@ -32,7 +32,9 @@ type NavGroup = { label: string; items: NavItem[] };
 // says "AI service"; the API and code say `ai`. "System" holds the box-wide
 // items. SSH sits between Notifications and Activity: it is per-account
 // like Notifications, and both of those read as settings you carry, while
-// Activity is the record of what happened on this box.
+// Activity is the record of what happened on this box. System (the versions
+// and, for admins, the updates, #488) sits next to About, the other page about
+// the box itself.
 const groups: NavGroup[] = [
   {
     label: "You",
@@ -55,6 +57,7 @@ const groups: NavGroup[] = [
       { to: "/settings/notifications", label: "Notifications", icon: Bell },
       { to: "/settings/ssh", label: "SSH", icon: Terminal },
       { to: "/settings/activity", label: "Activity", icon: ScrollText },
+      { to: "/settings/system", label: "System", icon: Server },
       { to: "/settings/about", label: "About", icon: Info },
     ],
   },

@@ -93,7 +93,8 @@ web-ui/
     │       ├── LLMProvidersSection.vue   # /settings/ai, Integrations → AI services: the user's own AI accounts (add: ServiceGrid + AIKeyForm)
     │       ├── EmailSection.vue          # Integrations → Email: the user's own SMTP account list
     │       ├── EmailAddSection.vue       # /email/add + /email/add/:preset (MailServiceGrid + MailAddForm; /settings/mail/* redirect here)
-    │       └── AboutSection.vue          # product identity
+    │       ├── SystemSection.vue         # versions (all users); update schedule, last update, Update now (admins, hosted)
+    │       └── AboutSection.vue          # product identity, links to System
     │
     └── components/         # reusable chrome + dialogs
         ├── AppShell.vue        # signed-in chrome; mounts useEvents() once

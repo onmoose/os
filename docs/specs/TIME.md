@@ -49,6 +49,8 @@ Boxes with no working RTC at all (rare on x86, possible on future ARM ports) are
 
 `/etc/localtime` symlinked via `timedatectl set-timezone <zone>`. Affects journald display, cron, anything reading `time.Local`.
 
+A Go program loads `time.Local` once, when it starts, so a long-running one does not see a later change. host-agent's update loop therefore reads the `/etc/localtime` link on every tick, and the update window follows a zone that first-run set after host-agent started (#488, `UPDATES.md` # 8.4).
+
 - **First-run:** auto-detected via IP geolocation in the setup wizard (already specced in `FIRST_RUN.md` Step 3). If no internet at first-run, fall back to picking from a list.
 - **Override:** Settings → System → Time. Always available.
 

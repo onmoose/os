@@ -547,7 +547,69 @@ type SystemUpdateResult struct {
 	// RevertError is set when the rollback itself failed. The box is then in a
 	// state no automatic path can fix, and this is the operator's signal.
 	RevertError string `json:"revert_error,omitempty"`
+	// FromVersion and ToVersion are the control-plane versions the update
+	// moved between, read from the images' org.opencontainers.image.version
+	// label. Empty when an image does not carry the label or was never pulled.
+	FromVersion string `json:"from_version,omitempty"`
+	ToVersion   string `json:"to_version,omitempty"`
 }
+
+// ImageVersionLabel is the OCI label the brain and UI images carry their
+// control-plane version in (cmd/brain/Dockerfile, web-ui/Dockerfile).
+const ImageVersionLabel = "org.opencontainers.image.version"
+
+// SystemUpdateTargetApplyPath is POST /v1/jobs/system-update-target: apply the
+// target the update-target loop already fetched and checked, now, without
+// waiting for the window (#488). It takes no body, on purpose: the refs come
+// from the loop, never from the caller. 202 + a Job, like system-update.
+const SystemUpdateTargetApplyPath = "/v1/jobs/system-update-target"
+
+// Error codes of POST /v1/jobs/system-update-target.
+const (
+	// ErrCodeJobRunning: another job holds the job lock (a control-plane
+	// update, or an OS install or switch). 409.
+	ErrCodeJobRunning = "job-running"
+	// ErrCodeNothingToApply: the loop has no target that differs from what
+	// the box runs (any state but available). 409.
+	ErrCodeNothingToApply = "nothing-to-apply"
+)
+
+// ControlPlaneOutcome is what the last control-plane update did (stream B),
+// kept on disk by host-agent so it outlives the brain it replaced. Scheduled
+// and manual updates write the same record. Its first five fields have the
+// shape of OSOutcome, stream A's record.
+type ControlPlaneOutcome struct {
+	// ID names this outcome once. It is the job id of the update, so a caller
+	// that started a job knows when its outcome has landed.
+	ID string `json:"id"`
+	// Outcome is "good" (the new pair came up healthy) or "failed" (it did
+	// not, or it never started; the box is on the pair it ran before, unless
+	// RevertError says the way back failed too).
+	Outcome string `json:"outcome"`
+	// Version is the control-plane version the update moved to; From the one
+	// it came from. Either is empty when the box could not tell.
+	Version string `json:"version,omitempty"`
+	From    string `json:"from,omitempty"`
+	// At is when the update finished, StartedAt when it began, RFC3339.
+	At        string `json:"at"`
+	StartedAt string `json:"started_at,omitempty"`
+	// BrainChanged and UIChanged say which containers the update replaced.
+	BrainChanged bool `json:"brain_changed"`
+	UIChanged    bool `json:"ui_changed"`
+	// FailureMode names the step that failed ("read", "pull", "snapshot",
+	// "declare", "recreate", "health"), or "timeout". Empty on success.
+	FailureMode string `json:"failure_mode,omitempty"`
+	// Reverted is true when the box had been changed and was put back.
+	Reverted bool `json:"reverted,omitempty"`
+	// RevertError is set when putting the box back failed. Not UI copy.
+	RevertError string `json:"revert_error,omitempty"`
+}
+
+// The ControlPlaneOutcome values.
+const (
+	ControlPlaneOutcomeGood   = "good"
+	ControlPlaneOutcomeFailed = "failed"
+)
 
 // Job is one host-agent job record. StartedAt/FinishedAt are RFC3339, matching
 // the other timestamps on this socket (SystemHealth.CheckedAt).
@@ -613,6 +675,14 @@ type UpdateTarget struct {
 	// a window can come from the source's answer, a URL never can.
 	Window     string `json:"window,omitempty"`
 	WindowFrom string `json:"window_from,omitempty"`
+	// Zone is the IANA time zone the window is read in: the box's zone, read
+	// the same way the loop reads it (#488). Empty when host-agent cannot
+	// name it.
+	Zone string `json:"zone,omitempty"`
+	// Last is what the last control-plane update did, read from disk, so it
+	// survives the brain restart the update causes (#488). Nil before the
+	// first update. Stream A's record is OS.Last.
+	Last *ControlPlaneOutcome `json:"last,omitempty"`
 	// AutoApply is the UPDATES.md # 8.2 difference between the profiles: a
 	// hosted box applies its target in the window on its own, an appliance
 	// waits for an admin. It is what decides whether the dashboard says "this

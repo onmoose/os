@@ -134,6 +134,9 @@ func main() {
 			SnapshotRoot:    filepath.Join(brainCfg.DataDir, "brain-snapshots"),
 		},
 	}
+	// Every control-plane update's outcome, kept beside the ledger so it
+	// outlives the brain the update replaced (#488).
+	a.LastUpdate = controlplane.LastUpdate{Dir: brainCfg.ControlPlaneDir}
 
 	mux := http.NewServeMux()
 	a.Mount(mux)

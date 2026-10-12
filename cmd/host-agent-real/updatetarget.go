@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 
 	"github.com/onmoose/os/internal/hostagent"
 	"github.com/onmoose/os/internal/hostagent/brainlaunch"
+	"github.com/onmoose/os/internal/hostagent/controlplane"
 	"github.com/onmoose/os/internal/hostagent/osupdate"
 	"github.com/onmoose/os/internal/hostagent/relmanifest"
 	"github.com/onmoose/os/internal/hostagent/updatetarget"
@@ -53,8 +55,10 @@ func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *
 			// The profile is a build-time fact, so it survives a source this
 			// box could not build. autoApply is left false on purpose: nothing
 			// on this box will apply anything, whatever profile it is.
-			profile: buildProfile,
-			os:      osReporter(osApp),
+			profile:    buildProfile,
+			os:         osReporter(osApp),
+			lastUpdate: controlplane.LastUpdate{Dir: brainCfg.ControlPlaneDir},
+			zone:       updatetarget.SystemZone,
 		}
 		return func() {}
 	}
@@ -71,6 +75,9 @@ func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *
 		AutoApply:   src.AutoApply,
 		Profile:     src.Profile,
 		OSURLPrefix: osURLPrefix(),
+		// The box's zone, read on every tick, so the window follows a zone
+		// first-run sets after host-agent started (#488).
+		Zone: updatetarget.SystemZone,
 	}
 	// Set only when there is an applier: a nil *Applier in the interface
 	// field would not read as nil.
@@ -89,7 +96,12 @@ func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *
 		profile:    src.Profile,
 		autoApply:  src.AutoApply,
 		os:         osReporter(osApp),
+		lastUpdate: controlplane.LastUpdate{Dir: brainCfg.ControlPlaneDir},
+		zone:       updatetarget.SystemZone,
 	}
+	// POST /v1/jobs/system-update-target: an admin's Update now applies the
+	// target this loop checked (#488).
+	a.TargetApplier = loopApplier{loop}
 	ctx, cancel := context.WithCancel(context.Background())
 	go loop.Run(ctx)
 	// The window here is the local setting. A source that names its own window
@@ -143,10 +155,22 @@ func repositories() updatetarget.Repositories {
 // admin-triggered one (hostagent.Agent.StartUpdate).
 type agentApplier struct{ a *hostagent.Agent }
 
-func (ap agentApplier) StartUpdate(brainRef, uiRef string) (string, error) {
-	job, err := ap.a.StartUpdate(brainRef, uiRef)
+func (ap agentApplier) StartUpdate(brainRef, uiRef, version string) (string, error) {
+	job, err := ap.a.StartUpdateTo(brainRef, uiRef, version)
 	if err != nil {
 		return "", err
 	}
 	return job.ID, nil
+}
+
+// loopApplier adapts the loop's ApplyNow to the agent's TargetApplier seam,
+// turning the loop's refusals into the agent's.
+type loopApplier struct{ l *updatetarget.Loop }
+
+func (ap loopApplier) ApplyTarget() (string, error) {
+	id, err := ap.l.ApplyNow()
+	if errors.Is(err, updatetarget.ErrNothingToApply) || errors.Is(err, updatetarget.ErrManualApplyUnsupported) {
+		return "", errors.Join(hostagent.ErrNothingToApply, err)
+	}
+	return id, err
 }

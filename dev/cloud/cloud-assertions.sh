@@ -2037,6 +2037,27 @@ update)
     grep -q ' 200' <<<"$spa_after" || fail "update: after the revert the dashboard does not answer: status='$spa_after'"
     echo "cloud-assertions: update — REVERT OK (health failure detected, both refs and the SQLite snapshot restored, box serving on the old pair with the same session)"
 
+    # 5e. THE RECORD (#488). The job above lives in host-agent's memory. The
+    #     dashboard reads the outcome from the update-target read instead, which
+    #     host-agent keeps on disk so it outlives the brain the update replaced.
+    #     It must name the failed job, its step, and that the box went back.
+    last_read=""
+    for _i in $(seq 1 60); do
+        last_read="$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)"
+        grep -q "\"id\":\"${bad_job}\"" <<<"$last_read" && break
+        sleep 1
+    done
+    grep -q "\"id\":\"${bad_job}\"" <<<"$last_read" \
+        || fail "update: the update-target read does not report the failed job ${bad_job} as the last update: $(tail -1 <<<"$last_read")"
+    grep -q '"outcome":"failed"' <<<"$last_read" && grep -q '"failure_mode":"health"' <<<"$last_read" && grep -q '"reverted":true' <<<"$last_read" \
+        || fail "update: the last update is not a reverted health failure: $(tail -1 <<<"$last_read")"
+    [ -s "$(dirname "$ledger")/last-update.json" ] \
+        || fail "update: no last-update.json beside the ledger, so the outcome would not survive a host-agent restart"
+    # The zone the window is read in, named the way the loop reads it.
+    grep -qE '"zone":"[^"]+"' <<<"$last_read" \
+        || fail "update: the update-target read names no time zone: $(tail -1 <<<"$last_read")"
+    echo "cloud-assertions: update — LAST OK (the read reports the reverted health failure of ${bad_job} from disk, zone $(json_str_of "$last_read" zone))"
+
     # 6. THE TARGET-DRIVEN PATH (os#401). Everything above was driven by an admin
     #    POSTing two refs. On a hosted box nobody types them: host-agent reads an
     #    update-target source and applies what it is handed, in the update window,
@@ -2242,6 +2263,57 @@ EOF
     grep -qE ' (401|403)' <<<"$anon_read" \
         || fail "update-target: the read answered an unauthenticated caller (status='$anon_read')"
     echo "cloud-assertions: update-target — READ OK (the brain reports the pinned pair the in-guest source served, from=seed, window from the answer, admin-only)"
+
+    # 6d. UPDATE NOW (#488). An admin applies an available target without waiting
+    #     for the window. The answer names a window twelve hours away, so only the
+    #     apply route can move the box. The route takes no refs: host-agent
+    #     applies the target its own loop checked.
+    brain_v4="$(publish_gen "$brain_v3" moose-brain:v4 'LABEL moose.test.generation=v4')" \
+        || fail "update-now: could not publish the gen-4 brain image"
+    ui_v4="$(publish_gen "$ui_v3" moose-ui:v4 'LABEL moose.test.generation=v4')" \
+        || fail "update-now: could not publish the gen-4 ui image"
+    shut_h=$(( ( 10#$(date +%H) + 12 ) % 24 ))
+    shut_window="$(printf '%02d:00-%02d:01' "$shut_h" "$shut_h")"
+    write_target "$brain_v4" "$ui_v4" "v0.0.0-update-now" "$shut_window"
+    systemctl restart host-agent.service || fail "update-now: could not restart host-agent for the gen-4 answer"
+
+    avail_read=""
+    for _i in $(seq 1 120); do
+        avail_read="$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)"
+        grep -q '"state":"available"' <<<"$avail_read" && grep -qF "$brain_v4" <<<"$avail_read" && break
+        sleep 1
+    done
+    grep -q '"state":"available"' <<<"$avail_read" && grep -qF "$brain_v4" <<<"$avail_read" \
+        || fail "update-now: the read never offered the gen-4 pair as available: $(tail -1 <<<"$avail_read")"
+    grep -qF "$brain_v4" "$ledger" \
+        && fail "update-now: the box applied gen-4 before anyone asked, with its window ($shut_window) shut"
+
+    apply_resp="$(full_send POST /api/v1/system/update-target/apply "$apex" "$session_cookie" "" 2>/dev/null || true)"
+    grep -q ' 202' <<<"$(status_of "$apply_resp")" \
+        || fail "update-now: POST /api/v1/system/update-target/apply was not accepted: status='$(status_of "$apply_resp")' $(tail -1 <<<"$apply_resp")"
+    now_job="$(json_str_of "$apply_resp" job_id)"
+    [ -n "$now_job" ] || fail "update-now: no job_id in the accepted apply: $(tail -1 <<<"$apply_resp")"
+    poll_job "$now_job" 420 || fail "update-now: job $now_job never reached a terminal state (last: $(status_of "$JOB_RESP"))"
+    grep -qE '"status"[[:space:]]*:[[:space:]]*"completed"' <<<"$JOB_RESP" \
+        || fail "update-now: the update did not complete: $(tail -1 <<<"$JOB_RESP")"
+    grep -qF "$brain_v4" "$ledger" && grep -qF "$ui_v4" "$ledger" \
+        || fail "update-now: the ledger does not name the gen-4 pair after the apply: $(tr -d '\n' < "$ledger")"
+    gen4="$(docker inspect -f '{{index .Config.Labels "moose.test.generation"}}' moose-brain 2>/dev/null || true)"
+    [ "$gen4" = v4 ] || fail "update-now: the running brain does not carry the gen-4 marker (got '$gen4')"
+
+    # The new brain reports the outcome of the job that replaced it.
+    now_read=""
+    for _i in $(seq 1 90); do
+        now_read="$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)"
+        grep -q "\"id\":\"${now_job}\"" <<<"$now_read" && break
+        sleep 1
+    done
+    grep -q "\"id\":\"${now_job}\"" <<<"$now_read" && grep -q '"outcome":"good"' <<<"$now_read" \
+        || fail "update-now: the read does not report ${now_job} as a good last update: $(tail -1 <<<"$now_read")"
+    # Nothing is left to apply, and the route says so rather than starting a job.
+    again="$(status_of "$(full_send POST /api/v1/system/update-target/apply "$apex" "$session_cookie" "" 2>/dev/null || true)")"
+    grep -q ' 409' <<<"$again" || fail "update-now: a second apply with nothing to apply answered '$again', want 409"
+    echo "cloud-assertions: update-now — APPLY OK (Update now applied the checked gen-4 target outside its window; the new brain reports ${now_job} as good)"
     ;;
 remap|remap-reboot)
     # The user-namespace tiers on the booted image (#531, APP_ISOLATION.md #
