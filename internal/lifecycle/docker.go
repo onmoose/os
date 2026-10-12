@@ -105,12 +105,15 @@ type DockerDriver interface {
 // ManagedContainer is one managed container's identity and liveness, as read
 // from `docker inspect`. Service is the compose service name
 // (com.docker.compose.service label); StartedAt is zero for a never-started
-// container.
+// container. Health is Docker's own healthcheck verdict (State.Health.Status):
+// "starting", "healthy" or "unhealthy", and empty when the image declares no
+// HEALTHCHECK.
 type ManagedContainer struct {
 	InstanceID string
 	Service    string
 	Running    bool
 	StartedAt  time.Time
+	Health     string
 }
 
 // RepoDigests is the `RepoDigests` field of `docker image inspect`: a list of
@@ -546,9 +549,10 @@ func (cliDocker) ManagedContainers(ctx context.Context) ([]ManagedContainer, err
 		return nil, nil
 	}
 	// One `docker inspect` over all managed containers: instance_id, compose
-	// service, running flag, and StartedAt (RFC3339) per line.
+	// service, running flag, StartedAt (RFC3339) and health status per line.
+	// A container with no healthcheck has no State.Health, so it prints "none".
 	args := append([]string{"inspect", "--format",
-		`{{index .Config.Labels "moose.instance_id"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.StartedAt}}`}, idList...)
+		`{{index .Config.Labels "moose.instance_id"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.StartedAt}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}`}, idList...)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -560,23 +564,35 @@ func (cliDocker) ManagedContainers(ctx context.Context) ([]ManagedContainer, err
 	// TOCTOU: a container removed between the `docker ps` above and this inspect
 	// causes Docker to exit non-zero but still outputs the containers it inspected.
 	// Parse partial output — the missing containers simply won't appear.
+	return parseManagedContainers(stdout.String()), nil
+}
+
+// parseManagedContainers parses the ManagedContainers inspect output, one
+// container per line: instance_id, service, running, StartedAt, health. A
+// malformed line is skipped.
+func parseManagedContainers(out string) []ManagedContainer {
 	var res []ManagedContainer
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		parts := strings.Fields(line)
-		if len(parts) != 4 {
+		if len(parts) != 5 {
 			continue
 		}
 		// Zero time on a parse failure (never-started container) — the caller's
 		// start-period gate treats it as not-yet-eligible, which is correct.
 		started, _ := time.Parse(time.RFC3339Nano, parts[3])
+		health := parts[4]
+		if health == "none" {
+			health = ""
+		}
 		res = append(res, ManagedContainer{
 			InstanceID: parts[0],
 			Service:    parts[1],
 			Running:    parts[2] == "true",
 			StartedAt:  started,
+			Health:     health,
 		})
 	}
-	return res, nil
+	return res
 }
 
 func (cliDocker) PSManaged(ctx context.Context) (map[string]bool, error) {

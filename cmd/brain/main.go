@@ -1181,10 +1181,14 @@ const (
 	// value open (issue #54); 5s matches the brain's other host-call timeouts and
 	// sits well under the 60s tick. Tune at first soak.
 	appProbeTimeout = 5 * time.Second
+	// dockerUnhealthy is the State.Health.Status Docker reports once a
+	// container's own HEALTHCHECK has failed its retries.
+	dockerUnhealthy = "unhealthy"
 )
 
 // managedContainerReader is the brain's consumer-side slice of the Docker seam
-// the probe needs: per-instance container service / running / StartedAt.
+// the probe needs: per-instance container service / running / StartedAt /
+// Docker health status.
 // lifecycle.DockerDriver satisfies it.
 type managedContainerReader interface {
 	ManagedContainers(ctx context.Context) ([]lifecycle.ManagedContainer, error)
@@ -1203,11 +1207,14 @@ type instanceManifestLoader interface {
 }
 
 // appProbeDetector is the locus-C app-unresponsive detector (HEALTH.md #
-// Detector catalog). For each steady-running instance that declares a
-// health_probe (APP_MANIFEST.md # B), it GETs the probe path *through the app's
-// Caddy route* (Host header, never dialing the container — THREAT_MODEL.md # B2)
-// and reconciles the per-instance app-unresponsive issue. Not thread-safe: it
-// holds per-instance bad-sample counters and is driven from the single
+// Detector catalog). It reads two signals for each steady-running instance:
+// Docker's own health status of the main service (every app whose image ships
+// a HEALTHCHECK), and, when the app declares a health_probe (APP_MANIFEST.md
+// # B), a GET of the probe path *through the app's Caddy route* (Host header,
+// never dialing the container: THREAT_MODEL.md # B2). Either one failing
+// fails the tick, and it reconciles the per-instance app-unresponsive issue.
+// Not thread-safe: it holds per-instance bad-sample counters and is driven
+// from the single
 // app-runtime poll goroutine (appRuntimeHealthLoop), after the restart-loop
 // detector so a crash-looper surfaces as container-restart-loop, not here.
 type appProbeDetector struct {
@@ -1221,7 +1228,7 @@ type appProbeDetector struct {
 	client    *http.Client
 	baseURL   string // Caddy site-listener base, e.g. http://127.0.0.1:80
 	now       func() time.Time
-	bad       map[string]int // instance_id -> consecutive failed-probe count
+	bad       map[string]int // instance_id -> consecutive failed-tick count
 
 	// profile + boxID select the probe's Host header to match the Caddy route
 	// (the same scheme the lifecycle keys routes on and the API surfaces). On
@@ -1251,19 +1258,46 @@ func newAppProbeDetector(docker managedContainerReader, instances instanceLister
 		auditor:   auditor,
 		notifier:  notifier,
 		bus:       bus,
-		client:    &http.Client{Timeout: appProbeTimeout},
+		client:    newProbeClient(),
 		baseURL:   baseURL,
 		now:       func() time.Time { return time.Now().UTC() },
 		bad:       map[string]int{},
 	}
 }
 
-// check probes every eligible instance once and reconciles app-unresponsive.
-// Eligible = declares a health_probe, isn't already flagged
-// container-restart-loop, has its main_service container running, and is past
-// the start-period grace. A failed probe raises on the 2nd consecutive failure
-// (or immediately while already active); one good probe — or losing eligibility
-// (stopped, crash-looping, uninstalled) — clears.
+// newProbeClient is the probe's HTTP client. It never follows a redirect: a
+// 3xx is the app's own answer, and probeHealthy classifies it. Following it
+// would land on some other page (often the dashboard) that answers 200 for an
+// app that is down.
+func newProbeClient() *http.Client {
+	return &http.Client{
+		Timeout: appProbeTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// probeResult is one probe's verdict. probeNoSample means the probe never
+// reached the app (the forward-auth gate answered for it), so it counts as
+// neither good nor bad.
+type probeResult int
+
+const (
+	probeGood probeResult = iota
+	probeBad
+	probeNoSample
+)
+
+// check samples every eligible instance once and reconciles app-unresponsive.
+// Eligible = isn't already flagged container-restart-loop and has its
+// main_service container running. A tick fails when Docker reports the main
+// container "unhealthy", or when the app declares a health_probe, is past its
+// start-period grace, and the probe fails. "starting" and a container with no
+// healthcheck add nothing: Docker's own start_period covers warm-up. A failed
+// tick raises on the 2nd consecutive failure (or immediately while already
+// active). Any tick that does not fail clears, and so does losing eligibility
+// (stopped, crash-looping, uninstalled).
 func (d *appProbeDetector) check(ctx context.Context) {
 	instances, err := d.instances.List()
 	if err != nil {
@@ -1284,14 +1318,14 @@ func (d *appProbeDetector) check(ctx context.Context) {
 	}
 
 	now := d.now()
-	probed := map[string]bool{}    // instances probed this tick
+	sampled := map[string]bool{}   // instances sampled this tick
 	unhealthy := map[string]bool{} // instances holding/raising app-unresponsive this tick
 	var raised []health.IssueKey
 
 	for _, inst := range instances {
 		man, err := d.manifests.InstanceManifest(inst.ID)
-		if err != nil || man.HealthProbe == nil {
-			continue // unloadable, or opt-out → never probed
+		if err != nil {
+			continue // unloadable → never sampled
 		}
 		// Defer to container-restart-loop: a crash-looper is its domain, not ours
 		// (HEALTH.md # app-unresponsive anti-flap — don't double-banner).
@@ -1302,25 +1336,20 @@ func (d *appProbeDetector) check(ctx context.Context) {
 		if !ok || !main.Running {
 			continue // not steady-running
 		}
-		if now.Sub(main.StartedAt) < man.HealthProbe.StartPeriod {
-			continue // start-period grace: warming up, don't count failures yet
+		sampled[inst.ID] = true
+		// Docker's own verdict applies to every app, with or without a
+		// health_probe. Only "unhealthy" is a signal here.
+		failed := main.Health == dockerUnhealthy
+		// The probe runs past its start-period grace; inside it the app is
+		// warming up and its failures don't count yet.
+		if man.HealthProbe != nil && now.Sub(main.StartedAt) >= man.HealthProbe.StartPeriod {
+			if d.probe(ctx, d.routeHost(inst), d.gated(inst), man.HealthProbe) == probeBad {
+				failed = true
+			}
 		}
-		probed[inst.ID] = true
-		// Address the app at its real Caddy route host (mirrors api getAppURL):
-		// hosted's public "<slug>.<box-id>.onmoose.io" takes precedence, then
-		// the announced mDNS name, then the reconstructed "<slug>.local".
-		var host string
-		switch {
-		case d.profile == profile.Hosted && d.boxID != "" && inst.Slug != "":
-			host = profile.HostedAppHost(d.boxID, inst.Slug)
-		case inst.MDNSName != "":
-			host = inst.MDNSName
-		default:
-			host = inst.Slug + protocol.AppHostSuffix
-		}
-		if d.probe(ctx, host, man.HealthProbe) {
+		if !failed {
 			d.bad[inst.ID] = 0
-			continue // good sample → clear handled in the sweep below
+			continue // clear handled in the sweep below
 		}
 		d.bad[inst.ID]++
 		_, active := d.healthMgr.Get("app-unresponsive", inst.ID)
@@ -1333,11 +1362,11 @@ func (d *appProbeDetector) check(ctx context.Context) {
 		}
 	}
 
-	// Drop bad-sample counters for instances not probed this tick (stopped, in
-	// grace, crash-looping, uninstalled) so a stale count can't carry across a
-	// gap — "2 consecutive" means consecutive probes.
+	// Drop bad-sample counters for instances not sampled this tick (stopped,
+	// crash-looping, uninstalled) so a stale count can't carry across a gap:
+	// "2 consecutive" means consecutive ticks.
 	for id := range d.bad {
-		if !probed[id] {
+		if !sampled[id] {
 			delete(d.bad, id)
 		}
 	}
@@ -1361,24 +1390,52 @@ func (d *appProbeDetector) check(ctx context.Context) {
 	emitHealthNotifications(d.notifier, d.healthMgr, raised, cleared)
 }
 
+// routeHost addresses the app at its real Caddy route host (mirrors api
+// getAppURL): hosted's public "<slug>.<box-id>.onmoose.io" takes precedence,
+// then the announced mDNS name, then the reconstructed "<slug>.local".
+func (d *appProbeDetector) routeHost(inst store.Instance) string {
+	switch {
+	case d.profile == profile.Hosted && d.boxID != "" && inst.Slug != "":
+		return profile.HostedAppHost(d.boxID, inst.Slug)
+	case inst.MDNSName != "":
+		return inst.MDNSName
+	default:
+		return inst.Slug + protocol.AppHostSuffix
+	}
+}
+
+// gated reports whether the app's route sits behind the hosted forward-auth
+// gate (an owner-only app), so a probe with no session meets the gate first.
+func (d *appProbeDetector) gated(inst store.Instance) bool {
+	return d.profile == profile.Hosted && d.boxID != "" && inst.Exposure == store.ExposureRestricted
+}
+
 // probe GETs the app's probe path through Caddy with Host: <route host> —
 // exactly the request a browser makes, never the brain dialing the container
-// (THREAT_MODEL.md # B2). Healthy = status in the app's healthy set. A timeout,
-// connection failure, or Caddy 502 (dead upstream) is unhealthy.
-func (d *appProbeDetector) probe(ctx context.Context, host string, p *manifest.HealthProbe) bool {
+// (THREAT_MODEL.md # B2). Good = status in the app's healthy set. A timeout,
+// connection failure, or Caddy 502 (dead upstream) is bad. On a gated route,
+// the gate's 302 to the box login means the probe never reached the app, so it
+// is no sample (#610 lets the probe past the gate).
+func (d *appProbeDetector) probe(ctx context.Context, host string, gated bool, p *manifest.HealthProbe) probeResult {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+p.Path, nil)
 	if err != nil {
 		slog.Warn("app-probe: build request", "host", host, "err", err)
-		return false
+		return probeBad
 	}
 	req.Host = host // route by Host through Caddy
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return false // timeout / connection failure = unhealthy
+		return probeBad // timeout / connection failure = unhealthy
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body) // drain so the keep-alive can be reused
-	return probeHealthy(resp.StatusCode, p.HealthyStatus)
+	if gated && resp.StatusCode == http.StatusFound && resp.Header.Get("Location") == profile.HostedLoginURL(d.boxID) {
+		return probeNoSample
+	}
+	if probeHealthy(resp.StatusCode, p.HealthyStatus) {
+		return probeGood
+	}
+	return probeBad
 }
 
 // probeHealthy classifies a probe response. Empty allowed set ⇒ the default

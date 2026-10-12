@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -865,9 +867,10 @@ func TestRestartLoop_RaiseEmitsNoBellNotification(t *testing.T) {
 // unhealthy / connection-failure probes without a real Caddy or app. It records
 // the last request so the "routes through Caddy by Host" wiring can be asserted.
 type stubRoundTripper struct {
-	status map[string]int  // Host -> status to return
-	fail   map[string]bool // Host -> return a transport error (timeout / refused)
-	last   *http.Request
+	status   map[string]int    // Host -> status to return
+	location map[string]string // Host -> Location header to return
+	fail     map[string]bool   // Host -> return a transport error (timeout / refused)
+	last     *http.Request
 }
 
 func (s *stubRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -879,10 +882,15 @@ func (s *stubRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	if !ok {
 		code = http.StatusOK
 	}
+	h := make(http.Header)
+	if loc, ok := s.location[r.Host]; ok {
+		h.Set("Location", loc)
+	}
 	return &http.Response{
 		StatusCode: code,
 		Body:       io.NopCloser(strings.NewReader("")),
-		Header:     make(http.Header),
+		Header:     h,
+		Request:    r,
 	}, nil
 }
 
@@ -912,6 +920,8 @@ func newTestProbeDetector(lister instanceLister, loader instanceManifestLoader, 
 	mgr := health.NewManager(nil)
 	es := &fakeEventStore{}
 	ns := &fakeNotifStore{}
+	client := newProbeClient()
+	client.Transport = rt
 	d := &appProbeDetector{
 		docker:    reader,
 		instances: lister,
@@ -919,7 +929,7 @@ func newTestProbeDetector(lister instanceLister, loader instanceManifestLoader, 
 		healthMgr: mgr,
 		auditor:   audit.New(es),
 		notifier:  notify.New(ns, nil),
-		client:    &http.Client{Transport: rt},
+		client:    client,
 		baseURL:   "http://caddy.test",
 		now:       clk.now,
 		bad:       map[string]int{},
@@ -1270,6 +1280,209 @@ func TestAppProbe_RaiseEmitsNoBellNotification(t *testing.T) {
 	}
 	if len(ns.raised) != 0 {
 		t.Errorf("app-unresponsive must not emit a notification (not allowlisted), got %v", ns.raised)
+	}
+}
+
+// --- app-unresponsive: Docker health signal and redirects (issue #609) ----
+
+// dockerHealthScenario is one running instance whose main container reports
+// the given Docker health status, with an optional manifest probe.
+func dockerHealthScenario(clk *stepClock, dockerHealth string, probe *manifest.HealthProbe) (*fakeInstanceLister, *fakeManifestLoader, *fakeContainerReader) {
+	lister := &fakeInstanceLister{instances: []store.Instance{
+		{ID: "app", Slug: "app", MDNSName: "app.local", State: "running"},
+	}}
+	loader := &fakeManifestLoader{m: map[string]*manifest.Manifest{
+		"app": {MainService: "web", HealthProbe: probe},
+	}}
+	reader := &fakeContainerReader{containers: []lifecycle.ManagedContainer{
+		{InstanceID: "app", Service: "web", Running: true, StartedAt: clk.now().Add(-5 * time.Minute), Health: dockerHealth},
+	}}
+	return lister, loader, reader
+}
+
+// A main container Docker reports "unhealthy" raises app-unresponsive on the
+// 2nd tick and clears on the first tick it is no longer unhealthy, both with
+// and without a health_probe. With a probe, a good probe does not outvote it.
+func TestAppProbe_DockerUnhealthyRaisesAndClears(t *testing.T) {
+	cases := map[string]*manifest.HealthProbe{
+		"no probe":         nil,
+		"probe answers ok": {Path: "/healthz", StartPeriod: manifest.DefaultStartPeriod},
+	}
+	for name, probe := range cases {
+		for _, next := range []string{"healthy", "starting", ""} {
+			t.Run(name+"/then "+next, func(t *testing.T) {
+				clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+				lister, loader, reader := dockerHealthScenario(clk, "unhealthy", probe)
+				rt := &stubRoundTripper{status: map[string]int{"app.local": 200}}
+				d, mgr, _, _ := newTestProbeDetector(lister, loader, reader, rt, clk)
+
+				d.check(context.Background())
+				if len(unresponsiveIssues(mgr)) != 0 {
+					t.Fatalf("first unhealthy tick must not raise, got %v", mgr.List())
+				}
+				d.check(context.Background())
+				if got := unresponsiveIssues(mgr); len(got) != 1 || got[0].InstanceKey != "app" {
+					t.Fatalf("second unhealthy tick must raise for 'app', got %v", mgr.List())
+				}
+				reader.containers[0].Health = next
+				d.check(context.Background())
+				if len(unresponsiveIssues(mgr)) != 0 {
+					t.Fatalf("Docker %q must clear, got %v", next, mgr.List())
+				}
+			})
+		}
+	}
+}
+
+// "starting", and a container with no healthcheck, are not samples: they never
+// raise, however many ticks pass. Nor does "healthy".
+func TestAppProbe_DockerStartingOrNoHealthcheckNeverRaises(t *testing.T) {
+	for _, health := range []string{"starting", "", "healthy"} {
+		clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+		lister, loader, reader := dockerHealthScenario(clk, health, nil)
+		rt := &stubRoundTripper{}
+		d, mgr, _, _ := newTestProbeDetector(lister, loader, reader, rt, clk)
+
+		for i := 0; i < 3; i++ {
+			d.check(context.Background())
+		}
+		if len(unresponsiveIssues(mgr)) != 0 {
+			t.Errorf("Docker %q must never raise, got %v", health, mgr.List())
+		}
+		if rt.last != nil {
+			t.Errorf("an app with no health_probe must never be probed; got a request to %v", rt.last.Host)
+		}
+	}
+}
+
+// When the app declares a probe, Docker "healthy" is not a good sample: the
+// probe decides, so a failing probe still raises.
+func TestAppProbe_DockerHealthyDoesNotOverrideProbe(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	lister, loader, reader := dockerHealthScenario(clk, "healthy", &manifest.HealthProbe{Path: "/healthz", StartPeriod: manifest.DefaultStartPeriod})
+	rt := &stubRoundTripper{status: map[string]int{"app.local": 503}}
+	d, mgr, _, _ := newTestProbeDetector(lister, loader, reader, rt, clk)
+
+	d.check(context.Background())
+	d.check(context.Background())
+	if len(unresponsiveIssues(mgr)) != 1 {
+		t.Fatalf("a failing probe must raise even when Docker says healthy, got %v", mgr.List())
+	}
+}
+
+// Docker's "unhealthy" counts inside the probe's start-period grace: Docker's
+// own start_period already covered warm-up before it said so.
+func TestAppProbe_DockerUnhealthyCountsInProbeGrace(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	lister, loader, reader := dockerHealthScenario(clk, "unhealthy", &manifest.HealthProbe{Path: "/healthz", StartPeriod: time.Hour})
+	rt := &stubRoundTripper{}
+	d, mgr, _, _ := newTestProbeDetector(lister, loader, reader, rt, clk)
+
+	d.check(context.Background())
+	d.check(context.Background())
+	if len(unresponsiveIssues(mgr)) != 1 {
+		t.Fatalf("Docker unhealthy must raise inside the probe grace, got %v", mgr.List())
+	}
+	if rt.last != nil {
+		t.Errorf("must not probe during the grace; got a request to %v", rt.last.Host)
+	}
+}
+
+// The probe never follows a redirect. Against a real server that redirects
+// /healthz to a page answering 200, a [200]-only probe sees the 302 and fails,
+// and the redirect target is never requested.
+func TestAppProbe_DoesNotFollowRedirects(t *testing.T) {
+	var followed atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			http.Redirect(w, r, "/dashboard", http.StatusFound)
+			return
+		}
+		followed.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	lister, loader, reader := probeScenario(clk, "/healthz", []int{200}, manifest.DefaultStartPeriod, 5*time.Minute)
+	d, mgr, _, _ := newTestProbeDetector(lister, loader, reader, http.DefaultTransport, clk)
+	d.baseURL = srv.URL
+
+	d.check(context.Background())
+	d.check(context.Background())
+	if followed.Load() {
+		t.Error("the probe followed the redirect")
+	}
+	if len(unresponsiveIssues(mgr)) != 1 {
+		t.Fatalf("a 302 outside [200] must raise, got %v", mgr.List())
+	}
+}
+
+// gatedScenario is a hosted, owner-only app whose probe meets the forward-auth
+// gate: Caddy answers 302 to the box login.
+func gatedScenario(clk *stepClock, dockerHealth string, healthy []int) (*appProbeDetector, *health.Manager, *stubRoundTripper, *fakeContainerReader) {
+	lister, loader, reader := dockerHealthScenario(clk, dockerHealth, &manifest.HealthProbe{Path: "/healthz", HealthyStatus: healthy, StartPeriod: manifest.DefaultStartPeriod})
+	lister.instances[0].MDNSName = ""
+	lister.instances[0].Exposure = store.ExposureRestricted
+	host := profile.HostedAppHost("cindy-fox", "app")
+	rt := &stubRoundTripper{
+		status:   map[string]int{host: http.StatusFound},
+		location: map[string]string{host: profile.HostedLoginURL("cindy-fox")},
+	}
+	d, mgr, _, _ := newTestProbeDetector(lister, loader, reader, rt, clk)
+	d.SetEnvironment(profile.Hosted, "cindy-fox")
+	return d, mgr, rt, reader
+}
+
+// An owner-only app on hosted is never reported from the gate's login redirect:
+// it is no sample. With the default healthy set it would have counted as good,
+// and with [200] as bad; it is neither. Docker's signal still applies.
+func TestAppProbe_GateLoginRedirectIsNoSample(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	d, mgr, rt, reader := gatedScenario(clk, "", []int{200})
+
+	d.check(context.Background())
+	d.check(context.Background())
+	if rt.last == nil {
+		t.Fatal("expected a probe request")
+	}
+	if len(unresponsiveIssues(mgr)) != 0 {
+		t.Fatalf("the gate's login redirect must not raise, got %v", mgr.List())
+	}
+
+	reader.containers[0].Health = "unhealthy"
+	d.check(context.Background())
+	d.check(context.Background())
+	if len(unresponsiveIssues(mgr)) != 1 {
+		t.Fatalf("Docker unhealthy must still raise behind the gate, got %v", mgr.List())
+	}
+
+	// The gate redirect does not clear it either way: the default healthy set
+	// would read a 302 as good, but here it is no sample, so Docker decides.
+	d2, mgr2, _, reader2 := gatedScenario(clk, "unhealthy", nil)
+	d2.check(context.Background())
+	d2.check(context.Background())
+	if len(unresponsiveIssues(mgr2)) != 1 {
+		t.Fatalf("with default healthy, the gate redirect must not hide Docker unhealthy, got %v", mgr2.List())
+	}
+	reader2.containers[0].Health = "healthy"
+	d2.check(context.Background())
+	if len(unresponsiveIssues(mgr2)) != 0 {
+		t.Fatalf("Docker healthy must clear, got %v", mgr2.List())
+	}
+}
+
+// Only the gate's own redirect is no sample. A 302 anywhere else, on the same
+// gated route, is the app's answer and is classified as usual.
+func TestAppProbe_OtherRedirectOnGatedRouteIsClassified(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	d, mgr, rt, _ := gatedScenario(clk, "", []int{200})
+	rt.location[profile.HostedAppHost("cindy-fox", "app")] = "https://app.cindy-fox.onmoose.io/login"
+
+	d.check(context.Background())
+	d.check(context.Background())
+	if len(unresponsiveIssues(mgr)) != 1 {
+		t.Fatalf("an app's own 302 outside [200] must raise, got %v", mgr.List())
 	}
 }
 

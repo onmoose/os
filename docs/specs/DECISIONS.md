@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-13 — `app-unresponsive` also reads Docker's health status (#609)
+
+**Previously:** `app-unresponsive` came only from the manifest `health_probe` (2026-06-02). An app with no `health_probe` never raised it, and Docker's `HEALTHCHECK` was ignored. The probe followed redirects.
+**Now:** Docker's `State.Health.Status` of the main service is a second signal, for every app. `unhealthy` fails the tick; `starting` and no healthcheck add nothing. The probe no longer follows redirects, and on hosted the forward-auth gate's `302` to the box login is not a sample.
+**Why:** on a hosted box an owner-only app's backend returned `502` for 15 hours while Docker reported the container `unhealthy`, and no issue was raised. The probe got the gate's `302` to the login, which the default healthy set (< 500) read as healthy, and a followed redirect can land on a page that answers `200` for an app that is down. Docker already knows the answer for every image that ships a healthcheck, and it costs nothing to read: the detector already inspects the container each tick. The 2026-06-02 reasoning against using `HEALTHCHECK` was that moose cannot add one for the author; that still holds, so the manifest probe stays, but an image that already has one should be heard.
+**Affected docs:** `HEALTH.md` (# Detector catalog: the row, the measurement, three new paragraphs), `APP_MANIFEST.md` (# B `health_probe`, the locked-decision bullet).
+
+---
+
 ## 2026-10-12 — An admin can restart the box for an OS update now (#509)
 
 **Previously:** an OS update reboots only in the window, after stream B, with no prompt (2026-10-01, `UPDATES.md` # 7). How the admin sees the reboot was open (`NEXT.md` # Reboot scheduling UX). Update now (#488) covered only the control plane, which never restarts the box.
