@@ -10,7 +10,7 @@ For how to *run* it (Vite dev server, Node version, CI), see [`running-locally.m
 
 ## Stack, as built
 
-Vue 3 (Composition API, `<script setup>` only) + Vite 5 + TypeScript `strict` (with `noUncheckedIndexedAccess`). Server state through `@tanstack/vue-query` v5; routing through Vue Router 4 (history mode); styling through Tailwind CSS 4 (CSS-config via `@theme`, no `tailwind.config.js`). Icons via `lucide-vue-next`. `reka-ui` + the `cn()` helper (`clsx` + `tailwind-merge`) are present as the shadcn-vue scaffolding so components can be added via the shadcn CLI later. The first owned components live in `components/ui/` — `Button.vue` (the pill idiom, `primary`/`secondary`/`ghost` variants, and an `as` prop for the cases that must be a real `<a>` — an "Open in a new tab" affordance is a link, not a button, but it is the same pill) and `Heading.vue` (the `font-display` display idiom) — hand-written from the Oatmeal Tailwind patterns (not the shadcn CLI, not Oatmeal's `.tsx` source; #261) and consuming the olive tokens via `cn()`. Prefer `<Button>` / `<Heading>` over ad-hoc `<button>` / heading markup for the pill + display idioms; other surfaces still use plain elements with Tailwind classes and the design tokens in `style.css`.
+Vue 3 (Composition API, `<script setup>` only) + Vite 5 + TypeScript `strict` (with `noUncheckedIndexedAccess`). Server state through `@tanstack/vue-query` v5; routing through Vue Router 4 (history mode); styling through Tailwind CSS 4 (CSS-config via `@theme`, no `tailwind.config.js`). Icons via `lucide-vue-next`. `reka-ui` + the `cn()` helper (`clsx` + `tailwind-merge`) are present as the shadcn-vue scaffolding so components can be added via the shadcn CLI later. The first owned components live in `components/ui/` — `Button.vue` (the pill idiom, `primary`/`secondary`/`ghost` variants, and an `as` prop for the cases that must be a real `<a>` — an "Open in a new tab" affordance is a link, not a button, but it is the same pill) `Heading.vue` (the `font-display` display idiom) and `ConfirmDialog.vue` (the "are you sure?" pop-up: a title, a body in its slot, Cancel and a confirm button; a native `<dialog>` the caller opens with `open()` through a template ref, which emits `confirm` after it closes) — hand-written from the Oatmeal Tailwind patterns (not the shadcn CLI, not Oatmeal's `.tsx` source; #261) and consuming the olive tokens via `cn()`. Prefer `<Button>` / `<Heading>` over ad-hoc `<button>` / heading markup for the pill + display idioms, and `<ConfirmDialog>` over a hand-built `<dialog>` or `window.confirm` when an action needs a yes before it runs; other surfaces still use plain elements with Tailwind classes and the design tokens in `style.css`.
 
 `main.ts` is the whole bootstrap: `createApp(App)` with Pinia, the router, and `VueQueryPlugin`. That's it — twelve lines.
 
@@ -117,6 +117,7 @@ web-ui/
         ├── SplitButton.vue
         ├── ElevateDialog.vue
         ├── ToastHost.vue
+        ├── ui/                 # owned base parts: Button, Heading, ConfirmDialog
         └── install/            # the steps of the install flow
             ├── OptionCards.vue       # selectable card grid + "More" divider + search (AISlotPicker)
             ├── ConfigFieldInput.vue  # one config field (text / secret / enum / bool)

@@ -32,6 +32,7 @@ import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { api, ApiError, type ControlPlaneOutcome, type SystemUpdateJob, type SystemVersion, type UpdateTarget } from "@/api";
 import { useAuth } from "@/auth";
 import Button from "@/components/ui/Button.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 
 const { currentUser } = useAuth();
 const isAdmin = computed(() => currentUser.value?.role === "admin");
@@ -264,7 +265,7 @@ const osLastSentence = computed(() => {
 });
 
 // ── Update now ─────────────────────────────────────────────────────────────
-const confirmDialog = ref<HTMLDialogElement | null>(null);
+const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null);
 const applyError = ref("");
 // waitError is set when a wait ends without the update happening.
 const waitError = ref("");
@@ -293,11 +294,10 @@ const confirmTitle = computed(() => {
 
 function openConfirm() {
   applyError.value = "";
-  confirmDialog.value?.showModal();
+  confirmDialog.value?.open();
 }
 
 async function applyNow() {
-  confirmDialog.value?.close();
   applyError.value = "";
   starting.value = true;
   // What this click covers, read before it: the screen's view of the box is
@@ -598,26 +598,15 @@ watch(
       </div>
     </div>
 
-    <dialog
-      ref="confirmDialog"
-      aria-labelledby="update-now-title"
-      class="m-auto w-[calc(100%-2rem)] max-w-md rounded-xl border border-border bg-card p-0 text-foreground backdrop:bg-black/50"
-    >
-      <div class="space-y-4 px-5 py-5">
-        <h3 id="update-now-title" class="text-base font-medium">{{ confirmTitle }}</h3>
-        <p v-if="osReady" class="text-sm text-muted-foreground">
-          Your box restarts. Your apps and the dashboard are offline for a few minutes. If the new system does not
-          start properly, your box goes back to the one it runs now on its own, which can take up to 15 minutes.
-        </p>
-        <p v-else class="text-sm text-muted-foreground">
-          Your apps keep working. The dashboard is away for up to a minute while it is replaced, and your box does not
-          restart. If the new version does not start properly, your box goes back to the version it runs now.
-        </p>
-        <div class="flex justify-end gap-2">
-          <Button variant="secondary" @click="confirmDialog?.close()">Cancel</Button>
-          <Button @click="applyNow">Update now</Button>
-        </div>
-      </div>
-    </dialog>
+    <ConfirmDialog ref="confirmDialog" :title="confirmTitle" confirm-label="Update now" @confirm="applyNow">
+      <p v-if="osReady">
+        Your box restarts. Your apps and the dashboard are offline for a few minutes. If the new system does not start
+        properly, your box goes back to the one it runs now on its own, which can take up to 15 minutes.
+      </p>
+      <p v-else>
+        Your apps keep working. The dashboard is away for up to a minute while it is replaced, and your box does not
+        restart. If the new version does not start properly, your box goes back to the version it runs now.
+      </p>
+    </ConfirmDialog>
   </section>
 </template>
