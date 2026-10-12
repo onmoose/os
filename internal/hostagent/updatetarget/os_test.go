@@ -99,10 +99,30 @@ type fakeOS struct {
 	running string
 	calls   []bool // the open flag of each Apply
 	rel     OSRelease
+	// peek is what Peek answers; empty means "nothing newer".
+	peek string
+	// switches records the night of each SwitchNow; switchState is its
+	// answer, rebooting when empty.
+	switches    []time.Time
+	switchState string
 }
 
 func (f *fakeOS) Running() (string, string) { return f.running, "A" }
 func (f *fakeOS) Floor() string             { return "" }
+func (f *fakeOS) Peek(OSRelease) (string, string, bool) {
+	if f.peek == "" {
+		return "", "", false
+	}
+	return f.peek, "", true
+}
+func (f *fakeOS) SwitchNow(r OSRelease, night time.Time) OSDecision {
+	f.switches = append(f.switches, night)
+	f.rel = r
+	if f.switchState != "" {
+		return OSDecision{State: f.switchState}
+	}
+	return OSDecision{State: protocol.OSUpdateRebooting, JobID: "j_os"}
+}
 func (f *fakeOS) Apply(r OSRelease, open bool, _ time.Time) OSDecision {
 	f.calls = append(f.calls, open)
 	f.rel = r

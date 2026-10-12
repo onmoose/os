@@ -142,10 +142,14 @@ func fakeOutcome(id string, failed bool) *protocol.ControlPlaneOutcome {
 	return o
 }
 
-// fakeTargetApplier is the fake's Update now (#488): it takes the job lock
-// like the real one, waits a few seconds, then reports the box on the target
-// with a good outcome, or a reverted failure under MOOSE_FAKE_UPDATE_APPLY=fail.
-// Nothing restarts, so the dashboard's wait ends as soon as the outcome lands.
+// fakeTargetApplier is the fake's Update now (#488, #509): it takes the job
+// lock like the real one and plays both streams in the window's order. Stream
+// B, when a control-plane target is available: a few seconds, then the box on
+// the target with a good `last`. Stream A, when the OS report says installed
+// (MOOSE_FAKE_OS_UPDATE=installed): `rebooting` for a few seconds, then the box
+// on the new release with a good `os.last`. MOOSE_FAKE_UPDATE_APPLY=fail makes
+// both fail and go back instead. Nothing really restarts, so the dashboard's
+// wait ends as soon as the outcome lands.
 type fakeTargetApplier struct {
 	a *hostagent.Agent
 	r *hostagent.FakeUpdateTargetReporter
@@ -153,26 +157,61 @@ type fakeTargetApplier struct {
 
 func (f fakeTargetApplier) ApplyTarget() (string, error) {
 	cur := f.r.Read()
-	if !cur.AutoApply || cur.State != protocol.UpdateTargetAvailable {
+	cp := cur.AutoApply && cur.State == protocol.UpdateTargetAvailable
+	osReady := cur.AutoApply && cur.OS != nil && cur.OS.State == protocol.OSUpdateInstalled && cur.OS.Target != nil
+	if !cp && !osReady {
 		return "", hostagent.ErrNothingToApply
 	}
 	fail := os.Getenv("MOOSE_FAKE_UPDATE_APPLY") == "fail"
 	idc := make(chan string, 1)
-	job, err := f.a.StartJob(protocol.JobKindSystemUpdate, time.Minute, func(ctx context.Context) error {
-		id := <-idc
+	wait := func(ctx context.Context) error {
 		select {
 		case <-time.After(fakeApplyTime):
+			return nil
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		next := f.r.Read()
-		next.Last = fakeOutcome(id, fail)
-		if !fail && next.Target != nil {
-			next.State = protocol.UpdateTargetCurrent
-			next.Running = protocol.ControlPlanePair{Brain: next.Target.BrainImage, UI: next.Target.UIImage}
+	}
+	job, err := f.a.StartJob(protocol.JobKindSystemUpdate, 2*time.Minute, func(ctx context.Context) error {
+		id := <-idc
+		if cp {
+			if err := wait(ctx); err != nil {
+				return err
+			}
+			next := f.r.Read()
+			next.Last = fakeOutcome(id, fail)
+			if !fail && next.Target != nil {
+				next.State = protocol.UpdateTargetCurrent
+				next.Running = protocol.ControlPlanePair{Brain: next.Target.BrainImage, UI: next.Target.UIImage}
+			}
+			f.r.Set(next)
+			slog.Info("host-agent (fake) applied the update target", "job_id", id, "step", next.Last.Outcome)
 		}
-		f.r.Set(next)
-		slog.Info("host-agent (fake) applied the update target", "job_id", id, "step", next.Last.Outcome)
+		if osReady {
+			next := f.r.Read()
+			o := *next.OS
+			o.State = protocol.OSUpdateRebooting
+			next.OS = &o
+			f.r.Set(next)
+			if err := wait(ctx); err != nil {
+				return err
+			}
+			next = f.r.Read()
+			o = *next.OS
+			to := o.Target.Version
+			last := &protocol.OSOutcome{ID: "os-" + to + "-" + id, Outcome: protocol.OSOutcomeGood, Version: to, From: o.Running,
+				At: time.Now().UTC().Format(time.RFC3339)}
+			if fail {
+				last.Outcome = protocol.OSOutcomeReverted
+				o.State, o.Detail = protocol.OSUpdateHeld, "this release was already tried tonight; the next window tries again"
+			} else {
+				o.State, o.Running = protocol.OSUpdateCurrent, to
+			}
+			o.Last = last
+			next.OS = &o
+			f.r.Set(next)
+			slog.Info("host-agent (fake) switched the OS", "job_id", id, "os", to, "step", last.Outcome)
+		}
 		return nil
 	})
 	if err != nil {

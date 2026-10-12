@@ -254,3 +254,126 @@ func TestNextNight_AcrossTheClockChange(t *testing.T) {
 		t.Fatalf("nextNight = %v, want %v", got, want)
 	}
 }
+
+// osNow builds a loop at noon whose OS target is installed and waits for the
+// window. cpCurrent says whether stream B is already on its target.
+func osNow(t *testing.T, cpCurrent bool) (*Loop, *fakeOS, *fakeApplier) {
+	t.Helper()
+	w, _ := ParseWindow("03:00-04:00")
+	noon := time.Date(2026, 10, 3, 12, 0, 0, 0, time.Local)
+	tgt := Target{Version: "v0.16.0", BrainImage: brainRef, UIImage: uiRef, BrainDigest: digest("a"), UIDigest: digest("b")}
+	tgt.OS = []OSRelease{rel("0.15.1")}
+	l, f, ap := osLoop(tgt, "0.15.0", w, noon)
+	if !cpCurrent {
+		l.Current = fakeRunning{brain: oldBrain, ui: oldUI}
+	}
+	l.Tick(context.Background())
+	if s := l.Snapshot().OS; s.State != "installed" {
+		t.Fatalf("setup: OS state %q, want installed", s.State)
+	}
+	if len(ap.calls) != 0 || len(f.switches) != 0 {
+		t.Fatalf("setup: the noon tick applied something")
+	}
+	return l, f, ap
+}
+
+// An installed OS release switches at once when stream B has nothing to do,
+// and the switch counts for the coming night (#509).
+func TestApplyNow_SwitchesAnInstalledOS(t *testing.T) {
+	l, f, ap := osNow(t, true)
+	id, err := l.ApplyNow()
+	if err != nil {
+		t.Fatalf("ApplyNow: %v", err)
+	}
+	if id != "j_os" || len(f.switches) != 1 || len(ap.calls) != 0 {
+		t.Fatalf("ApplyNow = %q, switches %v, updates %v; want one OS switch", id, f.switches, ap.calls)
+	}
+	if want := time.Date(2026, 10, 4, 0, 0, 0, 0, time.Local); !f.switches[0].Equal(want) {
+		t.Fatalf("the switch counts for %v, want the coming night %v", f.switches[0], want)
+	}
+	if s := l.Snapshot().OS.State; s != "rebooting" {
+		t.Fatalf("OS state after the switch = %q, want rebooting", s)
+	}
+}
+
+// With both streams pending, stream B starts first and the OS switch waits
+// for it, then starts on the next manual step (UPDATES.md # 7 order).
+func TestApplyNow_BothStreamsGoInTheWindowOrder(t *testing.T) {
+	l, f, ap := osNow(t, false)
+	id, err := l.ApplyNow()
+	if err != nil {
+		t.Fatalf("ApplyNow: %v", err)
+	}
+	if id != "j_1" || len(ap.calls) != 1 || len(f.switches) != 0 || !l.manualPending() {
+		t.Fatalf("ApplyNow = %q, updates %v, switches %v, pending %v; want stream B now and the switch waiting",
+			id, ap.calls, f.switches, l.manualPending())
+	}
+	// Stream B still holds the lock.
+	f.switchState = "waiting"
+	l.manualStep()
+	if !l.manualPending() {
+		t.Fatal("the switch gave up while the lock was held")
+	}
+	f.switchState = ""
+	l.manualStep()
+	if l.manualPending() || len(f.switches) != 2 || l.Snapshot().OS.State != "rebooting" {
+		t.Fatalf("after the lock freed: pending %v, switches %d, state %q; want a started switch",
+			l.manualPending(), len(f.switches), l.Snapshot().OS.State)
+	}
+}
+
+// A switch that never gets the lock is left to the window after an hour.
+func TestManualStep_GivesUp(t *testing.T) {
+	l, f, _ := osNow(t, false)
+	if _, err := l.ApplyNow(); err != nil {
+		t.Fatal(err)
+	}
+	f.switchState = "waiting"
+	later := time.Date(2026, 10, 3, 13, 1, 0, 0, time.Local)
+	l.Now = func() time.Time { return later }
+	l.manualStep()
+	if l.manualPending() || len(f.switches) != 0 {
+		t.Fatalf("pending %v, switches %d; want the switch dropped untried", l.manualPending(), len(f.switches))
+	}
+}
+
+// An OS release that is not installed yet is not Update now's to wait for,
+// and a held lock is a refusal the caller sees.
+func TestApplyNow_OSRefusals(t *testing.T) {
+	l, f, _ := osNow(t, true)
+	f.peek = "installing"
+	if _, err := l.ApplyNow(); !errors.Is(err, ErrNothingToApply) {
+		t.Fatalf("while installing: %v, want ErrNothingToApply", err)
+	}
+	f.peek = ""
+	f.switchState = "waiting"
+	if _, err := l.ApplyNow(); !errors.Is(err, ErrBusy) {
+		t.Fatalf("with the lock held: %v, want ErrBusy", err)
+	}
+}
+
+// ApplyNow wakes Run, so the waiting switch does not sleep 15 minutes.
+func TestRun_WakesForAManualSwitch(t *testing.T) {
+	l, f, _ := osNow(t, false)
+	never := make(chan time.Time)
+	l.After = func(time.Duration) <-chan time.Time { return never }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { l.Run(ctx); close(done) }()
+	if _, err := l.ApplyNow(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for l.manualPending() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if l.manualPending() {
+		t.Fatal("Run never tried the waiting switch")
+	}
+	cancel()
+	<-done
+	if len(f.switches) != 1 {
+		t.Fatalf("switches = %d, want 1", len(f.switches))
+	}
+}

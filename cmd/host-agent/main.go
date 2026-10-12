@@ -43,6 +43,10 @@
 //	                    reports none, as on a box that never updated.
 //	MOOSE_FAKE_UPDATE_APPLY — "fail" makes Update now end in a reverted
 //	                    failure instead of a success.
+//	MOOSE_FAKE_OS_UPDATE — the OS part of that report (#563): "unsupported"
+//	                    (default) or any OS state. With "installed" and the
+//	                    hosted profile, Update now also plays the OS switch
+//	                    and its restart (#509).
 package main
 
 import (

@@ -724,3 +724,44 @@ func TestSwitchClearsOldNotes(t *testing.T) {
 		}
 	}
 }
+
+// Update now switches an installed release at once, outside the window and
+// past both per-night guards, and reboots (#509).
+func TestSwitchNowSkipsTheNightGuards(t *testing.T) {
+	h := newHarness(t, "A")
+	if d := h.a.SwitchNow(h.rel, h.night); d.State != protocol.OSUpdateNone || h.reboots.Load() != 0 {
+		t.Fatalf("SwitchNow before the install = %+v (reboots %d), want none and no reboot", d, h.reboots.Load())
+	}
+	h.a.Apply(h.rel, false, h.night)
+	// A failed switch earlier tonight: the window would hold this release now.
+	r, _ := h.a.load()
+	r.Switch = &switched{Version: h.rel.Version, Night: h.night}
+	if err := h.a.save(r); err != nil {
+		t.Fatal(err)
+	}
+	if d := h.a.Apply(h.rel, true, h.night); d.State != protocol.OSUpdateHeld {
+		t.Fatalf("setup: the window must hold, got %+v", d)
+	}
+	d := h.a.SwitchNow(h.rel, h.night)
+	if d.State != protocol.OSUpdateRebooting || h.reboots.Load() != 1 || h.rauc.env["ORDER"] != "B A" {
+		t.Fatalf("SwitchNow = %+v, reboots %d, grubenv %v; want a switch to B and a reboot", d, h.reboots.Load(), h.rauc.env)
+	}
+}
+
+// Update now never moves the box while it is on trial, and waits for the job
+// lock like the window does.
+func TestSwitchNowKeepsTheSafetyGuards(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.jobs.busy = true
+	if d := h.a.SwitchNow(h.rel, h.night); d.State != protocol.OSUpdateWaiting {
+		t.Fatalf("SwitchNow with the lock held = %+v, want waiting", d)
+	}
+	h.jobs.busy = false
+	if err := os.WriteFile(TrialMarker(h.a.dir(), "A"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := h.a.SwitchNow(h.rel, h.night); d.State != protocol.OSUpdateWaiting || h.reboots.Load() != 0 {
+		t.Fatalf("SwitchNow on trial = %+v (reboots %d), want waiting and no reboot", d, h.reboots.Load())
+	}
+}

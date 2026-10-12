@@ -64,6 +64,11 @@ type SystemUpdater interface {
 // flight. The handler maps it to 409.
 var errJobRunning = errors.New("a job is already running")
 
+// ErrJobRunning is errJobRunning for a caller outside this package that has its
+// own way of saying "busy", such as the update loop's OS switch, so the apply
+// route answers it with the same 409.
+var ErrJobRunning = errJobRunning
+
 // errNoUpdater is what StartUpdate returns on a binary with no control-plane
 // updater wired (the fake agent, tests). The handler maps it to 501.
 var errNoUpdater = errors.New("this host-agent has no control-plane updater")

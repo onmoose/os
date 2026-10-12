@@ -308,6 +308,10 @@ func (stubOSApplier) Floor() string             { return "" }
 func (a stubOSApplier) Apply(updatetarget.OSRelease, bool, time.Time) updatetarget.OSDecision {
 	return updatetarget.OSDecision{State: a.state}
 }
+func (a stubOSApplier) SwitchNow(updatetarget.OSRelease, time.Time) updatetarget.OSDecision {
+	return updatetarget.OSDecision{State: a.state}
+}
+func (stubOSApplier) Peek(updatetarget.OSRelease) (string, string, bool) { return "", "", false }
 
 func TestReportOS(t *testing.T) {
 	// No applier: stream A is reported, as unsupported.
