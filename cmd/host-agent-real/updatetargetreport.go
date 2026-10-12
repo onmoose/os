@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/onmoose/os/internal/hostagent/osupdate"
@@ -44,6 +45,32 @@ type updateTargetReport struct {
 	// release and slot, and the last outcome, which outlive a reboot. Nil on
 	// a box that cannot update its OS.
 	os osFacts
+	// lastUpdate reads stream B's last outcome from disk (#488). Nil reports
+	// none.
+	lastUpdate lastUpdateReader
+	// zone reads the box's time zone, the same way the loop does. Nil
+	// reports none.
+	zone func() (*time.Location, string)
+}
+
+// lastUpdateReader is the slice of controlplane.LastUpdate the report reads.
+type lastUpdateReader interface {
+	Last() (*protocol.ControlPlaneOutcome, error)
+}
+
+// readLast reads stream B's last outcome. A record it cannot read is logged
+// and left out: the screen then says nothing about the last update, which is
+// better than a wrong sentence.
+func (r updateTargetReport) readLast() *protocol.ControlPlaneOutcome {
+	if r.lastUpdate == nil {
+		return nil
+	}
+	o, err := r.lastUpdate.Last()
+	if err != nil {
+		slog.Warn("update target: cannot read the last control-plane update", "err", err)
+		return nil
+	}
+	return o
 }
 
 // osFacts is the slice of osupdate.Applier the report reads.
@@ -104,6 +131,10 @@ func (r updateTargetReport) Read() protocol.UpdateTarget {
 		WindowFrom: r.windowFrom,
 		Profile:    r.profile,
 		AutoApply:  r.autoApply,
+		Last:       r.readLast(),
+	}
+	if r.zone != nil {
+		_, out.Zone = r.zone()
 	}
 	var runErr error
 	if r.running != nil {

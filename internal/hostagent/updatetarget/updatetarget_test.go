@@ -55,12 +55,14 @@ func (r fakeRunning) Running() (string, string, error) { return r.brain, r.ui, r
 // fakeRunning reports: the transaction is asynchronous on a real box, so the
 // loop must be correct without assuming the pair moved by the next tick.
 type fakeApplier struct {
-	calls [][2]string
-	err   error
+	calls    [][2]string
+	versions []string
+	err      error
 }
 
-func (a *fakeApplier) StartUpdate(brainRef, uiRef string) (string, error) {
+func (a *fakeApplier) StartUpdate(brainRef, uiRef, version string) (string, error) {
 	a.calls = append(a.calls, [2]string{brainRef, uiRef})
+	a.versions = append(a.versions, version)
 	if a.err != nil {
 		return "", a.err
 	}

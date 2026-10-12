@@ -3,6 +3,7 @@ package updatetarget
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"strings"
@@ -39,8 +40,9 @@ const pollJitter = 2 * time.Minute
 type Applier interface {
 	// StartUpdate begins an update to the given refs and returns the job id. The
 	// job runs in the background: a nil error means the transaction started, not
-	// that it succeeded.
-	StartUpdate(brainRef, uiRef string) (jobID string, err error)
+	// that it succeeded. version is the target's version, for the outcome
+	// record.
+	StartUpdate(brainRef, uiRef, version string) (jobID string, err error)
 }
 
 // OSApplier is stream A's transaction (internal/hostagent/osupdate). Consumer-
@@ -133,8 +135,14 @@ type Loop struct {
 	OSURLPrefix string
 	// Interval between polls; zero means PollInterval.
 	Interval time.Duration
+	// Zone is the box's time zone, read on every tick, so the window follows
+	// a zone change without a host-agent restart (#488). Go loads time.Local
+	// once at start, and set-timezone does not refresh it. Nil means
+	// time.Local. The name is what the update-target read reports.
+	Zone func() (loc *time.Location, name string)
 	// Now and After exist so a test can drive a week of polling in
-	// milliseconds. Both default to the real clock.
+	// milliseconds. Both default to the real clock. A test's Now is used as
+	// it is, in whatever location it carries.
 	Now   func() time.Time
 	After func(time.Duration) <-chan time.Time
 
@@ -166,6 +174,12 @@ type Loop struct {
 	// occurrence" and let the same version be retried twice in one night. The
 	// date is stable across such a shift; it only advances on a genuinely new
 	// night. See occurrenceNight.
+	//
+	// applyMu guards it, because it has two writers: the tick, and ApplyNow,
+	// which an admin's Update now calls from the host socket's HTTP handler.
+	// It is held across the check, the start and the mark, so the two can
+	// never both start the same update.
+	applyMu   sync.Mutex
 	attempted struct {
 		version string
 		night   time.Time
@@ -197,6 +211,11 @@ func occurrenceNight(w Window, t time.Time) time.Time {
 func (l *Loop) now() time.Time {
 	if l.Now != nil {
 		return l.Now()
+	}
+	if l.Zone != nil {
+		if loc, _ := l.Zone(); loc != nil {
+			return time.Now().In(loc)
+		}
 	}
 	return time.Now()
 }
@@ -410,6 +429,8 @@ func (l *Loop) applyControlPlane(t Target, w Window, brain, ui string) (busy boo
 	}
 
 	now := l.now()
+	l.applyMu.Lock()
+	defer l.applyMu.Unlock()
 	if !w.Contains(now) {
 		l.quiet(slog.LevelInfo, "holding:"+t.Version, "update target: holding a new version for the update window",
 			"brain", t.Version, "step", "waiting", "zone", now.Location().String())
@@ -424,7 +445,7 @@ func (l *Loop) applyControlPlane(t Target, w Window, brain, ui string) (busy boo
 
 	l.attempted.version, l.attempted.night = t.Version, occurrenceNight(w, now)
 	l.lastQuiet = ""
-	jobID, err := l.Applier.StartUpdate(t.BrainImage, t.UIImage)
+	jobID, err := l.Applier.StartUpdate(t.BrainImage, t.UIImage, t.Version)
 	if err != nil {
 		// Includes the ordinary "a job is already running" refusal, which is why
 		// this is a Warn and not an Error.
@@ -434,6 +455,77 @@ func (l *Loop) applyControlPlane(t Target, w Window, brain, ui string) (busy boo
 	slog.Info("update target: applying", "brain", t.Version, "image", t.BrainImage,
 		"step", "accepted", "job_id", jobID)
 	return true
+}
+
+// ErrNothingToApply is ApplyNow's refusal when the last tick left no target
+// that differs from what the box runs: the state is not "available".
+var ErrNothingToApply = errors.New("updatetarget: no update to apply")
+
+// ErrManualApplyUnsupported is ApplyNow's refusal on a box that does not
+// apply its own target (the appliance, UPDATES.md # 8.2). Its update is parked
+// (#400), so the dashboard shows no Update now there.
+var ErrManualApplyUnsupported = errors.New("updatetarget: this box does not apply its update target")
+
+// ApplyNow starts the update the last tick found, now, without waiting for the
+// window (#488, UPDATES.md # 8.4). It is what an admin's Update now does.
+//
+// It applies **only the target the loop already fetched and checked**:
+// digest-pinned refs from the expected repositories. Nothing comes from the
+// caller. It reads the running pair fresh, so an update that landed since the
+// tick is not applied twice.
+//
+// Two rules about tonight's attempt:
+//
+//   - **It bypasses the one-attempt-per-night guard.** An admin who presses
+//     Update now after a failed night is choosing to retry, and a failure puts
+//     the box back anyway.
+//   - **It counts as tonight's attempt.** Applying X at noon marks the coming
+//     window as tried for X, so a failed manual update is not repeated by the
+//     window a few hours later. The next night tries again.
+//
+// It returns the job id, or ErrNothingToApply, ErrManualApplyUnsupported, or
+// the applier's own refusal (another job holds the lock).
+func (l *Loop) ApplyNow() (jobID string, err error) {
+	if !l.AutoApply || l.Applier == nil {
+		return "", ErrManualApplyUnsupported
+	}
+	l.applyMu.Lock()
+	defer l.applyMu.Unlock()
+
+	s := l.Snapshot()
+	if s.Outcome != OutcomeOK {
+		return "", ErrNothingToApply
+	}
+	t := s.Target
+	brain, ui, err := l.Current.Running()
+	if err != nil {
+		return "", fmt.Errorf("updatetarget: cannot read what this box runs: %w", err)
+	}
+	if brain == t.BrainImage && ui == t.UIImage {
+		return "", ErrNothingToApply
+	}
+	jobID, err = l.Applier.StartUpdate(t.BrainImage, t.UIImage, t.Version)
+	if err != nil {
+		slog.Warn("update target: could not start the update an admin asked for", "err", err, "brain", t.Version)
+		return "", err
+	}
+	l.attempted.version, l.attempted.night = t.Version, nextNight(s.Window, l.now())
+	slog.Info("update target: applying now, as an admin asked", "brain", t.Version, "image", t.BrainImage,
+		"step", "accepted", "job_id", jobID)
+	return jobID, nil
+}
+
+// nextNight is the night of the window that is open at t, or of the next one
+// to open after t. A manual apply outside the window counts for that one.
+func nextNight(w Window, t time.Time) time.Time {
+	if w.Contains(t) {
+		return occurrenceNight(w, t)
+	}
+	start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Add(w.Start)
+	if !start.After(t) {
+		start = start.AddDate(0, 0, 1)
+	}
+	return time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
 }
 
 // tickOS is stream A's half of a tick (UPDATES.md # 1): check the OS part,

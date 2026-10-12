@@ -436,6 +436,12 @@ type Agent struct {
 	// in cmd/host-agent-real vs a canned reporter in the fake binary. When nil,
 	// the endpoint reports state "unknown".
 	UpdateTarget UpdateTargetReporter
+	// TargetApplier, when non-nil, backs POST /v1/jobs/system-update-target:
+	// apply the loop's checked target now (#488). Nil is a 501.
+	TargetApplier TargetApplier
+	// LastUpdate, when non-nil, keeps the outcome of every control-plane
+	// update on disk, so it outlives the brain the update replaced (#488).
+	LastUpdate LastUpdateSaver
 
 	// OS, when non-nil, backs os_version and os_slot of GET /v1/system/status:
 	// the OS release this box runs and the slot it booted (#563). Wired only
@@ -499,6 +505,7 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/health/system", a.systemHealth)
 	mux.HandleFunc("GET /v1/journal/follow", a.journalFollow)
 	mux.HandleFunc("POST /v1/jobs/system-update", a.startSystemUpdate)
+	mux.HandleFunc("POST "+protocol.SystemUpdateTargetApplyPath, a.applyUpdateTarget)
 	mux.HandleFunc("GET /v1/jobs/{id}", a.jobStatus)
 	mux.HandleFunc("GET /v1/users/{username}/exists", a.userExists)
 	mux.HandleFunc("GET /v1/users/{username}/home", a.resolveHome)

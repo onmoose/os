@@ -39,6 +39,8 @@ func (r Runner) Update(ctx context.Context, brainRef, uiRef string) (protocol.Sy
 		UIChanged:    res.UIChanged,
 		Reverted:     res.Reverted,
 		FailureMode:  res.FailureMode,
+		FromVersion:  res.FromVersion,
+		ToVersion:    res.ToVersion,
 	}
 	if res.RevertErr != nil {
 		out.RevertError = res.RevertErr.Error()
