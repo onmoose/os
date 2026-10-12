@@ -423,13 +423,14 @@ async function poll() {
         await finish();
         return;
       }
-      // A switch that never restarted the box leaves no outcome behind. Past
-      // the time limit, counted from when the OS part began, stop waiting,
-      // but only while the box still runs its old release and is not
-      // restarting. A box on the new release may be on trial, and a trial
-      // always ends in an outcome (good, or a revert the old slot records).
+      // A switch that never restarted the box leaves no outcome behind, and
+      // neither does a good switch whose record could not be written. Past
+      // the time limit, counted from when the OS part began, stop waiting
+      // unless the box is restarting or still on trial: host-agent reports a
+      // boot on trial as "waiting", and a trial ends in an outcome.
       const osStart = p.osAt ?? p.at;
-      if (Date.now() - osStart > osWaitLimit && s.os?.state !== "rebooting" && s.os?.running !== p.os) {
+      const onTrial = s.os?.running === p.os && s.os?.state === "waiting";
+      if (Date.now() - osStart > osWaitLimit && s.os?.state !== "rebooting" && !onTrial) {
         await finish();
         return;
       }
