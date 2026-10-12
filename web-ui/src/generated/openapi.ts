@@ -2025,6 +2025,7 @@ export interface components {
             /** @enum {string} */
             state: "unsupported" | "none" | "refused" | "current" | "installing" | "installed" | "waiting" | "rebooting" | "held" | "failed";
             target?: components["schemas"]["OSReleaseDTO"];
+            trial?: boolean;
         };
         Pack: {
             /**

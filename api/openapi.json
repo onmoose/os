@@ -3100,6 +3100,9 @@
           },
           "target": {
             "$ref": "#/components/schemas/OSReleaseDTO"
+          },
+          "trial": {
+            "type": "boolean"
           }
         },
         "required": [

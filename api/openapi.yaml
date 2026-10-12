@@ -2199,6 +2199,8 @@ components:
           type: string
         target:
           $ref: "#/components/schemas/OSReleaseDTO"
+        trial:
+          type: boolean
       required:
         - state
       type: object

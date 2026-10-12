@@ -714,6 +714,10 @@ type OSUpdate struct {
 	Detail string `json:"detail,omitempty"`
 	// Last is the outcome of the last OS switch, kept across reboots.
 	Last *OSOutcome `json:"last,omitempty"`
+	// Trial is true while the booted slot is on trial: just switched to,
+	// and not yet marked good or given up (#509). Read from the slot's trial
+	// marker, so it does not depend on what the loop last decided.
+	Trial bool `json:"trial,omitempty"`
 }
 
 // OSRelease is one OS release an update target names: the version and the

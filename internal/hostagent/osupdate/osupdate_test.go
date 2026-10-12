@@ -778,3 +778,17 @@ func TestSwitchNowWhileAJobRuns(t *testing.T) {
 		t.Fatalf("SwitchNow during a running switch = %+v, want waiting", d)
 	}
 }
+
+// OnTrial follows the booted slot's trial marker.
+func TestOnTrial(t *testing.T) {
+	h := newHarness(t, "A")
+	if h.a.OnTrial() {
+		t.Fatal("a normal boot reads as on trial")
+	}
+	if err := os.WriteFile(TrialMarker(h.a.dir(), "A"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !h.a.OnTrial() {
+		t.Fatal("a boot with its trial marker does not read as on trial")
+	}
+}

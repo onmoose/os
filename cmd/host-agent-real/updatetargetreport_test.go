@@ -291,7 +291,10 @@ func TestReport_RefusedTargetIsNotApplicable(t *testing.T) {
 // stubOS is stream A's facts for the report.
 type stubOS struct {
 	peekState string
+	trial     bool
 }
+
+func (s stubOS) OnTrial() bool { return s.trial }
 
 func (s stubOS) Running() (string, string) { return "0.15.0", "A" }
 func (s stubOS) Last() *protocol.OSOutcome {
@@ -341,5 +344,19 @@ func TestReportOS(t *testing.T) {
 	r = updateTargetReport{disabledErr: "bad seed", os: stubOS{}}
 	if got := r.Read().OS; got.State != protocol.OSUpdateNone || got.Running != "0.15.0" || got.Detail == "" {
 		t.Fatalf("disabled: %+v", got)
+	}
+}
+
+// os.trial comes from the applier's trial marker, whatever the loop decided
+// (#509): a dashboard waiting for an OS update relies on it.
+func TestReportOSTrial(t *testing.T) {
+	l := tickedLoop(t, stubSource{target: goodOffer()}, stubRunning{brain: runningBrain, ui: runningUI})
+	r := updateTargetReport{loop: l, running: stubRunning{brain: runningBrain, ui: runningUI}, os: stubOS{trial: true}}
+	if got := r.Read().OS; got == nil || !got.Trial {
+		t.Fatalf("on trial: %+v, want trial true", got)
+	}
+	r.os = stubOS{}
+	if got := r.Read().OS; got.Trial {
+		t.Fatalf("not on trial: %+v, want trial false", got)
 	}
 }

@@ -151,6 +151,7 @@ Three things about the payload:
 
 - **`state`**: `unsupported` (this box cannot update its OS: the appliance until #564, the fake), `none` (the answer names no OS release), `refused` (its OS part was refused, nothing downloaded), `current`, `installing`, `installed` (in the other slot, waiting for the window), `waiting` (another job holds the lock), `rebooting`, `held` (already tried tonight), `failed` (the last download or install failed; `detail` says why).
 - **`running`** is `host-agent`'s own version, the version of the slot it ships in. **`target`** is the release the box picked: the next step on the way to the answer's target, or the target itself (`UPDATES.md` # 1).
+- **`trial`** (#509) is true while the booted slot is on trial: just switched to, not yet marked good or given up. It is read from the slot's trial marker, not from the loop's last decision, so a dashboard waiting for an OS update can rely on it.
 - **`last`** is the last switch's outcome, `good` or `reverted`, kept on the state partition across reboots. **`id`** names it once: the brain raises one admin notification per id (`NOTIFICATIONS.md` # Updates).
 - The loop decides once per tick; between ticks host-agent refreshes `installing`, `installed`, `waiting` and `failed` from the job and its record, so a finished install is reported at once.
 

@@ -179,6 +179,9 @@ type OSUpdateDTO struct {
 	Target  *OSReleaseDTO `json:"target,omitempty"`
 	Detail  string        `json:"detail,omitempty"`
 	Last    *OSOutcomeDTO `json:"last,omitempty"`
+	// Trial is true while the booted slot is on trial (#509): it may still be
+	// given up, so a dashboard waiting for an OS update keeps waiting.
+	Trial bool `json:"trial,omitempty"`
 }
 
 // OSReleaseDTO is one OS release: the version and its bundle, pinned by
@@ -236,7 +239,7 @@ func osUpdateDTO(o *protocol.OSUpdate) *OSUpdateDTO {
 	if o == nil {
 		return nil
 	}
-	out := &OSUpdateDTO{State: o.State, Running: o.Running, Slot: o.Slot, Detail: o.Detail}
+	out := &OSUpdateDTO{State: o.State, Running: o.Running, Slot: o.Slot, Detail: o.Detail, Trial: o.Trial}
 	if o.Target != nil {
 		out.Target = &OSReleaseDTO{Version: o.Target.Version, BundleURL: o.Target.BundleURL, BundleSHA256: o.Target.BundleSHA256}
 	}

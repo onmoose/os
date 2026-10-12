@@ -360,6 +360,17 @@ func (a *Applier) Floor() string {
 	return strings.TrimSpace(string(b))
 }
 
+// OnTrial reports whether the booted slot is on trial: its trial marker is
+// there, so it was just switched to and is not marked good or given up yet.
+func (a *Applier) OnTrial() bool {
+	_, slot := a.Running()
+	if slot == "" {
+		return false
+	}
+	_, err := os.Stat(TrialMarker(a.dir(), slot))
+	return err == nil
+}
+
 // Last is the last recorded outcome, or nil.
 func (a *Applier) Last() *protocol.OSOutcome {
 	r, err := a.load()
