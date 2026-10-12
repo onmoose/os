@@ -63,6 +63,12 @@ type Pending = {
   // osLast the id of the last OS outcome before the click.
   os: string | null;
   osLast: string | null;
+  // cpJob is stream B's job id, kept after `job` is cleared, so the page can
+  // still tell from `last` whether that update replaced the dashboard when
+  // the OS restart hid the job (host-agent forgets jobs when it restarts).
+  // uiReloaded says the page already reloaded for it.
+  cpJob?: string | null;
+  uiReloaded?: boolean;
   // osJob is the os-switch job when Update now started it at once (an OS-only
   // click). A switch that fails before the restart ends that job "failed",
   // with no new os.last, so this is how the wait learns of it.
@@ -301,6 +307,7 @@ async function applyNow() {
     const job = await api.post<SystemUpdateJob>("/system/update-target/apply");
     const p: Pending = {
       job: withCP ? job.job_id : null,
+      cpJob: withCP ? job.job_id : null,
       os: withOS,
       osLast: osLastBefore,
       osJob: !withCP && withOS ? job.job_id : null,
@@ -343,11 +350,18 @@ async function finish() {
 
 // osDone reports whether the OS switch Update now asked for has ended: the box
 // runs the new release, or a new OS outcome names it (a revert included).
+// Only the outcome counts: a box that runs the new release may still be on
+// trial, and a trial can still give the slot up and go back.
 function osDone(p: Pending, s: UpdateTarget): boolean {
   const o = s.os;
   if (!o || !p.os) return true;
-  if (o.running === p.os && o.state !== "rebooting") return true;
   return !!o.last && o.last.id !== p.osLast && o.last.version === p.os;
+}
+
+// needsReload reports whether stream B replaced the dashboard and this tab has
+// not reloaded for it yet, read from `last` when its job is gone.
+function needsReload(p: Pending, s: UpdateTarget): boolean {
+  return !!p.cpJob && !p.uiReloaded && s.last?.id === p.cpJob && !!s.last.ui_changed;
 }
 
 // poll follows the update until it ends. Stream B first, through its job,
@@ -363,9 +377,10 @@ async function poll() {
       const job = await api.get<SystemUpdateJob>(`/system/update/${encodeURIComponent(p.job)}`);
       if (!alive) return;
       if (job.status !== "running") {
-        const next: Pending = { ...p, job: null };
+        const uiChanged = job.status === "completed" && !!job.result?.ui_changed;
+        const next: Pending = { ...p, job: null, uiReloaded: p.uiReloaded || uiChanged };
         if (!next.os) {
-          if (job.status === "completed" && job.result?.ui_changed) {
+          if (uiChanged) {
             writePending(null);
             window.location.reload();
             return;
@@ -377,7 +392,7 @@ async function poll() {
         // wait goes on from the marker after the reload.
         writePending(next);
         pending.value = next;
-        if (job.status === "completed" && job.result?.ui_changed) {
+        if (uiChanged) {
           window.location.reload();
           return;
         }
@@ -398,6 +413,11 @@ async function poll() {
       const s = await api.get<UpdateTarget>("/system/update-target");
       if (!alive) return;
       if (osDone(p, s)) {
+        if (needsReload(p, s)) {
+          writePending(null);
+          window.location.reload();
+          return;
+        }
         await finish();
         return;
       }
@@ -417,13 +437,11 @@ async function poll() {
       pending.value = next;
     }
     // 404 on the job: host-agent no longer knows it (it restarted). The
-    // outcome on disk is still the answer, so move on.
+    // outcome on disk is still the answer, so go on reading it: the next
+    // poll reads `last`, reloads when that update replaced the dashboard,
+    // and follows the OS part if there is one.
     if (e instanceof ApiError && e.status === 404 && p.job) {
       const next: Pending = { ...p, job: null };
-      if (!next.os) {
-        await finish();
-        return;
-      }
       writePending(next);
       pending.value = next;
     }

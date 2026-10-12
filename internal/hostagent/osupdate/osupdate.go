@@ -644,11 +644,11 @@ func (a *Applier) SwitchNow(rel updatetarget.OSRelease, night time.Time) updatet
 	a.mu.Lock()
 	slot, running := a.slot, a.running
 	a.mu.Unlock()
-	switch running {
-	case protocol.JobKindOSInstall:
-		return updatetarget.OSDecision{State: protocol.OSUpdateInstalling}
-	case protocol.JobKindOSSwitch:
-		return updatetarget.OSDecision{State: protocol.OSUpdateRebooting}
+	// A job of ours already runs (the window's install or switch started it
+	// since the caller looked). That is a busy box, not a switch this call
+	// started: it has no job to hand back.
+	if running != "" {
+		return updatetarget.OSDecision{State: protocol.OSUpdateWaiting, Detail: "another OS update job is running"}
 	}
 	if slot == "" {
 		return updatetarget.OSDecision{State: protocol.OSUpdateUnsupported, Detail: "the booted slot is not known"}

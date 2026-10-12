@@ -765,3 +765,16 @@ func TestSwitchNowKeepsTheSafetyGuards(t *testing.T) {
 		t.Fatalf("SwitchNow on trial = %+v (reboots %d), want waiting and no reboot", d, h.reboots.Load())
 	}
 }
+
+// A switch the window already started is a busy box to Update now, never a
+// "rebooting" with no job to hand back (Greptile on #606).
+func TestSwitchNowWhileAJobRuns(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.mu.Lock()
+	h.a.running = protocol.JobKindOSSwitch
+	h.a.mu.Unlock()
+	if d := h.a.SwitchNow(h.rel, h.night); d.State != protocol.OSUpdateWaiting || d.JobID != "" {
+		t.Fatalf("SwitchNow during a running switch = %+v, want waiting", d)
+	}
+}
