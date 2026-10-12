@@ -325,6 +325,41 @@ func (c *Client) JournalFollow(ctx context.Context, container string) (<-chan pr
 // act on, and it is the one refusal that is not a bug.
 var ErrUpdateInProgress = errors.New("a control-plane update is already running")
 
+// ErrNothingToApply is returned by ApplyUpdateTarget when host-agent has no
+// checked target that differs from what the box runs (#488).
+var ErrNothingToApply = errors.New("there is no update to apply")
+
+// ApplyUpdateTarget asks host-agent to apply, now, the target its update loop
+// already fetched and checked (POST /v1/jobs/system-update-target, #488). It
+// sends no refs: the box applies only what its own source named. Returns the
+// started job, ErrUpdateInProgress when another job holds the lock, or
+// ErrNothingToApply.
+func (c *Client) ApplyUpdateTarget(ctx context.Context) (protocol.Job, error) {
+	resp, err := c.request(ctx, "POST", protocol.SystemUpdateTargetApplyPath, nil)
+	if err != nil {
+		return protocol.Job{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		var e protocol.Error
+		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+			return protocol.Job{}, fmt.Errorf("host-agent %s: read the 409: %w", protocol.SystemUpdateTargetApplyPath, err)
+		}
+		if e.Code == protocol.ErrCodeNothingToApply {
+			return protocol.Job{}, ErrNothingToApply
+		}
+		return protocol.Job{}, ErrUpdateInProgress
+	}
+	if resp.StatusCode >= 300 {
+		return protocol.Job{}, statusErr(protocol.SystemUpdateTargetApplyPath, resp)
+	}
+	var out protocol.Job
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return protocol.Job{}, err
+	}
+	return out, nil
+}
+
 // ErrJobNotFound is returned by Job when host-agent has never seen the id
 // (404) — including every id from before a host-agent restart, since job
 // records are in memory. The brain maps it to 404.
