@@ -46,15 +46,17 @@ func (s *Server) registerSystemUpdate(api huma.API) {
 	}, s.getSystemUpdateTarget)
 	huma.Register(api, huma.Operation{
 		OperationID: "apply-system-update-target", Method: "POST", Path: "/api/v1/system/update-target/apply",
-		Summary:       "Apply the update this box already found, now, instead of in the window (admin only)",
+		Summary:       "Apply the updates this box already found (control plane, and an installed OS release, which restarts the box), now instead of in the window (admin only)",
 		DefaultStatus: 202,
 	}, s.applySystemUpdateTarget)
 }
 
-// applySystemUpdateTarget is the dashboard's Update now (#488). It takes **no
-// body**: host-agent applies the target its own loop fetched and checked
+// applySystemUpdateTarget is the dashboard's Update now (#488, #509). It takes
+// **no body**: host-agent applies the target its own loop fetched and checked
 // (digest-pinned, from the expected repositories), the same one the window
-// would apply. POST /api/v1/system/update takes refs from the caller, which is
+// would apply. That covers both streams in the window's order: the control
+// plane, then an OS release already installed in the other slot, whose switch
+// restarts the box. The job returned is the first one started. POST /api/v1/system/update takes refs from the caller, which is
 // the wrong trust boundary for a button in a browser.
 //
 // Elevation-class, so it audits success and every refusal that says who tried

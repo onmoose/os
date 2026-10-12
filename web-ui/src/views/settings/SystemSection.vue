@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// Settings → System (#488): what this box runs, when it updates itself, what
-// the last update did, and Update now for admins.
+// Settings → System (#488, #509): what this box runs, when it updates itself,
+// what the last updates did, and Update now for admins.
 //
 // Two parts, gated differently:
 //
@@ -16,13 +16,17 @@
 // The dashboard writes every sentence from `state`; `detail` is a diagnostic and
 // only shows underneath, as the technical reason (UPDATES.md # 8.4).
 //
-// Update now replaces the brain and this dashboard, so the brain goes away
-// while it runs. The page keeps the job id in sessionStorage, polls the job on
-// host-agent through the brain until it ends (requests fail while the brain is
-// down, and that is expected), then shows `last`. When the update replaced the
-// dashboard, the page reloads once so it runs the new one. The 426 path in
-// BRAIN_UI_PROTOCOL.md is not built: this reload is what stands in for it on
-// the tab that pressed the button.
+// Update now covers both streams (UPDATES.md # 8.4): the control plane
+// (stream B), which replaces the brain and this dashboard, and an OS release
+// that is installed and waiting (stream A, #509), which restarts the box. So
+// the brain, or the whole box, goes away while it runs. The page keeps what it
+// waits for in sessionStorage, and requests that fail meanwhile only mean "ask
+// again". Stream B is followed through its job on host-agent; when it replaced
+// the dashboard, the page reloads once so it runs the new one. Stream A is
+// followed through the update-target read: done when the box runs the new
+// release, or when a new OS outcome (os.last) names it. The 426 path in
+// BRAIN_UI_PROTOCOL.md is not built: the reload stands in for it on the tab
+// that pressed the button.
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { api, ApiError, type ControlPlaneOutcome, type SystemUpdateJob, type SystemVersion, type UpdateTarget } from "@/api";
@@ -50,20 +54,31 @@ const commitShort = computed(() => {
 const uiImage = computed(() => v.value?.ui_image ?? "");
 
 // ── Update status (admins) ─────────────────────────────────────────────────
-// pendingKey holds the job Update now started, so a reload during the update
-// comes back to the "Updating…" view.
-const pendingKey = "moose.system-update.job";
+// Pending is what Update now waits for, kept in sessionStorage so a reload
+// (ours after a dashboard change, or the admin's) comes back to "Updating…".
+type Pending = {
+  // job is stream B's update job, null when Update now had no stream B part.
+  job: string | null;
+  // os is the OS release being switched to, null when there was none, and
+  // osLast the id of the last OS outcome before the click.
+  os: string | null;
+  osLast: string | null;
+  // at is when Update now was pressed, ms since the epoch.
+  at: number;
+};
+const pendingKey = "moose.system-update.pending";
 
-function readPending(): string | null {
+function readPending(): Pending | null {
   try {
-    return sessionStorage.getItem(pendingKey);
+    const raw = sessionStorage.getItem(pendingKey);
+    return raw ? (JSON.parse(raw) as Pending) : null;
   } catch {
     return null;
   }
 }
-function writePending(id: string | null) {
+function writePending(p: Pending | null) {
   try {
-    if (id) sessionStorage.setItem(pendingKey, id);
+    if (p) sessionStorage.setItem(pendingKey, JSON.stringify(p));
     else sessionStorage.removeItem(pendingKey);
   } catch {
     // Private mode or blocked storage: the view still works, it just will not
@@ -71,8 +86,8 @@ function writePending(id: string | null) {
   }
 }
 
-const pendingJob = ref<string | null>(readPending());
-const updating = computed(() => pendingJob.value !== null);
+const pending = ref<Pending | null>(readPending());
+const updating = computed(() => pending.value !== null);
 
 const target = useQuery({
   queryKey: ["system-update-target"],
@@ -96,18 +111,27 @@ const windowStart = computed(() => t.value?.window?.split("-")[0] ?? "03:00");
 const windowEnd = computed(() => t.value?.window?.split("-")[1] ?? "04:00");
 const zone = computed(() => t.value?.zone || "");
 
+// What Update now would do: stream B when a control-plane target is waiting,
+// stream A when an OS release is installed and waits for its switch. An OS
+// release that is still downloading is not ready yet.
+const cpReady = computed(() => t.value?.auto_apply === true && t.value?.state === "available");
+const osReady = computed(() => t.value?.auto_apply === true && t.value?.os?.state === "installed" && !!t.value?.os?.target);
+const canUpdateNow = computed(() => cpReady.value || osReady.value);
+const cpVersion = computed(() => t.value?.target?.version || "");
+const osVersion = computed(() => t.value?.os?.target?.version || "");
+
 const stateSentence = computed(() => {
   const s = t.value;
   if (!s) return "";
   switch (s.state) {
     case "available":
-      return s.target?.version
-        ? `Version ${s.target.version} will be installed tonight.`
-        : "A new version will be installed tonight.";
+      return cpVersion.value
+        ? `Control plane ${cpVersion.value} will be installed tonight.`
+        : "A new control plane will be installed tonight.";
     case "current":
-      return "Your box is up to date.";
+      return "Your control plane is up to date.";
     case "none":
-      return "There is no update for your box right now.";
+      return "There is no control-plane update for your box right now.";
     case "unreachable":
       return "Your box could not check for updates. It keeps running as it is and checks again in 15 minutes.";
     case "refused":
@@ -116,6 +140,33 @@ const stateSentence = computed(() => {
       return "Your box cannot update itself, because its update settings are not valid. Please contact support.";
     case "unknown":
       return "Your box has not checked for updates yet.";
+  }
+  return "";
+});
+
+// osSentence is stream A's line. Nothing is said for a box that cannot
+// update its OS (unsupported) or whose answer names no OS release (none).
+const osSentence = computed(() => {
+  const o = t.value?.os;
+  if (!o) return "";
+  const v = o.target?.version ? `moose ${o.target.version}` : "A system update";
+  switch (o.state) {
+    case "current":
+      return "Your system is up to date.";
+    case "installing":
+      return `${v} is downloading. Your box installs it in tonight's window and restarts.`;
+    case "installed":
+      return `${v} is ready. Your box restarts tonight to install it.`;
+    case "waiting":
+      return `${v} waits for another update to finish.`;
+    case "rebooting":
+      return `Your box is restarting to install ${v}.`;
+    case "held":
+      return `The update to ${v} did not work. Your box tries again in the next window.`;
+    case "failed":
+      return `${v} could not be downloaded or installed. Your box tries again in the next window.`;
+    case "refused":
+      return "Your box was offered a system update it could not trust, so it did not install it. It keeps running as it is.";
   }
   return "";
 });
@@ -175,9 +226,9 @@ const lastSentence = computed(() => {
   const o = last.value;
   if (!o) return "";
   if (o.outcome === "good") {
-    return o.version ? `Updated to ${o.version} on ${when(o.at)}.` : `Updated on ${when(o.at)}.`;
+    return o.version ? `Control plane updated to ${o.version} on ${when(o.at)}.` : `Control plane updated on ${when(o.at)}.`;
   }
-  const to = o.version ? `The update to ${o.version}` : "The update";
+  const to = o.version ? `The update to control plane ${o.version}` : "The control-plane update";
   if (o.revert_error) {
     return `${to} failed${failedStep(o.failure_mode)}, and your box could not go back to the version before it. Please contact support.`;
   }
@@ -187,6 +238,17 @@ const lastSentence = computed(() => {
       : `${to} failed${failedStep(o.failure_mode)}. Your box went back to the version before it.`;
   }
   return `${to} failed${failedStep(o.failure_mode)}. Nothing on your box changed.`;
+});
+
+// The last OS switch (os.last, kept across the restart by host-agent).
+const osLast = computed(() => t.value?.os?.last);
+const osLastSentence = computed(() => {
+  const o = osLast.value;
+  if (!o) return "";
+  if (o.outcome === "good") return `System updated to moose ${o.version} on ${when(o.at)}.`;
+  return o.from
+    ? `The system update to moose ${o.version} did not start properly on ${when(o.at)}, so your box went back to moose ${o.from}.`
+    : `The system update to moose ${o.version} did not start properly on ${when(o.at)}, so your box went back to the system before it.`;
 });
 
 // ── Update now ─────────────────────────────────────────────────────────────
@@ -207,6 +269,14 @@ onBeforeUnmount(() => {
   clearTimeout(pollTimer);
 });
 
+// The title of the confirmation names what will be installed.
+const confirmTitle = computed(() => {
+  const parts: string[] = [];
+  if (cpReady.value) parts.push(cpVersion.value ? `control plane ${cpVersion.value}` : "the control-plane update");
+  if (osReady.value) parts.push(osVersion.value ? `moose ${osVersion.value}` : "the system update");
+  return `Install ${parts.join(" and ")} now?`;
+});
+
 function openConfirm() {
   applyError.value = "";
   confirmDialog.value?.showModal();
@@ -216,10 +286,16 @@ async function applyNow() {
   confirmDialog.value?.close();
   applyError.value = "";
   starting.value = true;
+  // What this click covers, read before it: the screen's view of the box is
+  // what the admin agreed to.
+  const withCP = cpReady.value;
+  const withOS = osReady.value ? osVersion.value || null : null;
+  const osLastBefore = t.value?.os?.last?.id ?? null;
   try {
     const job = await api.post<SystemUpdateJob>("/system/update-target/apply");
-    writePending(job.job_id);
-    pendingJob.value = job.job_id;
+    const p: Pending = { job: withCP ? job.job_id : null, os: withOS, osLast: osLastBefore, at: Date.now() };
+    writePending(p);
+    pending.value = p;
   } catch (e) {
     // Both 409s mean the screen is out of date: another update is running, or
     // there is nothing left to install. Read the state again either way.
@@ -236,56 +312,98 @@ async function applyNow() {
   }
 }
 
-// finish ends the wait. When the update replaced this dashboard, the page
-// reloads once, so it runs the new one; otherwise it reads the new state.
-async function finish(job: SystemUpdateJob | null) {
+// finish ends the wait and reads the new state.
+async function finish() {
   clearTimeout(slowTimer);
   writePending(null);
-  pendingJob.value = null;
+  pending.value = null;
   slow.value = false;
-  if (job?.status === "completed" && job.result?.ui_changed) {
-    window.location.reload();
-    return;
-  }
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["system-update-target"] }),
     queryClient.invalidateQueries({ queryKey: ["system-version"] }),
   ]);
 }
 
-// poll reads the job until it ends. The job lives on host-agent, which stays
-// up, so the read works again as soon as the new brain answers. A request that
-// fails while the brain restarts is expected and only means "ask again".
-async function poll(id: string) {
-  if (!alive || pendingJob.value !== id) return;
+// osDone reports whether the OS switch Update now asked for has ended: the box
+// runs the new release, or a new OS outcome names it (a revert included).
+function osDone(p: Pending, s: UpdateTarget): boolean {
+  const o = s.os;
+  if (!o || !p.os) return true;
+  if (o.running === p.os && o.state !== "rebooting") return true;
+  return !!o.last && o.last.id !== p.osLast && o.last.version === p.os;
+}
+
+// poll follows the update until it ends. Stream B first, through its job,
+// which host-agent keeps, so the read works again as soon as the new brain
+// answers. Then stream A, through the update-target read, which works again
+// once the box is back after its restart. A request that fails meanwhile is
+// expected and only means "ask again".
+async function poll() {
+  const p = pending.value;
+  if (!alive || !p) return;
   try {
-    const job = await api.get<SystemUpdateJob>(`/system/update/${encodeURIComponent(id)}`);
-    if (!alive) return;
-    if (job.status !== "running") {
-      await finish(job);
-      return;
+    if (p.job) {
+      const job = await api.get<SystemUpdateJob>(`/system/update/${encodeURIComponent(p.job)}`);
+      if (!alive) return;
+      if (job.status !== "running") {
+        const next: Pending = { ...p, job: null };
+        if (!next.os) {
+          if (job.status === "completed" && job.result?.ui_changed) {
+            writePending(null);
+            window.location.reload();
+            return;
+          }
+          await finish();
+          return;
+        }
+        // The OS switch comes next. A new dashboard is loaded now, and the
+        // wait goes on from the marker after the reload.
+        writePending(next);
+        pending.value = next;
+        if (job.status === "completed" && job.result?.ui_changed) {
+          window.location.reload();
+          return;
+        }
+      }
+    } else {
+      const s = await api.get<UpdateTarget>("/system/update-target");
+      if (!alive) return;
+      if (osDone(p, s)) {
+        await finish();
+        return;
+      }
     }
   } catch (e) {
     if (!alive) return;
-    // 404: host-agent no longer knows the job (it restarted). The outcome on
-    // disk is still the answer, so stop waiting and show it.
-    if (e instanceof ApiError && e.status === 404) {
-      await finish(null);
-      return;
+    // 404 on the job: host-agent no longer knows it (it restarted). The
+    // outcome on disk is still the answer, so move on.
+    if (e instanceof ApiError && e.status === 404 && p.job) {
+      const next: Pending = { ...p, job: null };
+      if (!next.os) {
+        await finish();
+        return;
+      }
+      writePending(next);
+      pending.value = next;
     }
   }
-  pollTimer = setTimeout(() => void poll(id), 3000);
+  pollTimer = setTimeout(() => void poll(), 3000);
 }
 
 watch(
-  pendingJob,
-  (id) => {
+  () => pending.value !== null,
+  (waiting) => {
     clearTimeout(pollTimer);
     clearTimeout(slowTimer);
-    if (!id) return;
-    // An update takes about a minute; past ten, say so instead of spinning on.
-    slowTimer = setTimeout(() => (slow.value = true), 10 * 60_000);
-    void poll(id);
+    slow.value = false;
+    if (!waiting) return;
+    // A control-plane update takes about a minute. An OS switch restarts the
+    // box, and a new slot that does not come up is given up after up to 15
+    // minutes. Past that, say so instead of spinning on.
+    const limit = pending.value?.os ? 25 * 60_000 : 10 * 60_000;
+    const left = Math.max(0, (pending.value?.at ?? Date.now()) + limit - Date.now());
+    slowTimer = setTimeout(() => (slow.value = true), left);
+    void poll();
   },
   { immediate: true },
 );
@@ -350,7 +468,11 @@ watch(
 
       <div v-if="updating" class="space-y-2 rounded-xl border border-border bg-card px-4 py-4" aria-live="polite">
         <p class="text-base font-medium">Updating…</p>
-        <p class="text-sm text-muted-foreground">
+        <p v-if="pending?.os" class="text-sm text-muted-foreground">
+          Your box restarts to install moose {{ pending.os }}. Your apps and the dashboard are offline for a few
+          minutes. This page will show the result when your box is back.
+        </p>
+        <p v-else class="text-sm text-muted-foreground">
           The dashboard may stop answering for up to a minute. Your apps keep working. This page will show the result when
           the update is done.
         </p>
@@ -369,15 +491,23 @@ watch(
 
         <div class="space-y-1">
           <p class="text-sm">{{ stateSentence }}</p>
-          <p v-if="t?.checked_at" class="text-sm text-muted-foreground">Last checked {{ ago(t.checked_at) }}.</p>
           <details v-if="t?.detail" class="text-sm">
             <summary class="cursor-pointer text-muted-foreground hover:text-foreground">Technical reason</summary>
             <p class="mt-1 break-words font-mono text-xs text-muted-foreground">{{ t.detail }}</p>
           </details>
+          <p v-if="osSentence" class="text-sm">{{ osSentence }}</p>
+          <details v-if="osSentence && t?.os?.detail" class="text-sm">
+            <summary class="cursor-pointer text-muted-foreground hover:text-foreground">Technical reason</summary>
+            <p class="mt-1 break-words font-mono text-xs text-muted-foreground">{{ t.os.detail }}</p>
+          </details>
+          <p v-if="t?.checked_at" class="text-sm text-muted-foreground">Last checked {{ ago(t.checked_at) }}.</p>
         </div>
 
-        <div v-if="t?.state === 'available'" class="space-y-2">
-          <p class="text-sm text-muted-foreground">
+        <div v-if="canUpdateNow" class="space-y-2">
+          <p v-if="osReady" class="text-sm text-muted-foreground">
+            Updating now restarts your box. Your apps and the dashboard are offline for a few minutes.
+          </p>
+          <p v-else class="text-sm text-muted-foreground">
             An update replaces the dashboard and the service behind it. Your apps keep working, the dashboard is away
             for up to a minute, and your box does not restart.
           </p>
@@ -385,13 +515,18 @@ watch(
         </div>
         <p v-if="applyError" class="text-sm text-destructive">{{ applyError }}</p>
 
-        <div v-if="last" class="space-y-1 border-t border-border pt-4">
-          <p class="text-base font-medium">Last update</p>
-          <p class="text-sm" :class="last.outcome === 'good' ? '' : 'text-destructive'">{{ lastSentence }}</p>
-          <details v-if="last.revert_error" class="text-sm">
-            <summary class="cursor-pointer text-muted-foreground hover:text-foreground">Technical reason</summary>
-            <p class="mt-1 break-words font-mono text-xs text-muted-foreground">{{ last.revert_error }}</p>
-          </details>
+        <div v-if="last || osLast" class="space-y-1 border-t border-border pt-4">
+          <p class="text-base font-medium">Last updates</p>
+          <template v-if="last">
+            <p class="text-sm" :class="last.outcome === 'good' ? '' : 'text-destructive'">{{ lastSentence }}</p>
+            <details v-if="last.revert_error" class="text-sm">
+              <summary class="cursor-pointer text-muted-foreground hover:text-foreground">Technical reason</summary>
+              <p class="mt-1 break-words font-mono text-xs text-muted-foreground">{{ last.revert_error }}</p>
+            </details>
+          </template>
+          <p v-if="osLast" class="text-sm" :class="osLast.outcome === 'good' ? '' : 'text-destructive'">
+            {{ osLastSentence }}
+          </p>
         </div>
       </div>
     </div>
@@ -402,10 +537,12 @@ watch(
       class="m-auto w-[calc(100%-2rem)] max-w-md rounded-xl border border-border bg-card p-0 text-foreground backdrop:bg-black/50"
     >
       <div class="space-y-4 px-5 py-5">
-        <h3 id="update-now-title" class="text-base font-medium">
-          Install {{ t?.target?.version ? `version ${t.target.version}` : "the update" }} now?
-        </h3>
-        <p class="text-sm text-muted-foreground">
+        <h3 id="update-now-title" class="text-base font-medium">{{ confirmTitle }}</h3>
+        <p v-if="osReady" class="text-sm text-muted-foreground">
+          Your box restarts. Your apps and the dashboard are offline for a few minutes. If the new system does not
+          start properly, your box goes back to the one it runs now on its own, which can take up to 15 minutes.
+        </p>
+        <p v-else class="text-sm text-muted-foreground">
           Your apps keep working. The dashboard is away for up to a minute while it is replaced, and your box does not
           restart. If the new version does not start properly, your box goes back to the version it runs now.
         </p>
