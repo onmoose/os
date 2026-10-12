@@ -564,8 +564,15 @@ func (cliDocker) ManagedContainers(ctx context.Context) ([]ManagedContainer, err
 	// TOCTOU: a container removed between the `docker ps` above and this inspect
 	// causes Docker to exit non-zero but still outputs the containers it inspected.
 	// Parse partial output — the missing containers simply won't appear.
+	return parseManagedContainers(stdout.String()), nil
+}
+
+// parseManagedContainers parses the ManagedContainers inspect output, one
+// container per line: instance_id, service, running, StartedAt, health. A
+// malformed line is skipped.
+func parseManagedContainers(out string) []ManagedContainer {
 	var res []ManagedContainer
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		parts := strings.Fields(line)
 		if len(parts) != 5 {
 			continue
@@ -585,7 +592,7 @@ func (cliDocker) ManagedContainers(ctx context.Context) ([]ManagedContainer, err
 			Health:     health,
 		})
 	}
-	return res, nil
+	return res
 }
 
 func (cliDocker) PSManaged(ctx context.Context) (map[string]bool, error) {

@@ -13,6 +13,7 @@ This fixes #609. The `app-unresponsive` detector came from the per-app health pr
 - **The probe does not follow redirects.** `newProbeClient` sets `CheckRedirect` to return `http.ErrUseLastResponse`, so `probeHealthy` classifies the app's own `3xx`.
 - **The gate's login redirect is no sample.** On hosted, for a restricted app, a `302` whose `Location` is exactly the box login URL means the probe met the gate. `probe` now returns a three-way result, and that case is `probeNoSample`: it neither fails nor passes the tick, and Docker decides. The login URL moved into `profile.HostedLoginURL`, which the route builder in `internal/lifecycle` now uses too, so the two cannot drift.
 - **Tests** (`cmd/brain/main_test.go`): Docker `unhealthy` raises on the 2nd tick and clears when it turns `healthy`, `starting` or no healthcheck, with and without a probe; `starting`, no healthcheck and `healthy` never raise; Docker `healthy` does not outvote a failing probe; Docker `unhealthy` counts inside the probe's grace; against an `httptest` server the probe does not follow a `302` and the target is never requested; the gate's login redirect never raises, does not hide Docker `unhealthy`, and does not count as good under the default healthy set; a `302` elsewhere on a gated route is still classified. Each new test fails with the matching part of the fix removed.
+- **Parser test** (`internal/lifecycle/docker_test.go`, after Greptile's review): the inspect line parsing moved into `parseManagedContainers`, and a test reads captured output with `starting`, `healthy`, `unhealthy`, `none` and a malformed line.
 
 ## How it maps to the specs
 
@@ -25,7 +26,7 @@ This fixes #609. The `app-unresponsive` detector came from the per-app health pr
 - **"No sample" clears, like a good sample.** The issue describes `starting`, no healthcheck and the gate redirect as "not samples". The detector has no hold state: a tick either fails or it does not, and one that does not fail clears an active issue. This is how the detector already treated the start-period grace and a stopped container, and it is what the issue's "clears on the first tick it is no longer `unhealthy`" asks for. The visible result: an owner-only app on hosted with no image healthcheck is never flagged by the probe. That is the honest state until #610 lets the probe past the gate.
 - **Review disagreement: hold on "no sample".** The self-review asked that the gate's redirect leave the counter and an active issue as they are. Not done. On a gated route the probe never reaches the app, so only Docker can raise the issue there, and holding it would keep the issue open after Docker stops saying `unhealthy`. That breaks the issue's clear rule. A hold state would also need Docker `healthy` to count as good on an app with a probe, which the issue rules out.
 - **The appliance path is unchanged** except for the Docker signal and the redirect rule. There is no gate on the appliance.
-- **Not tried on a running box.** The `docker inspect` format was checked against real Docker; the detector itself is covered by unit tests with the fake Docker reader.
+- **Not tried on a running box.** The `docker inspect` format was checked against real Docker, and its parsing has a unit test; the detector itself is covered by unit tests with the fake Docker reader.
 
 ## What's next
 
