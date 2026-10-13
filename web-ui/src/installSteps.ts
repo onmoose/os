@@ -27,6 +27,7 @@ import type {
   InstallPlanPermissions,
   RequiresGroup,
 } from "./api";
+import { tooBigText } from "./fit";
 import {
   COMPATIBLE,
   OTHER,
@@ -175,10 +176,17 @@ export function defaultFieldValues(plan: InstallPlan): Record<string, string> {
 }
 
 // installWarnings says whether the plan has something to warn about before
-// an install: a copy the user can already see, or not enough space. Then the
-// install pages open, even for an app that asks nothing.
+// an install: a copy the user can already see, not enough space, or not
+// enough memory next to the apps that are running. Then the install pages
+// open, even for an app that asks nothing.
 export function installWarnings(plan: InstallPlan): boolean {
-  return (plan.existing ?? []).length > 0 || spaceTight(plan.footprint);
+  return (plan.existing ?? []).length > 0 || spaceTight(plan.footprint) || memoryTight(plan);
+}
+
+// memoryTight says the app may not fit next to the apps that are running
+// (#599). The install pages show why, and Install reads "Install anyway".
+export function memoryTight(plan: InstallPlan | null | undefined): boolean {
+  return plan?.fit?.state === "tight";
 }
 
 // unavailableText is the sentence for a plan this box cannot install at all,
@@ -190,6 +198,8 @@ export function unavailableText(plan: InstallPlan | null): string {
   switch (plan.unavailable) {
     case "needs-remap":
       return "This app can't be installed on this box, because it needs a safety feature that only boxes set up with a newer version of moose have.";
+    case "too-big":
+      return plan.fit ? tooBigText(plan.fit) : "This box can't run this app as it is.";
     default:
       return "This app can't be installed on this box.";
   }

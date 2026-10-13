@@ -55,6 +55,17 @@ export function isBoxOwner() {
 // the box side is internal/api/sso.go, the portal side is the private cloud repo.
 const portalOpenBoxURL = `${portalURL}/api/boxes/current/open`;
 
+// upgradeBoxURL is the box's own page on the mooseos.com portal, where its
+// owner changes its size. The store links to it when an app does not fit
+// (#599). The portal sends a signed-out visitor through sign-in and back. It is
+// "" on an appliance, where the fix is hardware, and for every account but the
+// hosted box's owner, who is the only one who can change the box.
+export function upgradeBoxURL(): string {
+  const boxID = currentUser.value?.box_id;
+  if (!isHosted() || !isBoxOwner() || !boxID) return "";
+  return `${portalURL}/dashboard/boxes/${encodeURIComponent(boxID)}`;
+}
+
 // redirectToPortal sends the browser to the mooseos.com portal, which mints a
 // fresh SSO assertion and lands the owner back on the box dashboard. Used as the
 // hosted stand-in for the login screen. replace() so the unauthenticated box URL
