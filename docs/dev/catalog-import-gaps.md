@@ -375,3 +375,11 @@ Unlike `docs/progress/` entries (frozen ADR snapshots), this file is **mutable b
 - **What breaks:** the AI account the user picks at install fills the chat key only. File search needs the key a second time, in a plain field (`RAG_OPENAI_API_KEY`, `service: rag_api`) that the provider tiles cannot fill. Both features work once the key is pasted twice.
 - **Why moose can't satisfy it (v1):** a config field has one target service, and a slot's role can belong to one field only. There is no way to say "inject this value into these two services".
 - **Status:** open. Expect recurrence: any app that splits a provider's API across a web service and a worker that both call the provider. A `service:` list on a config field would close it.
+
+### config-field-single-service — rakazo (2026-10-13)
+
+- **Severity:** cosmetic
+- **Trigger:** Rakazo's `api` and `worker` both read the deployment model key (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`) and the computer provider and its key (`SANDBOX_PROVIDER`, `E2B_API_KEY`, ...). Upstream runs them as two services. A `config:` value reaches one of them only.
+- **What breaks:** nothing the user sees. The store package runs both processes in one container (`server`), so every field targets one service. The cost is packaging: a wrapper starts both processes and exits when either one does, so moose restarts the pair, and the two processes no longer have separate memory limits or restarts.
+- **Why moose can't satisfy it (v1):** same as the librechat entry: a config field has one target service. This is the second app in a day, and the first where the shape forced a change in the app's topology rather than a second paste.
+- **Status:** open. A `service:` list on a config field would let the package keep upstream's two services.
