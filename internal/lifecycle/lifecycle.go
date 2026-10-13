@@ -213,6 +213,11 @@ type Manager struct {
 	// host-agent and docker info on every request (remapstate.go).
 	remap remapCache
 
+	// caddyOff holds the running apps whose network the last
+	// EnsureCaddyNetworks pass left Caddy off (CaddyOffNetwork).
+	caddyNetMu sync.Mutex
+	caddyOff   map[string]bool
+
 	// caddyAdminWait replaces the wait for Caddy's admin API on the socket in
 	// MigrateCaddyAdminSocket (caddysocket.go). nil in production, where it
 	// is caddy.Client.WaitReady.
@@ -1154,6 +1159,9 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 // crash mid-start leaves a `running` row the reconcile pass finishes, the same
 // recovery path a reboot takes. The Caddy route flips to the "starting" splash,
 // then to the real upstream once main_service is healthy.
+//
+// A person's Start also gives the app a fresh hour of automatic restarts: the
+// count the brain gave up at is reset (#620, HEALTH.md # Automatic restart).
 func (m *Manager) Start(ctx context.Context, id string) error {
 	defer m.lockInstance(id)()
 	inst, err := m.store.Get(id)
@@ -1163,7 +1171,20 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if inst.State != "stopped" && inst.State != "failed" {
 		return fmt.Errorf("%w (state=%s)", ErrNotStartable, inst.State)
 	}
-	prevState := inst.State
+	if inst.AutoRestarts > 0 || !inst.LastAutoRestart.IsZero() {
+		if err := m.store.ResetInstanceAutoRestarts(id, true); err != nil {
+			return fmt.Errorf("reset automatic restarts: %w", err)
+		}
+		inst.AutoRestarts = 0
+		inst.LastAutoRestart = time.Time{}
+	}
+	return m.startLocked(ctx, inst, inst.State)
+}
+
+// startLocked is Start's work, after the caller took the per-instance lock
+// and checked the state: Start, and Restart once it has stopped the app.
+func (m *Manager) startLocked(ctx context.Context, inst store.Instance, prevState string) error {
+	id := inst.ID
 	man, err := m.loadInstanceManifest(id)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
@@ -1183,10 +1204,14 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 
 	// Commit desired state first, then flip the route to the starting splash so
 	// the hostname stops serving the "stopped" page the moment the user acts.
-	if err := m.store.SetState(id, "running"); err != nil {
-		return fmt.Errorf("set state running: %w", err)
+	// An automatic restart's row already reads running: no write, so no write
+	// that can fail after its compose stop and leave the app down.
+	if inst.State != "running" {
+		if err := m.store.SetState(id, "running"); err != nil {
+			return fmt.Errorf("set state running: %w", err)
+		}
+		inst.State = "running"
 	}
-	inst.State = "running"
 	if err := m.caddy.AddSplashRoute(ctx, id, host, man.Name, "starting"); err != nil {
 		slog.Warn("start: caddy splash flip failed (continuing)",
 			"instance_id", id, "host", host, "err", err)
@@ -1224,6 +1249,76 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	m.emitState(inst, prevState)
 	slog.Info("app started", "instance_id", id, "name", inst.Name, "upstream", upstream)
 	return nil
+}
+
+// ErrBusy is returned by BeginRestart when another lifecycle operation holds
+// the instance (an install's last steps, a stop, a start, an uninstall, a
+// config or mail edit). The automatic restart (#598) skips the app then: it
+// never runs into an operation the user started.
+var ErrBusy = errors.New("app has a lifecycle operation in flight")
+
+// ErrAutoRestartOff is returned by BeginRestart when the app's owner turned
+// the automatic restart off (#598). It is read under the app's lock from the
+// fresh row, so a switch flipped during a slow health tick still holds.
+var ErrAutoRestartOff = errors.New("automatic restart is off for this app")
+
+// BeginRestart starts an automatic restart of a running app (#598,
+// APP_LIFECYCLE.md # Automatic restart). It takes the per-instance lock only
+// if it is free (ErrBusy otherwise) and checks the app is running
+// (ErrNotRunning otherwise), both before it returns, so the caller knows at
+// once whether a restart will happen. The returned run does the work and
+// releases the lock; the caller must call it exactly once, usually on its own
+// goroutine, since it can take as long as a start.
+//
+// The work is a manual Stop then Start, under one lock: `compose stop`, then
+// the same steps Start runs (mDNS re-publish, the starting splash, `compose up
+// -d`, Caddy's networks, the health wait, the flip to the real upstream), so
+// the route, limits and env are applied the same way. The one difference is
+// that the row stays `running` the whole time, so a brain that dies halfway
+// leaves an app the reconcile pass brings back up, never one it keeps stopped.
+// A start that does not come healthy lands in `failed`, as with Start.
+//
+// Once the checks pass, the restart is counted in the app's row, begun at at,
+// before the work runs (#620): the count is what makes the brain give up, so
+// it must survive a brain that dies halfway. A failed write refuses the
+// restart. It also returns the row as it read it under the lock, before the
+// count: a person may have reset the count since the caller read it.
+func (m *Manager) BeginRestart(id string, at time.Time) (run func(context.Context) error, row store.Instance, err error) {
+	unlock, ok := m.tryLockInstance(id)
+	if !ok {
+		return nil, store.Instance{}, ErrBusy
+	}
+	inst, err := m.store.Get(id)
+	if err != nil {
+		unlock()
+		return nil, store.Instance{}, err
+	}
+	if inst.State != "running" {
+		unlock()
+		return nil, store.Instance{}, fmt.Errorf("%w (state=%s)", ErrNotRunning, inst.State)
+	}
+	if inst.AutoRestartOff {
+		unlock()
+		return nil, store.Instance{}, ErrAutoRestartOff
+	}
+	if err := m.store.RecordInstanceAutoRestart(id, at); err != nil {
+		unlock()
+		return nil, store.Instance{}, fmt.Errorf("count the automatic restart: %w", err)
+	}
+	return func(ctx context.Context) error {
+		defer unlock()
+		// The start needs the manifest. Read it before the stop, so a
+		// failure here leaves the app running, not stopped with nothing to
+		// start it.
+		if _, err := m.loadInstanceManifest(id); err != nil {
+			return fmt.Errorf("load manifest: %w", err)
+		}
+		if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {
+			return fmt.Errorf("compose stop: %w\n%s", err, out)
+		}
+		slog.Info("app stopped for an automatic restart", "instance_id", id, "name", inst.Name)
+		return m.startLocked(ctx, inst, "running")
+	}, inst, nil
 }
 
 // SetExposure flips an app between public and owner-only (restricted) access and
@@ -1690,12 +1785,22 @@ func (m *Manager) EnsureCaddyNetworks(ctx context.Context) {
 			running = append(running, inst.ID)
 		}
 	}
+	off := map[string]bool{}
+	defer func() {
+		m.caddyNetMu.Lock()
+		m.caddyOff = off
+		m.caddyNetMu.Unlock()
+	}()
 	if len(running) == 0 {
 		return
 	}
 	have, err := m.docker.ContainerNetworks(ctx, caddyContainer)
 	if err != nil {
 		slog.Warn("caddy networks: read the networks caddy is on", "err", err)
+		// Unknown: keep what the last pass found.
+		m.caddyNetMu.Lock()
+		off = m.caddyOff
+		m.caddyNetMu.Unlock()
 		return
 	}
 	for _, id := range running {
@@ -1704,16 +1809,127 @@ func (m *Manager) EnsureCaddyNetworks(ctx context.Context) {
 		}
 		unlock, ok := m.tryLockInstance(id)
 		if !ok {
+			// The operation holding the app handles Caddy's network itself.
+			// Until a pass sees Caddy on it, the app counts as off.
+			off[id] = true
 			continue
 		}
 		// Read the state again under the lock: the app may have been stopped
 		// or uninstalled since the list above.
 		if inst, err := m.store.Get(id); err == nil && inst.State == "running" {
 			slog.Info("caddy networks: reconnecting caddy to an app network", "instance_id", id)
-			m.connectCaddy(ctx, id)
+			if err := m.docker.NetworkConnect(ctx, "moose-app-"+id, caddyContainer); err != nil {
+				slog.Warn("connect caddy to the app network (retried on the next health tick)",
+					"instance_id", id, "err", err)
+				off[id] = true
+			}
 		}
 		unlock()
 	}
+}
+
+// CaddyOffNetwork reports whether the last EnsureCaddyNetworks pass left
+// Caddy off this running app's network: the connect failed, or the app was
+// held by an operation. Caddy then cannot reach the app, so its route answers
+// 502 whatever the app does, and the app-unresponsive probe must not read
+// that as the app failing (#613): a route written again after a Caddy
+// recreate would otherwise make a healthy app look down, and in time restart
+// it (#598).
+func (m *Manager) CaddyOffNetwork(id string) bool {
+	m.caddyNetMu.Lock()
+	defer m.caddyNetMu.Unlock()
+	return m.caddyOff[id]
+}
+
+// RestoreRoutes writes the Caddy route of each app again, after Caddy lost
+// its config while the brain runs (#613): a recreate starts Caddy from the
+// staged caddy.json, with no app route. It writes what the startup pass
+// writes: the app route of a running app and the splash of a stopped or
+// failed one. Each write also writes the app's copy in the probe server.
+// Unlike the startup pass it does not publish mDNS (Caddy losing its config
+// does not touch Avahi) and runs no compose.
+//
+// only names the apps to write; nil means every app. It returns the apps it
+// could not write, for the caller to pass back on the next health tick:
+//   - an app whose lock is held. The install, start, stop, restart or edit
+//     holding it may have written its route before the recreate and not
+//     write it again, so the route is written once the lock is free;
+//   - an app being installed or uninstalled. The install writes its own route
+//     at its end, but may have done so before the recreate; once the row is
+//     running or failed the route is written here. An app that is gone drops
+//     out;
+//   - an app whose route write failed.
+//
+// The lock is held for the write, so it never races the operation that
+// writes the same route. err is set only when the app list could not be read.
+func (m *Manager) RestoreRoutes(ctx context.Context, only map[string]bool) (owed map[string]bool, err error) {
+	insts, err := m.store.List()
+	if err != nil {
+		return nil, fmt.Errorf("restore routes: list instances: %w", err)
+	}
+	owed = map[string]bool{}
+	written := 0
+	for _, inst := range insts {
+		if only != nil && !only[inst.ID] {
+			continue
+		}
+		if m.restoreRoute(ctx, inst.ID) {
+			written++
+		} else {
+			owed[inst.ID] = true
+		}
+	}
+	if written > 0 || only == nil {
+		slog.Info("caddy: app routes written again", "count", written, "owed", len(owed))
+	}
+	return owed, nil
+}
+
+// restoreRoute is one app's part of RestoreRoutes. It reports whether the app
+// needs nothing more: its route was written, or it has no route to write.
+func (m *Manager) restoreRoute(ctx context.Context, id string) bool {
+	unlock, ok := m.tryLockInstance(id)
+	if !ok {
+		return false
+	}
+	defer unlock()
+	inst, err := m.store.Get(id)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		slog.Warn("caddy restore: read the app", "instance_id", id, "err", err)
+		return false
+	}
+	switch inst.State {
+	case "running":
+		man, err := m.loadInstanceManifest(id)
+		if err != nil {
+			// Trying again on every tick would not help. The startup pass
+			// skips such an app the same way.
+			slog.Warn("caddy restore: load manifest, skipping the route", "instance_id", id, "err", err)
+			return true
+		}
+		host := m.routeHost(inst)
+		upstream := fmt.Sprintf("moose-%s-%s:%d", inst.ID, man.MainService, man.MainPort)
+		if err := m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, man, host, upstream)); err != nil {
+			slog.Warn("caddy restore: app route", "instance_id", id, "host", host, "upstream", upstream, "err", err)
+			return false
+		}
+	case "stopped", "failed":
+		host := m.routeHost(inst)
+		appName := inst.Name
+		if man, err := m.loadInstanceManifest(id); err == nil {
+			appName = man.Name
+		}
+		if err := m.caddy.AddSplashRoute(ctx, id, host, appName, inst.State); err != nil {
+			slog.Warn("caddy restore: splash route", "instance_id", id, "host", host, "err", err)
+			return false
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 // reassertRouting re-publishes mDNS and re-registers the Caddy route for a

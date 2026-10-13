@@ -858,8 +858,9 @@ jobs:
       contents: read
     runs-on: ubuntu-24.04
     # The update and remap boots allow themselves up to 25 min of verdict
-    # wait each (run-cloud-tests.sh VERDICT_TIMEOUT); remap is two boots.
-    timeout-minutes: 60
+    # wait each (run-cloud-tests.sh VERDICT_TIMEOUT); remap is two boots. The
+    # access boot allows itself up to 53 min (#598's 5-minute restart window).
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build.outputs.matrix) }}

@@ -21,6 +21,33 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-13 — The automatic restart gives up after one hour (#620)
+
+**Previously:** an app that stays broken gets at most 3 automatic restarts in any rolling hour (#598). So it got about 3 restarts every hour for as long as it stayed broken, each one audited, while the issue said the brain "stopped trying". The count was in memory, so a brain restart started it again.
+**Now:** the brain tries for one hour, then gives up for good. After 3 automatic restarts that did not bring the app back (waits of 5, 10 and 20 minutes), it never restarts the app by itself again, and writes no more `app.restart.auto` records. The issue says the brain restarted it 3 times, that this did not help, and that the user can stop the app and start it to try again. Giving up ends only when the app answers a real health check (not a tick with no sample), when a person starts the app, or when a person turns its automatic restart setting off and on; each gives the app a fresh hour. The count is stored in the app's row, so it survives a brain restart. The #598 cap of 3 restarts in any hour stays for an app that recovers between restarts.
+**Why:** a restart that did not help three times will not help a fourth time. Repeating it every hour forever only fills the audit log and tells the user something untrue. The user is the one who can fix the app now, so the issue tells them what to do, and anything they do on the app lets the brain try again.
+**Affected docs:** `HEALTH.md` (# Automatic restart), `APP_LIFECYCLE.md` (# Locked: automatic restart of an unresponsive app), `LOGGING.md` (`app.restart.auto`), `BRAIN_UI_PROTOCOL.md`, `docs/architecture.md`.
+
+---
+
+## 2026-10-13 — The brain restarts an app whose `app-unresponsive` stays raised (#598)
+
+**Previously:** `app-unresponsive` only surfaces. Its Tier-2 action is a restart the user starts, and `HEALTH.md` # What's deliberately out of scope said every Tier-2 action is user-initiated, with host-agent's systemd restart policy as the only exception.
+**Now:** when the issue has stayed raised for 5 minutes, past the app's start-period grace, the brain restarts the app by itself, through the same Stop and Start a person does. Each restart in the last hour doubles the wait (5, 10, 20 minutes), and an app is restarted at most 3 times in any hour, then the issue says automatic restarts did not help. A stopped or failed app, an app with a lifecycle operation in flight, and an app whose per-app setting is off are never restarted. Each restart is an `app.restart.auto` audit record, shown in Activity, and the issue says when the brain last restarted the app. The limit is a rolling hour, read as written in the issue: an app that stays broken gets at most 3 restarts in any hour, not 3 in total.
+**Why:** an app's backend hung during startup after a reboot, alive but never listening, and stayed down for 15 hours until its owner restarted it by hand. Nothing in the stack acts on a process that is alive but not serving: pm2 restarts only on exit, and Docker records `unhealthy` but restarts nothing. A restart is safe to repeat, so the brain can do it without asking, as long as it is bounded, visible, never against the user, and can be turned off. It became safe only once the probe was right on hosted (#609, #610). Since a tick with no sample clears the issue, a gap can only delay a restart, never cause one.
+**Affected docs:** `HEALTH.md` (# Taxonomy row, # Automatic restart, # What's deliberately out of scope), `APP_LIFECYCLE.md` (# Locked: automatic restart of an unresponsive app), `LOGGING.md` (`app.restart.auto`), `BRAIN_UI_PROTOCOL.md`, `DASHBOARD.md`, `TESTING.md`, `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+---
+
+## 2026-10-13 — The health probe reaches owner-only apps through a Caddy probe server the brain writes (#610)
+
+**Previously:** the `app-unresponsive` probe goes through Caddy's front door with the app's `Host` (2026-06-02). On hosted the forward-auth gate answers an owner-only app's probe with its login redirect, which #609 made no sample, so such an app was never probed. #610 planned a second Caddy server for the probe, declared in the staged `caddy.json` on the OS line.
+**Now:** the brain writes the second server, `moose-probe`, through Caddy's admin API, like the routes. It listens only on a unix socket next to the admin socket and holds a copy of every app route with no gate. The brain writes it only when its admin API is on the socket. A probe server answer marked `X-Moose-Probe: no-route`, or a socket that does not answer, is no sample.
+**Why:** the staged `caddy.json` is copied to a box once and no update replaces it (`BUILD.md` # As built), so a server declared there would have reached new boxes only. Written by the brain, it reaches every box with a control-plane release. The cost: a Caddy recreate loses it with every route (#613), so the brain's route writes put it back when it is missing, and a brain restart writes it whole. The probe still talks only to Caddy, so the 2026-06-02 reasoning (keep the brain off app networks) holds.
+**Affected docs:** `HEALTH.md` (# Detector catalog: the row and a new paragraph), `CONTROL_PLANE.md` (# Locked: Caddy is moose substrate), `APP_MANIFEST.md` (# B `health_probe`), `THREAT_MODEL.md` (B2), `TESTING.md`, `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+---
+
 ## 2026-10-13 — The brain moves a box made before #608 to the Caddy admin socket, at once (#612)
 
 **Previously:** host-agent is the only writer of the staged `compose.yml`, and the brain only reads it (`UPDATES.md` # 8.3). A box made before #608 kept its TCP admin API (the entry below). The plan in #612 also waited for the 7-day revert window to close before it moved a box, so that a revert could never land on a brain from before #608.

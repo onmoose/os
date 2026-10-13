@@ -82,6 +82,7 @@ const ACTION_LABELS: Record<string, string> = {
   logout: "Signed out",
   "app.install": "App installed",
   "app.uninstall": "App uninstalled",
+  "app.restart.auto": "App restarted automatically",
   "app.custom.create": "Custom container installed",
   "user.create": "User created",
   "user.role.change": "Role changed",

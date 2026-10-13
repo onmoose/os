@@ -231,18 +231,64 @@ func main() {
 		waitCancel()
 	}
 
+	// The probe server (#610): a second Caddy server on a unix socket next to
+	// the admin socket, with every app route and no forward-auth gate, so the
+	// app-unresponsive probe reaches an owner-only app. Only when the admin
+	// API is on the socket: then the socket dir is bound into Caddy, and Caddy
+	// can make the probe socket there. A box still on TCP and the dev loop
+	// keep the probe on Caddy's site listener.
+	probeSocket := ""
+	if cfg.controlPlaneDir != "" && strings.HasPrefix(cfg.caddyAdmin, "unix://") {
+		cd.EnableProbeServer(lifecycle.CaddyProbeListen)
+		probeSocket = lifecycle.CaddyProbeSocket(cfg.controlPlaneDir)
+	}
+
+	// The TLS policy and the dashboard route, which the brain writes at
+	// startup below and again when Caddy lost its config (#613).
+	edge := caddyEdge{
+		cd:            cd,
+		tls:           prof == profile.Hosted && enrollment.Complete(),
+		certSubjects:  profile.CertSubjects(boxID),
+		acmeDNS:       cfg.acmeDNSEndpoint,
+		brainUpstream: cfg.dashboardBrainUpstream,
+		uiUpstream:    cfg.dashboardUIUpstream,
+		enrollment: caddy.EnrollmentCredentials{
+			Subdomain: enrollment.Subdomain,
+			Username:  enrollment.Username,
+			Password:  enrollment.Password,
+		},
+		// On hosted the dashboard is served at the box apex
+		// "<box-id>.onmoose.io" (under the box's wildcard cert), not the
+		// appliance's "moose.local" (ENVIRONMENT.md # Networking & discovery).
+		dashboardHost: cfg.dashboardHost,
+	}
+	if prof == profile.Hosted && boxID != "" {
+		edge.dashboardHost = profile.HostedDashboardHost(boxID)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	life.EnsureIngress(ctx)
+	// The startup writes below are the brain's config. They end with a mark
+	// on it (#613), which goes on only if every one of these steps worked and
+	// Caddy is still the one that got them (cfgToken). Otherwise the health
+	// tick finds no mark and writes the config again.
+	cfgToken, err := cd.BeginConfig(ctx)
+	cfgWritten := err == nil
+	if err != nil {
+		slog.Warn("caddy: could not start the config write; the health tick will write it again", "err", err)
+	}
 	// Startup reconcile: converge Docker + routing to SQLite desired state and
 	// re-assert Caddy routes lost when EnsureIngress reset the server block.
 	if err := life.Reconcile(ctx); err != nil {
 		slog.Warn("startup reconcile failed", "err", err)
+		cfgWritten = false
 	}
 	// Catch-all 404: ensure the tail route is present after reconcile has
 	// re-populated per-app routes at index 0. Best-effort — Caddy being
 	// transiently unreachable here doesn't block the brain from serving.
 	if err := cd.EnsureCatchAll(ctx); err != nil {
 		slog.Warn("caddy: ensure catch-all failed; continuing", "err", err)
+		cfgWritten = false
 	}
 	// Hosted wildcard HTTPS (ENVIRONMENT.md # Networking & discovery): tell Caddy
 	// to obtain "*.<box-id>.onmoose.io" via its acme-dns DNS-01 issuer and bind
@@ -252,14 +298,9 @@ func main() {
 	// cert on its own schedule afterwards, so a slow or unreachable ACME never
 	// blocks startup or delays the dashboard route installed just before Serve. A
 	// transient Caddy config error here does not stop the brain from serving.
-	if prof == profile.Hosted && enrollment.Complete() {
-		if err := cd.EnsureWildcardTLS(ctx, profile.CertSubjects(boxID), cfg.acmeDNSEndpoint, caddy.EnrollmentCredentials{
-			Subdomain: enrollment.Subdomain,
-			Username:  enrollment.Username,
-			Password:  enrollment.Password,
-		}); err != nil {
-			slog.Warn("caddy: configure wildcard TLS failed; continuing on HTTP", "err", err)
-		}
+	if err := edge.writeTLS(ctx); err != nil {
+		slog.Warn("caddy: configure wildcard TLS failed; continuing on HTTP", "err", err)
+		cfgWritten = false
 	}
 	cancel()
 	// The dashboard host route (which points Caddy's /api leg at this brain) is
@@ -315,10 +356,23 @@ func main() {
 	rld := newRestartLoopDetector(dock, healthMgr, auditor, notifier, bus)
 	probe := newAppProbeDetector(dock, st, life, cfg.caddyProbeURL, healthMgr, auditor, notifier, bus)
 	probe.SetEnvironment(prof, boxID)
+	probe.SetProbeSocket(probeSocket)
+	probe.SetCaddyNetworks(life)
+	// An app whose app-unresponsive issue stays raised is restarted (#598).
+	probe.SetRestarter(newAutoRestarter(life, st, auditor))
 	// Caddy's app networks ride the same tick (#608): a Caddy recreated while
 	// the brain runs is back on every running app's network within one tick.
-	// First, so the probe that follows reads an app Caddy can reach.
-	go appRuntimeHealthLoop(pollCtx, cfg.healthPollPeriod, life.EnsureCaddyNetworks, rld.check, probe.check)
+	// Its config too (#613): the restorer writes every route, the probe
+	// server, the dashboard route and the TLS policy again when Caddy lost
+	// them. Both first, so the probe that follows reads an app Caddy can
+	// reach through the route a browser gets.
+	restorer := &caddyRestorer{caddy: cd, life: life, edge: func(ctx context.Context) error {
+		if err := edge.writeTLS(ctx); err != nil {
+			return err
+		}
+		return edge.writeDashboard(ctx)
+	}}
+	go appRuntimeHealthLoop(pollCtx, cfg.healthPollPeriod, life.EnsureCaddyNetworks, restorer.check, rld.check, probe.check)
 
 	// Bound the notifications table (NOTIFICATIONS.md # Locked decisions, the
 	// retention bullet): prune aged / over-cap rows once at boot, then on a slow
@@ -390,20 +444,23 @@ func main() {
 	// set, which dev never does. Inserted at index 0 (PUT) so it sorts before the
 	// catch-all. Installed here, after the listener is bound, so Caddy's /api leg
 	// only goes live once this brain can answer it.
-	if cfg.dashboardUIUpstream != "" {
-		// On hosted the dashboard is served at the box apex
-		// "<box-id>.onmoose.io" (under the box's wildcard cert), not the
-		// appliance's "moose.local" (ENVIRONMENT.md # Networking & discovery).
-		dashboardHost := cfg.dashboardHost
-		if prof == profile.Hosted && boxID != "" {
-			dashboardHost = profile.HostedDashboardHost(boxID)
-		}
-		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := cd.EnsureDashboard(dctx, dashboardHost, cfg.dashboardBrainUpstream, cfg.dashboardUIUpstream); err != nil {
-			slog.Warn("caddy: ensure dashboard route failed; continuing", "err", err)
-		}
-		dcancel()
+	dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := edge.writeDashboard(dctx); err != nil {
+		slog.Warn("caddy: ensure dashboard route failed; continuing", "err", err)
+		cfgWritten = false
 	}
+	// The startup writes are done: mark Caddy's config as the brain's, and
+	// from now on let the health tick write it again if Caddy loses it
+	// (#613). With no mark, the first tick writes it all again.
+	if cfgWritten {
+		if err := cd.MarkConfigured(dctx, cfgToken); err != nil {
+			slog.Warn("caddy: could not mark the config as written; the health tick will write it again", "err", err)
+		}
+	} else {
+		slog.Warn("caddy: a startup write failed; the health tick will write the config again")
+	}
+	dcancel()
+	restorer.armed.Store(true)
 
 	if err := httpSrv.Serve(ln); err != nil {
 		fatal("http server", "err", err)
@@ -1223,6 +1280,8 @@ const (
 	// dockerUnhealthy is the State.Health.Status Docker reports once a
 	// container's own HEALTHCHECK has failed its retries.
 	dockerUnhealthy = "unhealthy"
+	// dockerHealthy is the status once the HEALTHCHECK passes.
+	dockerHealthy = "healthy"
 )
 
 // managedContainerReader is the brain's consumer-side slice of the Docker seam
@@ -1277,6 +1336,70 @@ type appProbeDetector struct {
 	// empty default keeps the appliance ".local" path.
 	profile profile.Profile
 	boxID   string
+
+	// socketPath is the host path of Caddy's probe socket (#610), and
+	// socketClient the client that dials it. Empty when the brain did not
+	// write the probe server; the probe then goes to baseURL. Set once at
+	// startup via SetProbeSocket.
+	socketPath   string
+	socketClient *http.Client
+
+	// caddyNets says which apps Caddy is off the network of (#613). The
+	// probe skips those: their route answers 502 whatever the app does. nil
+	// probes every app. Set once at startup via SetCaddyNetworks.
+	caddyNets caddyNetworkReader
+
+	// restarter restarts an app whose issue stays raised (#598). nil turns
+	// the automatic restart off. Set once at startup via SetRestarter.
+	restarter *autoRestarter
+}
+
+// SetRestarter turns on the automatic restart of an app that stays
+// unresponsive (#598).
+func (d *appProbeDetector) SetRestarter(r *autoRestarter) { d.restarter = r }
+
+// appUnresponsiveDetails is the issue's details before any note about
+// automatic restarts.
+const appUnresponsiveDetails = "This app is running but didn't respond to its health check."
+
+// errProbeSocketDial marks a probe that could not connect to the probe
+// socket. Caddy, not the app, is missing there, so it is no sample.
+var errProbeSocketDial = errors.New("dial the caddy probe socket")
+
+// SetProbeSocket points the probe at Caddy's probe socket (#610), the server
+// that holds every app route with no forward-auth gate. An empty path keeps
+// the probe on Caddy's site listener.
+// caddyNetworkReader is the slice of lifecycle.Manager the probe uses to
+// know that Caddy cannot reach an app.
+type caddyNetworkReader interface {
+	CaddyOffNetwork(id string) bool
+}
+
+// SetCaddyNetworks makes the probe skip an app whose network the last
+// lifecycle.Manager.EnsureCaddyNetworks pass left Caddy off (#613). Its route
+// then answers 502 from Caddy, which says nothing about the app; after a Caddy
+// recreate that would make a healthy app look down and, in time, restart it
+// (#598). Docker's own health status still counts for it.
+func (d *appProbeDetector) SetCaddyNetworks(r caddyNetworkReader) { d.caddyNets = r }
+
+func (d *appProbeDetector) SetProbeSocket(path string) {
+	d.socketPath = path
+	if path == "" {
+		d.socketClient = nil
+		return
+	}
+	var dialer net.Dialer
+	c := newProbeClient()
+	c.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, "unix", path)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", errProbeSocketDial, err)
+			}
+			return conn, nil
+		},
+	}
+	d.socketClient = c
 }
 
 // SetEnvironment records the environment profile and (on hosted) the box-id, so
@@ -1318,8 +1441,9 @@ func newProbeClient() *http.Client {
 }
 
 // probeResult is one probe's verdict. probeNoSample means the probe never
-// reached the app (the forward-auth gate answered for it), so it counts as
-// neither good nor bad.
+// reached the app (the forward-auth gate answered for it, or the probe server
+// had no route for it or did not answer), so it counts as neither good nor
+// bad.
 type probeResult int
 
 const (
@@ -1357,6 +1481,13 @@ func (d *appProbeDetector) check(ctx context.Context) {
 	}
 
 	now := d.now()
+	if d.restarter != nil {
+		present := make(map[string]bool, len(instances))
+		for _, inst := range instances {
+			present[inst.ID] = true
+		}
+		d.restarter.forget(present)
+	}
 	sampled := map[string]bool{}   // instances sampled this tick
 	unhealthy := map[string]bool{} // instances holding/raising app-unresponsive this tick
 	var raised []health.IssueKey
@@ -1379,25 +1510,43 @@ func (d *appProbeDetector) check(ctx context.Context) {
 		// Docker's own verdict applies to every app, with or without a
 		// health_probe. Only "unhealthy" is a signal here.
 		failed := main.Health == dockerUnhealthy
+		// healthy is a real healthy sample: the probe answered good, or, for
+		// an app with no health_probe, Docker reports "healthy". A tick with
+		// no sample is not one. Only a real one ends the brain's automatic
+		// restarts (#620).
+		healthy := man.HealthProbe == nil && main.Health == dockerHealthy
 		// The probe runs past its start-period grace; inside it the app is
 		// warming up and its failures don't count yet.
-		if man.HealthProbe != nil && now.Sub(main.StartedAt) >= man.HealthProbe.StartPeriod {
-			if d.probe(ctx, d.routeHost(inst), d.gated(inst), man.HealthProbe) == probeBad {
+		// The probe also skips an app Caddy is not on the network of: no
+		// sample, Caddy is what is missing (#613).
+		if man.HealthProbe != nil && now.Sub(main.StartedAt) >= man.HealthProbe.StartPeriod &&
+			(d.caddyNets == nil || !d.caddyNets.CaddyOffNetwork(inst.ID)) {
+			switch d.probe(ctx, d.routeHost(inst), d.gated(inst), man.HealthProbe) {
+			case probeBad:
 				failed = true
+			case probeGood:
+				healthy = true
 			}
 		}
 		if !failed {
 			d.bad[inst.ID] = 0
+			if healthy && d.restarter != nil {
+				d.restarter.recovered(inst)
+			}
 			continue // clear handled in the sweep below
 		}
 		d.bad[inst.ID]++
 		_, active := d.healthMgr.Get("app-unresponsive", inst.ID)
 		if active || d.bad[inst.ID] >= appProbeRaiseThreshold {
 			unhealthy[inst.ID] = true
-			details := "This app is running but didn't respond to its health check."
+			details := appUnresponsiveDetails
+			if d.restarter != nil {
+				details += d.restarter.note(inst, now)
+			}
 			if d.healthMgr.Raise("app-unresponsive", inst.ID, details) {
 				raised = append(raised, health.IssueKey{ID: "app-unresponsive", InstanceKey: inst.ID})
 			}
+			d.autoRestart(ctx, inst, man, main, now)
 		}
 	}
 
@@ -1429,6 +1578,32 @@ func (d *appProbeDetector) check(ctx context.Context) {
 	emitHealthNotifications(d.notifier, d.healthMgr, raised, cleared)
 }
 
+// autoRestart restarts the app when its app-unresponsive issue has stayed
+// raised long enough (#598). The time counts from when the issue was raised,
+// so a tick that cleared it (a good answer, or no sample) starts the wait
+// again. It counts only after the start-period grace of the app's current
+// container, so the wait also starts again after every restart.
+func (d *appProbeDetector) autoRestart(ctx context.Context, inst store.Instance, man *manifest.Manifest, main lifecycle.ManagedContainer, now time.Time) {
+	if d.restarter == nil {
+		return
+	}
+	iss, ok := d.healthMgr.Get("app-unresponsive", inst.ID)
+	if !ok {
+		return
+	}
+	since := iss.RaisedAt
+	grace := main.StartedAt
+	if man.HealthProbe != nil {
+		grace = grace.Add(man.HealthProbe.StartPeriod)
+	}
+	if grace.After(since) {
+		since = grace
+	}
+	if d.restarter.maybeRestart(ctx, inst, since, now) {
+		d.healthMgr.Raise("app-unresponsive", inst.ID, appUnresponsiveDetails+" moose is restarting it now.")
+	}
+}
+
 // routeHost addresses the app at its real Caddy route host (mirrors api
 // getAppURL): hosted's public "<slug>.<box-id>.onmoose.io" takes precedence,
 // then the announced mDNS name, then the reconstructed "<slug>.local".
@@ -1452,23 +1627,46 @@ func (d *appProbeDetector) gated(inst store.Instance) bool {
 // probe GETs the app's probe path through Caddy with Host: <route host> —
 // exactly the request a browser makes, never the brain dialing the container
 // (THREAT_MODEL.md # B2). Good = status in the app's healthy set. A timeout,
-// connection failure, or Caddy 502 (dead upstream) is bad. On a gated route,
-// the gate's 302 to the box login means the probe never reached the app, so it
-// is no sample (#610 lets the probe past the gate).
+// connection failure, or Caddy 502 (dead upstream) is bad.
+//
+// When Caddy's probe socket is there (#610), the probe goes to it: the same
+// routes, with no forward-auth gate, so an owner-only app is sampled for real.
+// Two kinds of answer there are no sample, because they say nothing about
+// the app: a socket that does not take the connection (Caddy was recreated
+// and its probe server is not back yet, #613), and an answer Caddy marked
+// with caddy.ProbeHeader (no route for this host, or the app's splash). Otherwise the probe goes to
+// Caddy's site listener, where on a gated route the gate's 302 to the box
+// login means the probe never reached the app, so it is no sample (#609).
 func (d *appProbeDetector) probe(ctx context.Context, host string, gated bool, p *manifest.HealthProbe) probeResult {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+p.Path, nil)
+	client, base, viaSocket := d.client, d.baseURL, false
+	if d.socketPath != "" {
+		if _, err := os.Stat(d.socketPath); err == nil {
+			// The host part is never dialed: the transport dials the socket.
+			client, base, viaSocket = d.socketClient, "http://127.0.0.1", true
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+p.Path, nil)
 	if err != nil {
 		slog.Warn("app-probe: build request", "host", host, "err", err)
 		return probeBad
 	}
 	req.Host = host // route by Host through Caddy
-	resp, err := d.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
+		if viaSocket && errors.Is(err, errProbeSocketDial) {
+			return probeNoSample
+		}
 		return probeBad // timeout / connection failure = unhealthy
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body) // drain so the keep-alive can be reused
-	if gated && resp.StatusCode == http.StatusFound && resp.Header.Get("Location") == profile.HostedLoginURL(d.boxID) {
+	if viaSocket {
+		// Only Caddy sets the mark: the probe copy deletes it from the
+		// app's answer.
+		if resp.Header.Get(caddy.ProbeHeader) != "" {
+			return probeNoSample
+		}
+	} else if gated && resp.StatusCode == http.StatusFound && resp.Header.Get("Location") == profile.HostedLoginURL(d.boxID) {
 		return probeNoSample
 	}
 	if probeHealthy(resp.StatusCode, p.HealthyStatus) {

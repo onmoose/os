@@ -1,0 +1,37 @@
+# Test-only catalog app for the hosted cloud access boot (#610). The whoami
+# image again, this time with a health_probe on /health. traefik/whoami answers
+# GET /health with a status that a POST to /health sets, so the lane can make
+# the app answer 502 and then 200 again without stopping its container.
+#
+# It installs owner-only, the hosted default, so the forward-auth gate stands
+# in front of it. The probe can only see its answer through Caddy's probe
+# socket. The lane checks that app-unresponsive is raised on the 502 and
+# cleared on the 200.
+#
+# start_period is short so the lane does not wait out the 60s default.
+# Same image and promised digest as whoami: the cloud test image bakes it once.
+id: probewho
+manifest_version: 1
+name: Probewho
+version: "1.10"
+description:
+  short: "Test fixture: an owner-only app whose health answer the lane sets."
+icon_glyph: flask-conical
+compose_file: compose.yml
+main_service: probewho
+main_port: 80
+preferred_slugs: [probewho]
+
+health_probe:
+  path: /health
+  start_period: 1s
+
+permissions:
+  internet: false
+  lan: false
+
+images:
+  traefik/whoami:v1.10.3:
+    digest: sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c
+    download_bytes: 2850040
+    disk_bytes: 6581646

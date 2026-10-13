@@ -555,8 +555,16 @@ if should_run access; then
     # checks (a Caddy recreate, up to one health tick, a brain restart and an
     # uninstall) add up to ~330s more. The #612 admin-socket move (a Caddy
     # recreate on the pre-#608 files and two brain restarts, one with a failed
-    # move) adds up to ~300s more.
-    VERDICT_TIMEOUT=1590
+    # move) adds up to ~300s more. The #610 probe socket proof (one more app
+    # install, a 70s healthy wait, up to two health ticks to raise and one to
+    # clear, and a route write after the recreate) adds up to ~600s more. The
+    # #598 automatic restart proof (one more install of up to 240s, up to 200s to raise,
+    # up to 480s for the 5-minute window and the restart, up to 180s to
+    # clear, up to 90s for the second copy to clear) adds up to ~1200s more.
+    # The #613 restore proof (a stop of up to 60s, up to 120s for the restore
+    # after the recreate, and one more health tick to read the issues) adds up
+    # to ~200s more.
+    VERDICT_TIMEOUT=3390
     if ! run_boot "${FIRMWARE}-access" "access" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_ACCESS" "$ACCESS_KEY")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$ACCESS_TOKEN" | base64 -w0)" \
@@ -565,7 +573,7 @@ if should_run access; then
         echo "cloud gate proof: ${VERDICT}" >&2
         exit 1
     fi
-    echo "boot access OK — per-app forward-auth access modes verified end-to-end (restricted gate + owner proxy-through, public, Cookie strip), household and personal folder apps wrote to the host, the hosted confirm step opened the elevation window, and apps are off the control-plane network (#608), box_id=${BOX_ID_ACCESS}"
+    echo "boot access OK — per-app forward-auth access modes verified end-to-end (restricted gate + owner proxy-through, public, Cookie strip), household and personal folder apps wrote to the host, the hosted confirm step opened the elevation window, apps are off the control-plane network (#608), and the health probe reaches an owner-only app through the probe socket (#610), box_id=${BOX_ID_ACCESS}"
 fi
 
 # --- 9. update boot: the control-plane updater, for real (#382). Its OWN fresh

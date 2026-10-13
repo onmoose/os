@@ -289,6 +289,105 @@ func TestSetInstancePendingRecreate(t *testing.T) {
 	}
 }
 
+func TestSetInstanceAutoRestart(t *testing.T) {
+	s := open(t)
+	if err := s.Create(sample("a", "alpha")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// On by default (#598): a fresh row is not opted out.
+	if row, _ := s.Get("a"); row.AutoRestartOff {
+		t.Fatalf("fresh row AutoRestartOff = true, want false")
+	}
+	if err := s.SetInstanceAutoRestart("a", false); err != nil {
+		t.Fatalf("turn off: %v", err)
+	}
+	if row, _ := s.Get("a"); !row.AutoRestartOff {
+		t.Fatalf("off did not round-trip through Get")
+	}
+	list, err := s.List()
+	if err != nil || len(list) != 1 || !list[0].AutoRestartOff {
+		t.Fatalf("off did not round-trip through List: %v %+v", err, list)
+	}
+	if err := s.SetInstanceAutoRestart("a", true); err != nil {
+		t.Fatalf("turn on: %v", err)
+	}
+	if row, _ := s.Get("a"); row.AutoRestartOff {
+		t.Fatalf("on did not take")
+	}
+	if err := s.SetInstanceAutoRestart("missing", false); err != ErrNotFound {
+		t.Fatalf("set on missing instance: err = %v, want ErrNotFound", err)
+	}
+}
+
+// The automatic restart count (#620): stored, so a brain restart keeps it;
+// reset by ResetInstanceAutoRestarts and by a change of the setting, not by
+// writing the value the app already has. A real recovery keeps the last
+// time; a person's action clears it.
+func TestInstanceAutoRestarts(t *testing.T) {
+	s := open(t)
+	if err := s.Create(sample("a", "alpha")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if row, _ := s.Get("a"); row.AutoRestarts != 0 || !row.LastAutoRestart.IsZero() {
+		t.Fatalf("fresh row = %d restarts, last %v; want 0 and zero", row.AutoRestarts, row.LastAutoRestart)
+	}
+	at := time.Date(2026, 10, 13, 12, 6, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		if err := s.RecordInstanceAutoRestart("a", at.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	last := at.Add(2 * time.Minute)
+	if row, _ := s.Get("a"); row.AutoRestarts != 3 || !row.LastAutoRestart.Equal(last) {
+		t.Fatalf("Get = %d restarts, last %v; want 3 at %v", row.AutoRestarts, row.LastAutoRestart, last)
+	}
+	list, err := s.List()
+	if err != nil || len(list) != 1 || list[0].AutoRestarts != 3 || !list[0].LastAutoRestart.Equal(last) {
+		t.Fatalf("List did not round-trip: %v %+v", err, list)
+	}
+	// Writing the value the app already has (on) resets nothing.
+	if err := s.SetInstanceAutoRestart("a", true); err != nil {
+		t.Fatalf("set on: %v", err)
+	}
+	if row, _ := s.Get("a"); row.AutoRestarts != 3 {
+		t.Fatalf("restarts = %d after writing the same setting, want 3", row.AutoRestarts)
+	}
+	if err := s.ResetInstanceAutoRestarts("a", false); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if row, _ := s.Get("a"); row.AutoRestarts != 0 || !row.LastAutoRestart.Equal(last) {
+		t.Fatalf("after reset = %d restarts, last %v; want 0 and the last time kept", row.AutoRestarts, row.LastAutoRestart)
+	}
+	// Off and on again: either change resets.
+	for _, on := range []bool{false, true} {
+		if err := s.RecordInstanceAutoRestart("a", at); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		if err := s.SetInstanceAutoRestart("a", on); err != nil {
+			t.Fatalf("set %v: %v", on, err)
+		}
+		if row, _ := s.Get("a"); row.AutoRestarts != 0 || !row.LastAutoRestart.IsZero() || row.AutoRestartOff == on {
+			t.Fatalf("after setting %v: %d restarts, last %v, off %v; want 0 restarts and no time", on, row.AutoRestarts, row.LastAutoRestart, row.AutoRestartOff)
+		}
+	}
+	// A person's reset clears the time too.
+	if err := s.RecordInstanceAutoRestart("a", at); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if err := s.ResetInstanceAutoRestarts("a", true); err != nil {
+		t.Fatalf("reset by person: %v", err)
+	}
+	if row, _ := s.Get("a"); row.AutoRestarts != 0 || !row.LastAutoRestart.IsZero() {
+		t.Fatalf("after a person's reset = %d restarts, last %v; want 0 and no time", row.AutoRestarts, row.LastAutoRestart)
+	}
+	if err := s.RecordInstanceAutoRestart("missing", at); err != ErrNotFound {
+		t.Fatalf("record on missing: err = %v, want ErrNotFound", err)
+	}
+	if err := s.ResetInstanceAutoRestarts("missing", false); err != ErrNotFound {
+		t.Fatalf("reset on missing: err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestInstanceExposure(t *testing.T) {
 	s := open(t)
 	// A Create with no exposure normalizes to public (the appliance default and the
