@@ -403,6 +403,9 @@ components:
         free_memory_bytes:
           format: int64
           type: integer
+        other_running:
+          format: int64
+          type: integer
         recommended_cpu:
           format: double
           type: number

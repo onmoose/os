@@ -11,13 +11,15 @@ import { computed } from "vue";
 import { TriangleAlert } from "lucide-vue-next";
 import type { AppFit } from "../api";
 import { upgradeBoxURL } from "../auth";
-import { runningLine, tightText, tooBigText } from "../fit";
+import { othersLine, runningLine, tightText, tooBigText } from "../fit";
 
 const props = defineProps<{ fit?: AppFit | null }>();
 
 const tooBig = computed(() => props.fit?.state === "too-big");
 const tight = computed(() => props.fit?.state === "tight");
 const running = computed(() => props.fit?.running ?? []);
+// Other people's own apps are counted, never named (canSee in the brain).
+const others = computed(() => props.fit?.other_running ?? 0);
 const upgradeURL = computed(() => upgradeBoxURL());
 </script>
 
@@ -36,12 +38,13 @@ const upgradeURL = computed(() => upgradeBoxURL());
       />
       <span>{{ tooBig ? tooBigText(fit) : tightText(fit) }}</span>
     </p>
-    <template v-if="tight && running.length > 0">
+    <template v-if="tight && running.length + others > 0">
       <p>Running now:</p>
       <ul class="list-disc space-y-0.5 pl-5">
         <li v-for="r in running" :key="r.instance_id">{{ runningLine(r) }}</li>
+        <li v-if="others > 0">{{ othersLine(others) }}</li>
       </ul>
-      <p>To make room, stop or uninstall one of them.</p>
+      <p v-if="running.length > 0">To make room, stop or uninstall one of them.</p>
     </template>
     <a
       v-if="upgradeURL"

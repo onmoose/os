@@ -490,9 +490,45 @@ func (s *Server) withFit(ctx context.Context, c *catalog.Catalog) *catalog.Catal
 	if !ok {
 		return c
 	}
+	forCaller := s.fitForCaller(ctx)
 	return c.WithFit(func(id string, rec manifest.Recommended) fit.AppFit {
-		return lifecycle.CheckFit(box, id, rec)
+		return forCaller(lifecycle.CheckFit(box, id, rec))
 	})
+}
+
+// fitForCaller returns a filter that keeps in a fit's running list only the
+// instances the caller may see (canSee), and counts the rest in OtherRunning.
+// The headroom still counts every running app: the box's memory is shared,
+// but another user's personal app is not the caller's to know by name. An
+// unknown caller or an unreadable instance list names nothing.
+func (s *Server) fitForCaller(ctx context.Context) func(fit.AppFit) fit.AppFit {
+	visible := map[string]bool{}
+	if id, ok := auth.FromContext(ctx); ok {
+		if insts, err := s.store.List(); err != nil {
+			slog.Warn("app fit: list instances", "err", err)
+		} else {
+			for _, i := range insts {
+				if canSee(id, i) {
+					visible[i.ID] = true
+				}
+			}
+		}
+	}
+	return func(res fit.AppFit) fit.AppFit {
+		if len(res.Running) == 0 {
+			return res
+		}
+		kept := make([]fit.RunningApp, 0, len(res.Running))
+		for _, r := range res.Running {
+			if visible[r.InstanceID] {
+				kept = append(kept, r)
+			} else {
+				res.OtherRunning++
+			}
+		}
+		res.Running = kept
+		return res
+	}
 }
 
 // --- handlers ------------------------------------------------------------

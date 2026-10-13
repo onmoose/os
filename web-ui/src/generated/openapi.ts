@@ -1268,6 +1268,8 @@ export interface components {
             box_memory_bytes: number;
             /** Format: int64 */
             free_memory_bytes: number;
+            /** Format: int64 */
+            other_running?: number;
             /** Format: double */
             recommended_cpu?: number;
             /** Format: int64 */

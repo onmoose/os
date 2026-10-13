@@ -50,6 +50,12 @@ export function tightText(fit: AppFit): string {
   );
 }
 
+// othersLine counts the running apps the caller may not see by name: other
+// people's own apps. They still take memory.
+export function othersLine(n: number): string {
+  return n === 1 ? "1 app that someone else on this box uses" : `${n} apps that other people on this box use`;
+}
+
 // runningLine is one running app and the memory it recommends.
 export function runningLine(r: { name: string; recommended_memory_bytes: number }): string {
   return `${r.name} (${formatSize(r.recommended_memory_bytes)})`;

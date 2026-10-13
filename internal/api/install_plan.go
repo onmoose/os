@@ -402,7 +402,7 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 	}
 	plan.Existing = existing
 	if box, ok := s.life.FitBox(ctx); ok {
-		res := lifecycle.CheckFit(box, man.ID, man.Resources.Recommended)
+		res := s.fitForCaller(ctx)(lifecycle.CheckFit(box, man.ID, man.Resources.Recommended))
 		plan.Fit = &res
 		if res.State == fit.TooBig {
 			plan.Unavailable = unavailableTooBig

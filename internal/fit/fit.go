@@ -71,6 +71,11 @@ type AppFit struct {
 	// Running is the apps that are running and recommend memory, largest first.
 	// Sent only when the app is tight, so the page can name what to stop.
 	Running []RunningApp `json:"running,omitempty"`
+	// OtherRunning counts the running apps that recommend memory but are not
+	// in Running because the caller may not see them (another user's
+	// personal app). They are still in the headroom. Set by the API, never by
+	// Check.
+	OtherRunning int `json:"other_running,omitempty"`
 }
 
 // Check computes the fit of an app that recommends memBytes of memory and cpu
