@@ -246,6 +246,7 @@ func (s *Server) registerAll(api huma.API) {
 	s.registerAppSecrets(api)
 	s.registerAppConfig(api)
 	s.registerAppExposure(api)
+	s.registerAppAutoRestart(api)
 }
 
 // OpenAPIDocument builds the brain's full REST surface against a throwaway mux
@@ -408,6 +409,10 @@ type InstanceDTO struct {
 	// the AI account the app used was deleted. The home tile and the
 	// installed-apps list show it. GET /apps/{id}/config says what is missing.
 	NeedsSetup bool `json:"needs_setup"`
+	// AutoRestart reports whether the brain restarts this app on its own when
+	// it stays unresponsive (#598, HEALTH.md # Automatic restart). On unless
+	// the owner turned it off.
+	AutoRestart bool `json:"auto_restart"`
 }
 
 func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
@@ -431,7 +436,7 @@ func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry)
 		ID: i.ID, ManifestID: i.ManifestID, Name: i.Name, Slug: i.Slug,
 		Version: i.Version, State: i.State, URL: url,
 		OwnerUserID: i.OwnerUserID, OwnerUsername: ownerUsername, Scope: i.Scope,
-		Exposure: i.Exposure,
+		Exposure: i.Exposure, AutoRestart: !i.AutoRestartOff,
 	}
 	if e != nil {
 		dto.IconURL = e.IconURL

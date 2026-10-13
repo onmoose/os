@@ -1163,7 +1163,13 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if inst.State != "stopped" && inst.State != "failed" {
 		return fmt.Errorf("%w (state=%s)", ErrNotStartable, inst.State)
 	}
-	prevState := inst.State
+	return m.startLocked(ctx, inst, inst.State)
+}
+
+// startLocked is Start's work, after the caller took the per-instance lock
+// and checked the state: Start, and Restart once it has stopped the app.
+func (m *Manager) startLocked(ctx context.Context, inst store.Instance, prevState string) error {
+	id := inst.ID
 	man, err := m.loadInstanceManifest(id)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
@@ -1183,10 +1189,14 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 
 	// Commit desired state first, then flip the route to the starting splash so
 	// the hostname stops serving the "stopped" page the moment the user acts.
-	if err := m.store.SetState(id, "running"); err != nil {
-		return fmt.Errorf("set state running: %w", err)
+	// An automatic restart's row already reads running: no write, so no write
+	// that can fail after its compose stop and leave the app down.
+	if inst.State != "running" {
+		if err := m.store.SetState(id, "running"); err != nil {
+			return fmt.Errorf("set state running: %w", err)
+		}
+		inst.State = "running"
 	}
-	inst.State = "running"
 	if err := m.caddy.AddSplashRoute(ctx, id, host, man.Name, "starting"); err != nil {
 		slog.Warn("start: caddy splash flip failed (continuing)",
 			"instance_id", id, "host", host, "err", err)
@@ -1224,6 +1234,66 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	m.emitState(inst, prevState)
 	slog.Info("app started", "instance_id", id, "name", inst.Name, "upstream", upstream)
 	return nil
+}
+
+// ErrBusy is returned by BeginRestart when another lifecycle operation holds
+// the instance (an install's last steps, a stop, a start, an uninstall, a
+// config or mail edit). The automatic restart (#598) skips the app then: it
+// never runs into an operation the user started.
+var ErrBusy = errors.New("app has a lifecycle operation in flight")
+
+// ErrAutoRestartOff is returned by BeginRestart when the app's owner turned
+// the automatic restart off (#598). It is read under the app's lock from the
+// fresh row, so a switch flipped during a slow health tick still holds.
+var ErrAutoRestartOff = errors.New("automatic restart is off for this app")
+
+// BeginRestart starts an automatic restart of a running app (#598,
+// APP_LIFECYCLE.md # Automatic restart). It takes the per-instance lock only
+// if it is free (ErrBusy otherwise) and checks the app is running
+// (ErrNotRunning otherwise), both before it returns, so the caller knows at
+// once whether a restart will happen. The returned run does the work and
+// releases the lock; the caller must call it exactly once, usually on its own
+// goroutine, since it can take as long as a start.
+//
+// The work is a manual Stop then Start, under one lock: `compose stop`, then
+// the same steps Start runs (mDNS re-publish, the starting splash, `compose up
+// -d`, Caddy's networks, the health wait, the flip to the real upstream), so
+// the route, limits and env are applied the same way. The one difference is
+// that the row stays `running` the whole time, so a brain that dies halfway
+// leaves an app the reconcile pass brings back up, never one it keeps stopped.
+// A start that does not come healthy lands in `failed`, as with Start.
+func (m *Manager) BeginRestart(id string) (run func(context.Context) error, err error) {
+	unlock, ok := m.tryLockInstance(id)
+	if !ok {
+		return nil, ErrBusy
+	}
+	inst, err := m.store.Get(id)
+	if err != nil {
+		unlock()
+		return nil, err
+	}
+	if inst.State != "running" {
+		unlock()
+		return nil, fmt.Errorf("%w (state=%s)", ErrNotRunning, inst.State)
+	}
+	if inst.AutoRestartOff {
+		unlock()
+		return nil, ErrAutoRestartOff
+	}
+	return func(ctx context.Context) error {
+		defer unlock()
+		// The start needs the manifest. Read it before the stop, so a
+		// failure here leaves the app running, not stopped with nothing to
+		// start it.
+		if _, err := m.loadInstanceManifest(id); err != nil {
+			return fmt.Errorf("load manifest: %w", err)
+		}
+		if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {
+			return fmt.Errorf("compose stop: %w\n%s", err, out)
+		}
+		slog.Info("app stopped for an automatic restart", "instance_id", id, "name", inst.Name)
+		return m.startLocked(ctx, inst, "running")
+	}, nil
 }
 
 // SetExposure flips an app between public and owner-only (restricted) access and

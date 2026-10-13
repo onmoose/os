@@ -145,6 +145,16 @@ const accessSummary = computed(() => {
   return "Only you can open it. Visitors sign in to your box first.";
 });
 
+// ── Automatic restart (#598, HEALTH.md # Automatic restart) ──────────────────
+// The brain restarts an app that stays unresponsive. The owner (or an admin)
+// can turn that off while they fix the app by hand. Both profiles. The PUT
+// echoes the updated instance, so invalidate refreshes the page without a job.
+const autoRestart = computed<boolean>(() => app.value?.auto_restart ?? true);
+const setAutoRestart = useMutation({
+  mutationFn: (enabled: boolean) => api.put<Instance>(`/apps/${id.value}/auto-restart`, { enabled }),
+  onSettled: invalidate,
+});
+
 // ── Outgoing email (SERVICE_PROVISIONING.md # BYO outgoing mail) ─────────────
 // Shown only for mail-capable apps (mail_supported comes from GET /apps/{id}).
 // The options endpoint lists the caller's own accounts, the only ones the
@@ -631,6 +641,33 @@ const saveConfig = useMutation({
         </div>
         <p v-if="setExposure.isError.value" class="text-sm text-destructive">
           Couldn't change access: {{ (setExposure.error.value as Error)?.message }}
+        </p>
+      </section>
+
+      <!-- Automatic restart (#598): on by default; off while debugging by hand. -->
+      <section v-if="canControl" class="space-y-2">
+        <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Automatic restart</h2>
+        <div class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3">
+          <div class="min-w-0">
+            <div class="text-sm font-medium">Restart it when it stops responding</div>
+            <div class="text-xs text-muted-foreground">
+              moose restarts the app if it does not respond for 5 minutes. Turn this off while you fix the app by hand.
+            </div>
+          </div>
+          <SwitchRoot
+            :model-value="autoRestart"
+            aria-label="Restart the app when it stops responding"
+            :disabled="setAutoRestart.isPending.value"
+            class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-border bg-muted outline-none transition-colors data-[state=checked]:border-accent data-[state=checked]:bg-accent disabled:cursor-default"
+            @update:model-value="(on: boolean) => setAutoRestart.mutate(on)"
+          >
+            <SwitchThumb
+              class="pointer-events-none block size-4 translate-x-0.5 rounded-full bg-card shadow transition-transform data-[state=checked]:translate-x-[1.125rem]"
+            />
+          </SwitchRoot>
+        </div>
+        <p v-if="setAutoRestart.isError.value" class="text-sm text-destructive">
+          Couldn't change automatic restart: {{ (setAutoRestart.error.value as Error)?.message }}
         </p>
       </section>
 

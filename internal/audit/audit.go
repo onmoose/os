@@ -77,6 +77,12 @@ const (
 	// elevation-class and audits success and failure.
 	ActionAppExposureSet = "app.exposure.set"
 
+	// Automatic restart of an app that stayed unresponsive (#598, HEALTH.md #
+	// Automatic restart). The brain does it, so the actor is the system. One
+	// record per restart, written when it ends: success true when the app came
+	// back up, false when the restart failed.
+	ActionAppAutoRestart = "app.restart.auto"
+
 	// Device access (AUTH.md # Device access). Enabling SSH on an account changes
 	// who can get a shell on the box, so it is elevation-class and audits failure
 	// as well as success — the Activity view has to be able to answer "did someone

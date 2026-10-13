@@ -328,6 +328,8 @@ func main() {
 	probe := newAppProbeDetector(dock, st, life, cfg.caddyProbeURL, healthMgr, auditor, notifier, bus)
 	probe.SetEnvironment(prof, boxID)
 	probe.SetProbeSocket(probeSocket)
+	// An app whose app-unresponsive issue stays raised is restarted (#598).
+	probe.SetRestarter(newAutoRestarter(life, auditor))
 	// Caddy's app networks ride the same tick (#608): a Caddy recreated while
 	// the brain runs is back on every running app's network within one tick.
 	// First, so the probe that follows reads an app Caddy can reach.
@@ -1297,7 +1299,19 @@ type appProbeDetector struct {
 	// startup via SetProbeSocket.
 	socketPath   string
 	socketClient *http.Client
+
+	// restarter restarts an app whose issue stays raised (#598). nil turns
+	// the automatic restart off. Set once at startup via SetRestarter.
+	restarter *autoRestarter
 }
+
+// SetRestarter turns on the automatic restart of an app that stays
+// unresponsive (#598).
+func (d *appProbeDetector) SetRestarter(r *autoRestarter) { d.restarter = r }
+
+// appUnresponsiveDetails is the issue's details before any note about
+// automatic restarts.
+const appUnresponsiveDetails = "This app is running but didn't respond to its health check."
 
 // errProbeSocketDial marks a probe that could not connect to the probe
 // socket. Caddy, not the app, is missing there, so it is no sample.
@@ -1405,6 +1419,13 @@ func (d *appProbeDetector) check(ctx context.Context) {
 	}
 
 	now := d.now()
+	if d.restarter != nil {
+		present := make(map[string]bool, len(instances))
+		for _, inst := range instances {
+			present[inst.ID] = true
+		}
+		d.restarter.forget(present)
+	}
 	sampled := map[string]bool{}   // instances sampled this tick
 	unhealthy := map[string]bool{} // instances holding/raising app-unresponsive this tick
 	var raised []health.IssueKey
@@ -1442,10 +1463,14 @@ func (d *appProbeDetector) check(ctx context.Context) {
 		_, active := d.healthMgr.Get("app-unresponsive", inst.ID)
 		if active || d.bad[inst.ID] >= appProbeRaiseThreshold {
 			unhealthy[inst.ID] = true
-			details := "This app is running but didn't respond to its health check."
+			details := appUnresponsiveDetails
+			if d.restarter != nil {
+				details += d.restarter.note(inst.ID, now)
+			}
 			if d.healthMgr.Raise("app-unresponsive", inst.ID, details) {
 				raised = append(raised, health.IssueKey{ID: "app-unresponsive", InstanceKey: inst.ID})
 			}
+			d.autoRestart(ctx, inst, man, main, now)
 		}
 	}
 
@@ -1475,6 +1500,32 @@ func (d *appProbeDetector) check(ctx context.Context) {
 	sortByInstanceKey(cleared)
 	emitHealthTransitions(ctx, d.auditor, d.bus, raised, cleared)
 	emitHealthNotifications(d.notifier, d.healthMgr, raised, cleared)
+}
+
+// autoRestart restarts the app when its app-unresponsive issue has stayed
+// raised long enough (#598). The time counts from when the issue was raised,
+// so a tick that cleared it (a good answer, or no sample) starts the wait
+// again. It counts only after the start-period grace of the app's current
+// container, so the wait also starts again after every restart.
+func (d *appProbeDetector) autoRestart(ctx context.Context, inst store.Instance, man *manifest.Manifest, main lifecycle.ManagedContainer, now time.Time) {
+	if d.restarter == nil {
+		return
+	}
+	iss, ok := d.healthMgr.Get("app-unresponsive", inst.ID)
+	if !ok {
+		return
+	}
+	since := iss.RaisedAt
+	grace := main.StartedAt
+	if man.HealthProbe != nil {
+		grace = grace.Add(man.HealthProbe.StartPeriod)
+	}
+	if grace.After(since) {
+		since = grace
+	}
+	if d.restarter.maybeRestart(ctx, inst, since, now) {
+		d.healthMgr.Raise("app-unresponsive", inst.ID, appUnresponsiveDetails+" moose is restarting it now.")
+	}
 }
 
 // routeHost addresses the app at its real Caddy route host (mirrors api

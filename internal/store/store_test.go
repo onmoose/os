@@ -289,6 +289,36 @@ func TestSetInstancePendingRecreate(t *testing.T) {
 	}
 }
 
+func TestSetInstanceAutoRestart(t *testing.T) {
+	s := open(t)
+	if err := s.Create(sample("a", "alpha")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// On by default (#598): a fresh row is not opted out.
+	if row, _ := s.Get("a"); row.AutoRestartOff {
+		t.Fatalf("fresh row AutoRestartOff = true, want false")
+	}
+	if err := s.SetInstanceAutoRestart("a", false); err != nil {
+		t.Fatalf("turn off: %v", err)
+	}
+	if row, _ := s.Get("a"); !row.AutoRestartOff {
+		t.Fatalf("off did not round-trip through Get")
+	}
+	list, err := s.List()
+	if err != nil || len(list) != 1 || !list[0].AutoRestartOff {
+		t.Fatalf("off did not round-trip through List: %v %+v", err, list)
+	}
+	if err := s.SetInstanceAutoRestart("a", true); err != nil {
+		t.Fatalf("turn on: %v", err)
+	}
+	if row, _ := s.Get("a"); row.AutoRestartOff {
+		t.Fatalf("on did not take")
+	}
+	if err := s.SetInstanceAutoRestart("missing", false); err != ErrNotFound {
+		t.Fatalf("set on missing instance: err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestInstanceExposure(t *testing.T) {
 	s := open(t)
 	// A Create with no exposure normalizes to public (the appliance default and the

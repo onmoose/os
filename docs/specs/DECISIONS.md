@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-13 — The brain restarts an app whose `app-unresponsive` stays raised (#598)
+
+**Previously:** `app-unresponsive` only surfaces. Its Tier-2 action is a restart the user starts, and `HEALTH.md` # What's deliberately out of scope said every Tier-2 action is user-initiated, with host-agent's systemd restart policy as the only exception.
+**Now:** when the issue has stayed raised for 5 minutes, past the app's start-period grace, the brain restarts the app by itself, through the same Stop and Start a person does. Each restart in the last hour doubles the wait (5, 10, 20 minutes), and an app is restarted at most 3 times in any hour, then the issue says automatic restarts did not help. A stopped or failed app, an app with a lifecycle operation in flight, and an app whose per-app setting is off are never restarted. Each restart is an `app.restart.auto` audit record, shown in Activity, and the issue says when the brain last restarted the app. The limit is a rolling hour, read as written in the issue: an app that stays broken gets at most 3 restarts in any hour, not 3 in total.
+**Why:** an app's backend hung during startup after a reboot, alive but never listening, and stayed down for 15 hours until its owner restarted it by hand. Nothing in the stack acts on a process that is alive but not serving: pm2 restarts only on exit, and Docker records `unhealthy` but restarts nothing. A restart is safe to repeat, so the brain can do it without asking, as long as it is bounded, visible, never against the user, and can be turned off. It became safe only once the probe was right on hosted (#609, #610). Since a tick with no sample clears the issue, a gap can only delay a restart, never cause one.
+**Affected docs:** `HEALTH.md` (# Taxonomy row, # Automatic restart, # What's deliberately out of scope), `APP_LIFECYCLE.md` (# Locked: automatic restart of an unresponsive app), `LOGGING.md` (`app.restart.auto`), `BRAIN_UI_PROTOCOL.md`, `DASHBOARD.md`, `TESTING.md`, `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+---
+
 ## 2026-10-13 — The health probe reaches owner-only apps through a Caddy probe server the brain writes (#610)
 
 **Previously:** the `app-unresponsive` probe goes through Caddy's front door with the app's `Host` (2026-06-02). On hosted the forward-auth gate answers an owner-only app's probe with its login redirect, which #609 made no sample, so such an app was never probed. #610 planned a second Caddy server for the probe, declared in the staged `caddy.json` on the OS line.
