@@ -61,6 +61,16 @@ type DockerDriver interface {
 	Inspect(ctx context.Context, instanceID, mainService string) (running bool, health string, err error)
 	NetworkCreate(ctx context.Context, name string, internal bool) error
 	NetworkRemove(ctx context.Context, name string) error
+	// NetworkConnect attaches an existing container to a network, and
+	// NetworkDisconnect detaches it. The brain uses them to put Caddy on each
+	// app's own network, so no app has to join the control-plane network
+	// (CONTROL_PLANE.md # Caddy is moose substrate, #608). Already attached and
+	// already gone both count as success. Needs the proxy's NETWORKS + POST.
+	NetworkConnect(ctx context.Context, network, container string) error
+	NetworkDisconnect(ctx context.Context, network, container string) error
+	// ContainerNetworks lists the networks a container is attached to, by
+	// name. Read-only; needs only the proxy's CONTAINERS endpoint family.
+	ContainerNetworks(ctx context.Context, container string) (map[string]bool, error)
 	PSManaged(ctx context.Context) (map[string]bool, error)
 	// RestartCounts reports each managed instance's cumulative container
 	// RestartCount (max across the instance's containers), keyed by
@@ -297,6 +307,65 @@ func (cliDocker) NetworkCreate(ctx context.Context, name string, internal bool) 
 
 func (cliDocker) NetworkRemove(ctx context.Context, name string) error {
 	return exec.CommandContext(ctx, "docker", "network", "rm", name).Run()
+}
+
+func (cliDocker) NetworkConnect(ctx context.Context, network, container string) error {
+	out, err := exec.CommandContext(ctx, "docker", "network", "connect", network, container).CombinedOutput()
+	if err != nil && alreadyAttached(string(out)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (cliDocker) NetworkDisconnect(ctx context.Context, network, container string) error {
+	out, err := exec.CommandContext(ctx, "docker", "network", "disconnect", network, container).CombinedOutput()
+	if err != nil && notAttached(string(out)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (cliDocker) ContainerNetworks(ctx context.Context, container string) (map[string]bool, error) {
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--type", "container",
+		"--format", "{{json .NetworkSettings.Networks}}", container).Output()
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s networks: %w", container, err)
+	}
+	return parseContainerNetworks(out)
+}
+
+// parseContainerNetworks reads the `{{json .NetworkSettings.Networks}}` of
+// `docker inspect`: an object keyed by network name.
+func parseContainerNetworks(out []byte) (map[string]bool, error) {
+	var nets map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(out), &nets); err != nil {
+		return nil, fmt.Errorf("parse container networks: %w", err)
+	}
+	names := make(map[string]bool, len(nets))
+	for name := range nets {
+		names[name] = true
+	}
+	return names, nil
+}
+
+// alreadyAttached reports whether a `docker network connect` failure says the
+// container is on the network already. Docker has worded it two ways.
+func alreadyAttached(out string) bool {
+	return strings.Contains(out, "already exists in network") || strings.Contains(out, "already attached")
+}
+
+// notAttached reports whether a `docker network disconnect` failure says there
+// is nothing to disconnect: the container is not on the network, or the
+// network or the container is gone.
+func notAttached(out string) bool {
+	return strings.Contains(out, "is not connected") || strings.Contains(out, "No such network") ||
+		strings.Contains(out, "No such container") || strings.Contains(out, "not found")
 }
 
 func (cliDocker) RemoveContainersByInstance(ctx context.Context, instanceID string) error {

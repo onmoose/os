@@ -77,6 +77,14 @@ type fakeDocker struct {
 	controlPlaneUpErr error
 	networkCreateErr  error // forces NetworkCreate to return this error
 
+	// attached is the networks each container is on, by container name, as
+	// NetworkConnect/NetworkDisconnect leave them and ContainerNetworks reads
+	// them. networkConnectErr forces NetworkConnect to fail, and
+	// containerNetworksErr forces ContainerNetworks to fail.
+	attached             map[string]map[string]bool
+	networkConnectErr    error
+	containerNetworksErr error
+
 	// runOneOff drives RunOneOff: it returns scripted output/error per invocation
 	// (matched on args). Default (nil) returns ("", nil) — provisioning only cares
 	// about the error. containerHealth, when set, overrides the readiness status
@@ -113,6 +121,7 @@ func newFakeDocker() *fakeDocker {
 		present:   map[string]bool{},
 		pullErr:   map[string]error{},
 		psManaged: map[string]bool{},
+		attached:  map[string]map[string]bool{},
 	}
 }
 
@@ -276,6 +285,42 @@ func (f *fakeDocker) NetworkCreate(_ context.Context, name string, internal bool
 func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 	f.record("NetworkRemove", name)
 	return nil
+}
+
+func (f *fakeDocker) NetworkConnect(_ context.Context, network, container string) error {
+	f.record("NetworkConnect", network, container)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkConnectErr != nil {
+		return f.networkConnectErr
+	}
+	if f.attached[container] == nil {
+		f.attached[container] = map[string]bool{}
+	}
+	f.attached[container][network] = true
+	return nil
+}
+
+func (f *fakeDocker) NetworkDisconnect(_ context.Context, network, container string) error {
+	f.record("NetworkDisconnect", network, container)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.attached[container], network)
+	return nil
+}
+
+func (f *fakeDocker) ContainerNetworks(_ context.Context, container string) (map[string]bool, error) {
+	f.record("ContainerNetworks", container)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.containerNetworksErr != nil {
+		return nil, f.containerNetworksErr
+	}
+	out := map[string]bool{}
+	for n := range f.attached[container] {
+		out[n] = true
+	}
+	return out, nil
 }
 
 func (f *fakeDocker) PSManaged(_ context.Context) (map[string]bool, error) {

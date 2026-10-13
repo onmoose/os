@@ -279,7 +279,10 @@ func main() {
 	rld := newRestartLoopDetector(dock, healthMgr, auditor, notifier, bus)
 	probe := newAppProbeDetector(dock, st, life, cfg.caddyProbeURL, healthMgr, auditor, notifier, bus)
 	probe.SetEnvironment(prof, boxID)
-	go appRuntimeHealthLoop(pollCtx, cfg.healthPollPeriod, rld.check, probe.check)
+	// Caddy's app networks ride the same tick (#608): a Caddy recreated while
+	// the brain runs is back on every running app's network within one tick.
+	// First, so the probe that follows reads an app Caddy can reach.
+	go appRuntimeHealthLoop(pollCtx, cfg.healthPollPeriod, life.EnsureCaddyNetworks, rld.check, probe.check)
 
 	// Bound the notifications table (NOTIFICATIONS.md # Locked decisions, the
 	// retention bullet): prune aged / over-cap rows once at boot, then on a slow
