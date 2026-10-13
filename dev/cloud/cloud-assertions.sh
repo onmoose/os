@@ -1603,7 +1603,18 @@ access)
     #       probewho's network too.
     pw_gone="$(caddy_admin_get /config/apps/http/servers/moose-probe 2>&1 | tail -1 | tr -d '\r')"
     [ "$pw_gone" = null ] || fail "probe: the recreated caddy still has a probe server: $(cut -c1-300 <<<"$pw_gone")"
-    pw_exp="$(status_of "$(full_send PUT "/api/v1/apps/${pw_id}/exposure" "$apex" "$session_cookie" '{"exposure":"public"}' 2>/dev/null)")"
+    #       The toggle goes straight to the brain on its moose-ingress address:
+    #       the recreated Caddy has no dashboard route either, so :80 would
+    #       answer it with the catch-all.
+    brain_send() { # METHOD PATH JSON -> full response
+        local len; len="$(printf '%s' "$3" | wc -c | tr -d ' ')"
+        exec 3<>"/dev/tcp/$(ingress_ip moose-brain)/8080" || return 1
+        printf '%s %s HTTP/1.0\r\nHost: %s\r\nCookie: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+            "$1" "$2" "$apex" "$session_cookie" "$len" "$3" >&3
+        cat <&3
+        exec 3>&- 3<&-
+    }
+    pw_exp="$(status_of "$(brain_send PUT "/api/v1/apps/${pw_id}/exposure" '{"exposure":"public"}' 2>/dev/null)")"
     grep -q ' 200' <<<"$pw_exp" || fail "probe: exposure toggle of probewho answered '$pw_exp'; wanted 200"
     pw_back=""
     for _i in $(seq 1 90); do

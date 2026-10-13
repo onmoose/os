@@ -519,8 +519,14 @@ func (c *Client) ensureProbeServer(ctx context.Context) (answered bool, err erro
 	if err != nil {
 		return false, err
 	}
-	if status == http.StatusOK {
+	switch status {
+	case http.StatusOK:
 		return true, nil
+	case http.StatusNotFound:
+	default:
+		// Not a clear "gone": writing the whole server now could drop every
+		// other app's copy for nothing.
+		return true, adminError("GET", "/id/"+probeCatchAllID, status, "")
 	}
 	status, msg, err := c.do(ctx, "POST", probeServerPath, c.probeServer())
 	if err != nil {
