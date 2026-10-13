@@ -352,6 +352,14 @@ Unlike `docs/progress/` entries (frozen ADR snapshots), this file is **mutable b
 - **Why moose can't satisfy it (v1):** the refusal is on purpose. Every app shares one Valkey keyspace, and the per-app ACL user is the isolation boundary (`SERVICE_PROVISIONING.md` # Per-app isolation in shared instances), so one app must not wipe the keys of the others. Per-app key isolation is deferred (`NEXT.md` # Managed-service per-app key isolation). Until then, an app that clears its Redis at start can only run on a Redis of its own, not on managed Valkey.
 - **Status:** open. nocodb's catalog package was fixed the same day. Expect recurrence: any app that calls `FLUSHDB` or `FLUSHALL` at start, often to clear a cache or a lock left from the last run, is a repeat candidate. A dedicated Valkey per app, the `isolated: true` shape in that `NEXT.md` item, would let such an app flush its own instance.
 
+### grpc-ingress — signoz (2026-10-13)
+
+- **Severity:** degraded
+- **Trigger:** SigNoz takes telemetry through an OpenTelemetry collector that listens for OTLP twice: gRPC on 4317 and HTTP on 4318. Many OpenTelemetry SDKs, and the collectors people run in front of their own apps, export over gRPC to 4317 by default.
+- **What breaks:** an SDK left on its defaults sends to `<app-host>:4317` and nothing arrives. On a real install, `curl http://signoz.local:4317/` from the box could not connect. With `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and the app's ingest token in an `Authorization` header (the settings in the store description), the same data posts to `/v1/traces`, `/v1/metrics` and `/v1/logs` and arrives. The OpenTelemetry Python SDK, configured only through env, delivered a span that way.
+- **Why moose can't satisfy it (v1):** the same mechanism as `grpc-ingress — laminar`: one routed HTTP port per app, and an ingress that dials plain HTTP upstreams, so h2c does not survive the hop even if a second port were routed. The app-side proxy splits by path on one HTTP origin and cannot carry a second protocol.
+- **Status:** open. Shipped `degraded` (`onmoose/store` `apps/signoz/`, limitation `grpc-export-not-routed`), with the HTTP setting named in the store description. This is the second app in this class, and the first whose whole job is receiving OTLP, as the laminar entry predicted.
+
 ### secondary-subdomain — librechat (2026-10-13)
 
 - **Severity:** degraded
