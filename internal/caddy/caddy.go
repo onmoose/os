@@ -88,9 +88,10 @@ func probeRouteID(instanceID string) string { return "moose-probe-" + instanceID
 // The brain creates it through the admin API, like the routes, and it is not
 // in the staged caddy.json: that file is copied to a box once and no update
 // replaces it, so only the brain reaches every box (BUILD.md # As built).
-// A Caddy recreate loses it with every other route (#613). The next route
-// write that finds it missing creates it again (ensureProbeServer), and the
-// brain's startup writes it whole (EnsureServer).
+// A Caddy recreate loses it with every other route. The brain's startup
+// writes it whole (EnsureServer), the health tick that finds Caddy lost its
+// config writes it again (RestoreServer, #613), and a route write that finds
+// it missing does too (ensureProbeServer).
 const (
 	probeServerPath = "/config/apps/http/servers/moose-probe"
 	probeRoutesPath = probeServerPath + "/routes"
@@ -758,10 +759,82 @@ func (c *Client) EnsureServer(ctx context.Context) error {
 // exists"), while POST creates-or-replaces. That keeps this idempotent across
 // brain restarts.
 func (c *Client) ensureTrustedProxies(ctx context.Context) error {
-	return c.post(ctx, "/config/apps/http/servers/moose/trusted_proxies", map[string]any{
+	return c.post(ctx, trustedProxiesPath, trustedProxies())
+}
+
+const trustedProxiesPath = "/config/apps/http/servers/moose/trusted_proxies"
+
+func trustedProxies() map[string]any {
+	return map[string]any{
 		"source": "static",
 		"ranges": []any{},
-	})
+	}
+}
+
+// configuredID is the @id of the mark that says the brain wrote Caddy's config
+// (#613). Caddy keeps no config across a recreate (its /config is a tmpfs), and
+// a new container starts from the staged caddy.json. That file already has the
+// moose server, its trusted proxies and a catch-all with the same @id the brain
+// uses, so none of those can tell a fresh Caddy from a configured one. The mark
+// is an @id the staged file never has.
+//
+// It sits on the trusted-proxy object because an @id needs an object to live
+// on, and that one is small and never changes: Caddy strips @id keys before it
+// reads a config, so the mark changes nothing in how Caddy runs. Every write of
+// the trusted proxies without it (EnsureServer, RestoreServer) removes it, so
+// it is only there once MarkConfigured has run after them.
+const configuredID = "moose-configured"
+
+// MarkConfigured puts the mark on Caddy's config. cmd/brain calls it once the
+// startup writes are done, and after it wrote the config again (#613).
+func (c *Client) MarkConfigured(ctx context.Context) error {
+	body := trustedProxies()
+	body["@id"] = configuredID
+	if err := c.post(ctx, trustedProxiesPath, body); err != nil {
+		return fmt.Errorf("caddy: mark the config as written: %w", err)
+	}
+	return nil
+}
+
+// Configured reports whether Caddy still holds the mark MarkConfigured wrote.
+// false means Caddy lost the brain's config: it was recreated, or restarted,
+// and runs on the staged caddy.json alone. An error means Caddy did not give
+// a clear answer, and the caller must not act on it.
+func (c *Client) Configured(ctx context.Context) (bool, error) {
+	status, err := c.get(ctx, "/id/"+configuredID)
+	if err != nil {
+		return false, err
+	}
+	switch status {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, adminError("GET", "/id/"+configuredID, status, "")
+	}
+}
+
+// RestoreServer writes the server-wide parts of the brain's config again after
+// Caddy lost them (#613): the empty trusted-proxy set, the moose-probe server
+// when it is on, and the catch-all. Unlike EnsureServer it never resets the
+// route list, because it runs while the brain serves: an install or a start
+// may be writing its own route at the same moment. Each step is a no-op when
+// its part is already there, so a second run changes nothing. The app routes,
+// the dashboard route and the TLS policy are the caller's.
+func (c *Client) RestoreServer(ctx context.Context) error {
+	if err := c.ensureTrustedProxies(ctx); err != nil {
+		return err
+	}
+	if c.probeListen != "" {
+		c.probeMu.Lock()
+		_, err := c.ensureProbeServer(ctx)
+		c.probeMu.Unlock()
+		if err != nil {
+			return fmt.Errorf("caddy: write the probe server: %w", err)
+		}
+	}
+	return c.EnsureCatchAll(ctx)
 }
 
 // EnrollmentCredentials is the per-box acme-dns account Caddy uses to answer the

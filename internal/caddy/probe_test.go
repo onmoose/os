@@ -24,7 +24,10 @@ type probeAdmin struct {
 	// server does not exist. probeRts are its routes.
 	probe    map[string]any
 	probeRts []map[string]any
-	calls    []string
+	// trusted is the moose server's trusted_proxies object, where the
+	// configured mark lives (#613).
+	trusted map[string]any
+	calls   []string
 	// failPrefix makes every call whose "METHOD path" starts with it answer
 	// 500 and change nothing.
 	failPrefix string
@@ -80,6 +83,10 @@ func (a *probeAdmin) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/id/")
 	switch {
+	case r.Method == "GET" && r.URL.Path == "/id/"+configuredID:
+		if a.trusted["@id"] != configuredID {
+			http.Error(w, `{"error":"unknown object ID"}`, http.StatusNotFound)
+		}
 	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/id/"):
 		list, _ := a.find(id)
 		a.mu.Unlock()
@@ -125,7 +132,15 @@ func (a *probeAdmin) serve(w http.ResponseWriter, r *http.Request) {
 		var srv map[string]any
 		_ = json.Unmarshal(b, &srv)
 		a.setProbeServer(srv)
-	case r.Method == "POST" && r.URL.Path == "/config/apps/http/servers/moose/trusted_proxies":
+	case r.Method == "POST" && r.URL.Path == trustedProxiesPath:
+		var tp map[string]any
+		_ = json.Unmarshal(b, &tp)
+		a.trusted = tp
+	case r.Method == "POST" && r.URL.Path == routesPath:
+		// Caddy appends on POST to a route list.
+		var route map[string]any
+		_ = json.Unmarshal(b, &route)
+		a.routes = append(a.routes, route)
 	case r.Method == "PATCH" && r.URL.Path == routesPath:
 		a.routes = nil
 	default:
