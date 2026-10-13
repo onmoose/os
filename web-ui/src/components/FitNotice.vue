@@ -2,7 +2,7 @@
 // What the App page and the install pages say when an app does not fit this
 // box's memory or CPU (#599). Nothing is drawn when it fits. A yellow alert
 // with a title and a description (Tailwind UI # Alerts # With description).
-// On the App page it sits under the Install button, as wide as the right
+// On the App page it is its own block above the price panel, in the right
 // column.
 //
 // Tight: the box has enough memory in total, but not next to the apps that
