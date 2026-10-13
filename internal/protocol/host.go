@@ -127,9 +127,15 @@ type SystemResources struct {
 // CPUCounters are cumulative jiffy counters from the aggregate /proc/stat line.
 // cpu_pct is derived by the brain as busy/total over the sample interval, where
 // busy = total - idle.
+//
+// Cores is the number of online CPUs, one per `cpuN` line of /proc/stat. The
+// brain compares it with an app's recommended CPU to say whether the app fits
+// (APP_ISOLATION.md # Resource limits). A host-agent older than the field sends
+// none, which reads as 0: the brain then skips the CPU check.
 type CPUCounters struct {
 	TotalJiffies int64 `json:"total_jiffies"`
 	IdleJiffies  int64 `json:"idle_jiffies"`
+	Cores        int   `json:"cores,omitempty"`
 }
 
 // MemCounters are instantaneous memory figures from /proc/meminfo, in bytes.

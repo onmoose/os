@@ -82,6 +82,10 @@ export type AuthState = Schemas["Auth-stateResponse"];
 export type SetupResult = Schemas["SetupResponse"];
 export type CatalogEntry = Schemas["Entry"];
 export type CatalogDetail = Schemas["Detail"];
+// AppFit is whether an app fits this box's memory and CPU (#599). The brain
+// computes it once and sends the same figures on the store card, the detail
+// page and the install plan.
+export type AppFit = Schemas["AppFit"];
 export type CatalogHome = Schemas["Home"];
 // HomeGroupView is one rendered category row of the landing page (a spotlight
 // app plus ordered groups, authored in store's home.yml). Exported on its own

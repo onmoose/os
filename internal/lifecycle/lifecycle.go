@@ -541,6 +541,13 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		return store.Instance{}, fmt.Errorf("app %q does not declare mail support", man.ID)
 	}
 
+	// An app that recommends more memory or CPU cores than the box has is
+	// refused here, before any state is written (#599). It is the backstop for
+	// the store page and the install plan, which already say so.
+	if err := m.checkInstallFit(ctx, man); err != nil {
+		return store.Instance{}, err
+	}
+
 	// A config field may target a non-main compose service (APP_MANIFEST.md # D4);
 	// verify each named service exists before any state is written. The manifest
 	// validator can't check this (it has no compose), so this is the transaction

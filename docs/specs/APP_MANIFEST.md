@@ -187,7 +187,7 @@ The rules:
 
 ### B2. Resources (recommended, never a limit)
 
-The author declares **recommended** specs — advice only, never a ceiling.
+The author declares **recommended** specs. They are never a ceiling.
 
 ```yaml
 resources:
@@ -196,7 +196,7 @@ resources:
     cpu: 1.0
 ```
 
-Used for the install-time capacity check ("you have 800M free; this wants 512M; fine") and store display/sorting. **There is deliberately no `limit` field** — the author can't see the user's hardware, so a manifest-imposed cap would throttle legitimate usage peaks. Apps run with no cgroup cap by default and burst freely; limiting is the *user's* call (an optional per-app **memory** cap in the UI, default off), and the brain protects its own control plane via OOM priority rather than caps. Full runtime model — including why CPU is never capped and how the brain stays alive under memory pressure — is owned by `APP_ISOLATION.md` # Resource limits.
+Used to tell the owner whether the app fits the box, on the store card, the store page and the install plan, and to refuse an install the box cannot hold at all (#599). An app that recommends more memory than the box has, or more CPU cores, is **too big** and its install is refused. An app that fits the box but not next to the apps that are running is **tight**: the dialog warns and asks for "Install anyway". The rules are in `APP_ISOLATION.md` # Resource limits, and the change from "advice only" is `DECISIONS.md` 2026-10-13. `memory` is a size string in the binary units of `storage.estimated_size` (`512M`, `2G`); `cpu` is a number of cores. Either may be left out, and an app that recommends nothing always fits. **There is deliberately no `limit` field** — the author can't see the user's hardware, so a manifest-imposed cap would throttle legitimate usage peaks. Apps run with no cgroup cap by default and burst freely; limiting is the *user's* call (an optional per-app **memory** cap in the UI, default off), and the brain protects its own control plane via OOM priority rather than caps. Full runtime model — including why CPU is never capped and how the brain stays alive under memory pressure — is owned by `APP_ISOLATION.md` # Resource limits.
 
 ### C. Storage
 
@@ -589,7 +589,7 @@ permissions:
 - **Schema versioned from day one.** `manifest_version: 1`. Backward compatible for at least the previous two majors.
 - **Most fields optional with sensible defaults.** Required: `id`, `manifest_version`, `name`, `version`, `compose_file`, `main_service`, `main_port`.
 - **Compose file is verbatim.** Moose doesn't rewrite it.
-- **`resources.recommended` is advice, never a cap.** No `limit` field exists in the manifest; authors can't see the user's hardware. Default runtime is uncapped burst; user-set memory caps and control-plane OOM protection live in `APP_ISOLATION.md` # Resource limits.
+- **`resources.recommended` is never a cap.** No `limit` field exists in the manifest; authors can't see the user's hardware. Default runtime is uncapped burst; user-set memory caps and control-plane OOM protection live in `APP_ISOLATION.md` # Resource limits. It is a gate in one case only: an app that recommends more memory or CPU cores than the box has is refused at install (`DECISIONS.md` 2026-10-13).
 - **Permissions are declared and enforced.** Not just metadata.
 - **User content vs. app state are separate stores.** User content (`/home/<user>/Photos/`, etc.) accessed by manifest-declared bind mounts of use-case folders; app state in `/var/lib/moose/state/instances/<id>/data/`. Apps reach user content by reference, never by copy.
 - **`scope: pick-subfolder`** for `folders` — install-time prompt for apps that should manage a subset (notes apps, media subsets). Default is provided by the manifest; user can override.

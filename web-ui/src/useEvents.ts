@@ -8,7 +8,14 @@ export function useEvents() {
   const qc = useQueryClient();
   let es: EventSource | null = null;
 
-  const invalidateApps = () => qc.invalidateQueries({ queryKey: ["apps"] });
+  // An app starting, stopping, installing or going away also changes whether
+  // other apps fit next to it (#599), so the store lists, the App page and the
+  // install plan re-read their fit too.
+  const invalidateApps = () => {
+    qc.invalidateQueries({ queryKey: ["apps"] });
+    qc.invalidateQueries({ queryKey: ["catalog"] });
+    qc.invalidateQueries({ queryKey: ["install-plan"] });
+  };
   // Notification events are advisory refetch triggers (NOTIFICATIONS.md #
   // Surfaces): re-read the caller's audience-scoped list/badge rather than
   // merging payloads off the shared, unfiltered bus.

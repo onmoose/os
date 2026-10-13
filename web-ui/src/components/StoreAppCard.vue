@@ -7,12 +7,17 @@
 // generic glyph (icon_url is omitted by the brain when absent, and we also guard
 // against a load error). The tagline (short_description) sits truncated under
 // the name, matching how the control plane's own store surface renders a card.
-import { ref } from "vue";
+// An app that does not fit this box's memory or CPU carries a small badge under
+// the tagline, so a too-big app is visible before it is opened (#599).
+import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
 import type { CatalogEntry } from "../api";
 import AppGlyph from "./AppGlyph.vue";
+import { fitBadge } from "../fit";
 
-defineProps<{ app: CatalogEntry }>();
+const props = defineProps<{ app: CatalogEntry }>();
+
+const badge = computed(() => fitBadge(props.app.fit));
 
 // brokenIcon flips if the <img> fails to load (e.g. asset 404) so we fall back to
 // the glyph rather than show a broken-image chrome.
@@ -42,6 +47,13 @@ const brokenIcon = ref(false);
     <div class="w-full min-w-0">
       <div class="truncate text-base font-medium">{{ app.name }}</div>
       <div class="mt-0.5 truncate text-sm text-muted-foreground">{{ app.short_description }}</div>
+      <div
+        v-if="badge"
+        class="mt-1 inline-block rounded-full px-2 py-0.5 text-xs"
+        :class="app.fit?.state === 'too-big' ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning'"
+      >
+        {{ badge }}
+      </div>
     </div>
   </RouterLink>
 </template>

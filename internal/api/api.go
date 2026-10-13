@@ -26,6 +26,7 @@ import (
 	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/health"
 	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/lifecycle"
@@ -468,11 +469,66 @@ func (s *Server) withPublicPaths(dto *InstanceDTO) {
 // When the remap state is unknown it hides nothing: the install path refuses
 // on its own then. The by-id routes (detail, install plan, assets) keep
 // reading s.catalog, so a direct link still loads.
+//
+// Every entry it returns carries its fit on this box (withFit).
 func (s *Server) storeCatalog(ctx context.Context) *catalog.Catalog {
 	if s.life != nil && s.life.RemapState(ctx) == lifecycle.RemapOff {
-		return s.catalog.WithoutRemapApps()
+		return s.withFit(ctx, s.catalog.WithoutRemapApps())
 	}
-	return s.catalog
+	return s.withFit(ctx, s.catalog)
+}
+
+// withFit returns c with every entry's fit on this box filled in (#599). The
+// box is read once, so every card in one response is judged against the same
+// figures. When the box cannot be read, c comes back as it is and the entries
+// carry no fit: the store shows no badge rather than a guess.
+func (s *Server) withFit(ctx context.Context, c *catalog.Catalog) *catalog.Catalog {
+	if s.life == nil {
+		return c
+	}
+	box, ok := s.life.FitBox(ctx)
+	if !ok {
+		return c
+	}
+	forCaller := s.fitForCaller(ctx)
+	return c.WithFit(func(id string, rec manifest.Recommended) fit.AppFit {
+		return forCaller(lifecycle.CheckFit(box, id, rec))
+	})
+}
+
+// fitForCaller returns a filter that keeps in a fit's running list only the
+// instances the caller may see (canSee), and counts the rest in OtherRunning.
+// The headroom still counts every running app: the box's memory is shared,
+// but another user's personal app is not the caller's to know by name. An
+// unknown caller or an unreadable instance list names nothing.
+func (s *Server) fitForCaller(ctx context.Context) func(fit.AppFit) fit.AppFit {
+	visible := map[string]bool{}
+	if id, ok := auth.FromContext(ctx); ok {
+		if insts, err := s.store.List(); err != nil {
+			slog.Warn("app fit: list instances", "err", err)
+		} else {
+			for _, i := range insts {
+				if canSee(id, i) {
+					visible[i.ID] = true
+				}
+			}
+		}
+	}
+	return func(res fit.AppFit) fit.AppFit {
+		if len(res.Running) == 0 {
+			return res
+		}
+		kept := make([]fit.RunningApp, 0, len(res.Running))
+		for _, r := range res.Running {
+			if visible[r.InstanceID] {
+				kept = append(kept, r)
+			} else {
+				res.OtherRunning++
+			}
+		}
+		res.Running = kept
+		return res
+	}
 }
 
 // --- handlers ------------------------------------------------------------
@@ -498,7 +554,7 @@ func (s *Server) listCatalog(ctx context.Context, _ *struct{}) (*struct {
 func (s *Server) getCatalogApp(ctx context.Context, in *struct {
 	ID string `path:"id"`
 }) (*struct{ Body catalog.Detail }, error) {
-	d, err := s.catalog.Detail(in.ID)
+	d, err := s.withFit(ctx, s.catalog).Detail(in.ID)
 	if errors.Is(err, catalog.ErrNotFound) {
 		return nil, huma.Error404NotFound("no such app")
 	}

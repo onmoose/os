@@ -182,6 +182,10 @@ type HostDriver interface {
 	// RenderGID feeds the override's /dev/dri group_add (APP_ISOLATION.md #
 	// GPU). Queried only when the manifest declares gpu: true.
 	SystemGPU(ctx context.Context) (protocol.SystemGPU, error)
+	// SystemResources is the host's /proc sample. The fit check reads its
+	// memory figures and core count (FitBox, #599). Read-only; a failure means
+	// no fit is shown and no install is refused for it.
+	SystemResources(ctx context.Context) (protocol.SystemResources, error)
 }
 
 // Admitter validates a verbatim compose. Default impl is admission.Check; tests

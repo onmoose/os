@@ -26,7 +26,9 @@ import { api, type CatalogDetail, type CatalogHome } from "../api";
 import { useAppInstances, useStartInstall } from "../useInstall";
 import { permissionLines, type PermissionLine } from "../installSteps";
 import { formatSize, safeExternalUrl } from "../utils";
+import { recommendedCPU, recommendedMemory } from "../fit";
 import AppGlyph from "../components/AppGlyph.vue";
+import FitNotice from "../components/FitNotice.vue";
 import SplitButton from "../components/SplitButton.vue";
 import HealthGated from "../components/HealthGated.vue";
 
@@ -64,6 +66,14 @@ const { householdInstance, ownPersonalInstance, installing, canInstallHousehold 
 // The install plan and what Install does (useStartInstall). The plan also
 // feeds the Permissions group in the right column.
 const { planQuery, plan, unavailable, goInstall, pending } = useStartInstall(manifestId);
+
+// Whether the app fits this box's memory and CPU (#599). The plan's figure
+// wins, because it is the one the Install button follows; the detail's own is
+// the same reading and shows while the plan loads. Both are re-read when an app
+// starts or stops (useEvents).
+const fit = computed(() => plan.value?.fit ?? app.value?.fit);
+const memoryLabel = computed(() => recommendedMemory(fit.value));
+const cpuLabel = computed(() => recommendedCPU(fit.value));
 
 // The Permissions group in the right column, in the install flow's words.
 const permissions = computed(() => (plan.value ? permissionLines(plan.value.permissions) : []));
@@ -307,8 +317,13 @@ watch(shots, (list) => {
         </div>
       </header>
 
-      <!-- This box cannot install the app: say why, in place of Install. -->
-      <p v-if="unavailable" class="text-sm text-muted-foreground">{{ unavailable }}</p>
+      <!-- The app does not fit this box's memory or CPU: tight warns, too big
+           says why it can't be installed. Either may carry the Upgrade link. -->
+      <FitNotice :fit="fit" />
+
+      <!-- This box cannot install the app: say why, in place of Install. Too
+           big is said by the notice above. -->
+      <p v-if="unavailable && plan?.unavailable !== 'too-big'" class="text-sm text-muted-foreground">{{ unavailable }}</p>
 
       <!-- Screenshots gallery. Each shot is a button that opens the full-screen
            viewer below; the border stays because it is what gives a white
@@ -494,6 +509,14 @@ watch(shots, (list) => {
               <div v-if="sizeLabel" class="flex justify-between gap-4">
                 <dt class="text-muted-foreground">Size</dt>
                 <dd class="text-right">{{ sizeLabel }}</dd>
+              </div>
+              <div v-if="memoryLabel" class="flex justify-between gap-4">
+                <dt class="text-muted-foreground">Memory</dt>
+                <dd class="text-right">{{ memoryLabel }}</dd>
+              </div>
+              <div v-if="cpuLabel" class="flex justify-between gap-4">
+                <dt class="text-muted-foreground">CPU</dt>
+                <dd class="text-right">{{ cpuLabel }}</dd>
               </div>
               <div v-if="app.license" class="flex justify-between gap-4">
                 <dt class="text-muted-foreground">License</dt>

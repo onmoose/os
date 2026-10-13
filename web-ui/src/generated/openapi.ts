@@ -1261,6 +1261,25 @@ export interface components {
                 [key: string]: string;
             };
         };
+        AppFit: {
+            /** Format: int64 */
+            box_cores?: number;
+            /** Format: int64 */
+            box_memory_bytes: number;
+            /** Format: int64 */
+            free_memory_bytes: number;
+            /** Format: int64 */
+            other_running?: number;
+            /** Format: double */
+            recommended_cpu?: number;
+            /** Format: int64 */
+            recommended_memory_bytes?: number;
+            running?: components["schemas"]["RunningApp"][] | null;
+            /** @enum {string} */
+            state: "fits" | "tight" | "too-big";
+            too_big_cpu?: boolean;
+            too_big_memory?: boolean;
+        };
         AppSecretDTO: {
             name: string;
             value: string;
@@ -1437,6 +1456,7 @@ export interface components {
             categories?: string[] | null;
             changelog_url?: string;
             external_costs?: components["schemas"]["ExternalCost"][] | null;
+            fit?: components["schemas"]["AppFit"];
             footprint: components["schemas"]["Footprint"];
             icon_glyph?: string;
             icon_url?: string;
@@ -1488,6 +1508,7 @@ export interface components {
         };
         Entry: {
             categories?: string[] | null;
+            fit?: components["schemas"]["AppFit"];
             footprint: components["schemas"]["Footprint"];
             icon_glyph?: string;
             icon_url?: string;
@@ -1672,6 +1693,7 @@ export interface components {
             readonly $schema?: string;
             config?: components["schemas"]["InstallPlanConfigField"][] | null;
             existing: components["schemas"]["InstallPlanExisting"][] | null;
+            fit?: components["schemas"]["AppFit"];
             footprint: components["schemas"]["InstallPlanFootprint"];
             mail?: components["schemas"]["InstallPlanMail"];
             manifest_id: string;
@@ -1681,7 +1703,7 @@ export interface components {
             scope_default: string;
             scope_options: string[] | null;
             /** @enum {string} */
-            unavailable?: "needs-remap";
+            unavailable?: "needs-remap" | "too-big";
             version: string;
         };
         InstallPlanExisting: {
@@ -2135,6 +2157,12 @@ export interface components {
              */
             readonly $schema?: string;
             password: string;
+        };
+        RunningApp: {
+            instance_id: string;
+            name: string;
+            /** Format: int64 */
+            recommended_memory_bytes: number;
         };
         SSHAccessDTO: {
             /**

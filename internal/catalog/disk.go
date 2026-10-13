@@ -33,6 +33,7 @@ func entryFor(man *manifest.Manifest) Entry {
 		Categories:       man.Categories,
 		IconGlyph:        man.IconGlyph,
 		Footprint:        man.Footprint(),
+		recommended:      man.Resources.Recommended,
 		needsRemap:       man.RootSetup || man.ImageUser,
 	}
 	if man.Icon != "" {

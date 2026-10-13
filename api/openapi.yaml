@@ -391,6 +391,48 @@ components:
             type: string
           type: object
       type: object
+    AppFit:
+      additionalProperties: false
+      properties:
+        box_cores:
+          format: int64
+          type: integer
+        box_memory_bytes:
+          format: int64
+          type: integer
+        free_memory_bytes:
+          format: int64
+          type: integer
+        other_running:
+          format: int64
+          type: integer
+        recommended_cpu:
+          format: double
+          type: number
+        recommended_memory_bytes:
+          format: int64
+          type: integer
+        running:
+          items:
+            $ref: "#/components/schemas/RunningApp"
+          type:
+            - array
+            - "null"
+        state:
+          enum:
+            - fits
+            - tight
+            - too-big
+          type: string
+        too_big_cpu:
+          type: boolean
+        too_big_memory:
+          type: boolean
+      required:
+        - state
+        - box_memory_bytes
+        - free_memory_bytes
+      type: object
     AppSecretDTO:
       additionalProperties: false
       properties:
@@ -793,6 +835,8 @@ components:
           type:
             - array
             - "null"
+        fit:
+          $ref: "#/components/schemas/AppFit"
         footprint:
           $ref: "#/components/schemas/Footprint"
         icon_glyph:
@@ -900,6 +944,8 @@ components:
           type:
             - array
             - "null"
+        fit:
+          $ref: "#/components/schemas/AppFit"
         footprint:
           $ref: "#/components/schemas/Footprint"
         icon_glyph:
@@ -1296,6 +1342,8 @@ components:
           type:
             - array
             - "null"
+        fit:
+          $ref: "#/components/schemas/AppFit"
         footprint:
           $ref: "#/components/schemas/InstallPlanFootprint"
         mail:
@@ -1323,6 +1371,7 @@ components:
         unavailable:
           enum:
             - needs-remap
+            - too-big
           type: string
         version:
           type: string
@@ -2379,6 +2428,21 @@ components:
           type: string
       required:
         - password
+      type: object
+    RunningApp:
+      additionalProperties: false
+      properties:
+        instance_id:
+          type: string
+        name:
+          type: string
+        recommended_memory_bytes:
+          format: int64
+          type: integer
+      required:
+        - instance_id
+        - name
+        - recommended_memory_bytes
       type: object
     SSHAccessDTO:
       additionalProperties: false

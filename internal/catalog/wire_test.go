@@ -57,6 +57,11 @@ func TestParseFixtureSnapshot(t *testing.T) {
 	if !a.RootSetup || !a.ImageUser {
 		t.Errorf("app %q: root_setup=%v image_user=%v, want both carried", a.ID, a.RootSetup, a.ImageUser)
 	}
+	// The recommended resources ride the record so the store can show whether
+	// the app fits before it fetches the manifest (#599).
+	if a.Resources == nil || a.Resources.Recommended.Memory == "" || a.Resources.Recommended.CPU == 0 {
+		t.Errorf("app %q: resources = %+v, want memory and cpu carried", a.ID, a.Resources)
+	}
 }
 
 // TestVerifyRejectsSchemaVersion covers the one refusal left on the browse

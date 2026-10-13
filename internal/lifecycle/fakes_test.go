@@ -508,6 +508,12 @@ type fakeHost struct {
 	// (FreeBytes must degrade to 0).
 	systemStatus protocol.SystemStatus
 	statusErr    error
+	// resources is returned by SystemResources, for the fit check (#599). The
+	// zero value reports no memory, which reads as "fit unknown", so a test
+	// that does not set it installs as before. resourcesErr forces the
+	// host-error path.
+	resources    protocol.SystemResources
+	resourcesErr error
 
 	// gpu is returned by SystemGPU; the zero value reports no usable GPU, so
 	// the capacity-refusal test needs no setup and stanza tests set Present +
@@ -598,6 +604,16 @@ func (h *fakeHost) SystemStatus(_ context.Context) (protocol.SystemStatus, error
 		return protocol.SystemStatus{}, h.statusErr
 	}
 	return h.systemStatus, nil
+}
+
+func (h *fakeHost) SystemResources(_ context.Context) (protocol.SystemResources, error) {
+	h.mu.Lock()
+	h.calls = append(h.calls, call{method: "SystemResources"})
+	h.mu.Unlock()
+	if h.resourcesErr != nil {
+		return protocol.SystemResources{}, h.resourcesErr
+	}
+	return h.resources, nil
 }
 
 func (h *fakeHost) SystemGPU(_ context.Context) (protocol.SystemGPU, error) {

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/manifest"
 )
 
@@ -516,6 +517,16 @@ type Entry struct {
 	// figure (estimated_size) is the manifest's measured baseline at install, not
 	// a usage projection (APP_MANIFEST.md # Storage, DECISIONS.md 2026-06-09).
 	Footprint manifest.Footprint `json:"footprint"`
+
+	// Fit says whether the app fits this box's memory and CPU (#599): the
+	// state, the figures behind it, and, when tight, the running apps to stop.
+	// Filled only by a WithFit view, so it is absent when the box could not
+	// measure itself.
+	Fit *fit.AppFit `json:"fit,omitempty"`
+
+	// recommended is the memory and CPU the app recommends, the input to Fit.
+	// It is not on the API by itself: Fit carries the figures.
+	recommended manifest.Recommended
 
 	// needsRemap is true when the app sets root_setup or image_user, so it can
 	// only run on a Docker daemon with the userns-remap. It is not on the API:
