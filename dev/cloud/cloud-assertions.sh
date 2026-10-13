@@ -1451,6 +1451,100 @@ access)
     pw_wait clear 90 || fail "probe: app-unresponsive was not cleared within 90s of probewho answering 200 again: $(pw_issue)"
     echo "cloud-assertions: app-unresponsive cleared on the first good tick after probewho recovered"
 
+    # 4f. AUTOMATIC RESTART (#598). An app whose app-unresponsive issue stays
+    #     raised for 5 minutes is restarted by the brain, the same stop and
+    #     start a person would do. whoami keeps the status a POST to /health
+    #     set in memory only, so the restart itself brings probewho back to
+    #     200: it recovers with nobody acting. A second copy of probewho has
+    #     the per-app setting off, answers 502 for the same time, and must be
+    #     left alone. The 3-in-an-hour limit, the backoff, and the stopped and
+    #     busy apps are unit-tested (cmd/brain/autorestart_test.go).
+    ar_issue() { # INSTANCE_ID -> raised | clear | error
+        local r; r="$(full_get /api/v1/health "$apex" "$session_cookie" 2>/dev/null || true)"
+        if ! grep -q ' 200' <<<"$(status_of "$r")"; then echo error; return; fi
+        if grep -qF "\"id\":\"app-unresponsive\",\"instance_key\":\"$1\"" <<<"$r"; then echo raised; else echo clear; fi
+    }
+    ar_started() { docker inspect "moose-$1-probewho" --format '{{.State.StartedAt}}' 2>/dev/null; }
+    ar_audit() { # INSTANCE_ID -> the app.restart.auto records for it, one per line
+        local r; r="$(full_get '/api/v1/audit?limit=200' "$apex" "$session_cookie" 2>/dev/null || true)"
+        grep -oF "\"action\":\"app.restart.auto\",\"target_kind\":\"app\",\"target_id\":\"$1\",\"success\":true" <<<"$r" || true
+    }
+    ar_resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"probewho","scope":"household","confirm":true}' 2>/dev/null)"
+    ar_job="$(json_str_of "$ar_resp" job_id)"
+    [ -n "$ar_job" ] || fail "auto-restart: install a second probewho returned no job id: status='$(status_of "$ar_resp")' $(tail -1 <<<"$ar_resp" | cut -c1-400)"
+    ar_st=""; ar_jr=""
+    for _i in $(seq 1 240); do
+        ar_jr="$(full_get "/api/v1/jobs/${ar_job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+        ar_st="$(json_str_of "$ar_jr" status)"
+        case "$ar_st" in completed|failed|cancelled) break ;; esac
+        sleep 1
+    done
+    [ "$ar_st" = completed ] || fail "auto-restart: install a second probewho ended '$ar_st', want completed: $(grep -o '"error":{[^}]*}' <<<"$ar_jr" | cut -c1-600)"
+    ar_off="$(json_str_of "$ar_jr" instance_id)"
+    [ -n "$ar_off" ] || fail "auto-restart: the second probewho completed with no instance id"
+    ar_slug="$(json_str_of "$(full_get "/api/v1/apps/${ar_off}" "$apex" "$session_cookie" 2>/dev/null)" slug)"
+    [ -n "$ar_slug" ] || fail "auto-restart: no slug for the second probewho ($ar_off)"
+    ar_off_host="${ar_slug}.${apex}"
+    # The setting is on by default, and the owner turns it off for this copy.
+    grep -qF '"auto_restart":true' <<<"$(full_get "/api/v1/apps/${ar_off}" "$apex" "$session_cookie" 2>/dev/null)" \
+        || fail "auto-restart: a new app does not report auto_restart true"
+    ar_put="$(full_send PUT "/api/v1/apps/${ar_off}/auto-restart" "$apex" "$session_cookie" '{"enabled":false}' 2>/dev/null)"
+    grep -q ' 200' <<<"$(status_of "$ar_put")" && grep -qF '"auto_restart":false' <<<"$ar_put" \
+        || fail "auto-restart: turning the setting off answered '$(status_of "$ar_put")': $(tail -1 <<<"$ar_put" | cut -c1-300)"
+
+    ar_on_t0="$(ar_started "$pw_id")"
+    ar_off_t0="$(ar_started "$ar_off")"
+    [ -n "$ar_on_t0" ] && [ -n "$ar_off_t0" ] || fail "auto-restart: no StartedAt for the probewho containers ('$ar_on_t0', '$ar_off_t0')"
+    [ -z "$(ar_audit "$pw_id")" ] || fail "auto-restart: probewho was restarted automatically before the test"
+    caddy_probe POST /health "$pw_host" 502 >/dev/null 2>&1 || fail "auto-restart: could not set probewho /health to 502"
+    caddy_probe POST /health "$ar_off_host" 502 >/dev/null 2>&1 || fail "auto-restart: could not set $ar_slug /health to 502"
+    for _i in $(seq 1 200); do
+        [ "$(ar_issue "$pw_id")" = raised ] && [ "$(ar_issue "$ar_off")" = raised ] && break
+        sleep 1
+    done
+    [ "$(ar_issue "$pw_id")" = raised ] && [ "$(ar_issue "$ar_off")" = raised ] \
+        || fail "auto-restart: both copies answering 502 were not flagged within 200s ($(ar_issue "$pw_id"), $(ar_issue "$ar_off"))"
+    ar_raised="$(date +%s)"
+    echo "cloud-assertions: both probewho copies answer 502 and are flagged app-unresponsive"
+
+    # 4f-1. probewho is restarted once, not before the 5-minute window, and
+    #       comes back answering 200 with the issue cleared, with nobody acting.
+    ar_on_t1="$ar_on_t0"
+    for _i in $(seq 1 480); do
+        ar_on_t1="$(ar_started "$pw_id")"
+        [ -n "$ar_on_t1" ] && [ "$ar_on_t1" != "$ar_on_t0" ] && break
+        sleep 1
+    done
+    [ -n "$ar_on_t1" ] && [ "$ar_on_t1" != "$ar_on_t0" ] \
+        || fail "auto-restart: probewho was not restarted within 480s of its issue being raised: $(ar_issue "$pw_id")"
+    ar_dt="$(( $(date +%s) - ar_raised ))"
+    [ "$ar_dt" -ge 280 ] || fail "auto-restart: probewho was restarted ${ar_dt}s after its issue was raised; the window is 5 minutes"
+    for _i in $(seq 1 180); do
+        [ "$(ar_issue "$pw_id")" = clear ] && break
+        sleep 1
+    done
+    [ "$(ar_issue "$pw_id")" = clear ] || fail "auto-restart: app-unresponsive not cleared within 180s of the automatic restart: $(ar_issue "$pw_id")"
+    grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" \
+        || fail "auto-restart: probewho does not answer 200 after the automatic restart"
+    # The record lands when the restart ends, which is before the clear.
+    [ "$(ar_audit "$pw_id" | wc -l)" -eq 1 ] \
+        || fail "auto-restart: want exactly one successful app.restart.auto record for probewho, got: $(ar_audit "$pw_id" | tr '\n' ' ')"
+    echo "cloud-assertions: probewho was restarted automatically ${ar_dt}s after its issue was raised, recovered, and the restart is in the audit log"
+
+    # 4f-2. The copy with the setting off was left alone: same container start,
+    #       still flagged, no record.
+    [ "$(ar_started "$ar_off")" = "$ar_off_t0" ] || fail "auto-restart: $ar_slug was restarted with its setting off"
+    [ "$(ar_issue "$ar_off")" = raised ] || fail "auto-restart: $ar_slug is no longer flagged: $(ar_issue "$ar_off")"
+    [ -z "$(ar_audit "$ar_off")" ] || fail "auto-restart: $ar_slug has an app.restart.auto record with its setting off"
+    echo "cloud-assertions: $ar_slug, with automatic restart off, was not restarted and stays flagged"
+    # Leave it healthy for the steps below.
+    caddy_probe POST /health "$ar_off_host" 200 >/dev/null 2>&1 || fail "auto-restart: could not set $ar_slug /health back to 200"
+    for _i in $(seq 1 90); do
+        [ "$(ar_issue "$ar_off")" = clear ] && break
+        sleep 1
+    done
+    [ "$(ar_issue "$ar_off")" = clear ] || fail "auto-restart: $ar_slug was not cleared within 90s of answering 200"
+
     # 5. THE HOSTED CONFIRM STEP (os#469). Destructive admin writes sit behind a
     #    re-auth gate, and until now a hosted owner could not pass it: the portal
     #    signs them in and the box gives their PAM account a random password nobody
