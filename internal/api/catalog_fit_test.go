@@ -60,9 +60,9 @@ func fitHarness(t *testing.T, host fitHost) *harness {
 	return h
 }
 
-// The detail page and the install plan carry the same fit, a too-big app is
-// still listed but cannot be installed, and the store lists carry no fit
-// (#599: the grid shows none, so it does not read the box).
+// The detail page and the install plan carry the same fit, and a too-big app
+// is still listed but cannot be installed (#599). The store lists carry no
+// fit at all: it is a Detail field.
 func TestCatalogCarriesFit(t *testing.T) {
 	h := fitHarness(t, fitHost{res: protocol.SystemResources{
 		Mem: protocol.MemCounters{TotalBytes: 4 << 30, UsedBytes: 1 << 30},
@@ -73,9 +73,6 @@ func TestCatalogCarriesFit(t *testing.T) {
 	listed := map[string]bool{}
 	for _, e := range decodeJSON[appsBody](t, h.getOK("/api/v1/catalog")).Apps {
 		listed[e.ID] = true
-		if e.Fit != nil {
-			t.Errorf("list: %s carries a fit; the store lists show none", e.ID)
-		}
 	}
 	for id, w := range want {
 		if !listed[id] {

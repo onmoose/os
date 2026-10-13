@@ -518,14 +518,9 @@ type Entry struct {
 	// a usage projection (APP_MANIFEST.md # Storage, DECISIONS.md 2026-06-09).
 	Footprint manifest.Footprint `json:"footprint"`
 
-	// Fit says whether the app fits this box's memory and CPU (#599): the
-	// state, the figures behind it, and, when tight, the running apps to stop.
-	// Filled only by a WithFit view, so it is absent when the box could not
-	// measure itself.
-	Fit *fit.AppFit `json:"fit,omitempty"`
-
-	// recommended is the memory and CPU the app recommends, the input to Fit.
-	// It is not on the API by itself: Fit carries the figures.
+	// recommended is the memory and CPU the app recommends, the input to
+	// Detail.Fit. It is not on the API by itself: Fit carries the figures.
+	// Read it through Detail.Recommended.
 	recommended manifest.Recommended
 
 	// needsRemap is true when the app sets root_setup or image_user, so it can
@@ -563,7 +558,19 @@ type Detail struct {
 	// only, not Entry: it is a paragraph of reading, so it belongs on the page
 	// where someone decides to install, not on a grid card.
 	ExternalCosts []ExternalCost `json:"external_costs,omitempty"`
+
+	// Fit says whether the app fits this box's memory and CPU (#599): the
+	// state, the figures behind it, and, when tight, the running apps to stop.
+	// The catalog never sets it: the API fills it from the box (getCatalogApp),
+	// and leaves it absent when the box could not measure itself.
+	Fit *fit.AppFit `json:"fit,omitempty"`
 }
+
+// Recommended is the memory and CPU the app recommends, from the browse
+// record's resources block (or the manifest, for the disk source). Zero when
+// it recommends nothing. A method on Detail, not Entry: huma cannot build the
+// schema link of a struct that embeds a type with methods.
+func (d Detail) Recommended() manifest.Recommended { return d.recommended }
 
 // iconURL / screenshotURL are the brain-served asset routes the store loads
 // directly in <img> tags (APP_STORE.md # Catalog schema). Both catalog sources

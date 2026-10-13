@@ -1508,7 +1508,6 @@ export interface components {
         };
         Entry: {
             categories?: string[] | null;
-            fit?: components["schemas"]["AppFit"];
             footprint: components["schemas"]["Footprint"];
             icon_glyph?: string;
             icon_url?: string;

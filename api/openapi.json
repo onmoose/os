@@ -1340,9 +1340,6 @@
               "null"
             ]
           },
-          "fit": {
-            "$ref": "#/components/schemas/AppFit"
-          },
           "footprint": {
             "$ref": "#/components/schemas/Footprint"
           },

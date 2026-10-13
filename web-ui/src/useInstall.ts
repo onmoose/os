@@ -67,7 +67,9 @@ export function useAppInstances(manifestId: Ref<string>) {
 // the pages, which show the error and a retry.
 //
 // unavailable is set when this box cannot install the app at all, as one plain
-// sentence; the page shows it in place of the button.
+// sentence; the page shows it in place of the button. tooBig is the one case
+// that keeps the button, disabled: the app does not fit this box's memory or
+// CPU, and the App page says why in its fit notice (#599).
 export function useStartInstall(manifestId: Ref<string>) {
   const router = useRouter();
 
@@ -78,6 +80,7 @@ export function useStartInstall(manifestId: Ref<string>) {
   });
   const plan = computed(() => planQuery.data.value ?? null);
   const unavailable = computed(() => unavailableText(plan.value));
+  const tooBig = computed(() => plan.value?.unavailable === "too-big");
 
   const { submit, submitError, submitLocation, duplicateInfo, pending } = useInstallSubmit(manifestId);
   const directScope = ref<"personal" | "household">("personal");
@@ -126,7 +129,7 @@ export function useStartInstall(manifestId: Ref<string>) {
     });
   });
 
-  return { planQuery, plan, unavailable, goInstall, pending };
+  return { planQuery, plan, unavailable, tooBig, goInstall, pending };
 }
 
 // onStarted runs when the brain accepted the install (202), before the page

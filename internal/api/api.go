@@ -476,24 +476,6 @@ func (s *Server) storeCatalog(ctx context.Context) *catalog.Catalog {
 	return s.catalog
 }
 
-// withFit returns c with every entry's fit on this box filled in (#599). Only
-// the detail route uses it: the store lists show no fit, so they do not read
-// the box. The box is read once per request. When the box cannot be read, c comes back as it is and the entries
-// carry no fit: the store shows no badge rather than a guess.
-func (s *Server) withFit(ctx context.Context, c *catalog.Catalog) *catalog.Catalog {
-	if s.life == nil {
-		return c
-	}
-	box, ok := s.life.FitBox(ctx)
-	if !ok {
-		return c
-	}
-	forCaller := s.fitForCaller(ctx)
-	return c.WithFit(func(id string, rec manifest.Recommended) fit.AppFit {
-		return forCaller(lifecycle.CheckFit(box, id, rec))
-	})
-}
-
 // fitForCaller returns a filter that keeps in a fit's running list only the
 // instances the caller may see (canSee), and counts the rest in OtherRunning.
 // The headroom still counts every running app: the box's memory is shared,
@@ -552,12 +534,21 @@ func (s *Server) listCatalog(ctx context.Context, _ *struct{}) (*struct {
 func (s *Server) getCatalogApp(ctx context.Context, in *struct {
 	ID string `path:"id"`
 }) (*struct{ Body catalog.Detail }, error) {
-	d, err := s.withFit(ctx, s.catalog).Detail(in.ID)
+	d, err := s.catalog.Detail(in.ID)
 	if errors.Is(err, catalog.ErrNotFound) {
 		return nil, huma.Error404NotFound("no such app")
 	}
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
+	}
+	// The app's fit on this box (#599), the same figures the install plan
+	// carries. Absent when the box cannot read its own memory: the page then
+	// shows no fit rather than a guess.
+	if s.life != nil {
+		if box, ok := s.life.FitBox(ctx); ok {
+			res := s.fitForCaller(ctx)(lifecycle.CheckFit(box, d.ID, d.Recommended()))
+			d.Fit = &res
+		}
 	}
 	return &struct{ Body catalog.Detail }{Body: d}, nil
 }

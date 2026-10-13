@@ -241,7 +241,7 @@ type wireApp struct {
 	// Resources copies the manifest's resources block: the memory and CPU the
 	// app recommends (APP_MANIFEST.md # B2). The box compares it with its own
 	// memory and cores to show on the app's store page whether the app fits
-	// (Catalog.WithFit, #599). Memory is the authored string, parsed here with
+	// (Detail.Fit, #599). Memory is the authored string, parsed here with
 	// the same rules as the manifest at install. A catalog that does not send it
 	// reads as no recommendation, so the app fits; the install plan reads the
 	// manifest itself and still sees the real figures.
