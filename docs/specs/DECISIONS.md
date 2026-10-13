@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-13 — An app too big for the box is refused at install; a tight one needs "Install anyway" (#599)
+
+**Previously:** `resources.recommended` was advice only, never a gate (`APP_MANIFEST.md` # B2, `APP_ISOLATION.md` # Resource limits). The specs promised an install-time capacity check that was never built, and the brain did not even parse the block. The GPU gate in `APP_ISOLATION.md` # GPU was the one hard capacity refusal, and it named `recommended` as the case that is not one.
+**Now:** the brain computes each app's **fit** on this box and returns it on the store card, the store page and the install plan. **Too big** (more memory than MemTotal rounded up to a whole GiB, or more CPU cores than the box has) is a hard refusal at install, before any work starts. **Tight** (fits the box, but not next to the apps that are running) is a warning, and the dialog needs an explicit "Install anyway". On hosted, both link to the box's page on the portal to upgrade it. `recommended` is still never a cgroup cap.
+**Why:** a hosted box with 3.8 GB ran two apps whose manifests recommended 4 GB and 2.5 GB. Nothing in the store said so, the box ran out of memory and one app wedged (#597, #599). An app that recommends more than the whole box will not run well there at any time, the same reasoning that makes no-GPU a hard gate: the owner should learn it from the store, not from a stalled box. Tight stays a warning, because stopping another app fixes it and the owner may know their usage better than the manifest. The rounding up to a whole GiB keeps a 4G app installable on a box sold as 4 GB, whose MemTotal is about 3.8 GiB.
+**Affected docs:** `APP_MANIFEST.md` (# B2, # Locked decisions), `APP_ISOLATION.md` (# GPU, # Resource limits), `APP_STORE.md` (# Apps this box cannot run), `BRAIN_UI_PROTOCOL.md` (catalog routes, # install-plan), `BRAIN_HOST_PROTOCOL.md` (`GET /v1/system/resources`), `docs/architecture.md`.
+
+---
+
 ## 2026-10-13 — The automatic restart gives up after one hour (#620)
 
 **Previously:** an app that stays broken gets at most 3 automatic restarts in any rolling hour (#598). So it got about 3 restarts every hour for as long as it stayed broken, each one audited, while the issue said the brain "stopped trying". The count was in memory, so a brain restart started it again.
