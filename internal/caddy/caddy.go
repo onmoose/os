@@ -32,6 +32,10 @@ type Client struct {
 	// retryDelay is the wait between tries of a route write that got no
 	// answer (upsertRouteByID). Tests shorten it.
 	retryDelay time.Duration
+	// probeListen is the listener of the moose-probe server, in Caddy's
+	// address form (#610). Empty means no probe server: the dev loop, and a
+	// box whose admin API is still on TCP. See EnableProbeServer.
+	probeListen string
 }
 
 // unixScheme marks an admin address that is a unix socket path, as in
@@ -65,6 +69,69 @@ func New(adminAddr string) *Client {
 
 // routeID is the stable @id we attach to each route so we can delete it later.
 func routeID(instanceID string) string { return "moose-app-" + instanceID }
+
+// probeRouteID is the @id of an app's copy in the moose-probe server (#610).
+func probeRouteID(instanceID string) string { return "moose-probe-" + instanceID }
+
+// The probe server (#610, HEALTH.md # Why app-unresponsive probes through
+// Caddy). The app-unresponsive probe has no box session, so on hosted the
+// forward-auth gate of an owner-only app answers it with a 302 to the login
+// and the probe never reaches the app. moose-probe is a second Caddy server,
+// on a unix socket only the brain can reach, that holds a copy of every app
+// route with no gate.
+//
+// The brain creates it through the admin API, like the routes, and it is not
+// in the staged caddy.json: that file is copied to a box once and no update
+// replaces it, so only the brain reaches every box (BUILD.md # As built).
+// A Caddy recreate loses it with every other route (#613). The next route
+// write that finds it missing creates it again (ensureProbeServer), and the
+// brain's startup writes it whole (EnsureServer).
+const (
+	probeServerPath = "/config/apps/http/servers/moose-probe"
+	probeRoutesPath = probeServerPath + "/routes"
+	probeCatchAllID = "moose-probe-catchall"
+	// ProbeHeader and ProbeNoRoute mark the probe server's catch-all answer:
+	// no route for this host, so the probe learned nothing about the app.
+	// The brain reads that as no sample. Without the mark it would be a 404,
+	// which the default healthy set (any status < 500) reads as healthy.
+	ProbeHeader  = "X-Moose-Probe"
+	ProbeNoRoute = "no-route"
+)
+
+// EnableProbeServer makes the client keep the moose-probe server, listening
+// at listen ("unix//run/moose-caddy/probe.sock" on a box): EnsureServer
+// writes it, and every route write and removal also writes or removes the
+// app's probe route. cmd/brain calls it once, at startup, before any route
+// write, and only when the admin API is on the unix socket, because only
+// then is the socket dir bound into Caddy. A listener Caddy cannot open
+// would make it refuse every config with the server in it.
+func (c *Client) EnableProbeServer(listen string) { c.probeListen = listen }
+
+// probeServer is the whole moose-probe server: the socket listener, no
+// automatic HTTPS (its hosts are the app hosts, and the moose server already
+// has their certificate), and only the catch-all. App routes go in front of
+// the catch-all, at index 0, like on the moose server.
+func (c *Client) probeServer() map[string]any {
+	return map[string]any{
+		"listen":          []any{c.probeListen},
+		"automatic_https": map[string]any{"disable": true},
+		"routes":          []any{probeCatchAllRoute()},
+	}
+}
+
+// probeCatchAllRoute answers any host the probe server has no route for, with
+// the no-route mark.
+func probeCatchAllRoute() map[string]any {
+	return map[string]any{
+		"@id":   probeCatchAllID,
+		"match": []any{map[string]any{}},
+		"handle": []any{map[string]any{
+			"handler":     "static_response",
+			"status_code": 404,
+			"headers":     map[string]any{ProbeHeader: []any{ProbeNoRoute}},
+		}},
+	}
+}
 
 // RouteConfig is the fully-resolved policy for one app's reverse-proxy route.
 // The profile/exposure decision lives in the caller — internal/lifecycle is the
@@ -172,7 +239,17 @@ func (c *Client) AddRoute(ctx context.Context, cfg RouteConfig) error {
 	default:
 		handle = append(handle, proxy)
 	}
-	return c.upsertRoute(ctx, cfg.InstanceID, cfg.Host, handle)
+	// The probe's copy: the same upstream, with no gate, no public-path split
+	// and nothing to strip, since only the brain sends to it. An app may not
+	// answer with the no-route mark itself.
+	probe := []any{map[string]any{
+		"handler":   "reverse_proxy",
+		"upstreams": []any{map[string]any{"dial": cfg.Upstream}},
+		"headers": map[string]any{
+			"response": map[string]any{"delete": []any{ProbeHeader}},
+		},
+	}}
+	return c.upsertRoute(ctx, cfg.InstanceID, cfg.Host, handle, probe)
 }
 
 // scrubHeadersHandler renders a Caddy headers handler that deletes the named
@@ -295,25 +372,49 @@ func forwardAuthHandler(fa ForwardAuthConfig) map[string]any {
 // connection-refused; the upstream is flipped to the real container once
 // healthy. State is one of "starting" | "stopped" | "failed".
 func (c *Client) AddSplashRoute(ctx context.Context, instanceID, host, appName, state string) error {
-	return c.upsertRoute(ctx, instanceID, host, []any{
+	// The probe gets the same splash, so it sees what a browser would.
+	handle := []any{
 		map[string]any{
 			"handler":     "static_response",
 			"status_code": 200,
 			"headers":     map[string]any{"Content-Type": []string{"text/html; charset=utf-8"}},
 			"body":        splashHTML(appName, state),
 		},
-	})
+	}
+	return c.upsertRoute(ctx, instanceID, host, handle, handle)
 }
 
 // upsertRoute writes the instance's route, replacing the one already there
 // (#520). See upsertRouteByID for why a failed write keeps the old route.
-func (c *Client) upsertRoute(ctx context.Context, instanceID, host string, handle []any) error {
+//
+// With the probe server on (#610), it then writes the probe's copy, probe, in
+// the moose-probe server, under the same host. Only after the app route
+// landed, so the copy never runs ahead of what browsers get. A failed copy is
+// logged and not returned: the app route is what users see, and a caller
+// must not undo or fail an install over the probe. Until the next write, the
+// probe of this app reads the old copy, or no route, which is no sample.
+func (c *Client) upsertRoute(ctx context.Context, instanceID, host string, handle, probe []any) error {
 	route := map[string]any{
 		"@id":    routeID(instanceID),
 		"match":  []any{map[string]any{"host": []string{host}}},
 		"handle": handle,
 	}
-	return c.upsertRouteByID(ctx, routeID(instanceID), host, route)
+	if err := c.upsertRouteByID(ctx, routesPath, routeID(instanceID), host, route); err != nil {
+		return err
+	}
+	if c.probeListen == "" {
+		return nil
+	}
+	probeRoute := map[string]any{
+		"@id":    probeRouteID(instanceID),
+		"match":  []any{map[string]any{"host": []string{host}}},
+		"handle": probe,
+	}
+	if err := c.upsertRouteByID(ctx, probeRoutesPath, probeRouteID(instanceID), host, probeRoute); err != nil {
+		slog.Warn("caddy: probe route write failed; the health probe learns nothing about this app until its route is written again",
+			"instance_id", instanceID, "host", host, "err", err)
+	}
+	return nil
 }
 
 // routesPath is the moose server's route list in Caddy's config.
@@ -323,8 +424,9 @@ const routesPath = "/config/apps/http/servers/moose/routes"
 // no answer from Caddy (a reset or refused connection) before it gives up.
 const routeWriteAttempts = 3
 
-// upsertRouteByID writes route under @id, in one admin call where it can
-// (#520). It used to delete the old route and then insert the new one, so a
+// upsertRouteByID writes route under @id into the route list at list
+// (routesPath, or probeRoutesPath for the probe's copy), in one admin call
+// where it can (#520). It used to delete the old route and then insert the new one, so a
 // failed insert left the host with no route and every request fell through to
 // the catch-all 404.
 //
@@ -348,9 +450,9 @@ const routeWriteAttempts = 3
 // would cost the full client timeout out of the caller's budget (the startup
 // pass writes every app's route under one deadline). The last error is
 // returned to the caller either way. host is only for the log line.
-func (c *Client) upsertRouteByID(ctx context.Context, id, host string, route map[string]any) error {
+func (c *Client) upsertRouteByID(ctx context.Context, list, id, host string, route map[string]any) error {
 	for attempt := 1; ; attempt++ {
-		answered, err := c.replaceOrInsertRoute(ctx, id, route)
+		answered, err := c.replaceOrInsertRoute(ctx, list, id, route)
 		if err == nil || answered || isTimeout(err) || attempt == routeWriteAttempts {
 			return err
 		}
@@ -373,27 +475,61 @@ func isTimeout(err error) bool {
 
 // replaceOrInsertRoute makes one try at the write described on
 // upsertRouteByID. answered is false when a call got no HTTP answer at all.
-func (c *Client) replaceOrInsertRoute(ctx context.Context, id string, route map[string]any) (answered bool, err error) {
+func (c *Client) replaceOrInsertRoute(ctx context.Context, list, id string, route map[string]any) (answered bool, err error) {
 	status, msg, err := c.do(ctx, "PATCH", "/id/"+id, route)
 	if err != nil {
 		return false, err
 	}
 	if status == http.StatusNotFound {
+		// No route with this @id. For the probe's copy that can mean the
+		// whole probe server is gone (a Caddy recreate, #613), and Caddy
+		// refuses a PUT into a server that does not exist, so put the server
+		// back first.
+		if list == probeRoutesPath {
+			if answered, err := c.ensureProbeServer(ctx); err != nil {
+				return answered, err
+			}
+		}
 		// Caddy's API inserts on PUT /routes/<N>, pushing the rest down, and
 		// appends on POST whatever the index (verified 2026-05-24). PUT at 0
 		// keeps the catch-all last in evaluation order.
-		status, msg, err = c.do(ctx, "PUT", routesPath+"/0", route)
+		status, msg, err = c.do(ctx, "PUT", list+"/0", route)
 		if err != nil {
 			return false, err
 		}
 		if status >= 300 {
-			return true, adminError("PUT", routesPath+"/0", status, msg)
+			return true, adminError("PUT", list+"/0", status, msg)
 		}
 		return true, nil
 	}
 	if status >= 300 {
 		return true, adminError("PATCH", "/id/"+id, status, msg)
 	}
+	return true, nil
+}
+
+// ensureProbeServer writes the whole moose-probe server when its catch-all is
+// missing, which means the server is gone: Caddy was recreated and started
+// from the staged caddy.json (#613). This is how a normal route write puts
+// the probe server back without a brain restart. Writing the whole server
+// drops any probe route left in it, which only a broken server could have.
+// answered is false when a call got no HTTP answer at all.
+func (c *Client) ensureProbeServer(ctx context.Context) (answered bool, err error) {
+	status, err := c.get(ctx, "/id/"+probeCatchAllID)
+	if err != nil {
+		return false, err
+	}
+	if status == http.StatusOK {
+		return true, nil
+	}
+	status, msg, err := c.do(ctx, "POST", probeServerPath, c.probeServer())
+	if err != nil {
+		return false, err
+	}
+	if status >= 300 {
+		return true, adminError("POST", probeServerPath, status, msg)
+	}
+	slog.Info("caddy: probe server was missing; wrote it again", "url", c.probeListen)
 	return true, nil
 }
 
@@ -414,8 +550,14 @@ func splashHTML(appName, state string) string {
 		`</head><body><div><h1 style="font-weight:600">` + msg + `</h1></div></body></html>`
 }
 
+// RemoveRoute deletes the instance's route, and its probe copy when the probe
+// server is on (#610).
 func (c *Client) RemoveRoute(ctx context.Context, instanceID string) error {
-	return c.RemoveRouteByID(ctx, routeID(instanceID))
+	err := c.RemoveRouteByID(ctx, routeID(instanceID))
+	if c.probeListen != "" {
+		err = errors.Join(err, c.RemoveRouteByID(ctx, probeRouteID(instanceID)))
+	}
+	return err
 }
 
 // RemoveRouteByID deletes a route by its raw Caddy @id (idempotent: an unknown
@@ -495,7 +637,7 @@ func (c *Client) EnsureDashboard(ctx context.Context, host, brainUpstream, uiUps
 			},
 		}},
 	}
-	if err := c.upsertRouteByID(ctx, dashboardRouteID, host, route); err != nil {
+	if err := c.upsertRouteByID(ctx, routesPath, dashboardRouteID, host, route); err != nil {
 		return fmt.Errorf("caddy: install dashboard route: %w", err)
 	}
 	slog.Info("caddy: dashboard route installed", "host", host, "upstream", uiUpstream)
@@ -552,11 +694,25 @@ func (c *Client) EnsureCatchAll(ctx context.Context) error {
 // by the M1b bootstrap) boot Caddy with this server and its :80 listener
 // pre-declared, so the brain never sets the listen addr — there is no
 // caller-supplied listen to apply.
+//
+// With the probe server on (#610) it then writes the whole moose-probe server,
+// with only its catch-all: POST creates it or replaces it, so its route list
+// is reset the same way.
 func (c *Client) EnsureServer(ctx context.Context) error {
 	if err := c.ensureTrustedProxies(ctx); err != nil {
 		return err
 	}
-	return c.patch(ctx, "/config/apps/http/servers/moose/routes", []any{})
+	if err := c.patch(ctx, routesPath, []any{}); err != nil {
+		return err
+	}
+	if c.probeListen == "" {
+		return nil
+	}
+	if err := c.post(ctx, probeServerPath, c.probeServer()); err != nil {
+		return fmt.Errorf("caddy: write the probe server: %w", err)
+	}
+	slog.Info("caddy: probe server written", "url", c.probeListen)
+	return nil
 }
 
 // ensureTrustedProxies declares that this Caddy trusts *no* client to have sent

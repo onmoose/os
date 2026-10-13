@@ -82,6 +82,22 @@ func ControlPlaneUIImage(dir string) (string, error) {
 // control-plane compose.
 const controlPlaneCaddyConfig = "caddy.json"
 
+// caddyProbeSocketName is the probe server's socket, next to the admin socket
+// in the socket dir (#610).
+const caddyProbeSocketName = "probe.sock"
+
+// CaddyProbeListen is the listener of Caddy's moose-probe server, in Caddy's
+// address form, as Caddy sees the socket dir inside its container (#610).
+const CaddyProbeListen = "unix/" + protocol.CaddySocketMount + "/" + caddyProbeSocketName
+
+// CaddyProbeSocket is the host path of the probe server's socket, for the
+// control-plane dir dir: where the brain dials it. Caddy only makes it once
+// the brain has written the probe server, which the brain does only when it
+// reaches the admin API on the socket in the same dir.
+func CaddyProbeSocket(dir string) string {
+	return filepath.Join(dir, protocol.CaddySocketDir, caddyProbeSocketName)
+}
+
 // ControlPlaneCaddyAdmin reports the address the brain dials Caddy's admin API
 // on, read from the staged caddy.json in dir. It returns "unix://<host path>"
 // when that file puts the admin API on a unix socket under

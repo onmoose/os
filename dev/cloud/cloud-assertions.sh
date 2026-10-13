@@ -749,6 +749,17 @@ caddy_admin_get() { # PATH -> full response
         print $s "GET $ARGV[1] HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
         print while <$s>;' "$CADDY_ADMIN_SOCK" "$1"
 }
+# Caddy's probe server (#610) listens on a second socket in the same dir: every
+# app route, with no forward-auth gate, for the brain's app-unresponsive probe.
+# Same perl as above, with any method, Host and an optional body.
+CADDY_PROBE_SOCK=/var/lib/moose/control-plane/caddy/probe.sock
+caddy_probe() { # METHOD PATH HOST [BODY] -> full response
+    perl -MIO::Socket::UNIX -e '
+        my ($sock, $m, $p, $h, $b) = @ARGV; $b = "" unless defined $b;
+        my $s = IO::Socket::UNIX->new(Peer => $sock) or die "connect $sock: $!\n";
+        print $s "$m $p HTTP/1.0\r\nHost: $h\r\nContent-Length: " . length($b) . "\r\n\r\n$b";
+        print while <$s>;' "$CADDY_PROBE_SOCK" "$@"
+}
 
 # Wait for a line matching a fixed pattern in the brain's container log. The brain
 # writes each milestone to stdout ONCE at startup, but `docker logs` reads the
@@ -1348,6 +1359,98 @@ access)
         echo "cloud-assertions: image_user $svc runs remapped as its image's user (Config.User='$c_user', cap_add=$c_capadd) and wrote $dir/id.txt as host uid $id_owner: $(cat "$id_file")"
     done
 
+    # 4e. THE PROBE SOCKET (#610). The app-unresponsive probe has no box
+    #     session, so on Caddy's :80 the gate of an owner-only app answers it
+    #     with the login redirect and the probe never sees the app. The brain
+    #     writes a second Caddy server, moose-probe, on a unix socket next to
+    #     the admin socket, with a copy of every app route and no gate, and
+    #     probes through it. probewho is whoami with a health_probe on /health,
+    #     installed owner-only (the hosted default). whoami answers GET /health
+    #     with the status a POST to /health sets, so the app can answer 502 and
+    #     then 200 with its container running all along.
+    pw_resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"probewho","scope":"household"}' 2>/dev/null)"
+    pw_job="$(json_str_of "$pw_resp" job_id)"
+    [ -n "$pw_job" ] || fail "probe: install probewho returned no job id: status='$(status_of "$pw_resp")' $(tail -1 <<<"$pw_resp" | cut -c1-400)"
+    pw_st=""; pw_jr=""
+    for _i in $(seq 1 240); do
+        pw_jr="$(full_get "/api/v1/jobs/${pw_job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+        pw_st="$(json_str_of "$pw_jr" status)"
+        case "$pw_st" in completed|failed|cancelled) break ;; esac
+        sleep 1
+    done
+    [ "$pw_st" = completed ] || fail "probe: install probewho ended '$pw_st', want completed: $(grep -o '"error":{[^}]*}' <<<"$pw_jr" | cut -c1-600)"
+    pw_id="$(json_str_of "$pw_jr" instance_id)"
+    [ -n "$pw_id" ] || fail "probe: install probewho completed with no instance id: $(tail -1 <<<"$pw_jr" | cut -c1-400)"
+    pw_host="probewho.${apex}"
+    # Owner-only: with no session, Caddy's :80 sends the probe's own request to
+    # the box login. That is all the old probe ever got for this app.
+    pw_gate="$(full_get /health "$pw_host" 2>/dev/null || true)"
+    grep -q ' 302' <<<"$(status_of "$pw_gate")" || fail "probe: probewho is not behind the gate on :80: status='$(status_of "$pw_gate")'"
+
+    # 4e-1. The socket: in the 0700 dir only the brain and Caddy mount, and the
+    #       probe server's only listener. No app container mounts that dir, and
+    #       a unix socket is on no network, so no app can reach it.
+    [ -S "$CADDY_PROBE_SOCK" ] || fail "probe: no probe socket at $CADDY_PROBE_SOCK: $(ls -la "$(dirname "$CADDY_PROBE_SOCK")" 2>&1 | tr '\n' ' ')"
+    pw_listen="$(caddy_admin_get /config/apps/http/servers/moose-probe/listen 2>&1 | tail -1 | tr -d '\r')"
+    [ "$pw_listen" = '["unix//run/moose-caddy/probe.sock"]' ] \
+        || fail "probe: the probe server listens on '$pw_listen', want only the unix socket"
+    for c in $(docker ps --filter label=moose.managed=true --format '{{.Names}}'); do
+        c_mounts="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null)"
+        grep -qE '(^| )/var/lib/moose/control-plane(/| |$)' <<<"$c_mounts" \
+            && fail "probe: APP REACHES THE PROBE SOCKET: $c mounts the control-plane dir: $c_mounts"
+    done
+    echo "cloud-assertions: probe server listens only on $CADDY_PROBE_SOCK, in a dir no app container mounts"
+
+    # 4e-2. Through the socket the request reaches the app past the gate, with
+    #       no identity header, and a host with no route gets the marked
+    #       catch-all, not a bare 404 the probe would read as healthy.
+    pw_echo="$(caddy_probe GET / "$pw_host" 2>&1)"
+    grep -qi 'Hostname:' <<<"$pw_echo" || fail "probe: the probe socket did not reach probewho past the gate: $(head -3 <<<"$pw_echo" | tr '\r\n' '  ')"
+    grep -qi '^X-Moose-User:' <<<"$pw_echo" && fail "probe: the probe socket sent an identity header to the app"
+    pw_health="$(caddy_probe GET /health "$pw_host" 2>&1)"
+    grep -q ' 200' <<<"$(status_of "$pw_health")" || fail "probe: probewho /health through the socket answered '$(status_of "$pw_health")', want 200"
+    grep -qi '^X-Moose-Probe:' <<<"$pw_health" && fail "probe: a routed answer carries the no-route mark"
+    pw_none="$(caddy_probe GET /health "nothing-here.${apex}" 2>&1)"
+    grep -q ' 404' <<<"$(status_of "$pw_none")" && grep -qi '^X-Moose-Probe: no-route' <<<"$pw_none" \
+        || fail "probe: a host with no probe route answered '$(status_of "$pw_none")' without the no-route mark"
+    echo "cloud-assertions: the probe socket reaches probewho past the gate (no identity header), and a missing route answers 404 with X-Moose-Probe: no-route"
+
+    # The brain's view of probewho, from GET /api/v1/health: raised, clear, or
+    # error when the answer is not a 200 (so an error is never read as clear).
+    pw_issue() {
+        local r; r="$(full_get /api/v1/health "$apex" "$session_cookie" 2>/dev/null || true)"
+        if ! grep -q ' 200' <<<"$(status_of "$r")"; then echo error; return; fi
+        if grep -qF "\"id\":\"app-unresponsive\",\"instance_key\":\"${pw_id}\"" <<<"$r"; then echo raised; else echo clear; fi
+    }
+    pw_wait() { # WANT SECONDS -> 0 when pw_issue says WANT within SECONDS
+        local want="$1" _i
+        for _i in $(seq 1 "$2"); do
+            [ "$(pw_issue)" = "$want" ] && return 0
+            sleep 1
+        done
+        return 1
+    }
+
+    # 4e-3. Healthy through the socket: past its 1s start_period, across more
+    #       than one 60s health tick, probewho is not flagged.
+    sleep 70
+    [ "$(pw_issue)" = clear ] || fail "probe: healthy probewho is flagged app-unresponsive (or the health API failed: $(pw_issue))"
+
+    # 4e-4. The upstream answers 502. Raised on the 2nd failed tick: so not
+    #       before about one tick (60s) has passed, and within three.
+    caddy_probe POST /health "$pw_host" 502 >/dev/null 2>&1 || fail "probe: could not set probewho /health to 502"
+    grep -q ' 502' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" || fail "probe: probewho /health does not answer 502 after the POST"
+    pw_t0="$(date +%s)"
+    pw_wait raised 200 || fail "probe: probewho answering 502 was not flagged app-unresponsive within 200s: $(pw_issue)"
+    pw_dt="$(( $(date +%s) - pw_t0 ))"
+    [ "$pw_dt" -ge 50 ] || fail "probe: app-unresponsive raised ${pw_dt}s after the 502; the first failed tick alone must not raise it"
+    echo "cloud-assertions: an owner-only app answering 502 was flagged app-unresponsive ${pw_dt}s later (2nd failed tick), through the probe socket"
+
+    # 4e-5. It recovers: cleared on the first good tick.
+    caddy_probe POST /health "$pw_host" 200 >/dev/null 2>&1 || fail "probe: could not set probewho /health back to 200"
+    pw_wait clear 90 || fail "probe: app-unresponsive was not cleared within 90s of probewho answering 200 again: $(pw_issue)"
+    echo "cloud-assertions: app-unresponsive cleared on the first good tick after probewho recovered"
+
     # 5. THE HOSTED CONFIRM STEP (os#469). Destructive admin writes sit behind a
     #    re-auth gate, and until now a hosted owner could not pass it: the portal
     #    signs them in and the box gives their PAM account a random password nobody
@@ -1490,6 +1593,28 @@ access)
     [ -n "$back" ] || fail "net: caddy was not back on $app_net within 90s of a recreate (one health tick is 60s)"
     echo "cloud-assertions: after a caddy recreate, the brain put caddy back on $app_net within ${_i}s"
 
+    # 6d-1. The recreated Caddy started from the staged caddy.json, so its probe
+    #       server is gone with every route (#613; #610 writes it through the
+    #       admin API, not in caddy.json). The brain's normal route write puts
+    #       it back: the exposure toggle rewrites probewho's route, and the probe
+    #       server comes back with probewho's copy in it. whoami's copy is not
+    #       written again, so its host gets the no-route mark until the brain
+    #       restarts. The wait covers one health tick, for Caddy to be back on
+    #       probewho's network too.
+    pw_gone="$(caddy_admin_get /config/apps/http/servers/moose-probe 2>&1 | tail -1 | tr -d '\r')"
+    [ "$pw_gone" = null ] || fail "probe: the recreated caddy still has a probe server: $(cut -c1-300 <<<"$pw_gone")"
+    pw_exp="$(status_of "$(full_send PUT "/api/v1/apps/${pw_id}/exposure" "$apex" "$session_cookie" '{"exposure":"public"}' 2>/dev/null)")"
+    grep -q ' 200' <<<"$pw_exp" || fail "probe: exposure toggle of probewho answered '$pw_exp'; wanted 200"
+    pw_back=""
+    for _i in $(seq 1 90); do
+        grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>/dev/null)")" && { pw_back=1; break; }
+        sleep 1
+    done
+    [ -n "$pw_back" ] || fail "probe: after a caddy recreate, a route write did not bring back the probe server for probewho: $(caddy_admin_get /config/apps/http/servers/moose-probe 2>&1 | tail -1 | cut -c1-300)"
+    pw_wh="$(caddy_probe GET / "$app_host" 2>&1)"
+    grep -qi '^X-Moose-Probe: no-route' <<<"$pw_wh" || fail "probe: whoami's probe route is back with no route write: $(status_of "$pw_wh")"
+    echo "cloud-assertions: after a caddy recreate, probewho's route write brought the probe server back (whoami's copy waits for the brain restart)"
+
     # 6e. A recreated Caddy also starts from the bootstrap caddy.json, so its
     #     routes are gone until the brain writes them again, which today happens
     #     at brain startup (the updater starts the brain last for this reason).
@@ -1506,6 +1631,15 @@ access)
     grep -qi 'Hostname:' <<<"$rr_resp" \
         || fail "net: whoami did not answer through the recreated caddy after a brain restart: status='$(status_of "$rr_resp")'"
     echo "cloud-assertions: whoami answers through the recreated caddy"
+    # The restart wrote the probe server and every copy again (#610). Each
+    # copy is written just after its app route, so give it a moment.
+    for _i in $(seq 1 15); do
+        grep -qi 'Hostname:' <<<"$(caddy_probe GET / "$app_host" 2>&1)" && break
+        sleep 1
+    done
+    grep -qi 'Hostname:' <<<"$(caddy_probe GET / "$app_host" 2>&1)" \
+        || fail "probe: after the brain restart the probe socket does not reach whoami: $(caddy_probe GET / "$app_host" 2>&1 | head -1)"
+    echo "cloud-assertions: after the brain restart the probe socket reaches whoami again"
 
     # 6g. A BOX MADE BEFORE #608 MOVES ITSELF TO THE SOCKET (#612). Such a box
     #     kept the staged files it got at first boot: caddy.json with the admin
@@ -1574,6 +1708,13 @@ access)
     whoami_answers "after the move"
     reach moose-caddy 80 || fail "migrate: the probe in ${cname}'s netns cannot reach moose-caddy:80 after the move"
     reach moose-caddy 2019 && fail "migrate: ADMIN API REACHABLE FROM AN APP after the move: ${cname} connected to moose-caddy:2019"
+    # A moved box gets the probe server too, from the same brain start (#610).
+    for _i in $(seq 1 15); do
+        grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" && break
+        sleep 1
+    done
+    grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" \
+        || fail "migrate: after the move the probe socket does not reach probewho: $(caddy_probe GET /health "$pw_host" 2>&1 | head -1)"
     echo "cloud-assertions: migrate: the brain moved a pre-#608 box to the socket: no TCP :2019, admin API on the socket, whoami answers, moose-caddy:2019 refuses from inside the app"
 
     # 6f. Uninstall removes the app network cleanly: the brain takes Caddy off it

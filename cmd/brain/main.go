@@ -231,6 +231,18 @@ func main() {
 		waitCancel()
 	}
 
+	// The probe server (#610): a second Caddy server on a unix socket next to
+	// the admin socket, with every app route and no forward-auth gate, so the
+	// app-unresponsive probe reaches an owner-only app. Only when the admin
+	// API is on the socket: then the socket dir is bound into Caddy, and Caddy
+	// can make the probe socket there. A box still on TCP and the dev loop
+	// keep the probe on Caddy's site listener.
+	probeSocket := ""
+	if cfg.controlPlaneDir != "" && strings.HasPrefix(cfg.caddyAdmin, "unix://") {
+		cd.EnableProbeServer(lifecycle.CaddyProbeListen)
+		probeSocket = lifecycle.CaddyProbeSocket(cfg.controlPlaneDir)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	life.EnsureIngress(ctx)
 	// Startup reconcile: converge Docker + routing to SQLite desired state and
@@ -315,6 +327,7 @@ func main() {
 	rld := newRestartLoopDetector(dock, healthMgr, auditor, notifier, bus)
 	probe := newAppProbeDetector(dock, st, life, cfg.caddyProbeURL, healthMgr, auditor, notifier, bus)
 	probe.SetEnvironment(prof, boxID)
+	probe.SetProbeSocket(probeSocket)
 	// Caddy's app networks ride the same tick (#608): a Caddy recreated while
 	// the brain runs is back on every running app's network within one tick.
 	// First, so the probe that follows reads an app Caddy can reach.
@@ -1277,6 +1290,40 @@ type appProbeDetector struct {
 	// empty default keeps the appliance ".local" path.
 	profile profile.Profile
 	boxID   string
+
+	// socketPath is the host path of Caddy's probe socket (#610), and
+	// socketClient the client that dials it. Empty when the brain did not
+	// write the probe server; the probe then goes to baseURL. Set once at
+	// startup via SetProbeSocket.
+	socketPath   string
+	socketClient *http.Client
+}
+
+// errProbeSocketDial marks a probe that could not connect to the probe
+// socket. Caddy, not the app, is missing there, so it is no sample.
+var errProbeSocketDial = errors.New("dial the caddy probe socket")
+
+// SetProbeSocket points the probe at Caddy's probe socket (#610), the server
+// that holds every app route with no forward-auth gate. An empty path keeps
+// the probe on Caddy's site listener.
+func (d *appProbeDetector) SetProbeSocket(path string) {
+	d.socketPath = path
+	if path == "" {
+		d.socketClient = nil
+		return
+	}
+	var dialer net.Dialer
+	c := newProbeClient()
+	c.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, "unix", path)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", errProbeSocketDial, err)
+			}
+			return conn, nil
+		},
+	}
+	d.socketClient = c
 }
 
 // SetEnvironment records the environment profile and (on hosted) the box-id, so
@@ -1318,8 +1365,9 @@ func newProbeClient() *http.Client {
 }
 
 // probeResult is one probe's verdict. probeNoSample means the probe never
-// reached the app (the forward-auth gate answered for it), so it counts as
-// neither good nor bad.
+// reached the app (the forward-auth gate answered for it, or the probe server
+// had no route for it or did not answer), so it counts as neither good nor
+// bad.
 type probeResult int
 
 const (
@@ -1452,23 +1500,44 @@ func (d *appProbeDetector) gated(inst store.Instance) bool {
 // probe GETs the app's probe path through Caddy with Host: <route host> —
 // exactly the request a browser makes, never the brain dialing the container
 // (THREAT_MODEL.md # B2). Good = status in the app's healthy set. A timeout,
-// connection failure, or Caddy 502 (dead upstream) is bad. On a gated route,
-// the gate's 302 to the box login means the probe never reached the app, so it
-// is no sample (#610 lets the probe past the gate).
+// connection failure, or Caddy 502 (dead upstream) is bad.
+//
+// When Caddy's probe socket is there (#610), the probe goes to it: the same
+// routes, with no forward-auth gate, so an owner-only app is sampled for real.
+// Two answers there are no sample, because they say nothing about the app: a
+// socket that does not take the connection (Caddy was recreated and its probe
+// server is not back yet, #613), and the probe server's catch-all, marked
+// with caddy.ProbeHeader (no route for this host). Otherwise the probe goes to
+// Caddy's site listener, where on a gated route the gate's 302 to the box
+// login means the probe never reached the app, so it is no sample (#609).
 func (d *appProbeDetector) probe(ctx context.Context, host string, gated bool, p *manifest.HealthProbe) probeResult {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+p.Path, nil)
+	client, base, viaSocket := d.client, d.baseURL, false
+	if d.socketPath != "" {
+		if _, err := os.Stat(d.socketPath); err == nil {
+			// The host part is never dialed: the transport dials the socket.
+			client, base, viaSocket = d.socketClient, "http://127.0.0.1", true
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+p.Path, nil)
 	if err != nil {
 		slog.Warn("app-probe: build request", "host", host, "err", err)
 		return probeBad
 	}
 	req.Host = host // route by Host through Caddy
-	resp, err := d.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
+		if viaSocket && errors.Is(err, errProbeSocketDial) {
+			return probeNoSample
+		}
 		return probeBad // timeout / connection failure = unhealthy
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body) // drain so the keep-alive can be reused
-	if gated && resp.StatusCode == http.StatusFound && resp.Header.Get("Location") == profile.HostedLoginURL(d.boxID) {
+	if viaSocket {
+		if resp.Header.Get(caddy.ProbeHeader) == caddy.ProbeNoRoute {
+			return probeNoSample
+		}
+	} else if gated && resp.StatusCode == http.StatusFound && resp.Header.Get("Location") == profile.HostedLoginURL(d.boxID) {
 		return probeNoSample
 	}
 	if probeHealthy(resp.StatusCode, p.HealthyStatus) {

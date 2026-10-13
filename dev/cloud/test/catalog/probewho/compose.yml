@@ -1,0 +1,6 @@
+# Author's compose, held verbatim by moose. A test fixture, not a catalog app.
+# GET /health answers 200 until a POST to /health sets another status (#610).
+services:
+  probewho:
+    image: traefik/whoami:v1.10.3
+    command: ["--port=80"]
