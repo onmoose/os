@@ -36,9 +36,10 @@ const (
 
 // appRestarter is the brain's consumer-side slice of the lifecycle seam the
 // automatic restart needs. *lifecycle.Manager satisfies it. BeginRestart
-// counts the restart in the app's row.
+// counts the restart in the app's row, and returns the row as it read it
+// under the app's lock, before the count.
 type appRestarter interface {
-	BeginRestart(id string, at time.Time) (func(context.Context) error, error)
+	BeginRestart(id string, at time.Time) (func(context.Context) error, store.Instance, error)
 }
 
 // autoRestartResetter sets an app's stored automatic restart count back to 0
@@ -172,7 +173,7 @@ func (r *autoRestarter) maybeRestart(ctx context.Context, inst store.Instance, s
 	if now.Sub(since) < r.after<<n {
 		return false
 	}
-	run, err := r.life.BeginRestart(inst.ID, now)
+	run, fresh, err := r.life.BeginRestart(inst.ID, now)
 	if err != nil {
 		if errors.Is(err, lifecycle.ErrBusy) || errors.Is(err, lifecycle.ErrNotRunning) || errors.Is(err, lifecycle.ErrAutoRestartOff) {
 			slog.Info("auto-restart: app busy, not running, or opted out; skipping", "instance_id", inst.ID, "err", err)
@@ -181,8 +182,15 @@ func (r *autoRestarter) maybeRestart(ctx context.Context, inst store.Instance, s
 		}
 		return false
 	}
+	// A person may have acted since this tick read the row (a Start, or the
+	// switch off and on): the fresh row under the lock then has no last
+	// restart time. Forget the history here, or this restart's new time
+	// would hide that reset from every later tick.
+	if fresh.LastAutoRestart.IsZero() {
+		delete(r.history, inst.ID)
+	}
 	r.history[inst.ID] = append(r.history[inst.ID], now)
-	attempt := inst.AutoRestarts + 1
+	attempt := fresh.AutoRestarts + 1
 	slog.Info("auto-restart: restarting an unresponsive app", "instance_id", inst.ID, "name", inst.Name, "count", attempt)
 	if attempt >= r.limit {
 		slog.Info("auto-restart: last automatic restart; the brain gives up if it does not help", "instance_id", inst.ID, "name", inst.Name)

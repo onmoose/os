@@ -1281,28 +1281,29 @@ var ErrAutoRestartOff = errors.New("automatic restart is off for this app")
 // Once the checks pass, the restart is counted in the app's row, begun at at,
 // before the work runs (#620): the count is what makes the brain give up, so
 // it must survive a brain that dies halfway. A failed write refuses the
-// restart.
-func (m *Manager) BeginRestart(id string, at time.Time) (run func(context.Context) error, err error) {
+// restart. It also returns the row as it read it under the lock, before the
+// count: a person may have reset the count since the caller read it.
+func (m *Manager) BeginRestart(id string, at time.Time) (run func(context.Context) error, row store.Instance, err error) {
 	unlock, ok := m.tryLockInstance(id)
 	if !ok {
-		return nil, ErrBusy
+		return nil, store.Instance{}, ErrBusy
 	}
 	inst, err := m.store.Get(id)
 	if err != nil {
 		unlock()
-		return nil, err
+		return nil, store.Instance{}, err
 	}
 	if inst.State != "running" {
 		unlock()
-		return nil, fmt.Errorf("%w (state=%s)", ErrNotRunning, inst.State)
+		return nil, store.Instance{}, fmt.Errorf("%w (state=%s)", ErrNotRunning, inst.State)
 	}
 	if inst.AutoRestartOff {
 		unlock()
-		return nil, ErrAutoRestartOff
+		return nil, store.Instance{}, ErrAutoRestartOff
 	}
 	if err := m.store.RecordInstanceAutoRestart(id, at); err != nil {
 		unlock()
-		return nil, fmt.Errorf("count the automatic restart: %w", err)
+		return nil, store.Instance{}, fmt.Errorf("count the automatic restart: %w", err)
 	}
 	return func(ctx context.Context) error {
 		defer unlock()
@@ -1317,7 +1318,7 @@ func (m *Manager) BeginRestart(id string, at time.Time) (run func(context.Contex
 		}
 		slog.Info("app stopped for an automatic restart", "instance_id", id, "name", inst.Name)
 		return m.startLocked(ctx, inst, "running")
-	}, nil
+	}, inst, nil
 }
 
 // SetExposure flips an app between public and owner-only (restricted) access and

@@ -36,17 +36,28 @@ type fakeRestarter struct {
 	runCtx  error // ctx.Err() the last run saw
 	begins  []time.Time
 	refused int
+	// beforeBegin runs once inside the next BeginRestart, before the row is
+	// read: a person acting between the tick's list and the restart.
+	beforeBegin func()
 }
 
-func (f *fakeRestarter) BeginRestart(id string, at time.Time) (func(context.Context) error, error) {
+func (f *fakeRestarter) BeginRestart(id string, at time.Time) (func(context.Context) error, store.Instance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.busy {
 		f.refused++
-		return nil, lifecycle.ErrBusy
+		return nil, store.Instance{}, lifecycle.ErrBusy
+	}
+	if f.beforeBegin != nil {
+		f.beforeBegin()
+		f.beforeBegin = nil
+	}
+	row, err := f.st.Get(id)
+	if err != nil {
+		return nil, store.Instance{}, err
 	}
 	if err := f.st.RecordInstanceAutoRestart(id, at); err != nil {
-		return nil, err
+		return nil, store.Instance{}, err
 	}
 	f.begins = append(f.begins, f.clk.now())
 	return func(ctx context.Context) error {
@@ -62,7 +73,7 @@ func (f *fakeRestarter) BeginRestart(id string, at time.Time) (func(context.Cont
 			f.onRun()
 		}
 		return f.runErr
-	}, nil
+	}, row, nil
 }
 
 func (f *fakeRestarter) count() int {
@@ -630,5 +641,42 @@ func TestAutoRestart_LongStartGraceDelaysNextRestart(t *testing.T) {
 	// for the 10-minute grace of the new container, then the 10-minute wait.
 	if len(mins) < 2 || mins[0] != 6 || mins[1] != 26 {
 		t.Fatalf("restart minutes = %v, want 6 then 26", mins)
+	}
+}
+
+// A person turns the switch off and on after the tick read the row but
+// before the restart begins (#620). The restart is counted as the first of a
+// fresh hour, and the restarts from before are forgotten, so the brain goes
+// on to the second and third.
+func TestAutoRestart_ToggleRacingTheTickGivesAFreshHour(t *testing.T) {
+	h := newRestartHarness(t)
+	for i := 0; i < 20; i++ {
+		h.tick() // restarts at 6 and 17
+	}
+	if n := h.fr.count(); n != 2 {
+		t.Fatalf("restarts = %d, want 2", n)
+	}
+	h.fr.mu.Lock()
+	h.fr.beforeBegin = func() {
+		if err := h.st.SetInstanceAutoRestart("app", false); err != nil {
+			t.Error(err)
+		}
+		if err := h.st.SetInstanceAutoRestart("app", true); err != nil {
+			t.Error(err)
+		}
+	}
+	h.fr.mu.Unlock()
+	start := h.clk.now()
+	for i := 0; i < 60; i++ {
+		h.tick()
+	}
+	if n := h.row(t).AutoRestarts; n != 3 {
+		t.Fatalf("stored restarts = %d, want 3 (one, then two more in the fresh hour)", n)
+	}
+	// The 3rd restart (20-minute wait, at 38) counts as the 1st of the fresh
+	// hour; then waits of 10 and 20 minutes from each restart.
+	mins := h.restartMinutes(start)
+	if len(mins) != 5 || mins[2] != 18 || mins[3] != 29 || mins[4] != 50 {
+		t.Fatalf("restart minutes from 20 = %v, want 18, 29, 50 after the two before", mins)
 	}
 }

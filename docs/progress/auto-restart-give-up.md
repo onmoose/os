@@ -37,6 +37,8 @@ This closes #620, the known gap that [auto-restart-unresponsive.md](auto-restart
 - **A reset after a real healthy sample is not audited or announced.** It is a log line (`auto-restart: app answered its health check; restart count reset`).
 - **The text says "stop the app and start it".** The switch off and on works too, but the text names the one action every user who can see the app's controls understands.
 
+- **Review.** The agent review found no Block. Its notes are left as they are: the switch is written without the app's lock, so a change during a restart in flight resets the count while the restart runs, which matches "a change of the setting ends giving up"; and an app with no probe and no image healthcheck can never give a real healthy sample, but it can never be flagged either, so its count never rises. Greptile found one real race, fixed: a person who turns the switch off and on (or stops and starts the app) after the tick read the row but before the restart began left the brain's in-memory history in place, and the restart's new time hid the reset from later ticks, so the old history blocked the next restarts for up to an hour. `BeginRestart` now also returns the row it read under the lock, before the count, and the brain forgets its history when that row has no last restart time and takes the attempt number from it. A detector test drives that race and fails without the fix.
+
 ## What's next
 
 - Nothing follows from this change.
