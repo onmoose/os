@@ -1546,7 +1546,9 @@ access)
         || fail "migrate: the brain did not report a failed move with the socket blocked: $(docker logs moose-brain 2>&1 | grep -F 'caddy admin' | tail -3)"
     # This error comes only after the files were written and Caddy recreated on
     # them, so the move got as far as the socket and failed there.
-    docker logs moose-brain 2>&1 | grep -qF 'caddy admin socket did not come up' \
+    # No grep -q: it would exit at the first match, docker logs would get
+    # SIGPIPE, and pipefail would read that as no match.
+    docker logs moose-brain 2>&1 | grep -F 'caddy admin socket did not come up' >/dev/null \
         || fail "migrate: the move failed before it reached the socket: $(docker logs moose-brain 2>&1 | grep -F 'could not move' | tail -1)"
     grep -q '"listen": "0.0.0.0:2019"' "$cp_dir/caddy.json" || fail "migrate: caddy.json was not put back after the failed move: $(grep -F listen "$cp_dir/caddy.json")"
     grep -qF './caddy:/run/moose-caddy' "$cp_dir/compose.yml" && fail "migrate: compose.yml was not put back after the failed move"
