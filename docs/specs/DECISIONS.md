@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-13 — The automatic restart gives up after one hour (#620)
+
+**Previously:** an app that stays broken gets at most 3 automatic restarts in any rolling hour (#598). So it got about 3 restarts every hour for as long as it stayed broken, each one audited, while the issue said the brain "stopped trying". The count was in memory, so a brain restart started it again.
+**Now:** the brain tries for one hour, then gives up for good. After 3 automatic restarts that did not bring the app back (waits of 5, 10 and 20 minutes), it never restarts the app by itself again, and writes no more `app.restart.auto` records. The issue says the brain restarted it 3 times, that this did not help, and that the user can stop the app and start it to try again. Giving up ends only when the app answers a real health check (not a tick with no sample), when a person starts the app, or when a person turns its automatic restart setting off and on; each gives the app a fresh hour. The count is stored in the app's row, so it survives a brain restart. The #598 cap of 3 restarts in any hour stays for an app that recovers between restarts.
+**Why:** a restart that did not help three times will not help a fourth time. Repeating it every hour forever only fills the audit log and tells the user something untrue. The user is the one who can fix the app now, so the issue tells them what to do, and anything they do on the app lets the brain try again.
+**Affected docs:** `HEALTH.md` (# Automatic restart), `APP_LIFECYCLE.md` (# Locked: automatic restart of an unresponsive app), `LOGGING.md` (`app.restart.auto`), `BRAIN_UI_PROTOCOL.md`, `docs/architecture.md`.
+
+---
+
 ## 2026-10-13 — The brain restarts an app whose `app-unresponsive` stays raised (#598)
 
 **Previously:** `app-unresponsive` only surfaces. Its Tier-2 action is a restart the user starts, and `HEALTH.md` # What's deliberately out of scope said every Tier-2 action is user-initiated, with host-agent's systemd restart policy as the only exception.
