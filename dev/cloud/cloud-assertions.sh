@@ -1681,11 +1681,11 @@ access)
     caddy_img="$(docker inspect -f '{{.Config.Image}}' moose-caddy)"
     old_caddy="$(docker inspect -f '{{.Id}}' moose-caddy)"
     # For 6d-1: what must not change across the recreate and the brain's
-    # restore. The brain is not restarted, and no app is restarted (#598).
+    # restore. The brain is not restarted, and no app is restarted (#598):
+    # a restart, automatic or not, gives the container a new start time.
     rs_brain0="$(docker inspect -f '{{.State.StartedAt}}' moose-brain)"
     rs_whoami0="$(docker inspect -f '{{.State.StartedAt}}' "$cname")"
     rs_pw0="$(ar_started "$pw_id")"
-    rs_auto0="$(full_get '/api/v1/audit?limit=200' "$apex" "$session_cookie" 2>/dev/null | grep -oF '"action":"app.restart.auto"' | wc -l)"
     # Read the whole log first, then count: grep -q on a live pipe would cut
     # docker logs short, which pipefail reads as a failure.
     brain_log_count() { local l; l="$(docker logs moose-brain 2>&1)"; grep -cF "$1" <<<"$l"; }
@@ -1768,8 +1768,6 @@ access)
     for rs_id in "$inst_id" "$pw_id"; do
         [ "$(ar_issue "$rs_id")" = clear ] || fail "restore: $rs_id is flagged app-unresponsive after the restore: $(ar_issue "$rs_id")"
     done
-    rs_auto1="$(full_get '/api/v1/audit?limit=200' "$apex" "$session_cookie" 2>/dev/null | grep -oF '"action":"app.restart.auto"' | wc -l)"
-    [ "$rs_auto1" -eq "$rs_auto0" ] || fail "restore: app.restart.auto records went from $rs_auto0 to $rs_auto1"
     echo "cloud-assertions: after a caddy recreate, the brain wrote its config again with no restart: app route, splash, dashboard, TLS and probe copies are back, and no app was restarted or flagged"
 
     # 6e. The updater starts the brain last, after any Caddy recreate. Restart
