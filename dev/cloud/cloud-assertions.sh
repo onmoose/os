@@ -1774,7 +1774,19 @@ access)
     #     the brain the same way and check the app answers through the
     #     recreated Caddy: the admin socket a new Caddy made is one the brain
     #     can use, and the startup writes every route again.
+    #     Since #613 Caddy still holds the routes the brain wrote back in
+    #     6d-1, so whoami answers before the new brain is done starting. Wait
+    #     for the end of its startup (the dashboard route is its last Caddy
+    #     write) first: its compose up on the control-plane project must be
+    #     over before 6g runs compose on the same project.
+    rr_dash0="$(brain_log_count 'caddy: dashboard route installed')"
     docker restart moose-brain >/dev/null || fail "net: could not restart the brain"
+    for _i in $(seq 1 120); do
+        [ "$(brain_log_count 'caddy: dashboard route installed')" -gt "$rr_dash0" ] && break
+        sleep 1
+    done
+    [ "$(brain_log_count 'caddy: dashboard route installed')" -gt "$rr_dash0" ] \
+        || fail "net: the restarted brain did not finish its startup within 120s"
     rr_resp=""
     for _i in $(seq 1 120); do
         rr_resp="$(full_get / "$app_host" 2>/dev/null || true)"
