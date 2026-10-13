@@ -351,3 +351,19 @@ Unlike `docs/progress/` entries (frozen ADR snapshots), this file is **mutable b
 - **What breaks:** the install never finishes. nocodb logs `ReplyError: NOPERM User nocodb_<n> has no permissions to run the 'flushdb' command` as an unhandled rejection, its container turns unhealthy about 30 s after start, and `compose up` fails with `dependency failed to start: container ... nocodb is unhealthy`. Seen the same way in all three Docker modes of the #516 pre-test (`docs/progress/userns-remap-pretest.md`), so it is not a remap issue.
 - **Why moose can't satisfy it (v1):** the refusal is on purpose. Every app shares one Valkey keyspace, and the per-app ACL user is the isolation boundary (`SERVICE_PROVISIONING.md` # Per-app isolation in shared instances), so one app must not wipe the keys of the others. Per-app key isolation is deferred (`NEXT.md` # Managed-service per-app key isolation). Until then, an app that clears its Redis at start can only run on a Redis of its own, not on managed Valkey.
 - **Status:** open. nocodb's catalog package was fixed the same day. Expect recurrence: any app that calls `FLUSHDB` or `FLUSHALL` at start, often to clear a cache or a lock left from the last run, is a repeat candidate. A dedicated Valkey per app, the `isolated: true` shape in that `NEXT.md` item, would let such an app flush its own instance.
+
+### secondary-subdomain — librechat (2026-10-13)
+
+- **Severity:** degraded
+- **Trigger:** LibreChat v0.8.8 ships a second web app beside the chat UI: `admin-panel` (`registry.librechat.ai/clickhouse/librechat-admin-panel`, source `LibreChat-AI/admin-panel`). Upstream serves it on its own port in `docker-compose.yml` and on its own host (`admin.localhost`) in `deploy-compose.yml`. Its base path is `VITE_BASE_PATH`, which must match at build time, so the published image only works at the root of an origin.
+- **What breaks:** the admin panel is the GUI for everything in `librechat.yaml` (interface settings, endpoints, MCP servers) and for role and group overrides. LibreChat itself still runs, chats, and lets an admin manage permissions from its own screens, but an admin on moose has no way to change `librechat.yaml` settings: there is no shell into the sandbox and no second origin for the panel.
+- **Why moose can't satisfy it (v1):** an app gets exactly one routed origin, `MOOSE_APP_URL`. The panel cannot share it, because both apps want `/`, and the panel's subpath is baked into its build. moose has no way for an app to ask for a second subdomain.
+- **Status:** open. librechat shipped `degraded` (`onmoose/store` `apps/librechat/`) without the panel. `lobe-chat` records the same class as a `cause` for its browser-direct S3 origin. Expect recurrence: any app whose admin UI, file store or second client is a separate web app on its own host is a repeat candidate.
+
+### config-field-single-service — librechat (2026-10-13)
+
+- **Severity:** cosmetic
+- **Trigger:** a `config:` value lands only in the one service it names (`service:`, default `main_service`; `internal/lifecycle/config.go` `configEnvByService`), and the lint refuses the same `role` on two fields. LibreChat reads the OpenAI key in `api` (chat) and again in `rag_api` (embeddings for file search).
+- **What breaks:** the AI account the user picks at install fills the chat key only. File search needs the key a second time, in a plain field (`RAG_OPENAI_API_KEY`, `service: rag_api`) that the provider tiles cannot fill. Both features work once the key is pasted twice.
+- **Why moose can't satisfy it (v1):** a config field has one target service, and a slot's role can belong to one field only. There is no way to say "inject this value into these two services".
+- **Status:** open. Expect recurrence: any app that splits a provider's API across a web service and a worker that both call the provider. A `service:` list on a config field would close it.
