@@ -1786,6 +1786,97 @@ func (m *Manager) EnsureCaddyNetworks(ctx context.Context) {
 	}
 }
 
+// RestoreRoutes writes the Caddy route of each app again, after Caddy lost
+// its config while the brain runs (#613): a recreate starts Caddy from the
+// staged caddy.json, with no app route. It writes what the startup pass
+// writes: the app route of a running app and the splash of a stopped or
+// failed one. Each write also writes the app's copy in the probe server.
+// Unlike the startup pass it does not publish mDNS (Caddy losing its config
+// does not touch Avahi) and runs no compose.
+//
+// only names the apps to write; nil means every app. It returns the apps it
+// could not write, for the caller to pass back on the next health tick:
+//   - an app whose lock is held. The install, start, stop, restart or edit
+//     holding it may have written its route before the recreate and not
+//     write it again, so the route is written once the lock is free;
+//   - an app being installed or uninstalled. The install writes its own route
+//     at its end, but may have done so before the recreate; once the row is
+//     running or failed the route is written here. An app that is gone drops
+//     out;
+//   - an app whose route write failed.
+//
+// The lock is held for the write, so it never races the operation that
+// writes the same route. err is set only when the app list could not be read.
+func (m *Manager) RestoreRoutes(ctx context.Context, only map[string]bool) (owed map[string]bool, err error) {
+	insts, err := m.store.List()
+	if err != nil {
+		return nil, fmt.Errorf("restore routes: list instances: %w", err)
+	}
+	owed = map[string]bool{}
+	written := 0
+	for _, inst := range insts {
+		if only != nil && !only[inst.ID] {
+			continue
+		}
+		if m.restoreRoute(ctx, inst.ID) {
+			written++
+		} else {
+			owed[inst.ID] = true
+		}
+	}
+	if written > 0 || only == nil {
+		slog.Info("caddy: app routes written again", "count", written, "owed", len(owed))
+	}
+	return owed, nil
+}
+
+// restoreRoute is one app's part of RestoreRoutes. It reports whether the app
+// needs nothing more: its route was written, or it has no route to write.
+func (m *Manager) restoreRoute(ctx context.Context, id string) bool {
+	unlock, ok := m.tryLockInstance(id)
+	if !ok {
+		return false
+	}
+	defer unlock()
+	inst, err := m.store.Get(id)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		slog.Warn("caddy restore: read the app", "instance_id", id, "err", err)
+		return false
+	}
+	switch inst.State {
+	case "running":
+		man, err := m.loadInstanceManifest(id)
+		if err != nil {
+			// Trying again on every tick would not help. The startup pass
+			// skips such an app the same way.
+			slog.Warn("caddy restore: load manifest, skipping the route", "instance_id", id, "err", err)
+			return true
+		}
+		host := m.routeHost(inst)
+		upstream := fmt.Sprintf("moose-%s-%s:%d", inst.ID, man.MainService, man.MainPort)
+		if err := m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, man, host, upstream)); err != nil {
+			slog.Warn("caddy restore: app route", "instance_id", id, "host", host, "upstream", upstream, "err", err)
+			return false
+		}
+	case "stopped", "failed":
+		host := m.routeHost(inst)
+		appName := inst.Name
+		if man, err := m.loadInstanceManifest(id); err == nil {
+			appName = man.Name
+		}
+		if err := m.caddy.AddSplashRoute(ctx, id, host, appName, inst.State); err != nil {
+			slog.Warn("caddy restore: splash route", "instance_id", id, "host", host, "err", err)
+			return false
+		}
+	default:
+		return false
+	}
+	return true
+}
+
 // reassertRouting re-publishes mDNS and re-registers the Caddy route for a
 // running instance. Returns true if the Avahi publish succeeded, false
 // otherwise. Best-effort: failures are logged and do not block startup.
