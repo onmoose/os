@@ -1159,6 +1159,9 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 // crash mid-start leaves a `running` row the reconcile pass finishes, the same
 // recovery path a reboot takes. The Caddy route flips to the "starting" splash,
 // then to the real upstream once main_service is healthy.
+//
+// A person's Start also gives the app a fresh hour of automatic restarts: the
+// count the brain gave up at is reset (#620, HEALTH.md # Automatic restart).
 func (m *Manager) Start(ctx context.Context, id string) error {
 	defer m.lockInstance(id)()
 	inst, err := m.store.Get(id)
@@ -1167,6 +1170,13 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	}
 	if inst.State != "stopped" && inst.State != "failed" {
 		return fmt.Errorf("%w (state=%s)", ErrNotStartable, inst.State)
+	}
+	if inst.AutoRestarts > 0 || !inst.LastAutoRestart.IsZero() {
+		if err := m.store.ResetInstanceAutoRestarts(id, true); err != nil {
+			return fmt.Errorf("reset automatic restarts: %w", err)
+		}
+		inst.AutoRestarts = 0
+		inst.LastAutoRestart = time.Time{}
 	}
 	return m.startLocked(ctx, inst, inst.State)
 }
@@ -1267,23 +1277,33 @@ var ErrAutoRestartOff = errors.New("automatic restart is off for this app")
 // that the row stays `running` the whole time, so a brain that dies halfway
 // leaves an app the reconcile pass brings back up, never one it keeps stopped.
 // A start that does not come healthy lands in `failed`, as with Start.
-func (m *Manager) BeginRestart(id string) (run func(context.Context) error, err error) {
+//
+// Once the checks pass, the restart is counted in the app's row, begun at at,
+// before the work runs (#620): the count is what makes the brain give up, so
+// it must survive a brain that dies halfway. A failed write refuses the
+// restart. It also returns the row as it read it under the lock, before the
+// count: a person may have reset the count since the caller read it.
+func (m *Manager) BeginRestart(id string, at time.Time) (run func(context.Context) error, row store.Instance, err error) {
 	unlock, ok := m.tryLockInstance(id)
 	if !ok {
-		return nil, ErrBusy
+		return nil, store.Instance{}, ErrBusy
 	}
 	inst, err := m.store.Get(id)
 	if err != nil {
 		unlock()
-		return nil, err
+		return nil, store.Instance{}, err
 	}
 	if inst.State != "running" {
 		unlock()
-		return nil, fmt.Errorf("%w (state=%s)", ErrNotRunning, inst.State)
+		return nil, store.Instance{}, fmt.Errorf("%w (state=%s)", ErrNotRunning, inst.State)
 	}
 	if inst.AutoRestartOff {
 		unlock()
-		return nil, ErrAutoRestartOff
+		return nil, store.Instance{}, ErrAutoRestartOff
+	}
+	if err := m.store.RecordInstanceAutoRestart(id, at); err != nil {
+		unlock()
+		return nil, store.Instance{}, fmt.Errorf("count the automatic restart: %w", err)
 	}
 	return func(ctx context.Context) error {
 		defer unlock()
@@ -1298,7 +1318,7 @@ func (m *Manager) BeginRestart(id string) (run func(context.Context) error, err 
 		}
 		slog.Info("app stopped for an automatic restart", "instance_id", id, "name", inst.Name)
 		return m.startLocked(ctx, inst, "running")
-	}, nil
+	}, inst, nil
 }
 
 // SetExposure flips an app between public and owner-only (restricted) access and

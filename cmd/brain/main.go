@@ -359,7 +359,7 @@ func main() {
 	probe.SetProbeSocket(probeSocket)
 	probe.SetCaddyNetworks(life)
 	// An app whose app-unresponsive issue stays raised is restarted (#598).
-	probe.SetRestarter(newAutoRestarter(life, auditor))
+	probe.SetRestarter(newAutoRestarter(life, st, auditor))
 	// Caddy's app networks ride the same tick (#608): a Caddy recreated while
 	// the brain runs is back on every running app's network within one tick.
 	// Its config too (#613): the restorer writes every route, the probe
@@ -1280,6 +1280,8 @@ const (
 	// dockerUnhealthy is the State.Health.Status Docker reports once a
 	// container's own HEALTHCHECK has failed its retries.
 	dockerUnhealthy = "unhealthy"
+	// dockerHealthy is the status once the HEALTHCHECK passes.
+	dockerHealthy = "healthy"
 )
 
 // managedContainerReader is the brain's consumer-side slice of the Docker seam
@@ -1508,18 +1510,29 @@ func (d *appProbeDetector) check(ctx context.Context) {
 		// Docker's own verdict applies to every app, with or without a
 		// health_probe. Only "unhealthy" is a signal here.
 		failed := main.Health == dockerUnhealthy
+		// healthy is a real healthy sample: the probe answered good, or, for
+		// an app with no health_probe, Docker reports "healthy". A tick with
+		// no sample is not one. Only a real one ends the brain's automatic
+		// restarts (#620).
+		healthy := man.HealthProbe == nil && main.Health == dockerHealthy
 		// The probe runs past its start-period grace; inside it the app is
 		// warming up and its failures don't count yet.
 		// The probe also skips an app Caddy is not on the network of: no
 		// sample, Caddy is what is missing (#613).
 		if man.HealthProbe != nil && now.Sub(main.StartedAt) >= man.HealthProbe.StartPeriod &&
 			(d.caddyNets == nil || !d.caddyNets.CaddyOffNetwork(inst.ID)) {
-			if d.probe(ctx, d.routeHost(inst), d.gated(inst), man.HealthProbe) == probeBad {
+			switch d.probe(ctx, d.routeHost(inst), d.gated(inst), man.HealthProbe) {
+			case probeBad:
 				failed = true
+			case probeGood:
+				healthy = true
 			}
 		}
 		if !failed {
 			d.bad[inst.ID] = 0
+			if healthy && d.restarter != nil {
+				d.restarter.recovered(inst)
+			}
 			continue // clear handled in the sweep below
 		}
 		d.bad[inst.ID]++
@@ -1528,7 +1541,7 @@ func (d *appProbeDetector) check(ctx context.Context) {
 			unhealthy[inst.ID] = true
 			details := appUnresponsiveDetails
 			if d.restarter != nil {
-				details += d.restarter.note(inst.ID, now)
+				details += d.restarter.note(inst, now)
 			}
 			if d.healthMgr.Raise("app-unresponsive", inst.ID, details) {
 				raised = append(raised, health.IssueKey{ID: "app-unresponsive", InstanceKey: inst.ID})
