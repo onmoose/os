@@ -23,7 +23,7 @@ The Docker HTTP API (via the socket proxy) is used directly only for things the 
 - `/events` stream for crash detection and health changes.
 - Log streaming to the UI WebSocket.
 - Image GC.
-- Network creation (`moose-ingress` at brain startup, per-app `moose-app-<id>` on install).
+- Network creation (`moose-ingress` at brain startup, per-app `moose-app-<id>` on install, with Caddy attached to it).
 
 **Why CLI for v1:** fastest path to a working system. Compose semantics stay upstream's problem; we don't reimplement them. The dev-loop and behavior match what app authors run locally with `docker compose up`. We can swap in the SDK later for hot paths if profiling demands it.
 
@@ -114,7 +114,7 @@ absent → installing → running ⇄ stopped
 
 The brain-generated `compose.override.yml` applies isolation and appliance behavior. **Locked contents, for every service in the compose:**
 
-- Networks: attach to `moose-app-<instance-id>` (per-app bridge). `main_service` additionally attaches to `moose-ingress` so Caddy can reach it.
+- Networks: attach to `moose-app-<instance-id>` (per-app bridge), where `main_service` also gets the `moose-<instance-id>-<service>` alias the route upstream dials. No service joins `moose-ingress`, the control-plane network. The brain attaches Caddy to the per-app network instead (`CONTROL_PLANE.md` # Locked: Caddy is moose substrate, #608).
 - `container_name: moose-<instance-id>-<main-service>` pinned on `main_service` **only**. Without the pin compose names the running container with a replica suffix (`…-1`), and Docker's journald driver tags log lines with that suffixed name — breaking the per-app Logs tail's exact `CONTAINER_NAME` match (`LOGGING.md` # Per-app logs) while the network alias kept Caddy working. The pin makes the running container's name the same `moose-<id>-<service>` stem the brain already computes for the Caddy upstream and ingress alias. An explicit `container_name` makes the service unscalable; the main service is single-replica by design, and sidecars stay unpinned so the constraint never lands on an author's scalable workers. Same pattern as the managed services' fixed exec handle.
 - `cap_drop: [ALL]`. No `cap_add` from an author, ever. The one `cap_add` the override carries is the brain's own fixed set for a `root_setup` app, on a remapped daemon only (`CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`), and such a service also gets no `user:` pin (`APP_ISOLATION.md` # User-namespace tiers).
 - `user:` pinned on every service, with two exceptions, both on a remapped daemon only: a `root_setup` app (above) and an `image_user` app. An `image_user` service gets no `user:` pin and no `cap_add`, so the image's own `USER` applies, remapped (`APP_ISOLATION.md` # User-namespace tiers).

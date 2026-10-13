@@ -841,3 +841,15 @@ const (
 	// for an admin.
 	UpdateTargetAvailable = "available"
 )
+
+// CaddySocketDir is the directory, inside the staged control-plane dir
+// (MOOSE_CONTROL_PLANE_DIR), that holds Caddy's admin socket (#608). The
+// control-plane compose binds it into Caddy at CaddySocketMount. host-agent
+// creates it, mode 0700 and owned by the uid Caddy's root maps to, before the
+// brain brings Caddy up. The brain dials the socket by its host path, which its
+// /var/lib/moose mount shows at the same path. No app mounts it. Kept general
+// (not "admin") so a later brain-only Caddy listener can sit beside it (#596).
+const CaddySocketDir = "caddy"
+
+// CaddySocketMount is where Caddy sees CaddySocketDir inside its container.
+const CaddySocketMount = "/run/moose-caddy"

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // --- EnsureControlPlane: the startup wiring. Predates the image reader below
@@ -147,4 +149,84 @@ func TestControlPlaneUIImage_Rejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- ControlPlaneCaddyAdmin: where the brain dials Caddy's admin API (#608).
+
+func writeCaddyJSON(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "caddy.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestControlPlaneCaddyAdmin(t *testing.T) {
+	cases := []struct {
+		name, listen, want string
+		wantErr            bool
+	}{
+		{"unix socket", "unix//run/moose-caddy/admin.sock", "unix://DIR/caddy/admin.sock", false},
+		{"unix socket with a mode", "unix//run/moose-caddy/admin.sock|0200", "unix://DIR/caddy/admin.sock", false},
+		// A box made before #608: keep the configured TCP address.
+		{"tcp", "0.0.0.0:2019", "", false},
+		{"no listen", "", "", false},
+		{"socket outside the shared mount", "unix//run/caddy/admin.sock", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeCaddyJSON(t, `{"admin":{"listen":"`+tc.listen+`"}}`)
+			got, err := ControlPlaneCaddyAdmin(dir)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if want := strings.ReplaceAll(tc.want, "DIR", dir); got != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestControlPlaneCaddyAdminUnreadable(t *testing.T) {
+	if _, err := ControlPlaneCaddyAdmin(t.TempDir()); err == nil {
+		t.Fatalf("want an error when caddy.json is missing")
+	}
+	if _, err := ControlPlaneCaddyAdmin(writeCaddyJSON(t, "{not json")); err == nil {
+		t.Fatalf("want an error when caddy.json does not parse")
+	}
+}
+
+// The staged files a new box gets must agree with each other: caddy.json puts
+// the admin API on the socket, and compose binds the socket dir into Caddy
+// where caddy.json expects it. Reads the real files the image build stages.
+func TestStagedControlPlaneUsesAdminSocket(t *testing.T) {
+	src := filepath.Join("..", "..", "dev", "control-plane")
+	got, err := ControlPlaneCaddyAdmin(src)
+	if err != nil {
+		t.Fatalf("staged caddy.json: %v", err)
+	}
+	if want := "unix://" + filepath.Join(src, "caddy", "admin.sock"); got != want {
+		t.Fatalf("staged caddy.json admin = %q, want %q", got, want)
+	}
+
+	b, err := os.ReadFile(filepath.Join(src, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]struct {
+			Volumes []string `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	bind := "./caddy:/run/moose-caddy"
+	for _, v := range doc.Services["caddy"].Volumes {
+		if v == bind {
+			return
+		}
+	}
+	t.Fatalf("control-plane compose does not bind %q into caddy: %v", bind, doc.Services["caddy"].Volumes)
 }

@@ -103,6 +103,8 @@ Denied. Apps that need to share data go through:
 
 A user who genuinely wants two apps wired directly together puts them in one Door-2 compose. Cross-app networking is not a v1 feature.
 
+**How the network enforces it (#608).** Each app's services are on the app's own network (`moose-app-<id>`) and on the managed-service networks it declares, nothing else. No app joins `moose-ingress`, the control-plane network. Caddy joins every app's network to reach its `main_service`, but a container does not route between its networks, so app A cannot reach app B through Caddy except by Caddy's `:80`/`:443`, the same front door the internet uses, with any gate in front of B still applied. An app also cannot reach the brain, the Docker socket proxy or Caddy's admin API (`CONTROL_PLANE.md` # Locked: Caddy is moose substrate, `THREAT_MODEL.md` B2).
+
 ---
 
 ## Filesystem & devices

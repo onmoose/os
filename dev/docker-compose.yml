@@ -1,8 +1,12 @@
 # Dev-only: the LAN-facing Caddy reverse proxy (CONTROL_PLANE.md). In
 # production Caddy is a brain-managed container; here we run it standalone so
 # the natively-run brain can drive its admin API. It joins the external
-# moose-ingress network (created by `make net`) so it can reach app containers
-# by their per-instance alias.
+# moose-ingress network (created by `make net`), and the brain attaches it to
+# each app's own network on install, where it reaches the app by its
+# per-instance alias. Apps never join moose-ingress (#608). The admin API stays
+# on TCP :2019 here: dev runs no outside apps, and a unix socket does not cross
+# a Docker Desktop bind mount on macOS. A box uses a unix socket instead
+# (dev/control-plane/caddy.json).
 services:
   caddy:
     image: caddy:2-alpine

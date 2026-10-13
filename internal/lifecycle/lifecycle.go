@@ -34,7 +34,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ingressNetwork is the control-plane network: the brain, Caddy, moose-ui and
+// the Docker socket proxy. No app container joins it (#608).
 const ingressNetwork = "moose-ingress"
+
+// caddyContainer is the box Caddy's container name, the same in the
+// control-plane compose and the dev compose. Caddy reaches an app by joining
+// that app's own network, which the brain attaches it to (# connectCaddy), so
+// no app ever shares a network with the brain, the socket proxy or Caddy's
+// admin API (CONTROL_PLANE.md # Caddy is moose substrate).
+const caddyContainer = "moose-caddy"
 
 // controlPlaneProject is the fixed compose project name for the brain-owned
 // control-plane stack (Caddy + moose-ui). A constant, not configurable: there
@@ -315,6 +324,22 @@ func (m *Manager) buildRouteConfig(inst store.Instance, man *manifest.Manifest, 
 // forward-auth request, and the same set scrubbed from every inbound request so
 // a caller can never forge them (ENVIRONMENT.md # Per-app owner-only access).
 var identityHeaders = []string{"X-Moose-User", "X-Moose-User-Id"}
+
+// tryLockInstance takes the per-instance lock only when it is free. ok is
+// false when another lifecycle path holds it; the caller skips the instance.
+func (m *Manager) tryLockInstance(id string) (unlock func(), ok bool) {
+	m.locksMu.Lock()
+	lk, found := m.instLocks[id]
+	if !found {
+		lk = &sync.Mutex{}
+		m.instLocks[id] = lk
+	}
+	m.locksMu.Unlock()
+	if !lk.TryLock() {
+		return nil, false
+	}
+	return lk.Unlock, true
+}
 
 // lockInstance acquires the per-instance lock (creating it on first use) and
 // returns the unlock func. Callers `defer unlock()`. See instLocks.
@@ -877,6 +902,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	if err := m.docker.NetworkCreate(ctx, appNet, !man.Permissions.Internet); err != nil {
 		return rollback(fmt.Errorf("create network: %w", err))
 	}
+	m.connectCaddy(ctx, id)
 
 	// 9. Publish mDNS + register the Caddy route pointing at a splash page, so
 	// the hostname is reachable immediately (APP_LIFECYCLE.md # register early,
@@ -1172,6 +1198,9 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	// — clear the marker rather than leaving it for reconcile to redundantly
 	// retry against an already-converged container.
 	m.clearPendingRecreate(inst)
+	// Caddy keeps its app networks across a stop, but it may have been
+	// recreated since, which drops them.
+	m.connectCaddy(ctx, id)
 	if err := m.waitHealthy(ctx, id, man.MainService, m.healthWait); err != nil {
 		return m.startFailed(ctx, inst, host, man.Name, fmt.Errorf("%s did not become healthy: %w", man.Name, err))
 	}
@@ -1365,6 +1394,10 @@ func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 // teardown reverses the resources install creates. Each step is best-effort so
 // a partial install can always be cleaned up.
 func (m *Manager) teardown(ctx context.Context, inst store.Instance, removeDir bool) error {
+	// Caddy leaves the app network first. Docker does not remove a network a
+	// container is still on, and Caddy is the one container compose down does
+	// not take off it.
+	m.disconnectCaddy(ctx, inst.ID)
 	if _, err := os.Stat(m.composeFile(inst.ID)); err == nil {
 		if out, err := m.docker.ComposeDown(ctx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
 			slog.Warn("teardown: compose down",
@@ -1472,6 +1505,14 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	var splashes []store.Instance // stopped and failed, written after the loop
 	for _, inst := range desired {
 		seen[inst.ID] = true
+		// An app installed before #608 is still on moose-ingress. Move it off
+		// before anything below runs compose up on its override.
+		if inst.State == "running" || inst.State == "stopped" || inst.State == "failed" {
+			if _, err := m.migrateOffIngress(ctx, inst.ID); err != nil {
+				slog.Warn("reconcile: move app off the control-plane network",
+					"instance_id", inst.ID, "err", err)
+			}
+		}
 		switch inst.State {
 		case "running":
 			if !actual[inst.ID] {
@@ -1590,7 +1631,79 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			m.teardownOrphan(ctx, id)
 		}
 	}
+	// The control-plane compose up just before this pass may have recreated
+	// Caddy, which drops every app network it was on.
+	m.EnsureCaddyNetworks(ctx)
 	return nil
+}
+
+// connectCaddy attaches Caddy to an app's own network, where the route
+// upstream (the main service's moose-<id>-<service> alias) lives. A failure is
+// logged and not returned: the route still serves its splash, and
+// EnsureCaddyNetworks tries again on the next health-poll tick.
+func (m *Manager) connectCaddy(ctx context.Context, id string) {
+	if err := m.docker.NetworkConnect(ctx, "moose-app-"+id, caddyContainer); err != nil {
+		slog.Warn("connect caddy to the app network (retried on the next health tick)",
+			"instance_id", id, "err", err)
+	}
+}
+
+// disconnectCaddy takes Caddy off an app's own network before the network is
+// removed. Best-effort, like the rest of teardown.
+func (m *Manager) disconnectCaddy(ctx context.Context, id string) {
+	if err := m.docker.NetworkDisconnect(ctx, "moose-app-"+id, caddyContainer); err != nil {
+		slog.Warn("teardown: disconnect caddy from the app network", "instance_id", id, "err", err)
+	}
+}
+
+// EnsureCaddyNetworks puts Caddy back on the network of every running app it
+// is not on. A Caddy restart keeps its networks, but a recreate drops them, and
+// every app then answers 502. host-agent can recreate Caddy during a
+// control-plane update while the brain keeps running (UPDATES.md # 8). So this
+// runs after the startup reconcile and on every health-poll tick (#608).
+//
+// It reads Caddy's networks with one docker inspect and connects only what is
+// missing. It never runs compose: the brain touches the control-plane project
+// once, at startup (# EnsureControlPlane). An instance whose lock is held is
+// skipped, because the install, start or uninstall holding it handles Caddy's
+// network itself, and connecting during an uninstall would stop the network
+// from being removed.
+func (m *Manager) EnsureCaddyNetworks(ctx context.Context) {
+	insts, err := m.store.List()
+	if err != nil {
+		slog.Warn("caddy networks: list instances", "err", err)
+		return
+	}
+	var running []string
+	for _, inst := range insts {
+		if inst.State == "running" {
+			running = append(running, inst.ID)
+		}
+	}
+	if len(running) == 0 {
+		return
+	}
+	have, err := m.docker.ContainerNetworks(ctx, caddyContainer)
+	if err != nil {
+		slog.Warn("caddy networks: read the networks caddy is on", "err", err)
+		return
+	}
+	for _, id := range running {
+		if have["moose-app-"+id] {
+			continue
+		}
+		unlock, ok := m.tryLockInstance(id)
+		if !ok {
+			continue
+		}
+		// Read the state again under the lock: the app may have been stopped
+		// or uninstalled since the list above.
+		if inst, err := m.store.Get(id); err == nil && inst.State == "running" {
+			slog.Info("caddy networks: reconnecting caddy to an app network", "instance_id", id)
+			m.connectCaddy(ctx, id)
+		}
+		unlock()
+	}
 }
 
 // reassertRouting re-publishes mDNS and re-registers the Caddy route for a
@@ -1637,6 +1750,7 @@ func (m *Manager) reassertSplash(ctx context.Context, inst store.Instance) {
 }
 
 func (m *Manager) teardownOrphan(ctx context.Context, id string) {
+	m.disconnectCaddy(ctx, id)
 	// Prefer compose if the instance dir survived; otherwise remove containers
 	// by label and drop the per-app network directly.
 	if _, err := os.Stat(m.composeFile(id)); err == nil {
@@ -1783,8 +1897,9 @@ func (m *Manager) writeInstanceDir(id string, man *manifest.Manifest, composeByt
 // writeOverride generates compose.override.yml per APP_LIFECYCLE.md "override
 // file contents": cap_drop ALL, no-new-privileges, forced restart, network
 // attachment, plus the `image: name@sha256:…` pin per service (digest pinning
-// — APP_LIFECYCLE.md). main_service additionally joins the ingress network
-// with a per-instance alias so Caddy can reach exactly this instance.
+// — APP_LIFECYCLE.md). main_service additionally gets a per-instance alias on
+// the app's own network, which Caddy joins to reach exactly this instance. No
+// service joins moose-ingress, the control-plane network (#608).
 func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes []byte, pins []servicePin, iso isolation, lim store.ResourceLimits) error {
 	svcs, err := parseComposeServices(composeBytes)
 	if err != nil {
@@ -1827,7 +1942,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 			nets[sn] = nil
 		}
 		if svc == man.MainService {
-			nets[ingressNetwork] = map[string]any{
+			nets[appNet] = map[string]any{
 				"aliases": []string{fmt.Sprintf("moose-%s-%s", id, man.MainService)},
 			}
 		}
@@ -1845,7 +1960,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 			},
 		}
 		// Pin the main service's *running* container name to the same
-		// moose-<id>-<service> stem as the ingress alias above — without the
+		// moose-<id>-<service> stem as the app-network alias above — without the
 		// pin compose appends a replica suffix ("-1"), and Docker's journald
 		// driver tags log lines with that suffixed name, so the per-app Logs
 		// tail's exact CONTAINER_NAME match (MainContainerName → journalsource)
@@ -1946,8 +2061,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		services[svc] = entry
 	}
 	networks := map[string]any{
-		appNet:         map[string]any{"external": true},
-		ingressNetwork: map[string]any{"external": true},
+		appNet: map[string]any{"external": true},
 	}
 	for _, sn := range svcNets {
 		networks[sn] = map[string]any{"external": true}

@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-13 — Apps leave `moose-ingress`; the brain reads Caddy's admin address from the staged `caddy.json` (#608)
+
+**Previously:** every app's main service joined `moose-ingress` with the brain, Caddy and the socket proxy, so an app could reach the proxy (host root, #430) and Caddy's TCP admin API. The brain dialed Caddy's admin API at the address host-agent put in `MOOSE_CADDY_ADMIN`. The issue planned to keep that, with host-agent passing a unix socket instead.
+**Now:** no app joins `moose-ingress`; the brain attaches Caddy to each app's own network. On a box made since #608 Caddy's admin API is a unix socket only the brain mounts. The brain reads where the admin API is from the staged `caddy.json`, and uses `MOOSE_CADDY_ADMIN` only when it cannot read that file. **Hosted boxes made before #608 keep their TCP admin API** until #612 moves them over. The maintainer chose this over migrating them in #608.
+**Why:** the staged `compose.yml` and `caddy.json` are copied to a box once and an OS update never replaces them (`BUILD.md` # As built), and an existing brain container keeps its env. So an env value from host-agent would point some brain at a listener its Caddy does not have, whichever value it chose, and the box would lose every route write. The staged file always matches the Caddy the box runs. Migrating old boxes needs a version gate between the brain and the staged files, which would have made #608 much larger. Old boxes still lose their reach to the proxy and the brain, the more severe half.
+**Affected docs:** `CONTROL_PLANE.md` (# Locked: Docker socket exposure, # Locked: Caddy is moose substrate), `THREAT_MODEL.md` (B2, accepted-risk list), `APP_ISOLATION.md` (# Inter-app traffic), `docs/architecture.md`.
+
+---
+
 ## 2026-10-13 — `app-unresponsive` also reads Docker's health status (#609)
 
 **Previously:** `app-unresponsive` came only from the manifest `health_probe` (2026-06-02). An app with no `health_probe` never raised it, and Docker's `HEALTHCHECK` was ignored. The probe followed redirects.
