@@ -38,6 +38,8 @@ This closes #598. It builds on [caddy-probe-socket.md](caddy-probe-socket.md) (#
 - **The lane proves one restart and the opt-out.** The 3-in-an-hour limit and the backoff need about 40 minutes of lane time, so they, the stopped app, the failed app and the busy app are proved by the unit tests against the real detector, not on the lane.
 - **The issue text update does not push over SSE.** A changed `details` on an issue that stays raised is not a transition, so the dashboard sees it on its next health fetch, as with every other detail change today.
 
+- **Review.** The agent review found no Block. Its "should fix" is taken: a restart in flight ran on the brain's poll context, so a brain stopping (an update, a reboot) cancelled its `compose up` and parked the app in `failed`, which nothing brings back. The restart now runs on a context the shutdown does not cancel (`context.WithoutCancel`); if the process exits halfway, the row is still `running` and the reconcile pass brings the app up. A test covers it and fails without the change. Its lane notes are taken too: the audit record is polled for a few seconds, since it lands a beat after the route flip, and the timeout comment counts the second install. A restart that succeeds emits an `app.state_changed` event from `running` to `running`; that is harmless and left as is.
+
 ## What's next
 
 - #613: write Caddy's config again when Caddy is recreated while the brain runs. Until then a recreate gives the apps whose route is not rewritten no sample, which delays an automatic restart; it never causes one.

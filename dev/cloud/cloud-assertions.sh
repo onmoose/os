@@ -1526,7 +1526,11 @@ access)
     [ "$(ar_issue "$pw_id")" = clear ] || fail "auto-restart: app-unresponsive not cleared within 180s of the automatic restart: $(ar_issue "$pw_id")"
     grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" \
         || fail "auto-restart: probewho does not answer 200 after the automatic restart"
-    # The record lands when the restart ends, which is before the clear.
+    # The record lands when the restart ends, a beat after the route flip.
+    for _i in $(seq 1 30); do
+        [ "$(ar_audit "$pw_id" | wc -l)" -ge 1 ] && break
+        sleep 1
+    done
     [ "$(ar_audit "$pw_id" | wc -l)" -eq 1 ] \
         || fail "auto-restart: want exactly one successful app.restart.auto record for probewho, got: $(ar_audit "$pw_id" | tr '\n' ' ')"
     echo "cloud-assertions: probewho was restarted automatically ${ar_dt}s after its issue was raised, recovered, and the restart is in the audit log"

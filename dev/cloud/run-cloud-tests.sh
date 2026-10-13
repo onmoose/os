@@ -558,9 +558,9 @@ if should_run access; then
     # move) adds up to ~300s more. The #610 probe socket proof (one more app
     # install, a 70s healthy wait, up to two health ticks to raise and one to
     # clear, and a route write after the recreate) adds up to ~600s more. The
-    # #598 automatic restart proof (one more install, up to 200s to raise,
+    # #598 automatic restart proof (one more install of up to 240s, up to 200s to raise,
     # up to 480s for the 5-minute window and the restart, up to 180s to
-    # clear, up to 90s for the second copy to clear) adds up to ~1000s more.
+    # clear, up to 90s for the second copy to clear) adds up to ~1200s more.
     VERDICT_TIMEOUT=3190
     if ! run_boot "${FIRMWARE}-access" "access" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_ACCESS" "$ACCESS_KEY")" \

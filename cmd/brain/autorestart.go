@@ -135,7 +135,11 @@ func (r *autoRestarter) maybeRestart(ctx context.Context, inst store.Instance, s
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		err := run(ctx)
+		// Not cancelled when the brain stops: a cancelled compose up would
+		// park the app in failed, which nothing brings back. If the brain
+		// exits halfway instead, the row is still running and the reconcile
+		// pass brings the app back up.
+		err := run(context.WithoutCancel(ctx))
 		meta := map[string]any{"name": inst.Name, "reason": "app-unresponsive", "attempt": attempt}
 		if err != nil {
 			slog.Warn("auto-restart: restart failed", "instance_id", inst.ID, "name", inst.Name, "err", err)

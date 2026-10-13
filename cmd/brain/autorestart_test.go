@@ -28,6 +28,7 @@ type fakeRestarter struct {
 	busy    bool
 	runErr  error
 	onRun   func()
+	runCtx  error // ctx.Err() the last run saw
 	begins  []time.Time
 	refused int
 }
@@ -40,9 +41,10 @@ func (f *fakeRestarter) BeginRestart(id string) (func(context.Context) error, er
 		return nil, lifecycle.ErrBusy
 	}
 	f.begins = append(f.begins, f.clk.now())
-	return func(context.Context) error {
+	return func(ctx context.Context) error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.runCtx = ctx.Err()
 		for i := range f.reader.containers {
 			if f.reader.containers[i].InstanceID == id {
 				f.reader.containers[i].StartedAt = f.clk.now()
@@ -294,5 +296,24 @@ func TestAutoRestart_FailureIsAudited(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no app.restart.auto audit record for the failed restart")
+	}
+}
+
+// A brain that is stopping does not cancel a restart in flight: a cancelled
+// compose up would park the app in failed, which nothing brings back.
+func TestAutoRestart_ShutdownDoesNotCancelRestart(t *testing.T) {
+	h := newRestartHarness(t)
+	for i := 0; i < 6; i++ {
+		h.tick()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.d.check(ctx)
+	h.r.wg.Wait()
+	if n := h.fr.count(); n != 1 {
+		t.Fatalf("restarts = %d, want 1", n)
+	}
+	if h.fr.runCtx != nil {
+		t.Fatalf("the restart ran on a cancelled context: %v", h.fr.runCtx)
 	}
 }
