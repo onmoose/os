@@ -256,3 +256,39 @@ func TestReconcileMovesOldAppsOffIngress(t *testing.T) {
 		})
 	}
 }
+
+// CaddyOffNetwork names the running apps the last pass left Caddy off, so the
+// probe does not read their route's 502 as the app failing (#613).
+func TestCaddyOffNetworkAfterAFailedConnect(t *testing.T) {
+	e := newTestEnv(t)
+	inst := installWhoami(t, e)
+	if e.m.CaddyOffNetwork(inst.ID) {
+		t.Fatal("off before any pass")
+	}
+	e.docker.attached[caddyContainer] = map[string]bool{}
+	e.docker.networkConnectErr = errors.New("no such container: moose-caddy")
+	e.m.EnsureCaddyNetworks(context.Background())
+	if !e.m.CaddyOffNetwork(inst.ID) {
+		t.Fatal("a failed connect does not count as off")
+	}
+	// The inspect fails: what the last pass found stays.
+	e.docker.containerNetworksErr = errors.New("docker unreachable")
+	e.m.EnsureCaddyNetworks(context.Background())
+	if !e.m.CaddyOffNetwork(inst.ID) {
+		t.Fatal("an unknown pass dropped what the last one found")
+	}
+	e.docker.containerNetworksErr = nil
+	e.docker.networkConnectErr = nil
+	e.m.EnsureCaddyNetworks(context.Background())
+	if e.m.CaddyOffNetwork(inst.ID) {
+		t.Fatal("still off after Caddy was put back on the network")
+	}
+	// A held app counts as off until a pass sees Caddy on its network.
+	e.docker.attached[caddyContainer] = map[string]bool{}
+	unlock := e.m.lockInstance(inst.ID)
+	e.m.EnsureCaddyNetworks(context.Background())
+	unlock()
+	if !e.m.CaddyOffNetwork(inst.ID) {
+		t.Fatal("a held app off Caddy's network does not count as off")
+	}
+}

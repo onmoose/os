@@ -88,9 +88,10 @@ func probeRouteID(instanceID string) string { return "moose-probe-" + instanceID
 // The brain creates it through the admin API, like the routes, and it is not
 // in the staged caddy.json: that file is copied to a box once and no update
 // replaces it, so only the brain reaches every box (BUILD.md # As built).
-// A Caddy recreate loses it with every other route (#613). The next route
-// write that finds it missing creates it again (ensureProbeServer), and the
-// brain's startup writes it whole (EnsureServer).
+// A Caddy recreate loses it with every other route. The brain's startup
+// writes it whole (EnsureServer), the health tick that finds Caddy lost its
+// config writes it again (RestoreServer, #613), and a route write that finds
+// it missing does too (ensureProbeServer).
 const (
 	probeServerPath = "/config/apps/http/servers/moose-probe"
 	probeRoutesPath = probeServerPath + "/routes"
@@ -758,10 +759,138 @@ func (c *Client) EnsureServer(ctx context.Context) error {
 // exists"), while POST creates-or-replaces. That keeps this idempotent across
 // brain restarts.
 func (c *Client) ensureTrustedProxies(ctx context.Context) error {
-	return c.post(ctx, "/config/apps/http/servers/moose/trusted_proxies", map[string]any{
+	return c.post(ctx, trustedProxiesPath, trustedProxies())
+}
+
+const trustedProxiesPath = "/config/apps/http/servers/moose/trusted_proxies"
+
+func trustedProxies() map[string]any {
+	return map[string]any{
 		"source": "static",
 		"ranges": []any{},
-	})
+	}
+}
+
+// configuredID is the @id of the mark that says the brain wrote Caddy's config
+// (#613). Caddy keeps no config across a recreate (its /config is a tmpfs), and
+// a new container starts from the staged caddy.json. That file already has the
+// moose server, its trusted proxies and a catch-all with the same @id the brain
+// uses, so none of those can tell a fresh Caddy from a configured one. The mark
+// is an @id the staged file never has.
+//
+// It sits on the trusted-proxy object because an @id needs an object to live
+// on, and that one is small and never changes: Caddy strips @id keys before it
+// reads a config, so the mark changes nothing in how Caddy runs. Every write
+// of the trusted proxies without it removes it (EnsureServer, BeginConfig), so
+// it is only there once MarkConfigured has run after them.
+const configuredID = "moose-configured"
+
+// configuringID is the @id BeginConfig puts on the same object while the
+// brain writes the config. The object's ETag then names this write, so
+// MarkConfigured can tell whether Caddy is still the one that got it.
+const configuringID = "moose-configuring"
+
+// BeginConfig starts a full write of the brain's config: it writes the empty
+// trusted-proxy set with the configuring @id, and returns the ETag Caddy gives
+// that object. Pass it to MarkConfigured once every other write is done.
+//
+// Caddy computes the ETag of a config path from that path's value alone, so the
+// brain's other writes (routes, the probe server, TLS) do not change it. A
+// Caddy that was recreated or restarted in between runs on the staged file,
+// whose object has no configuring @id, so its ETag differs and the mark is
+// refused (#613).
+func (c *Client) BeginConfig(ctx context.Context) (token string, err error) {
+	body := trustedProxies()
+	body["@id"] = configuringID
+	if err := c.post(ctx, trustedProxiesPath, body); err != nil {
+		return "", fmt.Errorf("caddy: begin the config write: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.admin+trustedProxiesPath, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("caddy admin unreachable: %w", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	token = resp.Header.Get("Etag")
+	if resp.StatusCode != http.StatusOK || token == "" {
+		return "", fmt.Errorf("caddy: begin the config write: GET %s answered %d with ETag %q", trustedProxiesPath, resp.StatusCode, token)
+	}
+	return token, nil
+}
+
+// MarkConfigured puts the mark on Caddy's config, only if Caddy is still the
+// one BeginConfig wrote to (token). cmd/brain calls it once the startup writes
+// are done, and after it wrote the config again (#613). An error means no
+// mark: the health tick then writes the config again.
+func (c *Client) MarkConfigured(ctx context.Context, token string) error {
+	body := trustedProxies()
+	body["@id"] = configuredID
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.admin+trustedProxiesPath, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("caddy admin unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	msg, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusPreconditionFailed {
+		return fmt.Errorf("caddy: not marking the config: caddy lost it while the brain wrote it (%s)", strings.TrimSpace(string(msg)))
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("caddy: mark the config as written: %w", adminError("POST", trustedProxiesPath, resp.StatusCode, string(msg)))
+	}
+	return nil
+}
+
+// Configured reports whether Caddy still holds the mark MarkConfigured wrote.
+// false means Caddy lost the brain's config: it was recreated, or restarted,
+// and runs on the staged caddy.json alone. An error means Caddy did not give
+// a clear answer, and the caller must not act on it.
+func (c *Client) Configured(ctx context.Context) (bool, error) {
+	status, err := c.get(ctx, "/id/"+configuredID)
+	if err != nil {
+		return false, err
+	}
+	switch status {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, adminError("GET", "/id/"+configuredID, status, "")
+	}
+}
+
+// RestoreServer writes the server-wide parts of the brain's config again after
+// Caddy lost them (#613): the moose-probe server when it is on, and the
+// catch-all. The trusted proxies are BeginConfig's, which the caller runs
+// first. Unlike EnsureServer it never resets the route list, because it runs
+// while the brain serves: an install or a start may be writing its own route
+// at the same moment. Each step is a no-op when its part is already there, so
+// a second run changes nothing. The app routes, the dashboard route and the
+// TLS policy are the caller's.
+func (c *Client) RestoreServer(ctx context.Context) error {
+	if c.probeListen != "" {
+		c.probeMu.Lock()
+		_, err := c.ensureProbeServer(ctx)
+		c.probeMu.Unlock()
+		if err != nil {
+			return fmt.Errorf("caddy: write the probe server: %w", err)
+		}
+	}
+	return c.EnsureCatchAll(ctx)
 }
 
 // EnrollmentCredentials is the per-box acme-dns account Caddy uses to answer the

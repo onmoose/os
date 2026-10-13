@@ -1680,6 +1680,29 @@ access)
     cp_project="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' moose-caddy)"
     caddy_img="$(docker inspect -f '{{.Config.Image}}' moose-caddy)"
     old_caddy="$(docker inspect -f '{{.Id}}' moose-caddy)"
+    # For 6d-1: what must not change across the recreate and the brain's
+    # restore. The brain is not restarted, and no app is restarted (#598):
+    # a restart, automatic or not, gives the container a new start time.
+    rs_brain0="$(docker inspect -f '{{.State.StartedAt}}' moose-brain)"
+    rs_whoami0="$(docker inspect -f '{{.State.StartedAt}}' "$cname")"
+    rs_pw0="$(ar_started "$pw_id")"
+    # Read the whole log first, then count: grep -q on a live pipe would cut
+    # docker logs short, which pipefail reads as a failure.
+    brain_log_count() { local l; l="$(docker logs moose-brain 2>&1)"; grep -cF "$1" <<<"$l"; }
+    rs_lost0="$(brain_log_count "caddy: lost the brain's config")"
+    rs_done0="$(brain_log_count 'caddy: config written again')"
+    [ -n "$rs_brain0" ] && [ -n "$rs_whoami0" ] && [ -n "$rs_pw0" ] \
+        || fail "restore: no StartedAt for the brain, whoami or probewho ('$rs_brain0', '$rs_whoami0', '$rs_pw0')"
+    # A stopped app, so the restore of a splash is proved too. The brain
+    # route goes through Caddy, which is still whole here.
+    st_resp="$(full_send POST "/api/v1/apps/${ar_off}/stop" "$apex" "$session_cookie" '{}' 2>/dev/null)"
+    grep -qE ' 20[02]' <<<"$(status_of "$st_resp")" || fail "restore: stop $ar_slug answered '$(status_of "$st_resp")'"
+    for _i in $(seq 1 60); do
+        grep -qF 'is stopped.' <<<"$(full_get / "$ar_off_host" 2>/dev/null)" && break
+        sleep 1
+    done
+    grep -qF 'is stopped.' <<<"$(full_get / "$ar_off_host" 2>/dev/null)" \
+        || fail "restore: $ar_slug does not show its stopped splash before the recreate: $(status_of "$(full_get / "$ar_off_host" 2>/dev/null)")"
     rc_out="$(cd /var/lib/moose/control-plane && MOOSE_CADDY_IMAGE="$caddy_img" docker compose -f compose.yml -p "$cp_project" up -d --force-recreate --no-deps caddy 2>&1)" \
         || fail "net: recreating caddy failed: $rc_out"
     [ "$(docker inspect -f '{{.Id}}' moose-caddy)" != "$old_caddy" ] || fail "net: caddy was not recreated (same container id)"
@@ -1691,46 +1714,79 @@ access)
     [ -n "$back" ] || fail "net: caddy was not back on $app_net within 90s of a recreate (one health tick is 60s)"
     echo "cloud-assertions: after a caddy recreate, the brain put caddy back on $app_net within ${_i}s"
 
-    # 6d-1. The recreated Caddy started from the staged caddy.json, so its probe
-    #       server is gone with every route (#613; #610 writes it through the
-    #       admin API, not in caddy.json). The brain's normal route write puts
-    #       it back: the exposure toggle rewrites probewho's route, and the probe
-    #       server comes back with probewho's copy in it. whoami's copy is not
-    #       written again, so its host gets the no-route mark until the brain
-    #       restarts. The wait covers one health tick, for Caddy to be back on
-    #       probewho's network too.
-    pw_gone="$(caddy_admin_get /config/apps/http/servers/moose-probe 2>&1 | tail -1 | tr -d '\r')"
-    [ "$pw_gone" = null ] || fail "probe: the recreated caddy still has a probe server: $(cut -c1-300 <<<"$pw_gone")"
-    #       The toggle goes straight to the brain on its moose-ingress address:
-    #       the recreated Caddy has no dashboard route either, so :80 would
-    #       answer it with the catch-all.
-    brain_send() { # METHOD PATH JSON -> full response
-        local len; len="$(printf '%s' "$3" | wc -c | tr -d ' ')"
-        exec 3<>"/dev/tcp/$(ingress_ip moose-brain)/8080" || return 1
-        printf '%s %s HTTP/1.0\r\nHost: %s\r\nCookie: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
-            "$1" "$2" "$apex" "$session_cookie" "$len" "$3" >&3
-        cat <&3
-        exec 3>&- 3<&-
-    }
-    pw_exp="$(status_of "$(brain_send PUT "/api/v1/apps/${pw_id}/exposure" '{"exposure":"public"}' 2>/dev/null)")"
-    grep -q ' 200' <<<"$pw_exp" || fail "probe: exposure toggle of probewho answered '$pw_exp'; wanted 200"
-    pw_back=""
+    # 6d-1. THE BRAIN WRITES CADDY'S CONFIG AGAIN, WITH NO RESTART (#613). The
+    #       recreated Caddy started from the staged caddy.json: no app route,
+    #       no dashboard route, no probe server and no TLS policy. On the
+    #       health tick that put Caddy back on the app network, the brain sees
+    #       that its mark is gone and writes all of it again. So within one
+    #       more tick at most: whoami answers through :80, the stopped app
+    #       shows its splash, the dashboard answers at the apex, :443 is bound
+    #       again, and the probe socket reaches whoami and probewho. The brain
+    #       was not restarted, and no app was restarted or flagged.
     for _i in $(seq 1 90); do
-        grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>/dev/null)")" && { pw_back=1; break; }
+        [ "$(brain_log_count "caddy: lost the brain's config")" -gt "$rs_lost0" ] && break
         sleep 1
     done
-    [ -n "$pw_back" ] || fail "probe: after a caddy recreate, a route write did not bring back the probe server for probewho: $(caddy_admin_get /config/apps/http/servers/moose-probe 2>&1 | tail -1 | cut -c1-300)"
-    pw_wh="$(caddy_probe GET / "$app_host" 2>&1)"
-    grep -qi '^X-Moose-Probe: no-route' <<<"$pw_wh" || fail "probe: whoami's probe route is back with no route write: $(status_of "$pw_wh")"
-    echo "cloud-assertions: after a caddy recreate, probewho's route write brought the probe server back (whoami's copy waits for the brain restart)"
+    [ "$(brain_log_count "caddy: lost the brain's config")" -gt "$rs_lost0" ] \
+        || fail "restore: the brain did not see that the recreated caddy lost its config"
+    rs_ok=""
+    for _i in $(seq 1 90); do
+        rs_who="$(full_get / "$app_host" 2>/dev/null || true)"
+        if grep -q ' 200' <<<"$(status_of "$rs_who")" && grep -qi 'Hostname:' <<<"$rs_who"; then rs_ok=1; break; fi
+        sleep 1
+    done
+    [ -n "$rs_ok" ] || fail "restore: whoami does not answer through the recreated caddy with no brain restart: status='$(status_of "$rs_who")'"
+    for _i in $(seq 1 30); do
+        [ "$(brain_log_count 'caddy: config written again')" -gt "$rs_done0" ] && break
+        sleep 1
+    done
+    [ "$(brain_log_count 'caddy: config written again')" -gt "$rs_done0" ] \
+        || fail "restore: the brain did not log that it wrote the config again: $(docker logs moose-brain 2>&1 | grep -F 'caddy restore' | tail -3)"
+    grep -qF 'is stopped.' <<<"$(full_get / "$ar_off_host" 2>/dev/null)" \
+        || fail "restore: $ar_slug lost its stopped splash: $(status_of "$(full_get / "$ar_off_host" 2>/dev/null)")"
+    grep -q ' 200' <<<"$(status_of "$(full_get /api/v1/health "$apex" "$session_cookie" 2>/dev/null)")" \
+        || fail "restore: the dashboard route is not back: /api/v1/health at the apex answered '$(status_of "$(full_get /api/v1/health "$apex" "$session_cookie" 2>/dev/null)")'"
+    timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/443' 2>/dev/null \
+        || fail "restore: :443 is not bound again after the restore (the TLS policy is not back)"
+    [ "$(caddy_admin_get /config/apps/http/servers/moose/listen 2>&1 | tail -1 | tr -d '\r')" = '[":80",":443"]' ] \
+        || fail "restore: the moose server listens on '$(caddy_admin_get /config/apps/http/servers/moose/listen 2>&1 | tail -1)', want :80 and :443"
+    grep -qF "\"*.${box_id}.onmoose.io\"" <<<"$(caddy_admin_get /config/apps/tls/certificates/automate 2>&1)" \
+        || fail "restore: the wildcard is not in Caddy's automate list again: $(caddy_admin_get /config/apps/tls/certificates/automate 2>&1 | tail -1 | cut -c1-300)"
+    grep -qi 'Hostname:' <<<"$(caddy_probe GET / "$app_host" 2>&1)" \
+        || fail "restore: the probe socket does not reach whoami: $(caddy_probe GET / "$app_host" 2>&1 | head -1)"
+    grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" \
+        || fail "restore: the probe socket does not reach probewho: $(caddy_probe GET /health "$pw_host" 2>&1 | head -1)"
+    grep -qi '^X-Moose-Probe: splash' <<<"$(caddy_probe GET / "$ar_off_host" 2>&1)" \
+        || fail "restore: the probe copy of $ar_slug is not its marked splash: $(caddy_probe GET / "$ar_off_host" 2>&1 | head -3 | tr '\r\n' '  ')"
+    [ "$(docker inspect -f '{{.State.StartedAt}}' moose-brain)" = "$rs_brain0" ] \
+        || fail "restore: the brain was restarted; the point is that it is not"
+    # Give the probe one more tick on the restored routes before reading the
+    # issues, so a wrong route would have had its chance to fail.
+    sleep 65
+    [ "$(docker inspect -f '{{.State.StartedAt}}' "$cname")" = "$rs_whoami0" ] || fail "restore: whoami was restarted"
+    [ "$(ar_started "$pw_id")" = "$rs_pw0" ] || fail "restore: probewho was restarted"
+    for rs_id in "$inst_id" "$pw_id"; do
+        [ "$(ar_issue "$rs_id")" = clear ] || fail "restore: $rs_id is flagged app-unresponsive after the restore: $(ar_issue "$rs_id")"
+    done
+    echo "cloud-assertions: after a caddy recreate, the brain wrote its config again with no restart: app route, splash, dashboard, TLS and probe copies are back, and no app was restarted or flagged"
 
-    # 6e. A recreated Caddy also starts from the bootstrap caddy.json, so its
-    #     routes are gone until the brain writes them again, which today happens
-    #     at brain startup (the updater starts the brain last for this reason).
-    #     Restart the brain the same way and check the app answers through the
-    #     recreated Caddy: the admin socket a new Caddy made is one the brain can
-    #     use, and the upstream on the app network is reachable.
+    # 6e. The updater starts the brain last, after any Caddy recreate. Restart
+    #     the brain the same way and check the app answers through the
+    #     recreated Caddy: the admin socket a new Caddy made is one the brain
+    #     can use, and the startup writes every route again.
+    #     Since #613 Caddy still holds the routes the brain wrote back in
+    #     6d-1, so whoami answers before the new brain is done starting. Wait
+    #     for the end of its startup (the dashboard route is its last Caddy
+    #     write) first: its compose up on the control-plane project must be
+    #     over before 6g runs compose on the same project.
+    rr_dash0="$(brain_log_count 'caddy: dashboard route installed')"
     docker restart moose-brain >/dev/null || fail "net: could not restart the brain"
+    for _i in $(seq 1 120); do
+        [ "$(brain_log_count 'caddy: dashboard route installed')" -gt "$rr_dash0" ] && break
+        sleep 1
+    done
+    [ "$(brain_log_count 'caddy: dashboard route installed')" -gt "$rr_dash0" ] \
+        || fail "net: the restarted brain did not finish its startup within 120s"
     rr_resp=""
     for _i in $(seq 1 120); do
         rr_resp="$(full_get / "$app_host" 2>/dev/null || true)"

@@ -2,7 +2,9 @@ package caddy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +26,10 @@ type probeAdmin struct {
 	// server does not exist. probeRts are its routes.
 	probe    map[string]any
 	probeRts []map[string]any
-	calls    []string
+	// trusted is the moose server's trusted_proxies object, where the
+	// configured mark lives (#613).
+	trusted map[string]any
+	calls   []string
 	// failPrefix makes every call whose "METHOD path" starts with it answer
 	// 500 and change nothing.
 	failPrefix string
@@ -80,6 +85,10 @@ func (a *probeAdmin) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/id/")
 	switch {
+	case r.Method == "GET" && r.URL.Path == "/id/"+configuredID:
+		if a.trusted["@id"] != configuredID {
+			http.Error(w, `{"error":"unknown object ID"}`, http.StatusNotFound)
+		}
 	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/id/"):
 		list, _ := a.find(id)
 		a.mu.Unlock()
@@ -125,7 +134,23 @@ func (a *probeAdmin) serve(w http.ResponseWriter, r *http.Request) {
 		var srv map[string]any
 		_ = json.Unmarshal(b, &srv)
 		a.setProbeServer(srv)
-	case r.Method == "POST" && r.URL.Path == "/config/apps/http/servers/moose/trusted_proxies":
+	case r.Method == "GET" && r.URL.Path == trustedProxiesPath:
+		// Caddy's ETag for a config path is the path and a hash of its value.
+		w.Header().Set("Etag", a.trustedETag())
+		_ = json.NewEncoder(w).Encode(a.trusted)
+	case r.Method == "POST" && r.URL.Path == trustedProxiesPath:
+		if m := r.Header.Get("If-Match"); m != "" && m != a.trustedETag() {
+			http.Error(w, `{"error":"If-Match header did not match current config hash"}`, http.StatusPreconditionFailed)
+			return
+		}
+		var tp map[string]any
+		_ = json.Unmarshal(b, &tp)
+		a.trusted = tp
+	case r.Method == "POST" && r.URL.Path == routesPath:
+		// Caddy appends on POST to a route list.
+		var route map[string]any
+		_ = json.Unmarshal(b, &route)
+		a.routes = append(a.routes, route)
 	case r.Method == "PATCH" && r.URL.Path == routesPath:
 		a.routes = nil
 	default:
@@ -142,6 +167,11 @@ func (a *probeAdmin) setProbeServer(srv map[string]any) {
 	}
 	delete(srv, "routes")
 	a.probe = srv
+}
+
+func (a *probeAdmin) trustedETag() string {
+	b, _ := json.Marshal(a.trusted)
+	return fmt.Sprintf("%s %x", trustedProxiesPath, sha256.Sum256(b))
 }
 
 // dropProbeServer is what a Caddy recreate does to the probe server.

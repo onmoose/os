@@ -407,6 +407,9 @@ type fakeCaddy struct {
 	routes  map[string]string            // instanceID → "splash:<state>" | "upstream:<addr>"
 	configs map[string]caddy.RouteConfig // instanceID → last AddRoute policy (#306)
 	calls   []call
+	// writeErr, when set, fails every AddRoute and AddSplashRoute, which then
+	// change nothing.
+	writeErr error
 }
 
 func newFakeCaddy() *fakeCaddy {
@@ -427,9 +430,12 @@ func (c *fakeCaddy) EnsureServer(context.Context) error {
 func (c *fakeCaddy) AddRoute(_ context.Context, cfg caddy.RouteConfig) error {
 	c.record("AddRoute", cfg.InstanceID, cfg.Host, cfg.Upstream)
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.writeErr != nil {
+		return c.writeErr
+	}
 	c.routes[cfg.InstanceID] = "upstream:" + cfg.Upstream
 	c.configs[cfg.InstanceID] = cfg
-	c.mu.Unlock()
 	return nil
 }
 
@@ -440,8 +446,11 @@ func (c *fakeCaddy) AddSplashRoute(ctx context.Context, id, host, name, state st
 		return err
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.writeErr != nil {
+		return c.writeErr
+	}
 	c.routes[id] = "splash:" + state
-	c.mu.Unlock()
 	return nil
 }
 
