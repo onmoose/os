@@ -1,0 +1,43 @@
+# The brain restarts an app that stays unresponsive
+
+- **Status:** done
+- **Date:** 2026-10-13
+- **Specs touched:** `HEALTH.md` (# Taxonomy, # Automatic restart, # What's deliberately out of scope); `APP_LIFECYCLE.md` # Locked: automatic restart of an unresponsive app; `LOGGING.md` # v1 action vocabulary; `BRAIN_UI_PROTOCOL.md`; `DASHBOARD.md` # Settings; `TESTING.md` # Hosted cloud variant; `DECISIONS.md` 2026-10-13; `docs/architecture.md`; `docs/dev/hosted-boot-proof.md`
+
+This closes #598. It builds on [caddy-probe-socket.md](caddy-probe-socket.md) (#610), which made the `app-unresponsive` probe a real sample for owner-only apps on hosted, and on [app-health-docker-signal.md](app-health-docker-signal.md) (#609), which added Docker's own health status. Acting on the probe was only safe once the probe was right.
+
+## What was done
+
+- **The rule** (`cmd/brain/autorestart.go`, driven from `appProbeDetector.check` in `cmd/brain/main.go`). On every health tick, for each app whose `app-unresponsive` issue the detector holds raised, the brain restarts the app when all of these hold:
+  - the issue has been raised for the wait, counted from its `raised_at`, and only after the start-period grace of the app's current container (`StartedAt` plus `health_probe.start_period`, or `StartedAt` alone with no probe). A tick that clears the issue (a good answer, or no sample) resets `raised_at`, so only an issue that stayed raised the whole time counts. The `StartedAt` part starts the wait again after every restart, even if no tick cleared the issue in between;
+  - the wait is 5 minutes doubled once per automatic restart in the last hour: 5, 10, 20;
+  - fewer than 3 automatic restarts of the app in the last hour (a rolling hour);
+  - the app's row is `running` and its new per-app setting is on.
+- **The restart** (`lifecycle.Manager.BeginRestart`). It takes the app's per-instance lock only when it is free (`ErrBusy` otherwise: an install's last steps, a stop, a start, an uninstall, a config or mail edit) and checks the row is `running` (`ErrNotRunning` otherwise), both before it returns, so a skip never uses up a restart. The work it returns is `compose stop`, then Start's own steps (`startLocked`, split out of `Start`): mDNS re-publish, the starting splash, `compose up -d`, Caddy's app networks, the health wait, the flip to the real upstream. The row stays `running` throughout, so a brain that dies halfway leaves an app the reconcile pass brings back up. A restart that does not come healthy lands in `failed`, as a Start does, and the brain does not restart a failed app. The work runs on its own goroutine, so the health tick keeps its pace.
+- **Visible.** Each restart writes one `app.restart.auto` audit record when it ends (system actor, `target_kind: app`, the instance id, metadata `name`, `reason: app-unresponsive`, `attempt`), success true or false. Activity labels it "App restarted automatically". The issue's details add "moose restarted it automatically at HH:MM UTC.", or, at the limit, that it restarted the app 3 times in the last hour, that this did not help and that it stopped trying. While a restart starts, the details say the brain is restarting it now.
+- **Opt-out.** `instances.auto_restart_off` (additive column, default 0, so every app is on, old ones too), `Store.SetInstanceAutoRestart`, `PUT /api/v1/apps/{id}/auto-restart` with `{"enabled": bool}` behind the owner-or-admin gate (`authorizeAppMutation`), and `auto_restart` on the instance DTO. The app's settings page has an **Automatic restart** switch on both profiles, for a viewer who may control the app. The setting is not audited: it changes no access and no principal, and the restarts it allows are.
+- **Tests.**
+  - `cmd/brain/autorestart_test.go`, through the real detector with a fake lifecycle and a one-minute tick: restart at exactly 5 minutes after the raise and not before, recovery and one audit record naming the app; an app that stays broken is restarted at minutes 6, 17 and 38 (the 5/10/20 backoff), never more than 3 in any hour, the 4th only at minute 66 when the 1st is an hour old, and the details say it stopped trying; the details name the last restart in UTC; a stopped app, a failed app and an app with the setting off are never restarted and keep the issue; a busy app is skipped without using a restart, then restarted once free; a clear in the middle starts the wait again; a failed restart is audited as a failure. Run with `-race`. With the backoff removed the bounded test fails (restarts at 6, 12, 18).
+  - `internal/lifecycle/lifecycle_restart_test.go`: stop then up in that order, the row `running`, the route back on the upstream, the name re-published, the lock released; a stopped app refused with no Docker call; a held lock refused with `ErrBusy`, and a begun restart holds the lock until it runs; a restart that does not come healthy lands in `failed` with the failed splash.
+  - `internal/store`: the column round-trips through `Get` and `List`, on by default. `internal/api`: the owner and an admin toggle it, a member on a household app gets 403, another member's app 404, no session 401.
+- **Cloud lane, `access` boot, step 4f** (`dev/cloud/cloud-assertions.sh`). After 4e, a second `probewho` is installed (`confirm: true` past the duplicate warning) and its setting turned off through the API. Both copies answer `502` and are flagged. The first is restarted (its container's `StartedAt` changes) no sooner than 280s after the flag, answers `200` again (whoami keeps the `/health` status in memory, so the restart itself is the fix), is cleared, and has exactly one successful `app.restart.auto` record in `GET /api/v1/audit`. The second keeps its `StartedAt`, stays flagged and has no record, then is set back to `200`. The access boot's `VERDICT_TIMEOUT` goes from 2190 to 3190, and the boot job's `timeout-minutes` from 60 to 75 to fit it.
+
+## How it maps to the specs
+
+- `HEALTH.md` # Automatic restart is new and holds the rule. The `app-unresponsive` row names it, and # What's deliberately out of scope lists it as the second exception to "every Tier-2 action is user-initiated". The locked "No silent auto-recovery" still holds: the restart is audited and the clear shows its toast.
+- `APP_LIFECYCLE.md` # Locked: automatic restart of an unresponsive app holds the mechanism, and # concurrency is what "never fights the user" rests on.
+- `DECISIONS.md` 2026-10-13 records the flip from "surface, don't act" for this one detector.
+
+## Known gaps & deviations
+
+- **There is no "restart" action in the dashboard.** The issue says to use "the restart the dashboard already triggers"; the dashboard has Stop and Start. The automatic restart is those two under one lock, so routes, limits and env are applied the same way. It differs from a person's Stop then Start only in that the row never reads `stopped`.
+- **The limit is a rolling hour, as the issue states it.** An app that stays broken gets at most 3 restarts in any hour, so about 3 an hour for as long as it stays broken, each one audited. The issue's "then left alone" is read as "for the rest of that hour". If the maintainer wants the brain to stop until the app is seen healthy or a person acts, that is a small change in `autoRestarter`.
+- **The restart history is in memory.** A brain restart (a control-plane update, a reboot) starts the hourly count again. The issue's `raised_at` survives, but a restart right after a brain restart still needs the full wait from it.
+- **The time in the details is UTC.** The brain has no per-user time zone to format with, and the details are plain text. The Activity row shows the restart in the viewer's own time.
+- **A member does not see the record of their own app's restart.** System events are admin-only in Activity (`LOGGING.md` # Visibility rules). They see the issue and its details.
+- **The lane proves one restart and the opt-out.** The 3-in-an-hour limit and the backoff need about 40 minutes of lane time, so they, the stopped app, the failed app and the busy app are proved by the unit tests against the real detector, not on the lane.
+- **The issue text update does not push over SSE.** A changed `details` on an issue that stays raised is not a transition, so the dashboard sees it on its next health fetch, as with every other detail change today.
+
+## What's next
+
+- #613: write Caddy's config again when Caddy is recreated while the brain runs. Until then a recreate gives the apps whose route is not rewritten no sample, which delays an automatic restart; it never causes one.

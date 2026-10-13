@@ -29,6 +29,7 @@ GET  /api/v1/apps                          → list installed instances (each wi
 GET  /api/v1/apps/:id                      → instance detail (with needs_setup)
 GET  /api/v1/apps/:id/config               → user-supplied config values (APP_MANIFEST.md # D4; secret fields masked), the app's AI bindings, and what is missing
 PUT  /api/v1/apps/:id/config               → update config values and AI bindings; rewrites override + restarts the app
+PUT  /api/v1/apps/:id/auto-restart         → turn the automatic restart of an unresponsive app on or off ({"enabled": bool}; owner or admin; echoes the app, whose auto_restart field reports it; HEALTH.md # Automatic restart, #598)
 POST /api/v1/users                         → create user
 DELETE /api/v1/users/:id                   → delete a user (admin, elevation required); may start a job for the apps their accounts reached (see Pattern B)
 GET  /api/v1/settings/network              → current network config
