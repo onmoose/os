@@ -243,6 +243,29 @@ func main() {
 		probeSocket = lifecycle.CaddyProbeSocket(cfg.controlPlaneDir)
 	}
 
+	// The TLS policy and the dashboard route, which the brain writes at
+	// startup below and again when Caddy lost its config (#613).
+	edge := caddyEdge{
+		cd:            cd,
+		tls:           prof == profile.Hosted && enrollment.Complete(),
+		certSubjects:  profile.CertSubjects(boxID),
+		acmeDNS:       cfg.acmeDNSEndpoint,
+		brainUpstream: cfg.dashboardBrainUpstream,
+		uiUpstream:    cfg.dashboardUIUpstream,
+		enrollment: caddy.EnrollmentCredentials{
+			Subdomain: enrollment.Subdomain,
+			Username:  enrollment.Username,
+			Password:  enrollment.Password,
+		},
+		// On hosted the dashboard is served at the box apex
+		// "<box-id>.onmoose.io" (under the box's wildcard cert), not the
+		// appliance's "moose.local" (ENVIRONMENT.md # Networking & discovery).
+		dashboardHost: cfg.dashboardHost,
+	}
+	if prof == profile.Hosted && boxID != "" {
+		edge.dashboardHost = profile.HostedDashboardHost(boxID)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	life.EnsureIngress(ctx)
 	// Startup reconcile: converge Docker + routing to SQLite desired state and
@@ -264,14 +287,8 @@ func main() {
 	// cert on its own schedule afterwards, so a slow or unreachable ACME never
 	// blocks startup or delays the dashboard route installed just before Serve. A
 	// transient Caddy config error here does not stop the brain from serving.
-	if prof == profile.Hosted && enrollment.Complete() {
-		if err := cd.EnsureWildcardTLS(ctx, profile.CertSubjects(boxID), cfg.acmeDNSEndpoint, caddy.EnrollmentCredentials{
-			Subdomain: enrollment.Subdomain,
-			Username:  enrollment.Username,
-			Password:  enrollment.Password,
-		}); err != nil {
-			slog.Warn("caddy: configure wildcard TLS failed; continuing on HTTP", "err", err)
-		}
+	if err := edge.writeTLS(ctx); err != nil {
+		slog.Warn("caddy: configure wildcard TLS failed; continuing on HTTP", "err", err)
 	}
 	cancel()
 	// The dashboard host route (which points Caddy's /api leg at this brain) is
@@ -332,8 +349,17 @@ func main() {
 	probe.SetRestarter(newAutoRestarter(life, auditor))
 	// Caddy's app networks ride the same tick (#608): a Caddy recreated while
 	// the brain runs is back on every running app's network within one tick.
-	// First, so the probe that follows reads an app Caddy can reach.
-	go appRuntimeHealthLoop(pollCtx, cfg.healthPollPeriod, life.EnsureCaddyNetworks, rld.check, probe.check)
+	// Its config too (#613): the restorer writes every route, the probe
+	// server, the dashboard route and the TLS policy again when Caddy lost
+	// them. Both first, so the probe that follows reads an app Caddy can
+	// reach through the route a browser gets.
+	restorer := &caddyRestorer{caddy: cd, life: life, edge: func(ctx context.Context) error {
+		if err := edge.writeTLS(ctx); err != nil {
+			return err
+		}
+		return edge.writeDashboard(ctx)
+	}}
+	go appRuntimeHealthLoop(pollCtx, cfg.healthPollPeriod, life.EnsureCaddyNetworks, restorer.check, rld.check, probe.check)
 
 	// Bound the notifications table (NOTIFICATIONS.md # Locked decisions, the
 	// retention bullet): prune aged / over-cap rows once at boot, then on a slow
@@ -405,20 +431,18 @@ func main() {
 	// set, which dev never does. Inserted at index 0 (PUT) so it sorts before the
 	// catch-all. Installed here, after the listener is bound, so Caddy's /api leg
 	// only goes live once this brain can answer it.
-	if cfg.dashboardUIUpstream != "" {
-		// On hosted the dashboard is served at the box apex
-		// "<box-id>.onmoose.io" (under the box's wildcard cert), not the
-		// appliance's "moose.local" (ENVIRONMENT.md # Networking & discovery).
-		dashboardHost := cfg.dashboardHost
-		if prof == profile.Hosted && boxID != "" {
-			dashboardHost = profile.HostedDashboardHost(boxID)
-		}
-		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := cd.EnsureDashboard(dctx, dashboardHost, cfg.dashboardBrainUpstream, cfg.dashboardUIUpstream); err != nil {
-			slog.Warn("caddy: ensure dashboard route failed; continuing", "err", err)
-		}
-		dcancel()
+	dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := edge.writeDashboard(dctx); err != nil {
+		slog.Warn("caddy: ensure dashboard route failed; continuing", "err", err)
 	}
+	// The startup writes are done: mark Caddy's config as the brain's, and
+	// from now on let the health tick write it again if Caddy loses it
+	// (#613). A failed mark is fine: the first tick then writes it all again.
+	if err := cd.MarkConfigured(dctx); err != nil {
+		slog.Warn("caddy: could not mark the config as written; the health tick will write it again", "err", err)
+	}
+	dcancel()
+	restorer.armed.Store(true)
 
 	if err := httpSrv.Serve(ln); err != nil {
 		fatal("http server", "err", err)
