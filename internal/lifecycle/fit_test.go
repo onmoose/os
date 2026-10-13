@@ -3,7 +3,6 @@ package lifecycle
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/onmoose/os/internal/fit"
@@ -30,8 +29,8 @@ func TestInstall_RefusesTooBigBeforeAnyWork(t *testing.T) {
 	if !errors.As(err, &tooBig) {
 		t.Fatalf("install = %v, want a TooBigError", err)
 	}
-	if !strings.Contains(err.Error(), "8.0 GB of memory") || !strings.Contains(err.Error(), "4.0 GB") {
-		t.Errorf("message = %q, want both memory figures", err.Error())
+	if want := "This app can't run on this box as it is. It requires 8.0 GB of memory, and this box only has 4.0 GB."; err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
 	if insts, _ := e.store.List(); len(insts) != 0 {
 		t.Errorf("want no instance rows after refusal, got %d", len(insts))
@@ -99,5 +98,12 @@ func TestFitBox_HostErrorIsUnknown(t *testing.T) {
 	e.host.resourcesErr = errors.New("host-agent unreachable")
 	if _, ok := e.m.FitBox(context.Background()); ok {
 		t.Error("FitBox reported a box when the host could not")
+	}
+}
+
+func TestTooBigErrorCPUText(t *testing.T) {
+	err := &TooBigError{Fit: fit.AppFit{TooBigCPU: true, RecommendedCPU: 4, BoxCores: 1}}
+	if want := "This app can't run on this box as it is. It requires 4 cores, and this box only has 1 core."; err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
 }

@@ -24,11 +24,12 @@ import DOMPurify from "dompurify";
 import { ChevronLeft, ChevronRight, Cpu, Folder, Globe, HardDrive, Info, Network, X } from "lucide-vue-next";
 import { api, type CatalogDetail, type CatalogHome } from "../api";
 import { useAppInstances, useStartInstall } from "../useInstall";
-import { permissionLines, type PermissionLine } from "../installSteps";
+import { permissionLines, spaceTight, type PermissionLine } from "../installSteps";
 import { formatSize, safeExternalUrl } from "../utils";
-import { recommendedCPU, recommendedMemory } from "../fit";
+import { SPACE_TITLE, recommendedCPU, recommendedMemory, spaceText } from "../fit";
 import AppGlyph from "../components/AppGlyph.vue";
 import FitNotice from "../components/FitNotice.vue";
+import WarningAlert from "../components/WarningAlert.vue";
 import SplitButton from "../components/SplitButton.vue";
 import HealthGated from "../components/HealthGated.vue";
 
@@ -65,7 +66,7 @@ const { householdInstance, ownPersonalInstance, installing, canInstallHousehold 
 
 // The install plan and what Install does (useStartInstall). The plan also
 // feeds the Permissions group in the right column.
-const { planQuery, plan, unavailable, goInstall, pending } = useStartInstall(manifestId);
+const { planQuery, plan, unavailable, tooBig, goInstall, pending } = useStartInstall(manifestId);
 
 // Whether the app fits this box's memory and CPU (#599). The plan's figure
 // wins, because it is the one the Install button follows; the detail's own is
@@ -73,8 +74,14 @@ const { planQuery, plan, unavailable, goInstall, pending } = useStartInstall(man
 // starts or stops (useEvents).
 const fit = computed(() => plan.value?.fit ?? app.value?.fit);
 const memoryLabel = computed(() => recommendedMemory(fit.value));
-// tooBig keeps Install on the page, disabled (the plan's refusal code).
-const tooBig = computed(() => plan.value?.unavailable === "too-big");
+// space is the not-enough-disk warning, from the plan's box-specific footprint:
+// the same 90% rule the install pages use (spaceTight). null when it fits or
+// the brain could not measure the free space.
+const space = computed(() => {
+  const fp = plan.value?.footprint;
+  if (!fp || !spaceTight(fp)) return null;
+  return spaceText(fp.image_disk_bytes + (fp.estimated_state_bytes ?? 0), fp.free_bytes);
+});
 const cpuLabel = computed(() => recommendedCPU(fit.value));
 
 // The Permissions group in the right column, in the install flow's words.
@@ -305,7 +312,7 @@ watch(shots, (list) => {
                while their own copy is still installing, or alongside "Open shared
                app" so the caller can still install their own copy. An app too
                big for this box keeps the button, disabled; the fit notice
-               under Information says why. -->
+               above the price panel says why. -->
           <HealthGated
             v-if="(!unavailable || tooBig) && (!ownPersonalInstance || ownPersonalInstance.state === 'installing')"
             blocks="apps"
@@ -322,7 +329,7 @@ watch(shots, (list) => {
       </header>
 
       <!-- This box cannot install the app: say why, in place of Install. Too
-           big is said by the fit notice under Information. -->
+           big is said by the fit notice above the price panel. -->
       <p v-if="unavailable && !tooBig" class="text-sm text-muted-foreground">{{ unavailable }}</p>
 
       <!-- Screenshots gallery. Each shot is a button that opens the full-screen
@@ -412,6 +419,15 @@ watch(shots, (list) => {
         <p v-else class="text-sm text-muted-foreground">No description provided.</p>
 
         <aside class="space-y-8 text-sm">
+          <!-- The app does not fit this box's memory or CPU: its own block above
+               the price panel. Tight warns, too big says why Install is
+               disabled. Either may carry the Upgrade link. -->
+          <!-- Not enough free disk: a warning only, the install still goes. -->
+          <WarningAlert v-if="space" :title="SPACE_TITLE">
+            <p>{{ space }}</p>
+          </WarningAlert>
+          <FitNotice :fit="fit" />
+
           <!-- Pricing panel: what moose charges, then what a third party charges
                to make the app useful. A required cost opens expanded — it is the
                one someone has to read before installing; an optional one stays
@@ -523,11 +539,6 @@ watch(shots, (list) => {
                 <dd class="text-right">{{ app.license }}</dd>
               </div>
             </dl>
-
-            <!-- The app does not fit this box's memory or CPU: tight warns, too
-                 big says why it can't be installed, next to the Memory and CPU
-                 rows it is about. Either may carry the Upgrade link. -->
-            <FitNotice :fit="fit" />
 
             <div v-if="hasLinks" class="space-y-1.5 border-t border-border pt-3">
               <a v-if="homepageUrl" :href="homepageUrl" target="_blank" rel="noopener noreferrer" class="block text-accent hover:underline">Website</a>

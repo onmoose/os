@@ -38,7 +38,7 @@ const tight = computed(() => spaceTight(props.footprint));
       <TriangleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       This might not fit. Only about {{ formatSize(footprint.free_bytes) }} is free on your box. You can still install.
     </p>
-    <FitNotice :fit="fit" class="text-foreground" />
+    <FitNotice :fit="fit" />
     <template v-if="lines.length > 0">
       <p class="font-medium text-foreground">{{ appName }} needs these permissions:</p>
       <ul class="list-disc space-y-0.5 pl-5">

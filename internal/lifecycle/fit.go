@@ -80,12 +80,13 @@ type TooBigError struct {
 }
 
 func (e *TooBigError) Error() string {
-	msg := "This box can't run this app as it is."
+	// The same words as the App page (web-ui fit.ts tooBigText).
+	msg := "This app can't run on this box as it is."
 	if e.Fit.TooBigMemory {
-		msg += fmt.Sprintf(" It recommends %s of memory, and this box has %s.", gbText(e.Fit.RecommendedMemoryBytes), gbText(e.Fit.BoxMemoryBytes))
+		msg += fmt.Sprintf(" It requires %s of memory, and this box only has %s.", gbText(e.Fit.RecommendedMemoryBytes), gbText(e.Fit.BoxMemoryBytes))
 	}
 	if e.Fit.TooBigCPU {
-		msg += fmt.Sprintf(" It recommends %s CPU cores, and this box has %d.", coresText(e.Fit.RecommendedCPU), e.Fit.BoxCores)
+		msg += fmt.Sprintf(" It requires %s, and this box only has %s.", coresText(e.Fit.RecommendedCPU), coresText(float64(e.Fit.BoxCores)))
 	}
 	return msg
 }
@@ -110,7 +111,11 @@ func gbText(n int64) string {
 	return fmt.Sprintf("%.1f GB", float64(n)/float64(int64(1)<<30))
 }
 
-// coresText writes a core count without a trailing ".0".
+// coresText writes a core count the way the App page does: "1 core",
+// "1.5 cores", "2 cores".
 func coresText(c float64) string {
-	return fmt.Sprintf("%g", c)
+	if c == 1 {
+		return "1 core"
+	}
+	return fmt.Sprintf("%g cores", c)
 }
