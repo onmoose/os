@@ -737,6 +737,19 @@ json_str_of() { # DOC KEY -> value
     sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" <<<"$1" | head -1
 }
 
+# Caddy's admin API is a unix socket in the staged control-plane dir (#608): no
+# TCP listener, so nothing on any network reaches it, the apps Caddy joins
+# included. The lean image has no curl, and bash cannot open a unix socket, so
+# this speaks HTTP/1.0 on it with perl-base (in every Debian image). Host
+# 127.0.0.1 is one of the values Caddy accepts on a unix socket.
+CADDY_ADMIN_SOCK=/var/lib/moose/control-plane/caddy/admin.sock
+caddy_admin_get() { # PATH -> full response
+    perl -MIO::Socket::UNIX -e '
+        my $s = IO::Socket::UNIX->new(Peer => $ARGV[0]) or die "connect $ARGV[0]: $!\n";
+        print $s "GET $ARGV[1] HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
+        print while <$s>;' "$CADDY_ADMIN_SOCK" "$1"
+}
+
 # Wait for a line matching a fixed pattern in the brain's container log. The brain
 # writes each milestone to stdout ONCE at startup, but `docker logs` reads the
 # daemon's json-file, which buffers the container's stream before flushing to disk
@@ -1404,7 +1417,111 @@ access)
         || fail "access: the off-box-return landing minted no session; sign-in must still succeed"
     echo "cloud-assertions: an off-box return path is refused and the owner lands on the box's own front page"
 
-    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes), and folder apps write to the host on both sources"
+    # 6. APPS ARE OFF THE CONTROL-PLANE NETWORK (#608). whoami answered through
+    #    Caddy above, owner-only and public. This checks the topology behind that:
+    #    Caddy reaches the app by joining the app's own network, the app is on no
+    #    network the brain, the socket proxy or Caddy's admin API is on, and the
+    #    admin API listens on a unix socket only. Before #608 an app could reach
+    #    docker-proxy:2375 (host root, THREAT_MODEL.md B2) and the unauthenticated
+    #    moose-caddy:2019.
+    app_net="moose-app-${inst_id}"
+
+    # 6a. No app container is on moose-ingress, and Caddy is on the app network.
+    on_ingress="$(docker network inspect moose-ingress --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' 2>/dev/null)"
+    [ -n "$on_ingress" ] || fail "net: could not list the containers on moose-ingress"
+    for c in $(docker ps --filter label=moose.managed=true --format '{{.Names}}'); do
+        grep -qx "$c" <<<"$on_ingress" \
+            && fail "net: APP ON THE CONTROL-PLANE NETWORK: $c is on moose-ingress (on it: $(tr '\n' ' ' <<<"$on_ingress"))"
+    done
+    caddy_on() { docker inspect moose-caddy --format '{{json .NetworkSettings.Networks}}' 2>/dev/null | grep -q "\"$1\""; }
+    caddy_on "$app_net" || fail "net: caddy is not on the app network $app_net"
+    echo "cloud-assertions: no app container is on moose-ingress; caddy is on $app_net"
+
+    # 6b. From inside the app's own network namespace, nothing on the control
+    #     plane answers: not by name, and not by its moose-ingress address. The
+    #     probe joins whoami's netns (whoami is FROM scratch, no shell) and uses
+    #     bash's /dev/tcp from the brain image, which is on the box already. Caddy's
+    #     :80 is the positive control: it is the front door every app may use, and
+    #     it shows the probe itself works.
+    probe_img="$(docker inspect -f '{{.Config.Image}}' moose-brain)"
+    ingress_ip() { docker inspect -f '{{with index .NetworkSettings.Networks "moose-ingress"}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null; }
+    reach() { # HOST PORT -> 0 when a TCP connect from the app's netns succeeds
+        docker run --rm --network "container:${cname}" --entrypoint bash "$probe_img" \
+            -c "timeout 3 bash -c '</dev/tcp/$1/$2'" >/dev/null 2>&1
+    }
+    reach moose-caddy 80 || fail "net: the probe in ${cname}'s netns cannot reach moose-caddy:80, so its negative results below would prove nothing"
+    for target in moose-caddy:2019 docker-proxy:2375 moose-brain:8080 \
+        "$(ingress_ip moose-caddy):2019" "$(ingress_ip moose-docker-proxy):2375" "$(ingress_ip moose-brain):8080"; do
+        case "$target" in :*) fail "net: no moose-ingress address for the target behind '$target'" ;; esac
+        reach "${target%:*}" "${target##*:}" \
+            && fail "net: CONTROL PLANE REACHABLE FROM AN APP: ${cname} connected to $target"
+    done
+    echo "cloud-assertions: from inside the app, moose-caddy:2019, docker-proxy:2375 and moose-brain:8080 refuse, by name and by moose-ingress address; caddy :80 answers"
+
+    # 6c. The admin API is a unix socket in a dir owned by Caddy's remapped root,
+    #     mode 0700, and the brain drives Caddy through it (the routes above prove
+    #     that). Caddy itself no longer listens on :2019 at all.
+    sock_dir="$(dirname "$CADDY_ADMIN_SOCK")"
+    [ "$(stat -c '%a %u' "$sock_dir" 2>/dev/null)" = "700 ${remap_base}" ] \
+        || fail "net: $sock_dir is '$(stat -c '%a %u:%g' "$sock_dir" 2>&1)', want mode 700 owned by the remap base ${remap_base}"
+    grep -q '"unix//run/moose-caddy/admin.sock"' <<<"$(caddy_admin_get /config/admin 2>&1)" \
+        || fail "net: Caddy's admin API does not answer on $CADDY_ADMIN_SOCK: $(caddy_admin_get /config/admin 2>&1 | head -3 | tr '\r\n' '  ')"
+    docker exec moose-caddy wget -qO- -T 3 http://127.0.0.1:2019/config/ >/dev/null 2>&1 \
+        && fail "net: Caddy still serves its admin API on TCP :2019"
+    docker logs moose-brain 2>&1 | grep -F 'caddy admin' | grep -qF "unix://${CADDY_ADMIN_SOCK}" \
+        || fail "net: the brain did not pick the admin socket from the staged caddy.json: $(docker logs moose-brain 2>&1 | grep -F 'caddy admin' | tail -1)"
+    echo "cloud-assertions: Caddy's admin API is on $CADDY_ADMIN_SOCK only (dir 700, owner ${remap_base}); no TCP :2019"
+
+    # 6d. A Caddy RECREATE drops its networks (a restart does not). The brain
+    #     must put Caddy back on every running app's network within one health
+    #     tick (60s), without running compose itself. The recreate here is the
+    #     same compose run host-agent's updater does, on the same project.
+    cp_project="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' moose-caddy)"
+    caddy_img="$(docker inspect -f '{{.Config.Image}}' moose-caddy)"
+    old_caddy="$(docker inspect -f '{{.Id}}' moose-caddy)"
+    rc_out="$(cd /var/lib/moose/control-plane && MOOSE_CADDY_IMAGE="$caddy_img" docker compose -f compose.yml -p "$cp_project" up -d --force-recreate --no-deps caddy 2>&1)" \
+        || fail "net: recreating caddy failed: $rc_out"
+    [ "$(docker inspect -f '{{.Id}}' moose-caddy)" != "$old_caddy" ] || fail "net: caddy was not recreated (same container id)"
+    back=""
+    for _i in $(seq 1 90); do
+        caddy_on "$app_net" && { back=1; break; }
+        sleep 1
+    done
+    [ -n "$back" ] || fail "net: caddy was not back on $app_net within 90s of a recreate (one health tick is 60s)"
+    echo "cloud-assertions: after a caddy recreate, the brain put caddy back on $app_net within ${_i}s"
+
+    # 6e. A recreated Caddy also starts from the bootstrap caddy.json, so its
+    #     routes are gone until the brain writes them again, which today happens
+    #     at brain startup (the updater starts the brain last for this reason).
+    #     Restart the brain the same way and check the app answers through the
+    #     recreated Caddy: the admin socket a new Caddy made is one the brain can
+    #     use, and the upstream on the app network is reachable.
+    docker restart moose-brain >/dev/null || fail "net: could not restart the brain"
+    rr_resp=""
+    for _i in $(seq 1 120); do
+        rr_resp="$(full_get / "$app_host" 2>/dev/null || true)"
+        grep -q ' 200' <<<"$(status_of "$rr_resp")" && grep -qi 'Hostname:' <<<"$rr_resp" && break
+        sleep 1
+    done
+    grep -qi 'Hostname:' <<<"$rr_resp" \
+        || fail "net: whoami did not answer through the recreated caddy after a brain restart: status='$(status_of "$rr_resp")'"
+    echo "cloud-assertions: whoami answers through the recreated caddy"
+
+    # 6f. Uninstall removes the app network cleanly: the brain takes Caddy off it
+    #     first, or Docker refuses to remove a network a container is still on.
+    #     The owner session survives the brain restart (sessions are in SQLite).
+    un_status="$(status_of "$(full_send DELETE "/api/v1/apps/${inst_id}" "$apex" "$session_cookie" '{}' 2>/dev/null)")"
+    grep -q ' 202' <<<"$un_status" || fail "net: uninstall whoami answered '$un_status'; wanted 202"
+    gone=""
+    for _i in $(seq 1 90); do
+        docker network inspect "$app_net" >/dev/null 2>&1 || { gone=1; break; }
+        sleep 1
+    done
+    [ -n "$gone" ] || fail "net: $app_net still exists 90s after uninstall (on it: $(docker network inspect "$app_net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>&1))"
+    caddy_on "$app_net" && fail "net: caddy is still attached to the removed $app_net"
+    echo "cloud-assertions: uninstall removed $app_net, with caddy taken off it first"
+
+    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes), folder apps write to the host on both sources, and apps are off the control-plane network (#608)"
     ;;
 ssh)
     # SSH end-to-end on a booted hosted box (#467). #464 built the whole path from
@@ -2402,7 +2519,7 @@ remap|remap-reboot)
             fi
             sleep 1
         done
-        fail "remap: GET $2 on $1.$apex through Caddy never answered 200: status='$(status_of "$r")'; caddy route ids: $(docker exec moose-caddy wget -qO- http://localhost:2019/config/apps/http/servers/moose/routes 2>&1 | grep -o '"@id":"[^"]*"' | tr '\n' ' ')"
+        fail "remap: GET $2 on $1.$apex through Caddy never answered 200: status='$(status_of "$r")'; caddy route ids: $(caddy_admin_get /config/apps/http/servers/moose/routes 2>&1 | grep -o '"@id":"[^"]*"' | tr '\n' ' ')"
     }
     remap_wait_file() { for _i in $(seq 1 60); do [ -s "$1" ] && return 0; sleep 1; done; return 1; }
     remap_owner() { stat -c '%u:%g' "$1" 2>/dev/null || echo "<missing $1>"; }
