@@ -27,7 +27,7 @@ import type {
   InstallPlanPermissions,
   RequiresGroup,
 } from "./api";
-import { tooBigText } from "./fit";
+import { TOO_BIG_TITLE, tooBigText } from "./fit";
 import {
   COMPATIBLE,
   OTHER,
@@ -199,7 +199,7 @@ export function unavailableText(plan: InstallPlan | null): string {
     case "needs-remap":
       return "This app can't be installed on this box, because it needs a safety feature that only boxes set up with a newer version of moose have.";
     case "too-big":
-      return plan.fit ? tooBigText(plan.fit) : "This box can't run this app as it is.";
+      return plan.fit ? tooBigText(plan.fit) : TOO_BIG_TITLE;
     default:
       return "This app can't be installed on this box.";
   }

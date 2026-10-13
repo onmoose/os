@@ -3,7 +3,7 @@
 // Resource limits). It is pure arithmetic over figures the caller gathers: the
 // box's memory and cores from the host-agent, and the recommended memory of the
 // apps that are running. The brain computes one AppFit and returns it on the
-// store card, the store page and the install plan, so the page and the install
+// app's store page and in the install plan, so the page and the install
 // refusal never disagree.
 package fit
 

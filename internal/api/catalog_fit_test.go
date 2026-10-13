@@ -60,8 +60,9 @@ func fitHarness(t *testing.T, host fitHost) *harness {
 	return h
 }
 
-// The store lists, the detail page and the install plan all carry the same
-// fit, and a too-big app is still listed but cannot be installed (#599).
+// The detail page and the install plan carry the same fit, and a too-big app
+// is still listed but cannot be installed (#599). The store lists carry no
+// fit at all: it is a Detail field.
 func TestCatalogCarriesFit(t *testing.T) {
 	h := fitHarness(t, fitHost{res: protocol.SystemResources{
 		Mem: protocol.MemCounters{TotalBytes: 4 << 30, UsedBytes: 1 << 30},
@@ -69,16 +70,13 @@ func TestCatalogCarriesFit(t *testing.T) {
 	}})
 	want := map[string]string{"small": fit.Fits, "big": fit.TooBig, "cores": fit.TooBig, "none": fit.Fits}
 
-	got := map[string]string{}
+	listed := map[string]bool{}
 	for _, e := range decodeJSON[appsBody](t, h.getOK("/api/v1/catalog")).Apps {
-		if e.Fit == nil {
-			t.Fatalf("%s carries no fit", e.ID)
-		}
-		got[e.ID] = e.Fit.State
+		listed[e.ID] = true
 	}
 	for id, w := range want {
-		if got[id] != w {
-			t.Errorf("list: %s = %q, want %q", id, got[id], w)
+		if !listed[id] {
+			t.Errorf("list: %s is missing; a too-big app is still listed", id)
 		}
 		d := decodeJSON[catalog.Detail](t, h.getOK("/api/v1/catalog/"+id))
 		if d.Fit == nil || d.Fit.State != w {
@@ -105,10 +103,8 @@ func TestCatalogCarriesFit(t *testing.T) {
 // A box that cannot read its own memory shows no fit and refuses nothing.
 func TestCatalogFitUnknown(t *testing.T) {
 	h := fitHarness(t, fitHost{err: errors.New("host-agent unreachable")})
-	for _, e := range decodeJSON[appsBody](t, h.getOK("/api/v1/catalog")).Apps {
-		if e.Fit != nil {
-			t.Errorf("%s carries a fit with no box reading: %+v", e.ID, e.Fit)
-		}
+	if d := decodeJSON[catalog.Detail](t, h.getOK("/api/v1/catalog/big")); d.Fit != nil {
+		t.Errorf("detail carries a fit with no box reading: %+v", d.Fit)
 	}
 	plan := decodeJSON[InstallPlanDTO](t, h.getOK("/api/v1/catalog/big/install-plan"))
 	if plan.Fit != nil || plan.Unavailable != "" {

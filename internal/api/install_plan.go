@@ -59,7 +59,7 @@ type InstallPlanDTO struct {
 	// refuses such an install on its own.
 	Unavailable string `json:"unavailable,omitempty" enum:"needs-remap,too-big"`
 	// Fit says whether the app fits this box's memory and CPU (#599), from the
-	// manifest's resources.recommended. The same figures as the store card and
+	// manifest's resources.recommended. The same figures as the app's store
 	// page. A tight app needs an explicit "Install anyway" in the dialog; a
 	// too-big one also sets Unavailable. Absent when the box cannot measure
 	// itself.
