@@ -35,9 +35,22 @@ func configured(t *testing.T, c *Client) bool {
 	return ok
 }
 
+// mark runs BeginConfig then MarkConfigured, as the brain does around a full
+// write.
+func mark(t *testing.T, c *Client) {
+	t.Helper()
+	tok, err := c.BeginConfig(context.Background())
+	if err != nil {
+		t.Fatalf("BeginConfig: %v", err)
+	}
+	if err := c.MarkConfigured(context.Background(), tok); err != nil {
+		t.Fatalf("MarkConfigured: %v", err)
+	}
+}
+
 // The mark is there only after MarkConfigured, and every write of the trusted
-// proxies without it takes it away: the startup reset, the restore, and a
-// Caddy recreate.
+// proxies without it takes it away: the startup reset, the start of a new
+// write, and a Caddy recreate.
 func TestConfiguredMark(t *testing.T) {
 	ctx := context.Background()
 	c, a := newProbeAdmin(t, true)
@@ -45,9 +58,7 @@ func TestConfiguredMark(t *testing.T) {
 	if configured(t, c) {
 		t.Fatal("a Caddy on the staged caddy.json reads as configured")
 	}
-	if err := c.MarkConfigured(ctx); err != nil {
-		t.Fatalf("MarkConfigured: %v", err)
-	}
+	mark(t, c)
 	if !configured(t, c) {
 		t.Fatal("no mark after MarkConfigured")
 	}
@@ -60,21 +71,57 @@ func TestConfiguredMark(t *testing.T) {
 	if configured(t, c) {
 		t.Error("the mark is still there after EnsureServer reset the routes")
 	}
-	if err := c.MarkConfigured(ctx); err != nil {
-		t.Fatalf("MarkConfigured: %v", err)
+	mark(t, c)
+	if _, err := c.BeginConfig(ctx); err != nil {
+		t.Fatalf("BeginConfig: %v", err)
+	}
+	if configured(t, c) {
+		t.Error("the mark is still there after BeginConfig started a new write")
+	}
+	mark(t, c)
+	a.recreate()
+	if configured(t, c) {
+		t.Error("a recreated Caddy reads as configured")
+	}
+}
+
+// The mark goes only on the Caddy that got the writes. Writes in between keep
+// the token good; a recreate in between makes MarkConfigured refuse, so the
+// brain never marks a Caddy that lost the config while it was being written.
+func TestMarkConfiguredRefusesARecreatedCaddy(t *testing.T) {
+	ctx := context.Background()
+	c, a := newProbeAdmin(t, true)
+	a.recreate()
+	tok, err := c.BeginConfig(ctx)
+	if err != nil {
+		t.Fatalf("BeginConfig: %v", err)
 	}
 	if err := c.RestoreServer(ctx); err != nil {
 		t.Fatalf("RestoreServer: %v", err)
 	}
-	if configured(t, c) {
-		t.Error("the mark is still there after RestoreServer; only the caller may set it, once the routes are written")
-	}
-	if err := c.MarkConfigured(ctx); err != nil {
-		t.Fatalf("MarkConfigured: %v", err)
+	if err := c.AddRoute(ctx, testRoute()); err != nil {
+		t.Fatalf("AddRoute: %v", err)
 	}
 	a.recreate()
+	if err := c.MarkConfigured(ctx, tok); err == nil {
+		t.Fatal("MarkConfigured marked a Caddy that was recreated after BeginConfig")
+	}
 	if configured(t, c) {
-		t.Error("a recreated Caddy reads as configured")
+		t.Fatal("marked after a refused MarkConfigured")
+	}
+
+	tok, err = c.BeginConfig(ctx)
+	if err != nil {
+		t.Fatalf("BeginConfig: %v", err)
+	}
+	if err := c.AddRoute(ctx, testRoute()); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if err := c.MarkConfigured(ctx, tok); err != nil {
+		t.Fatalf("MarkConfigured after writes on the same Caddy: %v", err)
+	}
+	if !configured(t, c) {
+		t.Fatal("no mark")
 	}
 }
 

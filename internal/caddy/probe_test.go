@@ -2,7 +2,9 @@ package caddy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -132,7 +134,15 @@ func (a *probeAdmin) serve(w http.ResponseWriter, r *http.Request) {
 		var srv map[string]any
 		_ = json.Unmarshal(b, &srv)
 		a.setProbeServer(srv)
+	case r.Method == "GET" && r.URL.Path == trustedProxiesPath:
+		// Caddy's ETag for a config path is the path and a hash of its value.
+		w.Header().Set("Etag", a.trustedETag())
+		_ = json.NewEncoder(w).Encode(a.trusted)
 	case r.Method == "POST" && r.URL.Path == trustedProxiesPath:
+		if m := r.Header.Get("If-Match"); m != "" && m != a.trustedETag() {
+			http.Error(w, `{"error":"If-Match header did not match current config hash"}`, http.StatusPreconditionFailed)
+			return
+		}
 		var tp map[string]any
 		_ = json.Unmarshal(b, &tp)
 		a.trusted = tp
@@ -157,6 +167,11 @@ func (a *probeAdmin) setProbeServer(srv map[string]any) {
 	}
 	delete(srv, "routes")
 	a.probe = srv
+}
+
+func (a *probeAdmin) trustedETag() string {
+	b, _ := json.Marshal(a.trusted)
+	return fmt.Sprintf("%s %x", trustedProxiesPath, sha256.Sum256(b))
 }
 
 // dropProbeServer is what a Caddy recreate does to the probe server.
