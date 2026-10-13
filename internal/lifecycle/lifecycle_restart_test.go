@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestBeginRestartStopsThenStarts(t *testing.T) {
@@ -18,7 +19,7 @@ func TestBeginRestartStopsThenStarts(t *testing.T) {
 	before := len(e.docker.methods())
 	pubBefore := e.host.publishCount(inst.Slug)
 
-	run, err := e.m.BeginRestart(inst.ID)
+	run, err := e.m.BeginRestart(inst.ID, time.Now())
 	if err != nil {
 		t.Fatalf("begin restart: %v", err)
 	}
@@ -67,7 +68,7 @@ func TestBeginRestartRefusesStoppedApp(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 	before := len(e.docker.methods())
-	if _, err := e.m.BeginRestart(inst.ID); !errors.Is(err, ErrNotRunning) {
+	if _, err := e.m.BeginRestart(inst.ID, time.Now()); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("err = %v, want ErrNotRunning", err)
 	}
 	if got := e.docker.methods()[before:]; len(got) != 0 {
@@ -84,17 +85,17 @@ func TestBeginRestartSkipsBusyApp(t *testing.T) {
 	e := newTestEnv(t)
 	inst := installRunning(t, e)
 	unlock := e.m.lockInstance(inst.ID)
-	if _, err := e.m.BeginRestart(inst.ID); !errors.Is(err, ErrBusy) {
+	if _, err := e.m.BeginRestart(inst.ID, time.Now()); !errors.Is(err, ErrBusy) {
 		unlock()
 		t.Fatalf("err = %v, want ErrBusy", err)
 	}
 	unlock()
 	// A restart that began holds the app: a second one is refused until it runs.
-	run, err := e.m.BeginRestart(inst.ID)
+	run, err := e.m.BeginRestart(inst.ID, time.Now())
 	if err != nil {
 		t.Fatalf("begin restart: %v", err)
 	}
-	if _, err := e.m.BeginRestart(inst.ID); !errors.Is(err, ErrBusy) {
+	if _, err := e.m.BeginRestart(inst.ID, time.Now()); !errors.Is(err, ErrBusy) {
 		t.Fatalf("second begin err = %v, want ErrBusy", err)
 	}
 	if err := run(context.Background()); err != nil {
@@ -109,7 +110,7 @@ func TestBeginRestartHealthFailureMarksFailed(t *testing.T) {
 	e.docker.inspect = func(_, _ string) (bool, string, error) {
 		return true, "unhealthy", nil
 	}
-	run, err := e.m.BeginRestart(inst.ID)
+	run, err := e.m.BeginRestart(inst.ID, time.Now())
 	if err != nil {
 		t.Fatalf("begin restart: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestBeginRestartRefusesOptedOutApp(t *testing.T) {
 	if err := e.store.SetInstanceAutoRestart(inst.ID, false); err != nil {
 		t.Fatalf("turn off: %v", err)
 	}
-	if _, err := e.m.BeginRestart(inst.ID); !errors.Is(err, ErrAutoRestartOff) {
+	if _, err := e.m.BeginRestart(inst.ID, time.Now()); !errors.Is(err, ErrAutoRestartOff) {
 		t.Fatalf("err = %v, want ErrAutoRestartOff", err)
 	}
 	if err := e.m.Stop(context.Background(), inst.ID); err != nil {
@@ -145,7 +146,7 @@ func TestBeginRestartRefusesOptedOutApp(t *testing.T) {
 func TestBeginRestartFailsBeforeStop(t *testing.T) {
 	e := newTestEnv(t)
 	inst := installRunning(t, e)
-	run, err := e.m.BeginRestart(inst.ID)
+	run, err := e.m.BeginRestart(inst.ID, time.Now())
 	if err != nil {
 		t.Fatalf("begin restart: %v", err)
 	}
@@ -160,5 +161,81 @@ func TestBeginRestartFailsBeforeStop(t *testing.T) {
 		if m == "ComposeStop" {
 			t.Fatal("the app was stopped although the restart could not start it")
 		}
+	}
+}
+
+// A begun restart is counted in the row before it runs, with its time, and
+// a refused one is not (#620). The count survives in the store, so a brain
+// restart does not reset it.
+func TestBeginRestartCountsInTheRow(t *testing.T) {
+	e := newTestEnv(t)
+	inst := installRunning(t, e)
+	at := time.Date(2026, 10, 13, 12, 6, 0, 0, time.UTC)
+	run, err := e.m.BeginRestart(inst.ID, at)
+	if err != nil {
+		t.Fatalf("begin restart: %v", err)
+	}
+	row, _ := e.store.Get(inst.ID)
+	if row.AutoRestarts != 1 || !row.LastAutoRestart.Equal(at) {
+		t.Fatalf("row = %d restarts, last %v; want 1 at %v, counted before the run", row.AutoRestarts, row.LastAutoRestart, at)
+	}
+	if _, err := e.m.BeginRestart(inst.ID, at.Add(time.Minute)); !errors.Is(err, ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if err := run(context.Background()); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if row, _ := e.store.Get(inst.ID); row.AutoRestarts != 1 {
+		t.Fatalf("restarts = %d after a refused begin, want 1", row.AutoRestarts)
+	}
+	if err := e.store.SetInstanceAutoRestart(inst.ID, false); err != nil {
+		t.Fatalf("turn off: %v", err)
+	}
+	if _, err := e.m.BeginRestart(inst.ID, at.Add(2*time.Minute)); !errors.Is(err, ErrAutoRestartOff) {
+		t.Fatalf("err = %v, want ErrAutoRestartOff", err)
+	}
+	if row, _ := e.store.Get(inst.ID); row.AutoRestarts != 0 {
+		t.Fatalf("restarts = %d; turning the setting off resets the count", row.AutoRestarts)
+	}
+}
+
+// A person's Start gives the app a fresh hour: the count the brain gave up
+// at goes back to 0 and the last time is cleared, for a stopped app and for a
+// failed one (#620).
+func TestStartResetsAutoRestarts(t *testing.T) {
+	for _, prev := range []string{"stopped", "failed"} {
+		t.Run(prev, func(t *testing.T) {
+			e := newTestEnv(t)
+			inst := installRunning(t, e)
+			at := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+			for i := 0; i < 3; i++ {
+				run, err := e.m.BeginRestart(inst.ID, at)
+				if err != nil {
+					t.Fatalf("begin restart: %v", err)
+				}
+				if err := run(context.Background()); err != nil {
+					t.Fatalf("restart: %v", err)
+				}
+			}
+			if prev == "stopped" {
+				if err := e.m.Stop(context.Background(), inst.ID); err != nil {
+					t.Fatalf("stop: %v", err)
+				}
+			} else if err := e.store.SetState(inst.ID, "failed"); err != nil {
+				t.Fatalf("set failed: %v", err)
+			}
+			if row, _ := e.store.Get(inst.ID); row.AutoRestarts != 3 {
+				t.Fatalf("restarts before Start = %d, want 3 (Stop alone does not reset)", row.AutoRestarts)
+			}
+			if err := e.m.Start(context.Background(), inst.ID); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			// The time goes too: it tells the brain to forget the restarts it
+			// holds in memory, so the app gets a fresh hour.
+			row, _ := e.store.Get(inst.ID)
+			if row.AutoRestarts != 0 || !row.LastAutoRestart.IsZero() {
+				t.Fatalf("after Start: %d restarts, last %v; want 0 and no time", row.AutoRestarts, row.LastAutoRestart)
+			}
+		})
 	}
 }

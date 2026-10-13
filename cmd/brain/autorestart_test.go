@@ -1,13 +1,15 @@
 package main
 
-// The automatic restart of an app that stays unresponsive (#598). Driven
-// through appProbeDetector.check with a hand-advanced clock and a fake
-// lifecycle, one tick a minute like the production health poll.
+// The automatic restart of an app that stays unresponsive (#598), and the
+// brain giving up on it (#620). Driven through appProbeDetector.check with a
+// hand-advanced clock, a fake lifecycle and a real store, one tick a minute
+// like the production health poll.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,12 +20,15 @@ import (
 	"github.com/onmoose/os/internal/store"
 )
 
-// fakeRestarter stands in for lifecycle.Manager.BeginRestart. A restart sets
-// the main container's StartedAt to the clock, as a real one does, and then
-// calls onRun, so a test can make the app recover or not.
+// fakeRestarter stands in for lifecycle.Manager.BeginRestart. Like the real
+// one it counts the restart in the app's row (the real store) before it
+// returns. A restart sets the main container's StartedAt to the clock, as a
+// real one does, and then calls onRun, so a test can make the app recover or
+// not.
 type fakeRestarter struct {
 	mu      sync.Mutex
 	clk     *stepClock
+	st      *store.Store
 	reader  *fakeContainerReader
 	busy    bool
 	runErr  error
@@ -33,12 +38,15 @@ type fakeRestarter struct {
 	refused int
 }
 
-func (f *fakeRestarter) BeginRestart(id string) (func(context.Context) error, error) {
+func (f *fakeRestarter) BeginRestart(id string, at time.Time) (func(context.Context) error, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.busy {
 		f.refused++
 		return nil, lifecycle.ErrBusy
+	}
+	if err := f.st.RecordInstanceAutoRestart(id, at); err != nil {
+		return nil, err
 	}
 	f.begins = append(f.begins, f.clk.now())
 	return func(ctx context.Context) error {
@@ -67,7 +75,9 @@ type restartHarness struct {
 	clk    *stepClock
 	d      *appProbeDetector
 	rt     *stubRoundTripper
-	lister *fakeInstanceLister
+	st     *store.Store
+	loader *fakeManifestLoader
+	reader *fakeContainerReader
 	fr     *fakeRestarter
 	es     *fakeEventStore
 	r      *autoRestarter
@@ -75,18 +85,118 @@ type restartHarness struct {
 
 // newRestartHarness is one app ("app", probe on /healthz with a 1s start
 // period, started an hour ago) answering 503, with the automatic restart on.
+// The app's row is in a real store, the one the detector lists and the
+// restart count lives in.
 func newRestartHarness(t *testing.T) *restartHarness {
 	t.Helper()
 	clk := &stepClock{t: time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)}
-	lister, loader, reader := probeScenario(clk, "/healthz", nil, time.Second, time.Hour)
+	_, loader, reader := probeScenario(clk, "/healthz", nil, time.Second, time.Hour)
+	st, err := store.Open(filepath.Join(t.TempDir(), "moose.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Create(store.Instance{
+		ID: "app", ManifestID: "app", Name: "My App", Slug: "app", MDNSName: "app.local",
+		Version: "1", State: "running", OwnerUserID: "u_owner", Scope: store.ScopeHousehold,
+		CreatedAt: clk.now(),
+	}); err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
 	rt := &stubRoundTripper{status: map[string]int{"app.local": 503}}
-	d, mgr, es, _ := newTestProbeDetector(lister, loader, reader, rt, clk)
-	mgr.SetClock(clk.now)
-	fr := &fakeRestarter{clk: clk, reader: reader}
-	r := newAutoRestarter(fr, d.auditor)
-	d.SetRestarter(r)
-	return &restartHarness{clk: clk, d: d, rt: rt, lister: lister, fr: fr, es: es, r: r}
+	h := &restartHarness{clk: clk, rt: rt, st: st, loader: loader, reader: reader}
+	h.fr = &fakeRestarter{clk: clk, st: st, reader: reader}
+	h.brainStarts()
+	return h
 }
+
+// brainStarts wires a new detector and restarter on the same store, Docker
+// and app, as a brain process that starts does: the health issues and the
+// restart history in memory are gone, the rows are not.
+func (h *restartHarness) brainStarts() {
+	d, mgr, es, _ := newTestProbeDetector(h.st, h.loader, h.reader, h.rt, h.clk)
+	mgr.SetClock(h.clk.now)
+	if h.es != nil {
+		d.auditor = audit.New(h.es) // one audit log across brain restarts
+	} else {
+		h.es = es
+	}
+	h.r = newAutoRestarter(h.fr, h.st, d.auditor)
+	d.SetRestarter(h.r)
+	h.d = d
+}
+
+func (h *restartHarness) row(t *testing.T) store.Instance {
+	t.Helper()
+	row, err := h.st.Get("app")
+	if err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	return row
+}
+
+// restartMinutes is when each restart began, in minutes from from.
+func (h *restartHarness) restartMinutes(from time.Time) []int {
+	h.fr.mu.Lock()
+	defer h.fr.mu.Unlock()
+	var mins []int
+	for _, b := range h.fr.begins {
+		mins = append(mins, int(b.Sub(from)/time.Minute))
+	}
+	return mins
+}
+
+func (h *restartHarness) autoRestartRecords() int {
+	n := 0
+	for _, e := range h.es.events {
+		if e.Action == audit.ActionAppAutoRestart {
+			n++
+		}
+	}
+	return n
+}
+
+// giveUp runs the app broken until the brain made its 3 restarts and gave
+// up: restarts at minutes 6, 17 and 38, and the issue raised again after the
+// third.
+func (h *restartHarness) giveUp(t *testing.T) {
+	t.Helper()
+	start := h.clk.now()
+	for i := 0; i < 45; i++ {
+		h.tick()
+	}
+	if mins := h.restartMinutes(start); len(mins) != 3 || mins[0] != 6 || mins[1] != 17 || mins[2] != 38 {
+		t.Fatalf("restart minutes = %v, want 6, 17, 38", mins)
+	}
+	d, ok := h.issueDetails(t)
+	if !ok || !strings.Contains(d, givenUpText) {
+		t.Fatalf("details = %q (raised %v), want that moose gave up", d, ok)
+	}
+	if n := h.row(t).AutoRestarts; n != 3 {
+		t.Fatalf("stored restarts = %d, want 3", n)
+	}
+}
+
+// givenUpText is part of the details once the brain gave up.
+const givenUpText = "so moose will not restart it again by itself. To try again, stop the app and start it."
+
+// noRestartFor runs n ticks and fails if any restart begins.
+func (h *restartHarness) noRestartFor(t *testing.T, n int) {
+	t.Helper()
+	before := h.fr.count()
+	for i := 0; i < n; i++ {
+		h.tick()
+	}
+	if got := h.fr.count(); got != before {
+		t.Fatalf("%d restarts in %d ticks, want none", got-before, n)
+	}
+}
+
+// fakeCaddyNets says Caddy is off the app's network, so the probe has no
+// sample (#613).
+type fakeCaddyNets struct{ off bool }
+
+func (f *fakeCaddyNets) CaddyOffNetwork(string) bool { return f.off }
 
 // tick runs one health tick, waits for any restart it started, then moves
 // the clock a minute on.
@@ -106,7 +216,6 @@ func (h *restartHarness) issueDetails(t *testing.T) (string, bool) {
 // and the restart is in the audit log naming the app.
 func TestAutoRestart_RestartsAfterWindowAndRecovers(t *testing.T) {
 	h := newRestartHarness(t)
-	h.lister.instances[0].Name = "My App"
 	h.fr.onRun = func() { h.rt.status["app.local"] = 200 }
 
 	// t=0 first bad, t=1 raised. The window runs from the raise.
@@ -123,6 +232,9 @@ func TestAutoRestart_RestartsAfterWindowAndRecovers(t *testing.T) {
 	h.tick() // t=7: the app answers again
 	if _, ok := h.issueDetails(t); ok {
 		t.Fatal("app-unresponsive still raised after the app recovered")
+	}
+	if n := h.row(t).AutoRestarts; n != 0 {
+		t.Fatalf("stored restarts = %d after the app answered again, want 0", n)
 	}
 	for i := 0; i < 30; i++ {
 		h.tick()
@@ -155,35 +267,192 @@ func TestAutoRestart_RestartsAfterWindowAndRecovers(t *testing.T) {
 }
 
 // An app that stays broken is restarted with growing waits (5, 10, 20
-// minutes), at most 3 times in any hour, and the issue says it stopped
-// trying.
-func TestAutoRestart_BoundedWithBackoff(t *testing.T) {
+// minutes), 3 times, and then never again (#620): not after the hour, not in
+// the next hours. The issue says moose gave up and what the user can do, and
+// no audit record is written while it has given up.
+func TestAutoRestart_GivesUpAfterThreeFailedRestarts(t *testing.T) {
 	h := newRestartHarness(t)
 	start := h.clk.now()
-	sawGaveUp := false
-	for i := 0; i < 180; i++ {
+	h.giveUp(t)
+	if d, _ := h.issueDetails(t); !strings.Contains(d, "moose restarted it 3 times, the last time at 12:38 UTC.") {
+		t.Fatalf("details = %q, want the count and the last restart", d)
+	}
+	h.noRestartFor(t, 5*60)
+	if mins := h.restartMinutes(start); len(mins) != 3 {
+		t.Fatalf("restart minutes = %v, want only 3", mins)
+	}
+	if n := h.autoRestartRecords(); n != 3 {
+		t.Fatalf("app.restart.auto records = %d, want 3 (none while given up)", n)
+	}
+	d, ok := h.issueDetails(t)
+	if !ok || !strings.Contains(d, givenUpText) {
+		t.Fatalf("details after 5 hours = %q (raised %v), want that moose gave up", d, ok)
+	}
+}
+
+// Given up survives a brain restart (#620): the count is in the row, so a new
+// brain process does not give the app a fresh hour.
+func TestAutoRestart_GivenUpSurvivesBrainRestart(t *testing.T) {
+	h := newRestartHarness(t)
+	h.giveUp(t)
+	h.brainStarts()
+	h.noRestartFor(t, 3*60)
+	d, ok := h.issueDetails(t)
+	if !ok || !strings.Contains(d, givenUpText) {
+		t.Fatalf("details after the brain restart = %q (raised %v), want that moose gave up", d, ok)
+	}
+}
+
+// A brain restart in the middle keeps the backoff: after 2 restarts the next
+// wait is 20 minutes, not 5.
+func TestAutoRestart_BrainRestartKeepsTheBackoff(t *testing.T) {
+	h := newRestartHarness(t)
+	for i := 0; i < 20; i++ {
+		h.tick() // restarts at 6 and 17
+	}
+	if n := h.fr.count(); n != 2 {
+		t.Fatalf("restarts before the brain restart = %d, want 2", n)
+	}
+	h.brainStarts()
+	start := h.clk.now()
+	for i := 0; i < 30; i++ {
+		h.tick() // bad at 0, raised at 1, 20 minutes later
+	}
+	mins := h.restartMinutes(start)
+	if len(mins) != 3 || mins[2] != 21 {
+		t.Fatalf("restart minutes after the brain restart = %v, want the 3rd at 21", mins)
+	}
+}
+
+// A real healthy answer ends giving up: the next time the app stops
+// answering, the brain starts again from the 5-minute wait.
+func TestAutoRestart_RealRecoveryEndsGivingUp(t *testing.T) {
+	h := newRestartHarness(t)
+	h.giveUp(t)
+	h.noRestartFor(t, 60) // the restarts are more than an hour old after this
+	h.rt.status["app.local"] = 200
+	h.tick()
+	if _, ok := h.issueDetails(t); ok {
+		t.Fatal("app-unresponsive still raised after the app answered")
+	}
+	if n := h.row(t).AutoRestarts; n != 0 {
+		t.Fatalf("stored restarts = %d after a healthy answer, want 0", n)
+	}
+	h.rt.status["app.local"] = 503
+	before := h.fr.count()
+	for i := 0; i < 7; i++ {
+		h.tick() // bad at 0, raised at 1, restarted at 6
+	}
+	if n := h.fr.count() - before; n != 1 {
+		t.Fatalf("restarts after the app broke again = %d, want 1", n)
+	}
+}
+
+// A tick with no sample clears the issue but does not end giving up: Caddy
+// off the app's network, or the app's container not running.
+func TestAutoRestart_NoSampleDoesNotEndGivingUp(t *testing.T) {
+	h := newRestartHarness(t)
+	h.giveUp(t)
+	nets := &fakeCaddyNets{off: true}
+	h.d.SetCaddyNetworks(nets)
+	h.tick()
+	if _, ok := h.issueDetails(t); ok {
+		t.Fatal("a tick with no sample should clear the issue")
+	}
+	nets.off = false
+	h.reader.containers[0].Running = false
+	h.tick()
+	h.reader.containers[0].Running = true
+	if n := h.row(t).AutoRestarts; n != 3 {
+		t.Fatalf("stored restarts = %d after ticks with no sample, want 3", n)
+	}
+	h.noRestartFor(t, 2*60)
+	if d, ok := h.issueDetails(t); !ok || !strings.Contains(d, givenUpText) {
+		t.Fatalf("details = %q (raised %v), want that moose gave up", d, ok)
+	}
+}
+
+// A person's Start ends giving up: Stop then Start, as lifecycle.Manager.Start
+// does it to the row (it resets the count, TestStartResetsAutoRestarts).
+func TestAutoRestart_ManualStartEndsGivingUp(t *testing.T) {
+	h := newRestartHarness(t)
+	h.giveUp(t)
+	// Stop: the row reads stopped and the container is down.
+	if err := h.st.SetState("app", "stopped"); err != nil {
+		t.Fatal(err)
+	}
+	h.reader.containers[0].Running = false
+	h.noRestartFor(t, 3)
+	if n := h.row(t).AutoRestarts; n != 3 {
+		t.Fatalf("stored restarts = %d after Stop, want 3 (Stop alone does not reset)", n)
+	}
+	// Start: the count is reset, the row reads running, a new container.
+	if err := h.st.ResetInstanceAutoRestarts("app", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.SetState("app", "running"); err != nil {
+		t.Fatal(err)
+	}
+	h.reader.containers[0].Running = true
+	h.reader.containers[0].StartedAt = h.clk.now()
+	before := h.fr.count()
+	for i := 0; i < 8; i++ {
+		// Still broken: inside the start grace at 0, bad at 1, raised at 2,
+		// restarted at 7.
 		h.tick()
-		if d, ok := h.issueDetails(t); ok && strings.Contains(d, "stopped trying") {
-			sawGaveUp = true
+	}
+	if n := h.fr.count() - before; n != 1 {
+		t.Fatalf("restarts after the person started the app = %d, want 1", n)
+	}
+}
+
+// Turning the switch off and on again ends giving up. The real store does the
+// reset, the same call the API makes.
+func TestAutoRestart_ToggleEndsGivingUp(t *testing.T) {
+	h := newRestartHarness(t)
+	h.giveUp(t)
+	if err := h.st.SetInstanceAutoRestart("app", false); err != nil {
+		t.Fatal(err)
+	}
+	h.noRestartFor(t, 10)
+	if err := h.st.SetInstanceAutoRestart("app", true); err != nil {
+		t.Fatal(err)
+	}
+	// The issue stayed raised the whole time, so the 5-minute wait is long
+	// over: the restart comes on the next tick.
+	before := h.fr.count()
+	h.tick()
+	if n := h.fr.count() - before; n != 1 {
+		t.Fatalf("restarts after the switch went off and on = %d, want 1", n)
+	}
+	if d, _ := h.issueDetails(t); strings.Contains(d, givenUpText) {
+		t.Fatalf("details = %q, still say moose gave up", d)
+	}
+}
+
+// An app that recovers after each restart and breaks again soon after is
+// never given up on, since each real healthy answer resets the stored count,
+// but it is still restarted at most 3 times in any hour (#598).
+func TestAutoRestart_RecoveringAppCappedPerHour(t *testing.T) {
+	h := newRestartHarness(t)
+	recoveredAt := -1
+	minute := 0
+	h.fr.onRun = func() { h.rt.status["app.local"] = 200; recoveredAt = minute + 2 }
+	start := h.clk.now()
+	for ; minute < 180; minute++ {
+		if minute == recoveredAt {
+			h.rt.status["app.local"] = 503 // breaks again a minute after it answered
 		}
+		h.tick()
 	}
-	var mins []int
-	for _, b := range h.fr.begins {
-		mins = append(mins, int(b.Sub(start)/time.Minute))
+	mins := h.restartMinutes(start)
+	if len(mins) < 4 {
+		t.Fatalf("restart minutes = %v, want restarts to go on for an app that recovers", mins)
 	}
-	if len(mins) < 4 || mins[0] != 6 || mins[1] != 17 || mins[2] != 38 {
-		t.Fatalf("restart minutes = %v, want the first three at 6, 17, 38", mins)
-	}
-	// The limit is per rolling hour: the 4th restart waits until the 1st is
-	// an hour old (minute 66), and its wait is the one for 2 restarts in the
-	// hour (20 minutes since the restart at 38, long over).
-	if mins[3] != 66 {
-		t.Fatalf("restart minutes = %v, want the 4th at 66", mins)
-	}
-	for i, b := range h.fr.begins {
+	for i := range mins {
 		n := 0
-		for _, o := range h.fr.begins[:i+1] {
-			if b.Sub(o) < time.Hour {
+		for _, o := range mins[:i+1] {
+			if mins[i]-o < 60 {
 				n++
 			}
 		}
@@ -191,11 +460,8 @@ func TestAutoRestart_BoundedWithBackoff(t *testing.T) {
 			t.Fatalf("restart at minute %d is the %dth in an hour: %v", mins[i], n, mins)
 		}
 	}
-	if !sawGaveUp {
-		t.Fatal("the issue never said automatic restarts stopped")
-	}
-	if _, ok := h.issueDetails(t); !ok {
-		t.Fatal("the issue is not raised for an app that stays broken")
+	if d, _ := h.issueDetails(t); strings.Contains(d, givenUpText) {
+		t.Fatalf("details = %q, say moose gave up on an app that recovers", d)
 	}
 }
 
@@ -216,15 +482,17 @@ func TestAutoRestart_DetailsNameLastRestart(t *testing.T) {
 func TestAutoRestart_NeverForStoppedFailedOrOptedOut(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		set  func(*store.Instance)
+		set  func(*store.Store) error
 	}{
-		{"stopped", func(i *store.Instance) { i.State = "stopped" }},
-		{"failed", func(i *store.Instance) { i.State = "failed" }},
-		{"setting off", func(i *store.Instance) { i.AutoRestartOff = true }},
+		{"stopped", func(s *store.Store) error { return s.SetState("app", "stopped") }},
+		{"failed", func(s *store.Store) error { return s.SetState("app", "failed") }},
+		{"setting off", func(s *store.Store) error { return s.SetInstanceAutoRestart("app", false) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newRestartHarness(t)
-			tc.set(&h.lister.instances[0])
+			if err := tc.set(h.st); err != nil {
+				t.Fatal(err)
+			}
 			for i := 0; i < 90; i++ {
 				h.tick()
 			}
@@ -323,9 +591,9 @@ func TestAutoRestart_ShutdownDoesNotCancelRestart(t *testing.T) {
 // so it starts again after each restart.
 func TestAutoRestart_DockerOnlySignal(t *testing.T) {
 	h := newRestartHarness(t)
-	man := h.d.manifests.(*fakeManifestLoader).m["app"]
+	man := h.loader.m["app"]
 	man.HealthProbe = nil
-	reader := h.fr.reader
+	reader := h.reader
 	reader.containers[0].Health = dockerUnhealthy
 	start := h.clk.now()
 	for i := 0; i < 30; i++ {
@@ -345,11 +613,11 @@ func TestAutoRestart_DockerOnlySignal(t *testing.T) {
 // starts only once the new container is past its grace.
 func TestAutoRestart_LongStartGraceDelaysNextRestart(t *testing.T) {
 	h := newRestartHarness(t)
-	man := h.d.manifests.(*fakeManifestLoader).m["app"]
+	man := h.loader.m["app"]
 	man.HealthProbe.StartPeriod = 10 * time.Minute
 	// Docker says unhealthy too, so the issue stays raised through the grace
 	// (the probe itself is skipped inside it).
-	h.fr.reader.containers[0].Health = dockerUnhealthy
+	h.reader.containers[0].Health = dockerUnhealthy
 	start := h.clk.now()
 	for i := 0; i < 40; i++ {
 		h.tick()

@@ -1159,6 +1159,9 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 // crash mid-start leaves a `running` row the reconcile pass finishes, the same
 // recovery path a reboot takes. The Caddy route flips to the "starting" splash,
 // then to the real upstream once main_service is healthy.
+//
+// A person's Start also gives the app a fresh hour of automatic restarts: the
+// count the brain gave up at is reset (#620, HEALTH.md # Automatic restart).
 func (m *Manager) Start(ctx context.Context, id string) error {
 	defer m.lockInstance(id)()
 	inst, err := m.store.Get(id)
@@ -1167,6 +1170,13 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	}
 	if inst.State != "stopped" && inst.State != "failed" {
 		return fmt.Errorf("%w (state=%s)", ErrNotStartable, inst.State)
+	}
+	if inst.AutoRestarts > 0 || !inst.LastAutoRestart.IsZero() {
+		if err := m.store.ResetInstanceAutoRestarts(id, true); err != nil {
+			return fmt.Errorf("reset automatic restarts: %w", err)
+		}
+		inst.AutoRestarts = 0
+		inst.LastAutoRestart = time.Time{}
 	}
 	return m.startLocked(ctx, inst, inst.State)
 }
@@ -1267,7 +1277,12 @@ var ErrAutoRestartOff = errors.New("automatic restart is off for this app")
 // that the row stays `running` the whole time, so a brain that dies halfway
 // leaves an app the reconcile pass brings back up, never one it keeps stopped.
 // A start that does not come healthy lands in `failed`, as with Start.
-func (m *Manager) BeginRestart(id string) (run func(context.Context) error, err error) {
+//
+// Once the checks pass, the restart is counted in the app's row, begun at at,
+// before the work runs (#620): the count is what makes the brain give up, so
+// it must survive a brain that dies halfway. A failed write refuses the
+// restart.
+func (m *Manager) BeginRestart(id string, at time.Time) (run func(context.Context) error, err error) {
 	unlock, ok := m.tryLockInstance(id)
 	if !ok {
 		return nil, ErrBusy
@@ -1284,6 +1299,10 @@ func (m *Manager) BeginRestart(id string) (run func(context.Context) error, err 
 	if inst.AutoRestartOff {
 		unlock()
 		return nil, ErrAutoRestartOff
+	}
+	if err := m.store.RecordInstanceAutoRestart(id, at); err != nil {
+		unlock()
+		return nil, fmt.Errorf("count the automatic restart: %w", err)
 	}
 	return func(ctx context.Context) error {
 		defer unlock()
