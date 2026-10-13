@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,6 +37,10 @@ type Client struct {
 	// address form (#610). Empty means no probe server: the dev loop, and a
 	// box whose admin API is still on TCP. See EnableProbeServer.
 	probeListen string
+	// probeMu serializes the probe copy writes. After a Caddy recreate two
+	// apps' writes can both find the probe server missing; without it, the
+	// second one's whole-server write could drop the first one's new copy.
+	probeMu sync.Mutex
 }
 
 // unixScheme marks an admin address that is a unix socket path, as in
@@ -90,12 +95,16 @@ const (
 	probeServerPath = "/config/apps/http/servers/moose-probe"
 	probeRoutesPath = probeServerPath + "/routes"
 	probeCatchAllID = "moose-probe-catchall"
-	// ProbeHeader and ProbeNoRoute mark the probe server's catch-all answer:
-	// no route for this host, so the probe learned nothing about the app.
-	// The brain reads that as no sample. Without the mark it would be a 404,
-	// which the default healthy set (any status < 500) reads as healthy.
+	// ProbeHeader marks a probe server answer that did not come from the app,
+	// so the probe learned nothing about it. The brain reads any answer with
+	// it as no sample. Two values: ProbeNoRoute on the catch-all (no route
+	// for this host; without the mark it would be a 404, which the default
+	// healthy set, any status < 500, reads as healthy), and ProbeSplash on
+	// the copy of a splash (a 200 that says nothing about the app, and a copy
+	// left behind by a failed write must not make a down app look healthy).
 	ProbeHeader  = "X-Moose-Probe"
 	ProbeNoRoute = "no-route"
+	ProbeSplash  = "splash"
 )
 
 // EnableProbeServer makes the client keep the moose-probe server, listening
@@ -372,16 +381,19 @@ func forwardAuthHandler(fa ForwardAuthConfig) map[string]any {
 // connection-refused; the upstream is flipped to the real container once
 // healthy. State is one of "starting" | "stopped" | "failed".
 func (c *Client) AddSplashRoute(ctx context.Context, instanceID, host, appName, state string) error {
-	// The probe gets the same splash, so it sees what a browser would.
-	handle := []any{
-		map[string]any{
+	splash := func(headers map[string]any) []any {
+		return []any{map[string]any{
 			"handler":     "static_response",
 			"status_code": 200,
-			"headers":     map[string]any{"Content-Type": []string{"text/html; charset=utf-8"}},
+			"headers":     headers,
 			"body":        splashHTML(appName, state),
-		},
+		}}
 	}
-	return c.upsertRoute(ctx, instanceID, host, handle, handle)
+	// The probe gets the same splash, so it sees what a browser would, with
+	// the mark that says it is not the app's answer.
+	return c.upsertRoute(ctx, instanceID, host,
+		splash(map[string]any{"Content-Type": []string{"text/html; charset=utf-8"}}),
+		splash(map[string]any{"Content-Type": []string{"text/html; charset=utf-8"}, ProbeHeader: []string{ProbeSplash}}))
 }
 
 // upsertRoute writes the instance's route, replacing the one already there
@@ -392,7 +404,9 @@ func (c *Client) AddSplashRoute(ctx context.Context, instanceID, host, appName, 
 // landed, so the copy never runs ahead of what browsers get. A failed copy is
 // logged and not returned: the app route is what users see, and a caller
 // must not undo or fail an install over the probe. Until the next write, the
-// probe of this app reads the old copy, or no route, which is no sample.
+// probe of this app reads the old copy, or no route. A splash copy and no
+// route are both no sample, so a failed flip from splash to app never makes
+// a down app look healthy; an old app copy has the same upstream.
 func (c *Client) upsertRoute(ctx context.Context, instanceID, host string, handle, probe []any) error {
 	route := map[string]any{
 		"@id":    routeID(instanceID),
@@ -410,6 +424,8 @@ func (c *Client) upsertRoute(ctx context.Context, instanceID, host string, handl
 		"match":  []any{map[string]any{"host": []string{host}}},
 		"handle": probe,
 	}
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
 	if err := c.upsertRouteByID(ctx, probeRoutesPath, probeRouteID(instanceID), host, probeRoute); err != nil {
 		slog.Warn("caddy: probe route write failed; the health probe learns nothing about this app until its route is written again",
 			"instance_id", instanceID, "host", host, "err", err)

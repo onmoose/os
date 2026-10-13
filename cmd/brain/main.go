@@ -1504,10 +1504,10 @@ func (d *appProbeDetector) gated(inst store.Instance) bool {
 //
 // When Caddy's probe socket is there (#610), the probe goes to it: the same
 // routes, with no forward-auth gate, so an owner-only app is sampled for real.
-// Two answers there are no sample, because they say nothing about the app: a
-// socket that does not take the connection (Caddy was recreated and its probe
-// server is not back yet, #613), and the probe server's catch-all, marked
-// with caddy.ProbeHeader (no route for this host). Otherwise the probe goes to
+// Two kinds of answer there are no sample, because they say nothing about
+// the app: a socket that does not take the connection (Caddy was recreated
+// and its probe server is not back yet, #613), and an answer Caddy marked
+// with caddy.ProbeHeader (no route for this host, or the app's splash). Otherwise the probe goes to
 // Caddy's site listener, where on a gated route the gate's 302 to the box
 // login means the probe never reached the app, so it is no sample (#609).
 func (d *appProbeDetector) probe(ctx context.Context, host string, gated bool, p *manifest.HealthProbe) probeResult {
@@ -1534,7 +1534,9 @@ func (d *appProbeDetector) probe(ctx context.Context, host string, gated bool, p
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body) // drain so the keep-alive can be reused
 	if viaSocket {
-		if resp.Header.Get(caddy.ProbeHeader) == caddy.ProbeNoRoute {
+		// Only Caddy sets the mark: the probe copy deletes it from the
+		// app's answer.
+		if resp.Header.Get(caddy.ProbeHeader) != "" {
 			return probeNoSample
 		}
 	} else if gated && resp.StatusCode == http.StatusFound && resp.Header.Get("Location") == profile.HostedLoginURL(d.boxID) {

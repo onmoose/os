@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // probeAdmin is a fake Caddy admin API with the moose server's route list and
@@ -27,6 +28,10 @@ type probeAdmin struct {
 	// failPrefix makes every call whose "METHOD path" starts with it answer
 	// 500 and change nothing.
 	failPrefix string
+	// getDelay holds back the answer to a GET /id/ by this long, after the
+	// answer was decided, so a concurrent write can land in between: the
+	// check-then-write race of two restores.
+	getDelay time.Duration
 }
 
 func newProbeAdmin(t *testing.T, withProbeServer bool) (*Client, *probeAdmin) {
@@ -61,7 +66,12 @@ func roundTrip(t *testing.T, v any) map[string]any {
 func (a *probeAdmin) serve(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			a.mu.Unlock()
+		}
+	}()
 	call := r.Method + " " + r.URL.Path
 	a.calls = append(a.calls, call)
 	if a.failPrefix != "" && strings.HasPrefix(call, a.failPrefix) {
@@ -71,7 +81,11 @@ func (a *probeAdmin) serve(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/id/")
 	switch {
 	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/id/"):
-		if list, i := a.find(id); list == nil || i < 0 {
+		list, _ := a.find(id)
+		a.mu.Unlock()
+		unlocked = true
+		time.Sleep(a.getDelay)
+		if list == nil {
 			http.Error(w, `{"error":"unknown object ID"}`, http.StatusNotFound)
 		}
 	case r.Method == "PATCH" && strings.HasPrefix(r.URL.Path, "/id/"):
@@ -292,6 +306,10 @@ func TestSplashThenAppReplacesProbeCopy(t *testing.T) {
 	if h["handler"] != "static_response" || !strings.Contains(h["body"].(string), "starting") {
 		t.Fatalf("probe copy of the splash = %v, want the same splash", h)
 	}
+	// Marked, so a copy left behind by a failed flip never reads as healthy.
+	if mark, _ := h["headers"].(map[string]any)[ProbeHeader].([]any); len(mark) != 1 || mark[0] != ProbeSplash {
+		t.Errorf("splash copy mark = %v, want %s: %s", h["headers"], ProbeHeader, ProbeSplash)
+	}
 	if err := c.AddRoute(ctx, testRoute()); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -365,5 +383,33 @@ func TestRemoveRouteRemovesProbeCopy(t *testing.T) {
 	}
 	if a.routes[0]["@id"] != "moose-catchall" {
 		t.Errorf("app route not removed: %v", a.routes[0]["@id"])
+	}
+}
+
+// After a Caddy recreate several apps' writes can all find the probe server
+// missing at once. Each writes the whole server again before its copy, so
+// without one lock over the check, the write and the copy, a later
+// whole-server write drops a copy written just before it.
+func TestConcurrentRestoresKeepEveryCopy(t *testing.T) {
+	c, a := newProbeAdmin(t, true)
+	a.dropProbeServer()
+	a.getDelay = 20 * time.Millisecond
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cfg := testRoute()
+			cfg.InstanceID = "app" + string(rune('a'+i))
+			cfg.Host = cfg.InstanceID + ".local"
+			if err := c.AddRoute(context.Background(), cfg); err != nil {
+				t.Errorf("AddRoute %s: %v", cfg.InstanceID, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if ids := a.probeIDs(); len(ids) != n+1 {
+		t.Fatalf("probe routes = %v, want all %d copies and the catch-all", ids, n)
 	}
 }

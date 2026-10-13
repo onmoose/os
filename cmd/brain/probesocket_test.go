@@ -18,23 +18,23 @@ import (
 // --- app-unresponsive through Caddy's probe socket (issue #610) ----------
 
 // probeSocketServer stands in for Caddy's moose-probe server on a unix socket.
-// It answers every request with status, and with the no-route mark when
-// noRoute is set, and records the Host and path it was asked for.
+// It answers every request with status, and with mark in caddy.ProbeHeader
+// when mark is set, and records the Host and path it was asked for.
 type probeSocketServer struct {
 	path string
 
 	mu       sync.Mutex
 	status   int
-	noRoute  bool
+	mark     string
 	gotHost  string
 	gotPath  string
 	requests int
 }
 
-func (s *probeSocketServer) set(status int, noRoute bool) {
+func (s *probeSocketServer) set(status int, mark string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.status, s.noRoute = status, noRoute
+	s.status, s.mark = status, mark
 }
 
 func (s *probeSocketServer) seen() (host, path string, n int) {
@@ -67,10 +67,10 @@ func startProbeSocket(t *testing.T, status int) *probeSocketServer {
 			s.mu.Lock()
 			s.gotHost, s.gotPath = r.Host, r.URL.Path
 			s.requests++
-			status, noRoute := s.status, s.noRoute
+			status, mark := s.status, s.mark
 			s.mu.Unlock()
-			if noRoute {
-				w.Header().Set(caddy.ProbeHeader, caddy.ProbeNoRoute)
+			if mark != "" {
+				w.Header().Set(caddy.ProbeHeader, mark)
 			}
 			w.WriteHeader(status)
 		}),
@@ -108,7 +108,7 @@ func TestAppProbe_SocketReachesGatedApp(t *testing.T) {
 		t.Errorf("the probe went to Caddy's site listener (Host %q); with the socket there it must not", rt.last.Host)
 	}
 
-	sock.set(http.StatusOK, false)
+	sock.set(http.StatusOK, "")
 	d.check(context.Background())
 	if len(unresponsiveIssues(mgr)) != 0 {
 		t.Fatalf("a good answer through the socket must clear, got %v", mgr.List())
@@ -122,7 +122,7 @@ func TestAppProbe_SocketNoRouteIsNoSample(t *testing.T) {
 	clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
 	d, mgr, _, reader := gatedScenario(clk, "", []int{http.StatusNotFound})
 	sock := startProbeSocket(t, http.StatusNotFound)
-	sock.set(http.StatusNotFound, true)
+	sock.set(http.StatusNotFound, caddy.ProbeNoRoute)
 	d.SetProbeSocket(sock.path)
 
 	p := &manifest.HealthProbe{Path: "/healthz", HealthyStatus: []int{http.StatusNotFound}}
@@ -130,12 +130,12 @@ func TestAppProbe_SocketNoRouteIsNoSample(t *testing.T) {
 		t.Fatalf("the no-route answer = %v, want probeNoSample", got)
 	}
 	// The same 404 without the mark is the app's own answer.
-	sock.set(http.StatusNotFound, false)
+	sock.set(http.StatusNotFound, "")
 	if got := d.probe(context.Background(), "app.cindy-fox.onmoose.io", true, p); got != probeGood {
 		t.Fatalf("an app's own 404 in its healthy set = %v, want probeGood", got)
 	}
 
-	sock.set(http.StatusNotFound, true)
+	sock.set(http.StatusNotFound, caddy.ProbeNoRoute)
 	reader.containers[0].Health = "unhealthy"
 	d.check(context.Background())
 	d.check(context.Background())
@@ -186,5 +186,21 @@ func TestAppProbe_NoSocketFileKeepsSiteListener(t *testing.T) {
 	}
 	if len(unresponsiveIssues(mgr)) != 0 {
 		t.Fatalf("the gate's login redirect must stay no sample, got %v", mgr.List())
+	}
+}
+
+// The copy of a splash answers 200 whatever the app does, so it is marked and
+// read as no sample. A splash copy left behind by a failed flip to the app
+// must not make a down app look healthy.
+func TestAppProbe_SocketSplashIsNoSample(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	d, _, _, _ := gatedScenario(clk, "", []int{http.StatusOK})
+	sock := startProbeSocket(t, http.StatusOK)
+	sock.set(http.StatusOK, caddy.ProbeSplash)
+	d.SetProbeSocket(sock.path)
+
+	p := &manifest.HealthProbe{Path: "/healthz", HealthyStatus: []int{http.StatusOK}}
+	if got := d.probe(context.Background(), "app.cindy-fox.onmoose.io", true, p); got != probeNoSample {
+		t.Fatalf("a splash answer = %v, want probeNoSample", got)
 	}
 }
