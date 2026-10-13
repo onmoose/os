@@ -1,5 +1,6 @@
-// Package caddy drives the Caddy admin API (CONTROL_PLANE.md: "Configured via
-// Caddy's admin API on localhost:2019 ... no Caddyfile on disk"). Skeleton
+// Package caddy drives the Caddy admin API (CONTROL_PLANE.md # Caddy is moose
+// substrate: no Caddyfile on disk). On a box the admin API is a unix socket the
+// brain alone can reach; in dev it is TCP on :2019 (# New). Skeleton
 // scope: per-instance reverse-proxy routes keyed by Host header, added/removed
 // on install/uninstall. All ops are best-effort in dev — if Caddy is down the
 // brain logs and continues so the install spine still works.
@@ -33,10 +34,31 @@ type Client struct {
 	retryDelay time.Duration
 }
 
+// unixScheme marks an admin address that is a unix socket path, as in
+// "unix:///var/lib/moose/control-plane/caddy/admin.sock".
+const unixScheme = "unix://"
+
+// New returns a client for the Caddy admin API at adminAddr: an HTTP base URL
+// such as "http://localhost:2019" (the dev loop), or a unix socket path with
+// the "unix://" scheme (a box, #608).
+//
+// Over the socket, every request is sent to http://127.0.0.1 and dialed on the
+// socket. Caddy checks the Host header of an admin request on a unix socket,
+// and 127.0.0.1 is one of the values it accepts there.
 func New(adminAddr string) *Client {
+	hc := &http.Client{Timeout: 5 * time.Second}
+	if sock, ok := strings.CutPrefix(adminAddr, unixScheme); ok {
+		var d net.Dialer
+		hc.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return d.DialContext(ctx, "unix", sock)
+			},
+		}
+		adminAddr = "http://127.0.0.1"
+	}
 	return &Client{
 		admin:      adminAddr,
-		http:       &http.Client{Timeout: 5 * time.Second},
+		http:       hc,
 		retryDelay: 500 * time.Millisecond,
 	}
 }
@@ -53,7 +75,7 @@ func routeID(instanceID string) string { return "moose-app-" + instanceID }
 type RouteConfig struct {
 	InstanceID string
 	Host       string
-	Upstream   string // "host:port" reachable from Caddy (the app's moose-ingress alias)
+	Upstream   string // "host:port" reachable from Caddy (the main service alias on the app network)
 	// StripCookieName, when non-empty, removes exactly that one cookie from the
 	// inbound Cookie header before proxying to the app upstream (hosted), and
 	// passes every other cookie through untouched. It carries the name rather

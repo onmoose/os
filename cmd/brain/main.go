@@ -132,6 +132,19 @@ func main() {
 		"profile", string(prof), "base_url", cfg.catalogBaseURL, "cache_dir", cfg.catalogAssetCacheDir,
 		"src", cfg.catalogSnapshotFile)
 	host := hostclient.New(cfg.agentSock)
+	// On a box, the staged caddy.json says where Caddy's admin API listens: a
+	// unix socket on a box made since #608, TCP on an older one, whose staged
+	// files an OS update never replaces. It wins over MOOSE_CADDY_ADMIN, which
+	// host-agent still sets to the TCP address for an older brain. Dev has no
+	// staged dir and keeps the env value.
+	if cfg.controlPlaneDir != "" {
+		if admin, err := lifecycle.ControlPlaneCaddyAdmin(cfg.controlPlaneDir); err != nil {
+			slog.Warn("caddy admin: could not read the staged caddy config; using MOOSE_CADDY_ADMIN", "url", cfg.caddyAdmin, "err", err)
+		} else if admin != "" {
+			cfg.caddyAdmin = admin
+		}
+	}
+	slog.Info("caddy admin", "url", cfg.caddyAdmin)
 	cd := caddy.New(cfg.caddyAdmin)
 	bus := events.NewBus()
 	// One Docker driver, shared by the lifecycle manager and the
