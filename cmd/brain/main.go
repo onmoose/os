@@ -59,6 +59,13 @@ const caddyReadyTimeout = 10 * time.Second
 // can still miss that window, as it could before.
 const dockerReadyTimeout = 15 * time.Second
 
+// caddyMigrateTimeout bounds the move of a pre-#608 box's Caddy admin API to
+// the unix socket (lifecycle.MigrateCaddyAdminSocket): one Caddy recreate and
+// the wait for the socket (20s at most). Putting Caddy back on TCP after a
+// failure has its own 30s inside. On a box that needs no move it returns at
+// once, after reading one file.
+const caddyMigrateTimeout = 45 * time.Second
+
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -189,6 +196,22 @@ func main() {
 	dockCancel()
 
 	if cfg.controlPlaneDir != "" {
+		// A box made before #608 still has Caddy's admin API on TCP, which
+		// every app network Caddy joins can reach. Move it to the unix socket
+		// now, once, before the compose up below (#612, UPDATES.md # 8.3). On
+		// any failure the box stays on TCP and the next brain start tries
+		// again. A box already on the socket returns at once.
+		migCtx, migCancel := context.WithTimeout(context.Background(), caddyMigrateTimeout)
+		if addr, err := life.MigrateCaddyAdminSocket(migCtx, cfg.controlPlaneDir); err != nil {
+			slog.Warn("caddy admin: could not move to the unix socket; staying on TCP until the next brain start", "url", cfg.caddyAdmin, "err", err)
+		} else if addr != "" {
+			cfg.caddyAdmin = addr
+			cd = caddy.New(addr)
+			life.SetCaddy(cd)
+			slog.Info("caddy admin", "url", cfg.caddyAdmin)
+		}
+		migCancel()
+
 		cpCtx, cpCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if err := life.EnsureControlPlane(cpCtx, cfg.controlPlaneDir); err != nil {
 			slog.Warn("control-plane stack up failed; continuing", "err", err)

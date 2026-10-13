@@ -41,6 +41,12 @@ type DockerDriver interface {
 	// of this project: it is host-agent-seeded transport (the brain cannot bring
 	// up its own sole Docker path), launched separately before the brain.
 	ControlPlaneUp(ctx context.Context, dir, project string) (string, error)
+	// ControlPlaneRecreate force-recreates one service of the control-plane
+	// project (`docker compose up -d --force-recreate --no-deps <service>`).
+	// Only MigrateCaddyAdminSocket uses it, at brain startup: Caddy reads
+	// caddy.json only when it starts, and a plain up does not recreate a
+	// container whose compose did not change.
+	ControlPlaneRecreate(ctx context.Context, dir, project, service string) (string, error)
 	// RunOneOff runs an ephemeral client container against a managed service
 	// (`docker run --rm --network <network> --env-file <envFile> <image> <args…>`)
 	// and returns combined output. The brain uses it to provision per-app
@@ -248,6 +254,13 @@ func (cliDocker) ControlPlaneUp(ctx context.Context, dir, project string) (strin
 	// Single compose.yml, no override, no .env — same shape as ServiceUp.
 	base := []string{"compose", "-f", "compose.yml", "-p", project, "up", "-d"}
 	cmd := exec.CommandContext(ctx, "docker", base...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func (cliDocker) ControlPlaneRecreate(ctx context.Context, dir, project, service string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", "compose.yml", "-p", project, "up", "-d", "--force-recreate", "--no-deps", service)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err

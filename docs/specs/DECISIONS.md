@@ -21,6 +21,17 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-13 — The brain moves a box made before #608 to the Caddy admin socket, at once (#612)
+
+**Previously:** host-agent is the only writer of the staged `compose.yml`, and the brain only reads it (`UPDATES.md` # 8.3). A box made before #608 kept its TCP admin API (the entry below). The plan in #612 also waited for the 7-day revert window to close before it moved a box, so that a revert could never land on a brain from before #608.
+**Now:** two decisions, both the maintainer's:
+- **The brain writes one line of `compose.yml`.** At its own startup, once, before its compose up, a brain that finds TCP in the staged `caddy.json` adds the `./caddy:/run/moose-caddy` bind to the `caddy` service and points `admin.listen` at the socket. It is a narrow exception to "host-agent is the only writer": a different line from the updater's UI line, written only at brain startup, a one-line edit checked by a parse, with copies of both files kept as `*.tcp-admin`. If the socket does not answer, it puts both files back and the box stays on TCP until the next brain start.
+- **The move happens at once.** The brain does not look at the ledger or the revert window. The accepted cost: a revert to a brain from before #608 on a moved box gets a brain that dials TCP `:2019`, which Caddy no longer has. Apps keep the routes Caddy already holds, but the brain cannot change routes, so a new install gets none and a stop or start does not flip its route, until the next control-plane update. A brain from #608 on reads the address from `caddy.json`, so any later update fixes it.
+**Why:** host-agent doing the edit was rejected because at boot it would race the brain's own startup compose on the same project, the collision `UPDATES.md` # 3 step 3c warns about. The brain is the actor that runs that compose and then dials the address, so the edit, the recreate and the dial happen in one process, in order. Waiting for the revert window would leave a box open to route rewrites from any app for up to 7 days after every control-plane update, to protect against a revert that is rare and that only stops route changes, not traffic.
+**Affected docs:** `UPDATES.md` # 8.3 and Locked decisions, `CONTROL_PLANE.md` # Locked: Caddy is moose substrate, `THREAT_MODEL.md` (B2, the list of gaps), `BUILD.md` # As built (copy once), `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+---
+
 ## 2026-10-13 — Apps leave `moose-ingress`; the brain reads Caddy's admin address from the staged `caddy.json` (#608)
 
 **Previously:** every app's main service joined `moose-ingress` with the brain, Caddy and the socket proxy, so an app could reach the proxy (host root, #430) and Caddy's TCP admin API. The brain dialed Caddy's admin API at the address host-agent put in `MOOSE_CADDY_ADMIN`. The issue planned to keep that, with host-agent passing a unix socket instead.

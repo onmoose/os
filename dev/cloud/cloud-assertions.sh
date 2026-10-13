@@ -1507,6 +1507,75 @@ access)
         || fail "net: whoami did not answer through the recreated caddy after a brain restart: status='$(status_of "$rr_resp")'"
     echo "cloud-assertions: whoami answers through the recreated caddy"
 
+    # 6g. A BOX MADE BEFORE #608 MOVES ITSELF TO THE SOCKET (#612). Such a box
+    #     kept the staged files it got at first boot: caddy.json with the admin
+    #     API on TCP 0.0.0.0:2019 and a compose.yml with no bind for caddy/.
+    #     Put this box in that state, with Caddy really running on TCP, then
+    #     restart the brain twice: once with the socket made to fail, where the
+    #     brain must put the files back and stay on TCP, and once normally,
+    #     where it must move the box to the socket.
+    cp_dir=/var/lib/moose/control-plane
+    caddy_tcp_ok() { docker exec moose-caddy wget -qO- -T 3 http://127.0.0.1:2019/config/ >/dev/null 2>&1; }
+    whoami_answers() { # LABEL
+        local resp="" _i
+        for _i in $(seq 1 120); do
+            resp="$(full_get / "$app_host" 2>/dev/null || true)"
+            grep -q ' 200' <<<"$(status_of "$resp")" && grep -qi 'Hostname:' <<<"$resp" && return 0
+            sleep 1
+        done
+        fail "migrate: whoami did not answer through caddy $1: status='$(status_of "$resp")'"
+    }
+    sed -i 's#"listen": "unix//run/moose-caddy/admin.sock"#"listen": "0.0.0.0:2019"#' "$cp_dir/caddy.json"
+    sed -i '\#^ *- \./caddy:/run/moose-caddy$#d' "$cp_dir/compose.yml"
+    grep -q '"listen": "0.0.0.0:2019"' "$cp_dir/caddy.json" || fail "migrate: could not stage the pre-#608 caddy.json: $(grep -F listen "$cp_dir/caddy.json")"
+    grep -qF './caddy:/run/moose-caddy' "$cp_dir/compose.yml" && fail "migrate: could not stage the pre-#608 compose.yml"
+    pre_out="$(cd "$cp_dir" && MOOSE_CADDY_IMAGE="$caddy_img" docker compose -f compose.yml -p "$cp_project" up -d --no-deps caddy 2>&1)" \
+        || fail "migrate: bringing caddy up on the pre-#608 files failed: $pre_out"
+    for _i in $(seq 1 30); do caddy_tcp_ok && break; sleep 1; done
+    caddy_tcp_ok || fail "migrate: caddy on the pre-#608 files does not answer on TCP :2019"
+    echo "cloud-assertions: migrate: caddy runs on the pre-#608 files, admin API on TCP :2019"
+
+    # 6g-1. The socket fails. A non-empty dir owned by host root where the
+    #       socket goes: Caddy's remapped root cannot remove it, so Caddy's admin
+    #       API cannot start on the socket. The brain sets the owner of caddy/
+    #       itself, so a wrong owner on the dir would not do.
+    rm -f "$cp_dir/caddy/admin.sock"
+    mkdir -p "$cp_dir/caddy/admin.sock/blocker"
+    docker restart moose-brain >/dev/null || fail "migrate: could not restart the brain"
+    wait_brain_log 'caddy admin: could not move to the unix socket' 180 \
+        || fail "migrate: the brain did not report a failed move with the socket blocked: $(docker logs moose-brain 2>&1 | grep -F 'caddy admin' | tail -3)"
+    # This error comes only after the files were written and Caddy recreated on
+    # them, so the move got as far as the socket and failed there.
+    # No grep -q: it would exit at the first match, docker logs would get
+    # SIGPIPE, and pipefail would read that as no match.
+    docker logs moose-brain 2>&1 | grep -F 'caddy admin socket did not come up' >/dev/null \
+        || fail "migrate: the move failed before it reached the socket: $(docker logs moose-brain 2>&1 | grep -F 'could not move' | tail -1)"
+    grep -q '"listen": "0.0.0.0:2019"' "$cp_dir/caddy.json" || fail "migrate: caddy.json was not put back after the failed move: $(grep -F listen "$cp_dir/caddy.json")"
+    grep -qF './caddy:/run/moose-caddy' "$cp_dir/compose.yml" && fail "migrate: compose.yml was not put back after the failed move"
+    whoami_answers "after the failed move"
+    caddy_tcp_ok || fail "migrate: after the failed move caddy does not answer on TCP :2019"
+    reach moose-caddy 2019 || fail "migrate: after the failed move the box should still be on TCP, but moose-caddy:2019 refuses from ${cname}"
+    echo "cloud-assertions: migrate: with the socket blocked the brain put the files back; the box stays on TCP and whoami answers"
+
+    # 6g-2. The move. caddy/ removed as well, as on a box whose host-agent
+    #       predates #608: the brain must make it, for the remap base.
+    rm -rf "$cp_dir/caddy"
+    docker restart moose-brain >/dev/null || fail "migrate: could not restart the brain"
+    wait_brain_log 'caddy admin: moved to the unix socket' 180 \
+        || fail "migrate: the brain did not move the box to the socket: $(docker logs moose-brain 2>&1 | grep -F 'caddy admin' | tail -3)"
+    grep -q '"listen": "unix//run/moose-caddy/admin.sock"' "$cp_dir/caddy.json" || fail "migrate: caddy.json does not name the socket: $(grep -F listen "$cp_dir/caddy.json")"
+    grep -qF -- '- ./caddy:/run/moose-caddy' "$cp_dir/compose.yml" || fail "migrate: compose.yml does not bind caddy/"
+    grep -q '"listen": "0.0.0.0:2019"' "$cp_dir/caddy.json.tcp-admin" || fail "migrate: no copy of the TCP caddy.json was kept"
+    [ "$(stat -c '%a %u' "$cp_dir/caddy" 2>/dev/null)" = "700 ${remap_base}" ] \
+        || fail "migrate: $cp_dir/caddy is '$(stat -c '%a %u:%g' "$cp_dir/caddy" 2>&1)', want mode 700 owned by the remap base ${remap_base}"
+    grep -q '"unix//run/moose-caddy/admin.sock"' <<<"$(caddy_admin_get /config/admin 2>&1)" \
+        || fail "migrate: Caddy's admin API does not answer on $CADDY_ADMIN_SOCK: $(caddy_admin_get /config/admin 2>&1 | head -3 | tr '\r\n' '  ')"
+    caddy_tcp_ok && fail "migrate: Caddy still serves its admin API on TCP :2019 after the move"
+    whoami_answers "after the move"
+    reach moose-caddy 80 || fail "migrate: the probe in ${cname}'s netns cannot reach moose-caddy:80 after the move"
+    reach moose-caddy 2019 && fail "migrate: ADMIN API REACHABLE FROM AN APP after the move: ${cname} connected to moose-caddy:2019"
+    echo "cloud-assertions: migrate: the brain moved a pre-#608 box to the socket: no TCP :2019, admin API on the socket, whoami answers, moose-caddy:2019 refuses from inside the app"
+
     # 6f. Uninstall removes the app network cleanly: the brain takes Caddy off it
     #     first, or Docker refuses to remove a network a container is still on.
     #     The owner session survives the brain restart (sessions are in SQLite).
