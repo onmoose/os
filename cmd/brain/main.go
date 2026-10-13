@@ -60,11 +60,11 @@ const caddyReadyTimeout = 10 * time.Second
 const dockerReadyTimeout = 15 * time.Second
 
 // caddyMigrateTimeout bounds the move of a pre-#608 box's Caddy admin API to
-// the unix socket (lifecycle.MigrateCaddyAdminSocket): one compose up that
-// recreates Caddy, and the wait for the socket. Putting the files back on a
-// failure has its own budget inside. On a box that needs no move it returns at
+// the unix socket (lifecycle.MigrateCaddyAdminSocket): one Caddy recreate and
+// the wait for the socket (20s at most). Putting Caddy back on TCP after a
+// failure has its own 30s inside. On a box that needs no move it returns at
 // once, after reading one file.
-const caddyMigrateTimeout = 60 * time.Second
+const caddyMigrateTimeout = 45 * time.Second
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")

@@ -46,9 +46,12 @@ const (
 	// caddySocketWait bounds the wait for the admin API on the socket after
 	// Caddy is recreated. Caddy answers within about a second of starting.
 	caddySocketWait = 20 * time.Second
-	// caddyRestoreTimeout bounds putting the files back and the compose up
-	// that follows, whatever is left of the caller's budget.
-	caddyRestoreTimeout = 60 * time.Second
+	// caddyRestoreTimeout bounds the Caddy recreate that puts it back on TCP,
+	// whatever is left of the caller's budget. Kept short: a brain recreated
+	// by an update has 60s to answer /healthz, and this runs before it serves.
+	caddyRestoreTimeout = 30 * time.Second
+	// caddyServiceName is the Caddy service in the control-plane compose.
+	caddyServiceName = "caddy"
 )
 
 // MigrateCaddyAdminSocket moves a box whose staged caddy.json still puts
@@ -69,15 +72,19 @@ const (
 //  1. The socket dir, mode 0700, owned by the host id Caddy's root maps to.
 //     The base comes from host-agent and is checked against Docker
 //     (hostIdentity), like every install.
-//  2. Copies of both files as they are, next to them.
+//  2. Copies of both files as they are, next to them. An existing copy is
+//     kept: after a crash between the two writes below, the compose on disk
+//     is already edited, and the first copy is the true original.
 //  3. compose.yml first, then caddy.json. Each is a one-line edit checked by
 //     a parse, written atomically. caddy.json goes last because it is the one
 //     the brain reads to pick its address: a crash between the two leaves a
 //     box that still says TCP, which this function then finishes next time.
-//  4. compose up (EnsureControlPlane), which recreates Caddy because its
-//     mounts changed, and a wait for the admin API on the socket.
-//  5. If either fails, the original files go back and compose up runs again,
-//     which recreates Caddy on TCP.
+//  4. A forced recreate of Caddy alone, and a wait for the admin API on the
+//     socket. Forced, because Caddy reads caddy.json only when it starts, and
+//     a plain compose up leaves Caddy alone when the compose already had the
+//     bind (that same crash case). The caller's EnsureControlPlane follows.
+//  5. If either fails, the original files go back and Caddy is recreated
+//     again, on TCP.
 func (m *Manager) MigrateCaddyAdminSocket(ctx context.Context, dir string) (string, error) {
 	jsonPath := filepath.Join(dir, controlPlaneCaddyConfig)
 	composePath := filepath.Join(dir, controlPlaneComposeFile)
@@ -117,11 +124,17 @@ func (m *Manager) MigrateCaddyAdminSocket(ctx context.Context, dir string) (stri
 	}
 
 	for p, b := range map[string][]byte{jsonPath: origJSON, composePath: origCompose} {
-		if err := writeFileAtomic(p+caddyTCPBackupSuffix, b, 0o644); err != nil {
+		backup := p + caddyTCPBackupSuffix
+		if _, err := os.Lstat(backup); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("check the copy of %s: %w", p, err)
+		}
+		if err := writeFileAtomic(backup, b, 0o644); err != nil {
 			return "", fmt.Errorf("keep a copy of %s: %w", p, err)
 		}
 	}
-	slog.Info("caddy admin: moving the admin API from TCP to the unix socket", "dir", dir)
+	slog.Info("caddy admin: moving the admin API from TCP to the unix socket", "state_dir", dir)
 	if !bytes.Equal(newCompose, origCompose) {
 		if err := writeFileAtomic(composePath, newCompose, 0o644); err != nil {
 			return "", fmt.Errorf("write control-plane compose: %w", err)
@@ -134,7 +147,7 @@ func (m *Manager) MigrateCaddyAdminSocket(ctx context.Context, dir string) (stri
 
 	addr, err := ControlPlaneCaddyAdmin(dir)
 	if err == nil {
-		err = m.EnsureControlPlane(ctx, dir)
+		err = m.recreateCaddy(ctx, dir)
 	}
 	if err == nil {
 		err = m.waitCaddyAdmin(ctx, addr)
@@ -143,14 +156,14 @@ func (m *Manager) MigrateCaddyAdminSocket(ctx context.Context, dir string) (stri
 		return "", errors.Join(fmt.Errorf("caddy admin socket did not come up: %w", err),
 			m.restoreCaddyTCP(ctx, dir, origJSON, origCompose, true))
 	}
-	slog.Info("caddy admin: moved to the unix socket", "dir", dir, "url", addr)
+	slog.Info("caddy admin: moved to the unix socket", "state_dir", dir, "url", addr)
 	return addr, nil
 }
 
 // restoreCaddyTCP puts the original files back, caddy.json first so the box
 // says TCP again before anything else, and, when Caddy may already run on the
-// new files, runs compose up again so Caddy is recreated on TCP. It gets its
-// own budget: the caller's may be spent by the wait that just failed.
+// new files, recreates Caddy on TCP. It gets its own budget: the caller's may
+// be spent by the wait that just failed.
 func (m *Manager) restoreCaddyTCP(ctx context.Context, dir string, origJSON, origCompose []byte, up bool) error {
 	var errs []error
 	if err := writeFileAtomic(filepath.Join(dir, controlPlaneCaddyConfig), origJSON, 0o644); err != nil {
@@ -162,14 +175,24 @@ func (m *Manager) restoreCaddyTCP(ctx context.Context, dir string, origJSON, ori
 	if up && len(errs) == 0 {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), caddyRestoreTimeout)
 		defer cancel()
-		if err := m.EnsureControlPlane(rctx, dir); err != nil {
+		if err := m.recreateCaddy(rctx, dir); err != nil {
 			errs = append(errs, fmt.Errorf("bring caddy back up on TCP: %w", err))
 		}
 	}
 	if len(errs) == 0 {
-		slog.Warn("caddy admin: put the TCP admin files back; the box stays on TCP until the next brain start", "dir", dir)
+		slog.Warn("caddy admin: put the TCP admin files back; the box stays on TCP until the next brain start", "state_dir", dir)
 	}
 	return errors.Join(errs...)
+}
+
+// recreateCaddy force-recreates the Caddy service of the control-plane
+// project, so it starts with the mounts and the caddy.json on disk now.
+func (m *Manager) recreateCaddy(ctx context.Context, dir string) error {
+	out, err := m.docker.ControlPlaneRecreate(ctx, dir, controlPlaneProject, caddyServiceName)
+	if err != nil {
+		return fmt.Errorf("recreate caddy: %w\n%s", err, out)
+	}
+	return nil
 }
 
 // waitCaddyAdmin waits for the admin API at addr to answer. Tests replace it
@@ -198,7 +221,7 @@ func (m *Manager) ensureCaddySocketDir(dir string, owner int) error {
 		if err := os.Mkdir(p, caddySocketDirMode); err != nil && !errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("create caddy socket dir %q: %w", p, err)
 		}
-		slog.Info("caddy socket dir created", "dir", p, "uid", owner)
+		slog.Info("caddy socket dir created", "state_dir", p, "uid", owner)
 	case err != nil:
 		return fmt.Errorf("check caddy socket dir %q: %w", p, err)
 	}
@@ -309,7 +332,7 @@ func composeWithCaddySocket(orig []byte) ([]byte, error) {
 		return nil, fmt.Errorf("the edited file does not end caddy's volumes with %q", caddySocketBind)
 	}
 	// Take the new item off and the two must be the same document.
-	svc := after["services"].(map[string]any)["caddy"].(map[string]any)
+	svc := after["services"].(map[string]any)[caddyServiceName].(map[string]any)
 	svc["volumes"] = afterVols[:len(afterVols)-1]
 	if !reflect.DeepEqual(before, after) {
 		return nil, errors.New("the edit changed more than caddy's volumes")
@@ -323,7 +346,7 @@ func caddyVolumes(doc map[string]any) ([]any, error) {
 	if !ok {
 		return nil, errors.New("it has no services")
 	}
-	svc, ok := services["caddy"].(map[string]any)
+	svc, ok := services[caddyServiceName].(map[string]any)
 	if !ok {
 		return nil, errors.New("it has no caddy service")
 	}
@@ -391,7 +414,7 @@ func caddyVolumesEnd(lines []string) (last, itemIndent int, err error) {
 			if svcLevel < 0 {
 				svcLevel = indent
 			}
-			if indent == svcLevel && trimmed == "caddy:" {
+			if indent == svcLevel && trimmed == caddyServiceName+":" {
 				caddyIndent = indent
 			}
 		}

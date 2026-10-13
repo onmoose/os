@@ -73,11 +73,20 @@ func newMigrateRig(waitErr error) *migrateRig {
 	return r
 }
 
-func (r *migrateRig) ups() int {
+// recreates counts the forced recreates of Caddy, and fails on a recreate of
+// anything else or on a plain compose up, which the move never runs.
+func (r *migrateRig) recreates(t *testing.T) int {
+	t.Helper()
 	n := 0
 	for _, c := range r.docker.Calls() {
-		if c.method == "ControlPlaneUp" {
+		switch c.method {
+		case "ControlPlaneRecreate":
+			if c.args[1] != controlPlaneProject || c.args[2] != "caddy" {
+				t.Errorf("recreate args = %v, want [dir %s caddy]", c.args, controlPlaneProject)
+			}
 			n++
+		case "ControlPlaneUp":
+			t.Error("the move ran a plain compose up, which does not recreate a Caddy whose compose did not change")
 		}
 	}
 	return n
@@ -165,8 +174,8 @@ func TestMigrateCaddyAdminSocket_MovesPre608Box(t *testing.T) {
 	if want := []chownCall{{filepath.Join(dir, "caddy"), 100000, 100000}}; !reflect.DeepEqual(r.chowns, want) {
 		t.Errorf("chowns = %v, want %v", r.chowns, want)
 	}
-	if r.ups() != 1 {
-		t.Errorf("compose up ran %d times, want 1", r.ups())
+	if r.recreates(t) != 1 {
+		t.Errorf("caddy was recreated %d times, want 1", r.recreates(t))
 	}
 	if !reflect.DeepEqual(r.waits, []string{wantAddr}) {
 		t.Errorf("waited on %v, want the socket %q", r.waits, wantAddr)
@@ -215,15 +224,15 @@ func TestMigrateCaddyAdminSocket_SocketFailsRestores(t *testing.T) {
 			t.Errorf("%s was not put back byte for byte", f)
 		}
 	}
-	if r.ups() != 2 {
-		t.Errorf("compose up ran %d times, want 2: once on the socket, once back on TCP", r.ups())
+	if r.recreates(t) != 2 {
+		t.Errorf("caddy was recreated %d times, want 2: once on the socket, once back on TCP", r.recreates(t))
 	}
 	if got, err := ControlPlaneCaddyAdmin(dir); err != nil || got != "" {
 		t.Errorf("after the restore the staged caddy.json reads %q, %v; want TCP", got, err)
 	}
 }
 
-// TestMigrateCaddyAdminSocket_ComposeFailsRestores: a failed compose up is
+// TestMigrateCaddyAdminSocket_ComposeFailsRestores: a failed recreate is
 // treated like a socket that does not answer.
 func TestMigrateCaddyAdminSocket_ComposeFailsRestores(t *testing.T) {
 	dir := stageControlPlane(t, pre608Dir)
@@ -238,6 +247,41 @@ func TestMigrateCaddyAdminSocket_ComposeFailsRestores(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(dir, "caddy.json")); string(got) != string(readFile(t, filepath.Join(pre608Dir, "caddy.json"))) {
 		t.Error("caddy.json was not put back")
+	}
+}
+
+// TestMigrateCaddyAdminSocket_FinishesHalfMovedBox: a crash between the two
+// writes leaves the bind in compose.yml and TCP in caddy.json. The next start
+// changes only caddy.json, still recreates Caddy (a plain compose up would
+// not, since the compose did not change), and keeps the copies from the first
+// attempt, which hold the true original compose.
+func TestMigrateCaddyAdminSocket_FinishesHalfMovedBox(t *testing.T) {
+	dir := stageControlPlane(t, pre608Dir)
+	origCompose := readFile(t, filepath.Join(dir, "compose.yml"))
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml.tcp-admin"), origCompose, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	half, err := composeWithCaddySocket(origCompose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), half, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := newMigrateRig(nil)
+	addr, err := r.m.MigrateCaddyAdminSocket(context.Background(), dir)
+	if err != nil || addr == "" {
+		t.Fatalf("got %q, %v; want the move to finish", addr, err)
+	}
+	if got := readFile(t, filepath.Join(dir, "compose.yml")); string(got) != string(half) {
+		t.Error("compose.yml changed again; the bind was there already")
+	}
+	if r.recreates(t) != 1 {
+		t.Errorf("caddy was recreated %d times, want 1", r.recreates(t))
+	}
+	if got := readFile(t, filepath.Join(dir, "compose.yml.tcp-admin")); string(got) != string(origCompose) {
+		t.Error("the copy of the original compose was overwritten with the edited one")
 	}
 }
 
@@ -279,8 +323,8 @@ func assertUntouched(t *testing.T, dir string, r *migrateRig) {
 			t.Errorf("%s.tcp-admin was written: %v", f, err)
 		}
 	}
-	if r.ups() != 0 {
-		t.Errorf("compose up ran %d times, want 0", r.ups())
+	if r.recreates(t) != 0 {
+		t.Errorf("caddy was recreated %d times, want 0", r.recreates(t))
 	}
 }
 
@@ -295,7 +339,7 @@ func TestComposeWithCaddySocket(t *testing.T) {
 	}{
 		{
 			name: "items indented under the key, comment after the list",
-			in: "services:\n  caddy:\n    image: caddy\n    volumes:\n      - ./caddy.json:/etc/caddy/caddy.json:ro\n      # a note\n      - caddy_data:/data\n    # about tmpfs\n    tmpfs:\n      - /config\n  moose-ui:\n    volumes:\n      - x:/y\n",
+			in:   "services:\n  caddy:\n    image: caddy\n    volumes:\n      - ./caddy.json:/etc/caddy/caddy.json:ro\n      # a note\n      - caddy_data:/data\n    # about tmpfs\n    tmpfs:\n      - /config\n  moose-ui:\n    volumes:\n      - x:/y\n",
 			want: "services:\n  caddy:\n    image: caddy\n    volumes:\n      - ./caddy.json:/etc/caddy/caddy.json:ro\n      # a note\n      - caddy_data:/data\n      - ./caddy:/run/moose-caddy\n    # about tmpfs\n    tmpfs:\n      - /config\n  moose-ui:\n    volumes:\n      - x:/y\n",
 		},
 		{

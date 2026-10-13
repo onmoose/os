@@ -1544,6 +1544,10 @@ access)
     docker restart moose-brain >/dev/null || fail "migrate: could not restart the brain"
     wait_brain_log 'caddy admin: could not move to the unix socket' 180 \
         || fail "migrate: the brain did not report a failed move with the socket blocked: $(docker logs moose-brain 2>&1 | grep -F 'caddy admin' | tail -3)"
+    # This error comes only after the files were written and Caddy recreated on
+    # them, so the move got as far as the socket and failed there.
+    docker logs moose-brain 2>&1 | grep -qF 'caddy admin socket did not come up' \
+        || fail "migrate: the move failed before it reached the socket: $(docker logs moose-brain 2>&1 | grep -F 'could not move' | tail -1)"
     grep -q '"listen": "0.0.0.0:2019"' "$cp_dir/caddy.json" || fail "migrate: caddy.json was not put back after the failed move: $(grep -F listen "$cp_dir/caddy.json")"
     grep -qF './caddy:/run/moose-caddy' "$cp_dir/compose.yml" && fail "migrate: compose.yml was not put back after the failed move"
     whoami_answers "after the failed move"

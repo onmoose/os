@@ -240,6 +240,14 @@ func (f *fakeDocker) ControlPlaneUp(_ context.Context, dir, project string) (str
 	return "", nil
 }
 
+func (f *fakeDocker) ControlPlaneRecreate(_ context.Context, dir, project, service string) (string, error) {
+	f.record("ControlPlaneRecreate", dir, project, service)
+	if f.controlPlaneUpErr != nil {
+		return "boom", f.controlPlaneUpErr
+	}
+	return "", nil
+}
+
 func (f *fakeDocker) RunOneOff(_ context.Context, image, network, envFile string, args []string) (string, error) {
 	f.record("RunOneOff", image, network, envFile, strings.Join(args, " "))
 	if f.runOneOff != nil {
