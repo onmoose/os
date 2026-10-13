@@ -26,6 +26,7 @@ import (
 	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/health"
 	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/lifecycle"
@@ -468,11 +469,30 @@ func (s *Server) withPublicPaths(dto *InstanceDTO) {
 // When the remap state is unknown it hides nothing: the install path refuses
 // on its own then. The by-id routes (detail, install plan, assets) keep
 // reading s.catalog, so a direct link still loads.
+//
+// Every entry it returns carries its fit on this box (withFit).
 func (s *Server) storeCatalog(ctx context.Context) *catalog.Catalog {
 	if s.life != nil && s.life.RemapState(ctx) == lifecycle.RemapOff {
-		return s.catalog.WithoutRemapApps()
+		return s.withFit(ctx, s.catalog.WithoutRemapApps())
 	}
-	return s.catalog
+	return s.withFit(ctx, s.catalog)
+}
+
+// withFit returns c with every entry's fit on this box filled in (#599). The
+// box is read once, so every card in one response is judged against the same
+// figures. When the box cannot be read, c comes back as it is and the entries
+// carry no fit: the store shows no badge rather than a guess.
+func (s *Server) withFit(ctx context.Context, c *catalog.Catalog) *catalog.Catalog {
+	if s.life == nil {
+		return c
+	}
+	box, ok := s.life.FitBox(ctx)
+	if !ok {
+		return c
+	}
+	return c.WithFit(func(id string, rec manifest.Recommended) fit.AppFit {
+		return lifecycle.CheckFit(box, id, rec)
+	})
 }
 
 // --- handlers ------------------------------------------------------------
@@ -498,7 +518,7 @@ func (s *Server) listCatalog(ctx context.Context, _ *struct{}) (*struct {
 func (s *Server) getCatalogApp(ctx context.Context, in *struct {
 	ID string `path:"id"`
 }) (*struct{ Body catalog.Detail }, error) {
-	d, err := s.catalog.Detail(in.ID)
+	d, err := s.withFit(ctx, s.catalog).Detail(in.ID)
 	if errors.Is(err, catalog.ErrNotFound) {
 		return nil, huma.Error404NotFound("no such app")
 	}

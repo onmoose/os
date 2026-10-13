@@ -12,6 +12,7 @@ import (
 
 	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
@@ -53,16 +54,26 @@ type InstallPlanDTO struct {
 	// Unavailable is set when this box cannot install the app at all. It is a
 	// reason code, not copy: the UI owns the sentence, like every other
 	// wording on this plan. The detail page shows that sentence in place of a
-	// working Install button. Today the one code is unavailableNeedsRemap.
-	// Advisory like the rest of the plan: POST /api/v1/apps refuses such an
-	// install on its own.
-	Unavailable string `json:"unavailable,omitempty" enum:"needs-remap"`
+	// working Install button. The codes are unavailableNeedsRemap and
+	// unavailableTooBig. Advisory like the rest of the plan: POST /api/v1/apps
+	// refuses such an install on its own.
+	Unavailable string `json:"unavailable,omitempty" enum:"needs-remap,too-big"`
+	// Fit says whether the app fits this box's memory and CPU (#599), from the
+	// manifest's resources.recommended. The same figures as the store card and
+	// page. A tight app needs an explicit "Install anyway" in the dialog; a
+	// too-big one also sets Unavailable. Absent when the box cannot measure
+	// itself.
+	Fit *fit.AppFit `json:"fit,omitempty"`
 }
 
 // unavailableNeedsRemap: the app needs the userns-remap (root_setup or
 // image_user) and this box runs none (APP_STORE.md # Apps this box cannot
 // run).
 const unavailableNeedsRemap = "needs-remap"
+
+// unavailableTooBig: the app recommends more memory than the box has, or more
+// CPU cores (APP_ISOLATION.md # Resource limits).
+const unavailableTooBig = "too-big"
 
 // InstallPlanExisting is one copy of the app that is already installed.
 // Mine is true when the caller owns it; an admin also sees other users'
@@ -390,10 +401,18 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 		return nil, err
 	}
 	plan.Existing = existing
+	if box, ok := s.life.FitBox(ctx); ok {
+		res := lifecycle.CheckFit(box, man.ID, man.Resources.Recommended)
+		plan.Fit = &res
+		if res.State == fit.TooBig {
+			plan.Unavailable = unavailableTooBig
+		}
+	}
 	// The same rule as the store lists (storeCatalog), read from the manifest
 	// itself so it holds even when the browse record does not say it. Only a
 	// known "no remap" sets it; an unknown state leaves Install to the
 	// install path, which refuses on its own.
+	// It wins over too-big: the app cannot run here at any size.
 	if (man.RootSetup || man.ImageUser) && s.life.RemapState(ctx) == lifecycle.RemapOff {
 		plan.Unavailable = unavailableNeedsRemap
 	}

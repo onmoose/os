@@ -391,6 +391,9 @@ func entryOfApp(a *wireApp) Entry {
 		Footprint:        a.Footprint,
 		needsRemap:       a.RootSetup || a.ImageUser,
 	}
+	if a.Resources != nil {
+		e.recommended = a.Resources.Recommended
+	}
 	if a.IconURL != "" {
 		e.IconURL = iconURL(a.ID)
 	}

@@ -179,6 +179,11 @@ func loadApp(pkgDir string) catalog.SnapshotApp {
 	if man.Links != (manifest.Links{}) {
 		a.Links = &man.Links
 	}
+	// The store card and page show whether the app fits the box (#599), from
+	// the record, as the published catalog sends it.
+	if man.Resources.Recommended != (manifest.Recommended{}) {
+		a.Resources = &man.Resources
+	}
 	return a
 }
 
