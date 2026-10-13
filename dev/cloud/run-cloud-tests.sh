@@ -553,8 +553,10 @@ if should_run access; then
     # prechecks, which alone can approach the 480s default under CI's TCG-only QEMU.
     # The two folder-app installs (#519) add up to ~240s more. The #608 network
     # checks (a Caddy recreate, up to one health tick, a brain restart and an
-    # uninstall) add up to ~330s more.
-    VERDICT_TIMEOUT=1290
+    # uninstall) add up to ~330s more. The #612 admin-socket move (a Caddy
+    # recreate on the pre-#608 files and two brain restarts, one with a failed
+    # move) adds up to ~300s more.
+    VERDICT_TIMEOUT=1590
     if ! run_boot "${FIRMWARE}-access" "access" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_ACCESS" "$ACCESS_KEY")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$ACCESS_TOKEN" | base64 -w0)" \
