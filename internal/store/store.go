@@ -61,7 +61,12 @@ type Instance struct {
 	// host owners. That is also the value every row from before the column
 	// gets.
 	UsernsTier string
-	CreatedAt  time.Time
+	// AutoRestartOff turns off the automatic restart of an app that stays
+	// unresponsive (#598, HEALTH.md # Automatic restart). The zero value is on,
+	// so every instance, new or from before the column, is restarted by
+	// default; an owner turns it off while they debug the app by hand.
+	AutoRestartOff bool
+	CreatedAt      time.Time
 }
 
 const (
@@ -172,6 +177,7 @@ func (s *Store) migrate() error {
 			pending_recreate INTEGER NOT NULL DEFAULT 0,
 			exposure    TEXT NOT NULL DEFAULT 'public' CHECK (exposure IN ('public','restricted')),
 			userns_tier TEXT NOT NULL DEFAULT 'host' CHECK (userns_tier IN ('default','caps','image','host')),
+			auto_restart_off INTEGER NOT NULL DEFAULT 0,
 			created_at  INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS instance_images (
@@ -456,6 +462,8 @@ func (s *Store) migrate() error {
 		// it runs in the host user namespace and its data has real host owners:
 		// the host tier (APP_ISOLATION.md # User-namespace tiers).
 		{"instances", "userns_tier", "ALTER TABLE instances ADD COLUMN userns_tier TEXT NOT NULL DEFAULT 'host'"},
+		// Automatic restart is on for every app from before the column (#598).
+		{"instances", "auto_restart_off", "ALTER TABLE instances ADD COLUMN auto_restart_off INTEGER NOT NULL DEFAULT 0"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
 		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
 		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
@@ -1020,12 +1028,29 @@ func (s *Store) SetInstanceExposure(id, exposure string) error {
 	return nil
 }
 
+// SetInstanceAutoRestart turns the automatic restart of an unresponsive app
+// on or off (#598). It is read by the app-unresponsive detector on every tick.
+func (s *Store) SetInstanceAutoRestart(id string, on bool) error {
+	off := 1
+	if on {
+		off = 0
+	}
+	res, err := s.db.Exec(`UPDATE instances SET auto_restart_off=? WHERE id=?`, off, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) Delete(id string) error {
 	_, err := s.db.Exec(`DELETE FROM instances WHERE id=?`, id)
 	return err
 }
 
-const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, created_at`
+const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, created_at`
 
 func (s *Store) Get(id string) (Instance, error) {
 	return scan(s.db.QueryRow(
@@ -1678,8 +1703,8 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scan(row scanner) (Instance, error) {
 	var i Instance
-	var created, pendingRecreate int64
-	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &created)
+	var created, pendingRecreate, autoRestartOff int64
+	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &autoRestartOff, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, ErrNotFound
 	}
@@ -1687,6 +1712,7 @@ func scan(row scanner) (Instance, error) {
 		return Instance{}, fmt.Errorf("scan instance: %w", err)
 	}
 	i.PendingRecreate = pendingRecreate != 0
+	i.AutoRestartOff = autoRestartOff != 0
 	i.CreatedAt = time.Unix(created, 0)
 	return i, nil
 }

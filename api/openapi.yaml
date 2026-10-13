@@ -1445,6 +1445,8 @@ components:
           format: uri
           readOnly: true
           type: string
+        auto_restart:
+          type: boolean
         exposure:
           enum:
             - restricted
@@ -1501,6 +1503,7 @@ components:
         - scope
         - exposure
         - needs_setup
+        - auto_restart
       type: object
     Issue:
       additionalProperties: false
@@ -2463,6 +2466,21 @@ components:
         - apps
         - packs
       type: object
+    Set-app-auto-restartRequest:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/Set-app-auto-restartRequest.json
+          format: uri
+          readOnly: true
+          type: string
+        enabled:
+          type: boolean
+      required:
+        - enabled
+      type: object
     Set-app-exposureRequest:
       additionalProperties: false
       properties:
@@ -3227,6 +3245,35 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Get one app instance
+  /api/v1/apps/{id}/auto-restart:
+    put:
+      operationId: set-app-auto-restart
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Set-app-auto-restartRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceDTO"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Turn the automatic restart of an unresponsive app on or off (owner or admin)
   /api/v1/apps/{id}/config:
     get:
       operationId: get-app-config

@@ -161,6 +161,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{id}/auto-restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Turn the automatic restart of an unresponsive app on or off (owner or admin) */
+        put: operations["set-app-auto-restart"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/{id}/config": {
         parameters: {
             query?: never;
@@ -1708,6 +1725,7 @@ export interface components {
              * @example https://example.com/schemas/InstanceDTO.json
              */
             readonly $schema?: string;
+            auto_restart: boolean;
             /** @enum {string} */
             exposure: "restricted" | "public";
             icon_glyph?: string;
@@ -2153,6 +2171,15 @@ export interface components {
             readonly $schema?: string;
             apps: components["schemas"]["Entry"][] | null;
             packs: components["schemas"]["Pack"][] | null;
+        };
+        "Set-app-auto-restartRequest": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Set-app-auto-restartRequest.json
+             */
+            readonly $schema?: string;
+            enabled: boolean;
         };
         "Set-app-exposureRequest": {
             /**
@@ -2836,6 +2863,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "set-app-auto-restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Set-app-auto-restartRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstanceDTO"];
                 };
             };
             /** @description Error */
