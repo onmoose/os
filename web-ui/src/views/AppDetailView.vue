@@ -73,6 +73,8 @@ const { planQuery, plan, unavailable, goInstall, pending } = useStartInstall(man
 // starts or stops (useEvents).
 const fit = computed(() => plan.value?.fit ?? app.value?.fit);
 const memoryLabel = computed(() => recommendedMemory(fit.value));
+// tooBig keeps Install on the page, disabled (the plan's refusal code).
+const tooBig = computed(() => plan.value?.unavailable === "too-big");
 const cpuLabel = computed(() => recommendedCPU(fit.value));
 
 // The Permissions group in the right column, in the install flow's words.
@@ -301,15 +303,17 @@ watch(shots, (list) => {
 
           <!-- Install button: shown when the caller has no own instance yet, or
                while their own copy is still installing, or alongside "Open shared
-               app" so the caller can still install their own copy. -->
+               app" so the caller can still install their own copy. An app too
+               big for this box keeps the button, disabled; the fit notice
+               under Information says why. -->
           <HealthGated
-            v-if="!unavailable && (!ownPersonalInstance || ownPersonalInstance.state === 'installing')"
+            v-if="(!unavailable || tooBig) && (!ownPersonalInstance || ownPersonalInstance.state === 'installing')"
             blocks="apps"
           >
             <SplitButton
               :label="installing ? 'Installing…' : pending ? 'Starting…' : 'Install'"
               :loading="installing || pending || planQuery.isPending.value"
-              :disabled="installing || pending || planQuery.isPending.value"
+              :disabled="tooBig || installing || pending || planQuery.isPending.value"
               :items="dropdownItems"
               @click="goInstall()"
             />
@@ -317,13 +321,9 @@ watch(shots, (list) => {
         </div>
       </header>
 
-      <!-- The app does not fit this box's memory or CPU: tight warns, too big
-           says why it can't be installed. Either may carry the Upgrade link. -->
-      <FitNotice :fit="fit" />
-
       <!-- This box cannot install the app: say why, in place of Install. Too
-           big is said by the notice above. -->
-      <p v-if="unavailable && plan?.unavailable !== 'too-big'" class="text-sm text-muted-foreground">{{ unavailable }}</p>
+           big is said by the fit notice under Information. -->
+      <p v-if="unavailable && !tooBig" class="text-sm text-muted-foreground">{{ unavailable }}</p>
 
       <!-- Screenshots gallery. Each shot is a button that opens the full-screen
            viewer below; the border stays because it is what gives a white
@@ -523,6 +523,11 @@ watch(shots, (list) => {
                 <dd class="text-right">{{ app.license }}</dd>
               </div>
             </dl>
+
+            <!-- The app does not fit this box's memory or CPU: tight warns, too
+                 big says why it can't be installed, next to the Memory and CPU
+                 rows it is about. Either may carry the Upgrade link. -->
+            <FitNotice :fit="fit" />
 
             <div v-if="hasLinks" class="space-y-1.5 border-t border-border pt-3">
               <a v-if="homepageUrl" :href="homepageUrl" target="_blank" rel="noopener noreferrer" class="block text-accent hover:underline">Website</a>

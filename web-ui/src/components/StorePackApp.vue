@@ -17,7 +17,10 @@ const props = defineProps<{ app: CatalogEntry }>();
 const manifestId = toRef(() => props.app.id);
 
 const { householdInstance, ownPersonalInstance, installing, canInstallHousehold } = useAppInstances(manifestId);
-const { planQuery, unavailable, goInstall, pending } = useStartInstall(manifestId);
+const { planQuery, plan, unavailable, goInstall, pending } = useStartInstall(manifestId);
+// An app too big for this box keeps Install, disabled, as on the App page. Why
+// is said on the App page only, not in the store (#599).
+const tooBig = computed(() => plan.value?.unavailable === "too-big");
 
 const dropdownItems = computed(() =>
   canInstallHousehold.value ? [{ label: "Install for the whole household", action: () => goInstall(true) }] : [],
@@ -54,18 +57,18 @@ const dropdownItems = computed(() =>
         Open
       </a>
       <HealthGated
-        v-if="!unavailable && (!ownPersonalInstance || ownPersonalInstance.state === 'installing')"
+        v-if="(!unavailable || tooBig) && (!ownPersonalInstance || ownPersonalInstance.state === 'installing')"
         blocks="apps"
       >
         <SplitButton
           :label="installing ? 'Installing…' : pending ? 'Starting…' : 'Install'"
           :loading="installing || pending || planQuery.isPending.value"
-          :disabled="installing || pending || planQuery.isPending.value"
+          :disabled="tooBig || installing || pending || planQuery.isPending.value"
           :items="dropdownItems"
           @click="goInstall()"
         />
       </HealthGated>
-      <p v-if="unavailable" class="max-w-xs text-sm text-muted-foreground">{{ unavailable }}</p>
+      <p v-if="unavailable && !tooBig" class="max-w-xs text-sm text-muted-foreground">{{ unavailable }}</p>
     </div>
   </li>
 </template>

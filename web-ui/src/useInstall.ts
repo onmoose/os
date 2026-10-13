@@ -96,6 +96,9 @@ export function useStartInstall(manifestId: Ref<string>) {
       if (planQuery.isError.value) router.push(pagesPath(household));
       return;
     }
+    // A box that cannot install the app at all starts nothing. The App page
+    // also disables its button then; this covers any other caller.
+    if (p.unavailable) return;
     const scope = household ? "household" : "personal";
     if (!needsNoPages(p) || installWarnings(p)) {
       router.push(pagesPath(household));

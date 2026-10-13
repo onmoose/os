@@ -7,16 +7,15 @@ import (
 
 // FitCheck computes one app's fit on this box from the memory and CPU it
 // recommends. The API builds it once per request from a single reading of the
-// box (lifecycle.FitBox), so every card on a page is judged against the same
-// figures.
+// box (lifecycle.FitBox), so every entry in one response is judged against
+// the same figures.
 type FitCheck func(id string, rec manifest.Recommended) fit.AppFit
 
 // WithFit returns a view of the catalog that fills Entry.Fit on every entry
 // it returns, in the lists (List, and so Home, Category and Search, plus the
 // featured row, the spotlight, the groups, the packs and the landing sections)
-// and in the by-id Entry and Detail (#599). It hides nothing: an app that is
-// too big for this box still shows, with the state on its card, so the owner
-// sees it before opening it.
+// and in the by-id Entry and Detail (#599). It hides nothing. The API uses it
+// for the detail route only: the store grid shows no fit.
 func (c *Catalog) WithFit(check FitCheck) *Catalog {
 	return &Catalog{src: fitView{source: c.src, check: check}}
 }

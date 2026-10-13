@@ -469,18 +469,16 @@ func (s *Server) withPublicPaths(dto *InstanceDTO) {
 // When the remap state is unknown it hides nothing: the install path refuses
 // on its own then. The by-id routes (detail, install plan, assets) keep
 // reading s.catalog, so a direct link still loads.
-//
-// Every entry it returns carries its fit on this box (withFit).
 func (s *Server) storeCatalog(ctx context.Context) *catalog.Catalog {
 	if s.life != nil && s.life.RemapState(ctx) == lifecycle.RemapOff {
-		return s.withFit(ctx, s.catalog.WithoutRemapApps())
+		return s.catalog.WithoutRemapApps()
 	}
-	return s.withFit(ctx, s.catalog)
+	return s.catalog
 }
 
-// withFit returns c with every entry's fit on this box filled in (#599). The
-// box is read once, so every card in one response is judged against the same
-// figures. When the box cannot be read, c comes back as it is and the entries
+// withFit returns c with every entry's fit on this box filled in (#599). Only
+// the detail route uses it: the store lists show no fit, so they do not read
+// the box. The box is read once per request. When the box cannot be read, c comes back as it is and the entries
 // carry no fit: the store shows no badge rather than a guess.
 func (s *Server) withFit(ctx context.Context, c *catalog.Catalog) *catalog.Catalog {
 	if s.life == nil {

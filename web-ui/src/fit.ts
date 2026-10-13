@@ -1,7 +1,6 @@
 // The words for an app's fit on this box (#599, APP_ISOLATION.md # Resource
 // limits). The brain sends the state and the figures (AppFit); the sentences
-// live here, so the store card, the App page and the install pages say the
-// same thing.
+// live here, so the App page and the install pages say the same thing.
 import type { AppFit } from "./api";
 import { formatSize } from "./utils";
 
@@ -17,13 +16,6 @@ export function recommendedMemory(fit: AppFit | undefined): string {
 }
 export function recommendedCPU(fit: AppFit | undefined): string {
   return fit?.recommended_cpu ? cores(fit.recommended_cpu) : "";
-}
-
-// fitBadge is the short label on a store card, or "" when the app fits.
-export function fitBadge(fit: AppFit | undefined): string {
-  if (fit?.state === "too-big") return "Too big for this box";
-  if (fit?.state === "tight") return "May not fit right now";
-  return "";
 }
 
 // tooBigText says why this box can't run the app, with both figures for each
