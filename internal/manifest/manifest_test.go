@@ -29,6 +29,46 @@ main_port: 80
 	}
 }
 
+func TestParseResources(t *testing.T) {
+	base := `
+id: whoami
+manifest_version: 1
+name: Whoami
+version: "1.10"
+compose_file: compose.yml
+main_service: whoami
+main_port: 80
+`
+	m, err := Parse([]byte(base + "resources:\n  recommended: { memory: 2560M, cpu: 1.5 }\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got, err := m.Resources.Recommended.MemoryBytes(); err != nil || got != 2560<<20 {
+		t.Errorf("MemoryBytes = %d, %v; want %d", got, err, 2560<<20)
+	}
+	if m.Resources.Recommended.CPU != 1.5 {
+		t.Errorf("CPU = %v, want 1.5", m.Resources.Recommended.CPU)
+	}
+
+	m, err = Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("parse without resources: %v", err)
+	}
+	if got, err := m.Resources.Recommended.MemoryBytes(); err != nil || got != 0 {
+		t.Errorf("absent memory = %d, %v; want 0, nil", got, err)
+	}
+
+	for _, bad := range []string{
+		"resources:\n  recommended: { memory: lots }\n",
+		"resources:\n  recommended: { memory: 2X }\n",
+		"resources:\n  recommended: { cpu: -1 }\n",
+	} {
+		if _, err := Parse([]byte(base + bad)); err == nil {
+			t.Errorf("Parse accepted %q", bad)
+		}
+	}
+}
+
 func TestParseListed(t *testing.T) {
 	base := `
 id: whoami

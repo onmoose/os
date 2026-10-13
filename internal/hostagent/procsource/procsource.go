@@ -122,13 +122,26 @@ func (s *Sampler) read(rel string) (string, error) {
 // counters: user nice system idle iowait irq softirq steal [guest guest_nice].
 // Total sums the first eight (see the package doc for why guest is excluded);
 // older kernels emit fewer fields, in which case whatever is present is summed.
+// Cores counts the per-CPU `cpuN` lines, which the kernel prints for each
+// online CPU.
 func parseCPU(stat string) (protocol.CPUCounters, error) {
+	var c protocol.CPUCounters
+	found := false
 	for _, line := range strings.Split(stat, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 5 || fields[0] != "cpu" {
+		if len(fields) < 5 || !strings.HasPrefix(fields[0], "cpu") {
 			continue
 		}
-		var c protocol.CPUCounters
+		if fields[0] != "cpu" {
+			if _, err := strconv.Atoi(fields[0][3:]); err == nil {
+				c.Cores++
+			}
+			continue
+		}
+		if found {
+			continue
+		}
+		found = true
 		for i, f := range fields[1:] {
 			if i >= 8 {
 				break
@@ -142,9 +155,11 @@ func parseCPU(stat string) (protocol.CPUCounters, error) {
 				c.IdleJiffies += v
 			}
 		}
-		return c, nil
 	}
-	return protocol.CPUCounters{}, fmt.Errorf("proc/stat has no aggregate cpu line")
+	if !found {
+		return protocol.CPUCounters{}, fmt.Errorf("proc/stat has no aggregate cpu line")
+	}
+	return c, nil
 }
 
 // parseMeminfo reads MemTotal and MemAvailable (kB → bytes). Used is

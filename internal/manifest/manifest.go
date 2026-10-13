@@ -74,6 +74,13 @@ type Manifest struct {
 	// keys (e.g. data_volumes) live in the compose, not parsed here.
 	Storage Storage `yaml:"storage,omitempty"`
 
+	// Resources is the memory and CPU the author recommends (APP_MANIFEST.md #
+	// B2). Never a cgroup limit. The brain compares it with the box's memory and
+	// cores to say whether the app fits, and refuses an install the box cannot
+	// hold at all (Fit, APP_ISOLATION.md # Resource limits). Absent ⇒ the app
+	// always fits.
+	Resources Resources `yaml:"resources,omitempty"`
+
 	// HealthProbe is the optional "up but not responding" probe config
 	// (APP_MANIFEST.md # B). nil ⇒ the app is never probed and the
 	// app-unresponsive health issue is never raised for it. Door-2 synthetic
@@ -321,6 +328,43 @@ type Storage struct {
 	EstimatedSize string `yaml:"estimated_size,omitempty" json:"estimated_size,omitempty"`
 }
 
+// Resources is the manifest's resources block. Only recommended exists: there
+// is deliberately no limit field (APP_MANIFEST.md # B2). The json tags are the
+// published catalog's, which carries this block on each detail record so the
+// store can show the fit before it fetches the manifest.
+type Resources struct {
+	Recommended Recommended `yaml:"recommended,omitempty" json:"recommended"`
+}
+
+// Recommended is the memory and CPU an app recommends. Memory is the authored
+// size string ("512M", "2G"), in the binary units of storage.estimated_size;
+// read it through MemoryBytes. CPU is a number of cores. Either may be absent.
+type Recommended struct {
+	Memory string  `yaml:"memory,omitempty" json:"memory,omitempty"`
+	CPU    float64 `yaml:"cpu,omitempty" json:"cpu,omitempty"`
+}
+
+// MemoryBytes parses the recommended memory into bytes. Unset is 0 with no
+// error. Parse has already refused a malformed value in a manifest, but the
+// catalog's copy of the block is read without Parse, so the error stays.
+func (r Recommended) MemoryBytes() (int64, error) {
+	raw := strings.TrimSpace(r.Memory)
+	if raw == "" {
+		return 0, nil
+	}
+	return parseBinarySize("resources.recommended.memory", raw)
+}
+
+func (m *Manifest) validateResources() error {
+	if _, err := m.Resources.Recommended.MemoryBytes(); err != nil {
+		return err
+	}
+	if m.Resources.Recommended.CPU < 0 {
+		return fmt.Errorf("resources.recommended.cpu %v must not be negative", m.Resources.Recommended.CPU)
+	}
+	return nil
+}
+
 // EstimatedSizeBytes parses storage.estimated_size into a byte count for the
 // box-specific install-plan footprint (BRAIN_UI_PROTOCOL.md # install-plan).
 // The catalog grid keeps the verbatim string (Footprint.EstimatedState); this
@@ -339,7 +383,7 @@ func (s Storage) EstimatedSizeBytes() (int64, bool, error) {
 	if raw == "" {
 		return 0, false, nil
 	}
-	n, err := parseBinarySize(raw)
+	n, err := parseBinarySize("estimated_size", raw)
 	if err != nil {
 		return 0, false, err
 	}
@@ -364,19 +408,19 @@ var sizeRe = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]*)$`)
 
 // parseBinarySize parses a human size like "10GB" or "1.5 GiB" into bytes using
 // the binary multipliers in sizeUnits. The caller passes a non-empty, trimmed
-// string.
-func parseBinarySize(s string) (int64, error) {
+// string, and the field name the error messages use.
+func parseBinarySize(field, s string) (int64, error) {
 	m := sizeRe.FindStringSubmatch(s)
 	if m == nil {
-		return 0, fmt.Errorf("estimated_size %q is not a valid size (e.g. 10GB, 512MB)", s)
+		return 0, fmt.Errorf("%s %q is not a valid size (e.g. 10GB, 512MB)", field, s)
 	}
 	mult, ok := sizeUnits[strings.ToLower(m[2])]
 	if !ok {
-		return 0, fmt.Errorf("estimated_size %q has an unknown unit %q", s, m[2])
+		return 0, fmt.Errorf("%s %q has an unknown unit %q", field, s, m[2])
 	}
 	mant, err := strconv.ParseFloat(m[1], 64)
 	if err != nil {
-		return 0, fmt.Errorf("estimated_size %q: %w", s, err)
+		return 0, fmt.Errorf("%s %q: %w", field, s, err)
 	}
 	return int64(mant * float64(mult)), nil
 }
@@ -721,6 +765,9 @@ func (m *Manifest) validate() error {
 		return fmt.Errorf("icon_glyph %q must be a lucide icon name in kebab-case", m.IconGlyph)
 	}
 	if err := m.validateHealthProbe(); err != nil {
+		return err
+	}
+	if err := m.validateResources(); err != nil {
 		return err
 	}
 	if err := m.validateSecrets(); err != nil {

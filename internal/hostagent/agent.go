@@ -643,7 +643,7 @@ func (a *Agent) systemResources(w http.ResponseWriter, r *http.Request) {
 	secs := elapsed.Seconds()
 	writeJSON(w, http.StatusOK, protocol.SystemResources{
 		TsNs:    time.Now().UnixNano(),
-		CPU:     protocol.CPUCounters{TotalJiffies: int64(secs * 400), IdleJiffies: int64(secs * 300)},
+		CPU:     protocol.CPUCounters{TotalJiffies: int64(secs * 400), IdleJiffies: int64(secs * 300), Cores: 4},
 		LoadAvg: [3]float64{0.42, 0.51, 0.48},
 		Mem: protocol.MemCounters{
 			TotalBytes:     16728338432,
