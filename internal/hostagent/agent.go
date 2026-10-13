@@ -144,15 +144,15 @@ type LogSource interface {
 
 // RAMReporter is a consumer-side interface for the locus-B ram-pressure
 // detector: it reads the kernel's PSI memory file (/proc/pressure/memory, the
-// `some avg60` field) and emits a ram-pressure finding when memory-stall
-// pressure is sustained above threshold. It backs the resources category of GET
-// /v1/health/system. Provider packages return concrete types:
+// `full avg300` field) and /proc/meminfo, and emits a ram-pressure finding when
+// the box stalls on memory or is nearly out of it (#597). It backs the
+// resources category of GET /v1/health/system. Provider packages return concrete types:
 // rampressure.Reporter (real /proc) for cmd/host-agent-real, FakeRAMReporter for
 // the fake binary and tests.
 //
 // Read always returns a usable slice (nil = pressure below threshold) and never
 // errors — like ServiceReporter, a PSI reading is data, not a failure; a missing
-// PSI file fails open to nil.
+// or unparseable file fails open for its own signal.
 type RAMReporter interface {
 	Read() []protocol.Finding
 }
