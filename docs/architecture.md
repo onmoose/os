@@ -14,14 +14,19 @@ one is JavaScript, one is a container we don't write.
 |---|---|---|---|
 | **`moose-brain`** | `cmd/brain/`, `internal/` | The control-plane daemon. Owns SQLite state, the REST+SSE API, the app lifecycle, and the Caddy config. One Go binary. | Real |
 | **`host-agent` (fake)** | `cmd/host-agent/` | Privileged side used in the inner dev loop. Speaks the real `BRAIN_HOST_PROTOCOL.md` wire format over a UNIX socket; the host operations themselves (Avahi, LUKS, PAM, apt) are stubbed in memory. | **Fake** (real wire, canned ops) |
-| **`host-agent-real`** | `cmd/host-agent-real/`, `internal/hostagent/` | The real privileged binary. Seam-injected reporters: PAM password verify (`pamverifier`), `/proc` system sampling (`procsource`), disk usage, RAM pressure, journal streaming, service health, reboot-required flag, user manager, system time-zone setter (`timezone`, `timedatectl set-timezone` — the first-run wizard's Step 3, wired in both build profiles), per-account SSH access (`sshaccess`, #463 — renders `sshd_config.d/moose-allowed.conf` whole from the enabled set, validates with `sshd -t`, and starts or stops sshd so :22 is open only while someone has SSH on; also writes the hosted owner's no-password sudo rule `/etc/sudoers.d/moose-owner` while the brain asks for it, checked with `visudo -cf`, and removes a stale one at every start, #602; wired in both build profiles). Discovery is real: per-LAN-interface Avahi announcements (`avahipublisher`) driven by the NetworkManager LAN set (`netstate`), with an avahi-daemon.conf allowlist sync and IP-change replay. Seeds the brain's Docker transport then launches the brain container on startup (`brainlaunch`: `EnsureTransport` creates `moose-ingress` + runs the `docker-socket-proxy`; `Launch` docker-loads the bundled image if absent, lockstep `moose.protocol.major` OCI-label check, `docker run --restart unless-stopped` on the ingress net with `DOCKER_HOST` at the proxy). Before the launch it makes sure the household shared tree `/srv/moose/shared` exists as `root:moose-shared` `02770` (`brainlaunch.EnsureSharedTree`) and mounts it into the brain at the same path, so the brain can prepare shared folder sources (#519). Personal folder sources are prepared by host-agent itself, over `POST /v1/users/{username}/prepare-folder` (`usermgr`, a walk that never follows a symlink), so the brain never mounts `/home`. The A/B OS update on the hosted build (`osupdate`, #563: RAUC install into the other slot, switch in the window, trial boot, revert). Host ops not yet wired: LUKS/TPM, NM configuration (WiFi setup, `/v1/network/*`). A build-tagged slim **`hosted`** profile (`go build -tags hosted`, #204/C1c) compiles the discovery/NetworkManager stack out for the cloud image — `avahipublisher`/`netstate` unwired, no-op publisher, nil `Net` — keeping the same PAM/user-mgmt/health-system/brain-launch seams (`cmd/host-agent-real/wiring_appliance.go` vs `wiring_hosted.go`). | Partial — see "What is not built yet" |
+| **`host-agent-real`** | `cmd/host-agent-real/`, `internal/hostagent/` | The real privileged binary. Seam-injected reporters: PAM password verify (`pamverifier`), `/proc` system sampling (`procsource`), disk usage, RAM pressure, journal streaming, service health, reboot-required flag, user manager, system time-zone setter (`timezone`, `timedatectl set-timezone` — the first-run wizard's Step 3, wired in both build profiles), per-account SSH access (`sshaccess`, #463 — renders `sshd_config.d/moose-allowed.conf` whole from the enabled set, validates with `sshd -t`, and starts or stops sshd so :22 is open only while someone has SSH on; also writes the hosted owner's no-password sudo rule `/etc/sudoers.d/moose-owner` while the brain asks for it, checked with `visudo -cf`, and removes a stale one at every start, #602; wired in both build profiles). Discovery is real: per-LAN-interface Avahi announcements (`avahipublisher`) driven by the NetworkManager LAN set (`netstate`), with an avahi-daemon.conf allowlist sync and IP-change replay. Seeds the brain's Docker transport then launches the brain container on startup (`brainlaunch`: `EnsureTransport` creates `moose-ingress` + runs the `docker-socket-proxy`; `EnsureCaddySocketDir` makes `/var/lib/moose/control-plane/caddy/` mode `0700`, owned by the uid Caddy's root maps to, for Caddy's admin socket, #608; `Launch` docker-loads the bundled image if absent, lockstep `moose.protocol.major` OCI-label check, `docker run --restart unless-stopped` on the ingress net with `DOCKER_HOST` at the proxy). Before the launch it makes sure the household shared tree `/srv/moose/shared` exists as `root:moose-shared` `02770` (`brainlaunch.EnsureSharedTree`) and mounts it into the brain at the same path, so the brain can prepare shared folder sources (#519). Personal folder sources are prepared by host-agent itself, over `POST /v1/users/{username}/prepare-folder` (`usermgr`, a walk that never follows a symlink), so the brain never mounts `/home`. The A/B OS update on the hosted build (`osupdate`, #563: RAUC install into the other slot, switch in the window, trial boot, revert). Host ops not yet wired: LUKS/TPM, NM configuration (WiFi setup, `/v1/network/*`). A build-tagged slim **`hosted`** profile (`go build -tags hosted`, #204/C1c) compiles the discovery/NetworkManager stack out for the cloud image — `avahipublisher`/`netstate` unwired, no-op publisher, nil `Net` — keeping the same PAM/user-mgmt/health-system/brain-launch seams (`cmd/host-agent-real/wiring_appliance.go` vs `wiring_hosted.go`). | Partial — see "What is not built yet" |
 | **Caddy** | `dev/caddy.json`, `dev/docker-compose.yml` | Reverse proxy. Terminates `*.local` (appliance) or `*.<box-id>.onmoose.io` over real Let's Encrypt HTTPS (hosted, via a custom acme-dns build) and routes to app containers + the brain. Configured live by the brain via Caddy's admin API. | Real (container) |
 | **`web-ui`** | `web-ui/` | Vue 3 + Vite + TanStack Query dashboard. Talks only to the brain. Tailwind 4 with the Oatmeal `@theme` tokens; `reka-ui` + `cn()` are present as shadcn-vue scaffolding, but the owned components in `components/ui/` (`Button`, `Heading`) are hand-written from the Oatmeal patterns, not pulled through the shadcn CLI (#261). The catalog install is a set of steps, one need per step with the saved accounts listed and one picked, and the last step installs; an app with no steps installs from the App page (`INSTALL_STEPS.md`, `DASHBOARD.md` # Install authorization). Internal code architecture: [`dev/web-ui.md`](dev/web-ui.md). | Real |
 | **SQLite** | `$STATE_DIR/moose.db` | The brain's only persistent store. Schema + queries in `internal/store/`. | Real |
 
 Plus the **Docker daemon** on the host, which the brain drives with the
-`docker compose` CLI (`internal/lifecycle/docker.go`). App containers run on the
-`moose-ingress` Docker network so Caddy can reach them by service name.
+`docker compose` CLI (`internal/lifecycle/docker.go`). Each app runs on its own
+`moose-app-<id>` network, and the brain attaches Caddy to that network
+(`docker network connect`) so Caddy reaches the app's `main_service` by its
+`moose-<id>-<service>` alias. No app joins `moose-ingress`, the control-plane
+network of the brain, Caddy, `moose-ui` and the socket proxy (#608). On a box,
+Caddy's admin API is a unix socket in `/var/lib/moose/control-plane/caddy/`,
+which only the brain mounts; in dev it is TCP `:2019`.
 
 ## How the wires connect
 
@@ -36,10 +41,11 @@ Plus the **Docker daemon** on the host, which the brain drives with the
                            │     moose-brain     │ ──────────────────────► Docker daemon
                            │                     │                                │
                            │  api / lifecycle    │ ─── Caddy admin API ──► Caddy ─┘
-                           │  store / catalog    │                          │
+                           │  store / catalog    │  (unix socket on a box)  │
                            │  auth / audit       │                          ▼
                            │  caddy / events     │                       app containers
-                           └──────────┬──────────┘                       (moose-ingress net)
+                           └──────────┬──────────┘                (each on its own moose-app-<id>
+                                      │                            net, which Caddy joins)
                                       │ HTTP/JSON over UNIX socket
                                       ▼
                            ┌─────────────────────┐
@@ -61,7 +67,12 @@ Plus the **Docker daemon** on the host, which the brain drives with the
   never rewrites it. Driver interface lives in `internal/lifecycle/` (the
   consumer), implementation in the same package.
 - **brain → Caddy:** the brain POSTs JSON to Caddy's admin API to add/remove
-  site blocks per app. A splash route covers `<slug>.local` until the
+  site blocks per app. On a box the API is a unix socket, and the brain reads
+  its address from the staged `caddy.json` (`lifecycle.ControlPlaneCaddyAdmin`),
+  so a box made before #608 keeps its TCP `:2019`. The brain also attaches Caddy
+  to each app's network on install and start, takes it off before uninstall
+  removes the network, and puts it back after the startup reconcile and on
+  every health tick if a Caddy recreate dropped it (`Manager.EnsureCaddyNetworks`). A splash route covers `<slug>.local` until the
   container's health check passes, then flips to the real upstream. Each flip replaces the route in place by its `@id` in one admin call, so a failed call leaves the old route serving (#520). The startup pass writes every app's route again: the app for a running one, the splash for a stopped or failed one. It first waits up to 15s for Docker to answer through the proxy (`Manager.WaitDocker`), since after a reboot the brain can start before the proxy does (#540).
 - **brain → host-agent:** HTTP/JSON over `MOOSE_AGENT_SOCK`. Two patterns,
   sync request/response and SSE-streamed jobs (`internal/protocol/host.go`
