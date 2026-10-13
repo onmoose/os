@@ -212,6 +212,11 @@ type Manager struct {
 	// remap caches what RemapState last read, so the store lists do not call
 	// host-agent and docker info on every request (remapstate.go).
 	remap remapCache
+
+	// caddyAdminWait replaces the wait for Caddy's admin API on the socket in
+	// MigrateCaddyAdminSocket (caddysocket.go). nil in production, where it
+	// is caddy.Client.WaitReady.
+	caddyAdminWait func(ctx context.Context, addr string) error
 }
 
 func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd CaddyDriver, docker DockerDriver, bus *events.Bus, stateDir string) *Manager {
@@ -248,6 +253,11 @@ func (m *Manager) SetEnvironment(prof profile.Profile, boxID string) {
 	m.profile = prof
 	m.boxID = boxID
 }
+
+// SetCaddy replaces the Caddy client. cmd/brain calls it once, at startup,
+// when MigrateCaddyAdminSocket moved the box's admin API to the socket after
+// the manager was built, and before anything has used the old client.
+func (m *Manager) SetCaddy(cd CaddyDriver) { m.caddy = cd }
 
 // hosted reports whether per-app routing should use the public
 // "<slug>.<box-id>.onmoose.io" scheme: the hosted profile with a resolved
