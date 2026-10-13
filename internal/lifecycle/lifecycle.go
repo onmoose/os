@@ -1505,6 +1505,14 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	var splashes []store.Instance // stopped and failed, written after the loop
 	for _, inst := range desired {
 		seen[inst.ID] = true
+		// An app installed before #608 is still on moose-ingress. Move it off
+		// before anything below runs compose up on its override.
+		if inst.State == "running" || inst.State == "stopped" || inst.State == "failed" {
+			if _, err := m.migrateOffIngress(ctx, inst.ID); err != nil {
+				slog.Warn("reconcile: move app off the control-plane network",
+					"instance_id", inst.ID, "err", err)
+			}
+		}
 		switch inst.State {
 		case "running":
 			if !actual[inst.ID] {

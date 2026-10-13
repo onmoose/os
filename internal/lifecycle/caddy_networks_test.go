@@ -3,7 +3,12 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Caddy reaches an app by joining the app's own network, and no app joins
@@ -181,5 +186,73 @@ func TestDockerNetworkErrorWording(t *testing.T) {
 	}
 	if notAttached("Error response from daemon: permission denied") {
 		t.Fatalf("a real failure read as not attached")
+	}
+}
+
+// An app installed before #608 has a saved override that attaches its main
+// service to moose-ingress, and every later compose up reuses that file. The
+// startup reconcile must take it off, in the file and on the running
+// container, for running and stopped apps alike.
+func TestReconcileMovesOldAppsOffIngress(t *testing.T) {
+	for _, state := range []string{"running", "stopped"} {
+		t.Run(state, func(t *testing.T) {
+			e := newTestEnv(t)
+			inst := installWhoami(t, e)
+			if state == "stopped" {
+				if err := e.m.Stop(context.Background(), inst.ID); err != nil {
+					t.Fatalf("stop: %v", err)
+				}
+			}
+			e.docker.psManaged[inst.ID] = state == "running"
+			appNet := "moose-app-" + inst.ID
+			alias := "moose-" + inst.ID + "-whoami"
+			ovPath := filepath.Join(e.m.instanceDir(inst.ID), "compose.override.yml")
+			// The override as writeOverride wrote it before #608.
+			old := "networks:\n    " + appNet + ":\n        external: true\n    moose-ingress:\n        external: true\n" +
+				"services:\n    whoami:\n        container_name: " + alias + "\n        networks:\n            " + appNet + ": null\n" +
+				"            moose-ingress:\n                aliases:\n                    - " + alias + "\n"
+			if err := os.WriteFile(ovPath, []byte(old), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			e.docker.calls = nil
+
+			if err := e.m.Reconcile(context.Background()); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			got, err := os.ReadFile(ovPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(got), "moose-ingress") {
+				t.Fatalf("override still names moose-ingress:\n%s", got)
+			}
+			var doc struct {
+				Services map[string]struct {
+					Networks map[string]*struct {
+						Aliases []string `yaml:"aliases"`
+					} `yaml:"networks"`
+				} `yaml:"services"`
+			}
+			if err := yaml.Unmarshal(got, &doc); err != nil {
+				t.Fatal(err)
+			}
+			n := doc.Services["whoami"].Networks[appNet]
+			if n == nil || len(n.Aliases) != 1 || n.Aliases[0] != alias {
+				t.Fatalf("alias did not move to %s:\n%s", appNet, got)
+			}
+			calls := e.docker.Calls()
+			if i := callIndex(calls, "NetworkDisconnect", ingressNetwork); i < 0 || calls[i].args[1] != alias {
+				t.Fatalf("main container not disconnected from moose-ingress: %v", e.docker.methods())
+			}
+
+			// Already moved: the next pass changes nothing.
+			e.docker.calls = nil
+			if err := e.m.Reconcile(context.Background()); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if callIndex(e.docker.Calls(), "NetworkDisconnect", ingressNetwork) >= 0 {
+				t.Fatalf("disconnected again on an override with no moose-ingress")
+			}
+		})
 	}
 }
