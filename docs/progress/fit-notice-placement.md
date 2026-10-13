@@ -1,31 +1,34 @@
-# The fit is said on the app's page only, under Information, with Install disabled
+# The fit is said on the app's page only, in a yellow alert, with Install disabled
 
 - **Status:** done
-- **Date:** 2026-10-13
+- **Date:** 2026-10-14
 - **Specs touched:** `APP_STORE.md` # Apps this box cannot run, `APP_ISOLATION.md` # Resource limits, `APP_MANIFEST.md` # B2, `BRAIN_UI_PROTOCOL.md` (catalog routes, # install-plan), `DECISIONS.md` 2026-10-13, `docs/architecture.md`
 
-This follows [app-fit-check.md](app-fit-check.md) (#599), after the maintainer tried it on a running box. Three UI changes were asked for: no fit warning in the store, the notice in the right column under Information, and the Install button kept but disabled for an app too big for the box.
+This follows [app-fit-check.md](app-fit-check.md) (#599). The maintainer tried it on the dev box and changed how the fit is shown. The changes below came out of that testing, plus a refactor the new layout made possible.
 
 ## What was done
 
-- **No badge on store cards.** `StoreAppCard` no longer shows "Too big for this box" or "May not fit right now". The landing page already says there are no badges on it (`APP_STORE.md` # How the box store draws it). `fitBadge` is gone from `fit.ts`.
-- **The store lists no longer carry `fit`.** With no badge, nothing reads it, so `Server.storeCatalog` no longer wraps the catalog in `WithFit` and a list request no longer reads host-agent or the running apps' manifests. The detail route and the install plan keep `fit`. `Catalog.WithFit` still fills every shape; only the detail route uses it.
-- **The notice sits under Information.** On the App page, `FitNotice` moved from under the header to the right column, after the Information rows (Version, Category, Size, Memory, CPU, License) and before the links. It is next to the Memory and CPU rows it is about.
-- **Install stays, disabled, for a too-big app.** On the App page and on a pack page, the Install button is shown and disabled when the plan says `unavailable: "too-big"`. The pack page shows no sentence for it, so the reason is said on the App page only. `needs-remap` is unchanged: its sentence still replaces the button. `useStartInstall.goInstall` now starts nothing when the plan has any `unavailable` code, as a guard for any other caller.
-- **Tests.** `TestCatalogCarriesFit` now checks that the list routes carry no `fit` and still list a too-big app, and that the detail and the plan agree. `TestCatalogFitUnknown` checks the detail instead of the list.
+- **No badge on store cards.** `StoreAppCard` no longer shows "Too big for this box" or "May not fit right now". The landing page already has no badges (`APP_STORE.md` # How the box store draws it).
+- **A yellow alert above the price panel.** On the App page the fit notice is its own block at the top of the right column, above the price panel, with the column's normal spacing. It is a Tailwind UI "alert with description" in yellow (`WarningAlert.vue`, used by `FitNotice.vue`). Too big reads "This app can't run on this box as it is." as the title and "It requires 64.0 GB of memory, and this box only has 7.6 GB." under it; CPU reads "It requires 16 cores, and this box only has 8 cores.". Tight reads "This app may not fit next to the apps that are running.", then the free memory and the running apps in one line. The Upgrade link stays for a hosted owner. The install pages use the same alert.
+- **The brain's refusal says the same words** (`lifecycle.TooBigError`), so a forced install fails with the page's text.
+- **Install stays, disabled, for a too-big app**, on the App page and on a pack page. A pack page shows no sentence for it: each app installs on its own, and the reason is said on the App page only. `needs-remap` is unchanged.
+- **A disk warning on the App page.** When the plan's footprint reaches 90% of the free space (`spaceTight`, the install pages' rule), the App page shows the same yellow alert, "This might not fit." with "It needs about X, and only about Y is free on your box. You can still install.". A warning only; Install stays enabled. The install pages keep their older wording.
+- **Refactor.** With no fit in the lists, `Catalog.WithFit` walked every list shape for one caller. It is gone (`fitview.go` and its test). The detail handler computes the fit from `Detail.Recommended()`, and `Fit` moved from `Entry` to `Detail`, so the list routes have no always-empty field and do not read the box. The getter is on `Detail`, not `Entry`, because huma cannot build the schema link of a struct that embeds a type with methods. `useStartInstall` returns `tooBig`, which the App page and the pack row each worked out on their own.
+- **Tests.** `TestCatalogCarriesFit` checks the detail and the plan agree and a too-big app is still listed. `TestRecommendedFromRecord` checks the record's `resources` reaches `Detail.Recommended`. The lifecycle tests pin the exact refusal text for memory and for CPU.
 
 ## How it maps to the specs
 
-- `APP_STORE.md` # Apps this box cannot run: the store lists show a too-big app as usual with no badge; the app page says it, and its Install is disabled; a pack page disables Install with no sentence.
-- `APP_ISOLATION.md` # Resource limits and `APP_MANIFEST.md` # B2: the fit is shown on the app's page and in the install plan, not on the store card.
-- `BRAIN_UI_PROTOCOL.md`: only the detail route's `Entry` carries `fit`; the list routes do not read the box.
-- `DECISIONS.md` 2026-10-13 (#599) is reworded in place to drop the store card. The entry is from the same day and nothing was released between, so it is corrected rather than followed by a new entry.
+- `APP_STORE.md` # Apps this box cannot run: no badge in the lists; on the App page the Memory and CPU rows, the yellow alert above the price panel, the disabled Install, and the disk warning; a pack page disables Install with no sentence.
+- `APP_ISOLATION.md` # Resource limits: the alert titles and the refusal text.
+- `BRAIN_UI_PROTOCOL.md`: `fit` is a `Detail` field, absent on `Entry`.
+- `DECISIONS.md` 2026-10-13 (#599) is reworded in place to drop the store card. It is from the day before and nothing was released between, so it is corrected rather than followed by a new entry.
 
 ## Known gaps & deviations
 
 - **The issue's "store cards show the same state" no longer holds**, by the maintainer's choice after trying it.
-- **`Entry.Fit` stays in the API schema** for the list routes, always absent there. Removing it would split `Entry` into two types for no gain.
-- **Not looked at in a browser by me.** The maintainer is testing it on the dev stack; typecheck and the production build pass.
+- **The install pages' disk warning keeps its older wording and style.** Moving it to the shared alert was offered and not asked for.
+- **The tight wording has not been seen on a box with real running apps.** Only the too-big alert was tried on the dev box.
+- **One commit in this PR does not build alone**: the UI commit uses `tooBig` from `useStartInstall`, which the next commit adds. The branch as a whole builds.
 
 ## What's next
 
