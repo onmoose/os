@@ -379,7 +379,7 @@ Unlike `docs/progress/` entries (frozen ADR snapshots), this file is **mutable b
 ### config-field-single-service — rakazo (2026-10-13)
 
 - **Severity:** cosmetic
-- **Trigger:** Rakazo's `api` and `worker` both read the deployment model key (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`) and the computer provider and its key (`SANDBOX_PROVIDER`, `E2B_API_KEY`, ...). Upstream runs them as two services. A `config:` value reaches one of them only.
+- **Trigger:** Rakazo's `api` and `worker` both read the deployment model key (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`) and the computer provider and its key (`SANDBOX_PROVIDER`, plus `E2B_API_KEY`, `DAYTONA_API_KEY` or `BOX_API_KEY`). Upstream runs them as two services. A `config:` value lands only in the one service it names (`internal/lifecycle/config.go` `configEnvByService`), so it reaches one of them only.
 - **What breaks:** nothing the user sees. The store package runs both processes in one container (`server`), so every field targets one service. The cost is packaging: a wrapper starts both processes and exits when either one does, so moose restarts the pair, and the two processes no longer have separate memory limits or restarts.
-- **Why moose can't satisfy it (v1):** same as the librechat entry: a config field has one target service. This is the second app in a day, and the first where the shape forced a change in the app's topology rather than a second paste.
+- **Why moose can't satisfy it (v1):** same as the librechat entry: a config field has one target service. Second app to hit this class, and the first where it forced a change in the app's topology rather than a second paste.
 - **Status:** open. A `service:` list on a config field would let the package keep upstream's two services.
