@@ -27,6 +27,7 @@ This closes #597. [ram-pressure-detector.md](ram-pressure-detector.md) (#38) bui
 - **Only one soak data point.** The 2% and 5% values are set from one box. The constants stay one-line changes.
 - **The issue does not name the heavy apps.** #597 asked for it. Nothing on the box measures memory per app, and the banner does not show the issue's details. The maintainer chose to rewrite the summary and file #623.
 - **Not run on a real box.** The change is proved by unit tests against fixture files with the field numbers. No cloud lane step reads the detector, and no lane was run.
+- **An issue saved before the upgrade keeps the old summary** (Greptile on #624). `LoadFromStore` restores the saved text, and a repeat raise updates only the details. Not fixed here: the old threshold never fired in the field, so no box should have an active `ram-pressure` issue with the old text. Refreshing every summary from the registry on load is a general change for all issues, not part of #597.
 - On the #597 box, 200 MB available was just over the 5% line (about 195 MB), so the memory signal alone would not have fired there. PSI does.
 
 ## What's next
