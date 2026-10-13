@@ -122,8 +122,8 @@ func (r *autoRestarter) maybeRestart(ctx context.Context, inst store.Instance, s
 	}
 	run, err := r.life.BeginRestart(inst.ID)
 	if err != nil {
-		if errors.Is(err, lifecycle.ErrBusy) || errors.Is(err, lifecycle.ErrNotRunning) {
-			slog.Info("auto-restart: app busy or not running; skipping", "instance_id", inst.ID, "err", err)
+		if errors.Is(err, lifecycle.ErrBusy) || errors.Is(err, lifecycle.ErrNotRunning) || errors.Is(err, lifecycle.ErrAutoRestartOff) {
+			slog.Info("auto-restart: app busy, not running, or opted out; skipping", "instance_id", inst.ID, "err", err)
 		} else {
 			slog.Warn("auto-restart: could not begin", "instance_id", inst.ID, "err", err)
 		}

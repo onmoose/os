@@ -1189,10 +1189,14 @@ func (m *Manager) startLocked(ctx context.Context, inst store.Instance, prevStat
 
 	// Commit desired state first, then flip the route to the starting splash so
 	// the hostname stops serving the "stopped" page the moment the user acts.
-	if err := m.store.SetState(id, "running"); err != nil {
-		return fmt.Errorf("set state running: %w", err)
+	// An automatic restart's row already reads running: no write, so no write
+	// that can fail after its compose stop and leave the app down.
+	if inst.State != "running" {
+		if err := m.store.SetState(id, "running"); err != nil {
+			return fmt.Errorf("set state running: %w", err)
+		}
+		inst.State = "running"
 	}
-	inst.State = "running"
 	if err := m.caddy.AddSplashRoute(ctx, id, host, man.Name, "starting"); err != nil {
 		slog.Warn("start: caddy splash flip failed (continuing)",
 			"instance_id", id, "host", host, "err", err)
@@ -1238,6 +1242,11 @@ func (m *Manager) startLocked(ctx context.Context, inst store.Instance, prevStat
 // never runs into an operation the user started.
 var ErrBusy = errors.New("app has a lifecycle operation in flight")
 
+// ErrAutoRestartOff is returned by BeginRestart when the app's owner turned
+// the automatic restart off (#598). It is read under the app's lock from the
+// fresh row, so a switch flipped during a slow health tick still holds.
+var ErrAutoRestartOff = errors.New("automatic restart is off for this app")
+
 // BeginRestart starts an automatic restart of a running app (#598,
 // APP_LIFECYCLE.md # Automatic restart). It takes the per-instance lock only
 // if it is free (ErrBusy otherwise) and checks the app is running
@@ -1267,8 +1276,18 @@ func (m *Manager) BeginRestart(id string) (run func(context.Context) error, err 
 		unlock()
 		return nil, fmt.Errorf("%w (state=%s)", ErrNotRunning, inst.State)
 	}
+	if inst.AutoRestartOff {
+		unlock()
+		return nil, ErrAutoRestartOff
+	}
 	return func(ctx context.Context) error {
 		defer unlock()
+		// The start needs the manifest. Read it before the stop, so a
+		// failure here leaves the app running, not stopped with nothing to
+		// start it.
+		if _, err := m.loadInstanceManifest(id); err != nil {
+			return fmt.Errorf("load manifest: %w", err)
+		}
 		if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {
 			return fmt.Errorf("compose stop: %w\n%s", err, out)
 		}

@@ -317,3 +317,50 @@ func TestAutoRestart_ShutdownDoesNotCancelRestart(t *testing.T) {
 		t.Fatalf("the restart ran on a cancelled context: %v", h.fr.runCtx)
 	}
 }
+
+// An app with no health_probe, flagged by Docker's own "unhealthy", is
+// restarted on the same rule; its wait counts from its container's start,
+// so it starts again after each restart.
+func TestAutoRestart_DockerOnlySignal(t *testing.T) {
+	h := newRestartHarness(t)
+	man := h.d.manifests.(*fakeManifestLoader).m["app"]
+	man.HealthProbe = nil
+	reader := h.fr.reader
+	reader.containers[0].Health = dockerUnhealthy
+	start := h.clk.now()
+	for i := 0; i < 30; i++ {
+		h.tick()
+	}
+	var mins []int
+	for _, b := range h.fr.begins {
+		mins = append(mins, int(b.Sub(start)/time.Minute))
+	}
+	// Raised at t=1: first at 6, then 10 minutes after that container's start.
+	if len(mins) < 2 || mins[0] != 6 || mins[1] != 16 {
+		t.Fatalf("restart minutes = %v, want 6 then 16", mins)
+	}
+}
+
+// A long start-period grace holds the wait back after a restart: the clock
+// starts only once the new container is past its grace.
+func TestAutoRestart_LongStartGraceDelaysNextRestart(t *testing.T) {
+	h := newRestartHarness(t)
+	man := h.d.manifests.(*fakeManifestLoader).m["app"]
+	man.HealthProbe.StartPeriod = 10 * time.Minute
+	// Docker says unhealthy too, so the issue stays raised through the grace
+	// (the probe itself is skipped inside it).
+	h.fr.reader.containers[0].Health = dockerUnhealthy
+	start := h.clk.now()
+	for i := 0; i < 40; i++ {
+		h.tick()
+	}
+	var mins []int
+	for _, b := range h.fr.begins {
+		mins = append(mins, int(b.Sub(start)/time.Minute))
+	}
+	// First at 6 (the old container is long past its grace). The second waits
+	// for the 10-minute grace of the new container, then the 10-minute wait.
+	if len(mins) < 2 || mins[0] != 6 || mins[1] != 26 {
+		t.Fatalf("restart minutes = %v, want 6 then 26", mins)
+	}
+}

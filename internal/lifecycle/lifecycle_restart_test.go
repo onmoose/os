@@ -7,6 +7,8 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -119,5 +121,44 @@ func TestBeginRestartHealthFailureMarksFailed(t *testing.T) {
 	}
 	if got := e.caddy.route(inst.ID); got != "splash:failed" {
 		t.Fatalf("route = %q, want splash:failed", got)
+	}
+}
+
+// The setting is read from the fresh row under the lock: an app turned off
+// after the detector read it is not restarted.
+func TestBeginRestartRefusesOptedOutApp(t *testing.T) {
+	e := newTestEnv(t)
+	inst := installRunning(t, e)
+	if err := e.store.SetInstanceAutoRestart(inst.ID, false); err != nil {
+		t.Fatalf("turn off: %v", err)
+	}
+	if _, err := e.m.BeginRestart(inst.ID); !errors.Is(err, ErrAutoRestartOff) {
+		t.Fatalf("err = %v, want ErrAutoRestartOff", err)
+	}
+	if err := e.m.Stop(context.Background(), inst.ID); err != nil {
+		t.Fatalf("stop after refusal (lock released?): %v", err)
+	}
+}
+
+// A restart that cannot read the manifest fails before it stops anything,
+// so the app is never left stopped with nothing to start it.
+func TestBeginRestartFailsBeforeStop(t *testing.T) {
+	e := newTestEnv(t)
+	inst := installRunning(t, e)
+	run, err := e.m.BeginRestart(inst.ID)
+	if err != nil {
+		t.Fatalf("begin restart: %v", err)
+	}
+	if err := os.Remove(filepath.Join(e.m.instanceDir(inst.ID), "manifest.yml")); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+	before := len(e.docker.methods())
+	if err := run(context.Background()); err == nil {
+		t.Fatal("restart: want a manifest error")
+	}
+	for _, m := range e.docker.methods()[before:] {
+		if m == "ComposeStop" {
+			t.Fatal("the app was stopped although the restart could not start it")
+		}
 	}
 }
