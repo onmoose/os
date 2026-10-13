@@ -188,6 +188,23 @@ func TestControlPlaneCaddyAdmin(t *testing.T) {
 	}
 }
 
+// The probe socket (#610) is the same file on both sides of the bind: Caddy
+// listens on it inside its container, the brain dials it on the host, next to
+// the admin socket ControlPlaneCaddyAdmin finds.
+func TestCaddyProbeSocket(t *testing.T) {
+	dir := writeCaddyJSON(t, `{"admin":{"listen":"unix//run/moose-caddy/admin.sock"}}`)
+	admin, err := ControlPlaneCaddyAdmin(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := CaddyProbeSocket(dir), filepath.Join(filepath.Dir(strings.TrimPrefix(admin, "unix://")), "probe.sock"); got != want {
+		t.Errorf("CaddyProbeSocket = %q, want %q (next to the admin socket)", got, want)
+	}
+	if CaddyProbeListen != "unix//run/moose-caddy/probe.sock" {
+		t.Errorf("CaddyProbeListen = %q, want the probe socket in the socket mount", CaddyProbeListen)
+	}
+}
+
 func TestControlPlaneCaddyAdminUnreadable(t *testing.T) {
 	if _, err := ControlPlaneCaddyAdmin(t.TempDir()); err == nil {
 		t.Fatalf("want an error when caddy.json is missing")

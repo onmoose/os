@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-10-13 — The health probe reaches owner-only apps through a Caddy probe server the brain writes (#610)
+
+**Previously:** the `app-unresponsive` probe goes through Caddy's front door with the app's `Host` (2026-06-02). On hosted the forward-auth gate answers an owner-only app's probe with its login redirect, which #609 made no sample, so such an app was never probed. #610 planned a second Caddy server for the probe, declared in the staged `caddy.json` on the OS line.
+**Now:** the brain writes the second server, `moose-probe`, through Caddy's admin API, like the routes. It listens only on a unix socket next to the admin socket and holds a copy of every app route with no gate. The brain writes it only when its admin API is on the socket. A probe server answer marked `X-Moose-Probe: no-route`, or a socket that does not answer, is no sample.
+**Why:** the staged `caddy.json` is copied to a box once and no update replaces it (`BUILD.md` # As built), so a server declared there would have reached new boxes only. Written by the brain, it reaches every box with a control-plane release. The cost: a Caddy recreate loses it with every route (#613), so the brain's route writes put it back when it is missing, and a brain restart writes it whole. The probe still talks only to Caddy, so the 2026-06-02 reasoning (keep the brain off app networks) holds.
+**Affected docs:** `HEALTH.md` (# Detector catalog: the row and a new paragraph), `CONTROL_PLANE.md` (# Locked: Caddy is moose substrate), `APP_MANIFEST.md` (# B `health_probe`), `THREAT_MODEL.md` (B2), `TESTING.md`, `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+---
+
 ## 2026-10-13 — The brain moves a box made before #608 to the Caddy admin socket, at once (#612)
 
 **Previously:** host-agent is the only writer of the staged `compose.yml`, and the brain only reads it (`UPDATES.md` # 8.3). A box made before #608 kept its TCP admin API (the entry below). The plan in #612 also waited for the 7-day revert window to close before it moved a box, so that a revert could never land on a brain from before #608.
