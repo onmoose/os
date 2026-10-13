@@ -14,6 +14,7 @@ type fakeRestoreCaddy struct {
 	calls      *[]string
 	marked     bool
 	readErr    error
+	beginErr   error
 	restoreErr error
 	markErr    error
 }
@@ -23,13 +24,22 @@ func (f *fakeRestoreCaddy) Configured(context.Context) (bool, error) {
 	return f.marked, f.readErr
 }
 
+func (f *fakeRestoreCaddy) BeginConfig(context.Context) (string, error) {
+	*f.calls = append(*f.calls, "BeginConfig")
+	f.marked = false
+	return "tok", f.beginErr
+}
+
 func (f *fakeRestoreCaddy) RestoreServer(context.Context) error {
 	*f.calls = append(*f.calls, "RestoreServer")
 	return f.restoreErr
 }
 
-func (f *fakeRestoreCaddy) MarkConfigured(context.Context) error {
+func (f *fakeRestoreCaddy) MarkConfigured(_ context.Context, token string) error {
 	*f.calls = append(*f.calls, "MarkConfigured")
+	if token != "tok" {
+		return errors.New("wrong token")
+	}
 	if f.markErr != nil {
 		return f.markErr
 	}
@@ -110,7 +120,7 @@ func TestCaddyRestoreNothingLost(t *testing.T) {
 func TestCaddyRestoreWritesTheConfigAgain(t *testing.T) {
 	h := newRestoreHarness()
 	h.caddy.marked = false
-	wantSteps(t, h.tick(), "Configured", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured")
+	wantSteps(t, h.tick(), "Configured", "BeginConfig", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured")
 	if h.routes.asked[0] != nil {
 		t.Errorf("the first restore asked for %v, want every app (nil)", h.routes.asked[0])
 	}
@@ -124,7 +134,7 @@ func TestCaddyRestoreRetriesOwedApps(t *testing.T) {
 	h := newRestoreHarness()
 	h.caddy.marked = false
 	h.routes.owed = map[string]bool{"busy": true}
-	wantSteps(t, h.tick(), "Configured", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured")
+	wantSteps(t, h.tick(), "Configured", "BeginConfig", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured")
 	if !h.caddy.marked {
 		t.Fatal("no mark while an app is owed; a second recreate would not be seen")
 	}
@@ -144,7 +154,7 @@ func TestCaddyRestoreSecondLossStartsOver(t *testing.T) {
 	h.routes.owed = map[string]bool{"busy": true}
 	h.tick()
 	h.caddy.marked = false
-	wantSteps(t, h.tick(), "Configured", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured")
+	wantSteps(t, h.tick(), "Configured", "BeginConfig", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured")
 	if got := h.routes.asked[len(h.routes.asked)-1]; got != nil {
 		t.Fatalf("the second restore asked for %v, want every app (nil)", got)
 	}
@@ -167,10 +177,11 @@ func TestCaddyRestoreFailedStepTriesAgain(t *testing.T) {
 		set  func(h *restoreHarness)
 		want []string
 	}{
-		{"server", func(h *restoreHarness) { h.caddy.restoreErr = boom }, []string{"Configured", "RestoreServer"}},
-		{"edge", func(h *restoreHarness) { h.edgeErr = boom }, []string{"Configured", "RestoreServer", "edge"}},
-		{"routes", func(h *restoreHarness) { h.routes.err = boom }, []string{"Configured", "RestoreServer", "edge", "RestoreRoutes"}},
-		{"mark", func(h *restoreHarness) { h.caddy.markErr = boom }, []string{"Configured", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured"}},
+		{"begin", func(h *restoreHarness) { h.caddy.beginErr = boom }, []string{"Configured", "BeginConfig"}},
+		{"server", func(h *restoreHarness) { h.caddy.restoreErr = boom }, []string{"Configured", "BeginConfig", "RestoreServer"}},
+		{"edge", func(h *restoreHarness) { h.edgeErr = boom }, []string{"Configured", "BeginConfig", "RestoreServer", "edge"}},
+		{"routes", func(h *restoreHarness) { h.routes.err = boom }, []string{"Configured", "BeginConfig", "RestoreServer", "edge", "RestoreRoutes"}},
+		{"mark", func(h *restoreHarness) { h.caddy.markErr = boom }, []string{"Configured", "BeginConfig", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,8 +192,8 @@ func TestCaddyRestoreFailedStepTriesAgain(t *testing.T) {
 			if h.caddy.marked {
 				t.Fatal("marked after a failed step")
 			}
-			h.caddy.restoreErr, h.edgeErr, h.routes.err, h.caddy.markErr = nil, nil, nil, nil
-			wantSteps(t, h.tick(), "Configured", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured")
+			h.caddy.beginErr, h.caddy.restoreErr, h.edgeErr, h.routes.err, h.caddy.markErr = nil, nil, nil, nil, nil
+			wantSteps(t, h.tick(), "Configured", "BeginConfig", "RestoreServer", "edge", "RestoreRoutes", "MarkConfigured")
 		})
 	}
 }

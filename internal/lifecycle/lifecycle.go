@@ -213,6 +213,11 @@ type Manager struct {
 	// host-agent and docker info on every request (remapstate.go).
 	remap remapCache
 
+	// caddyOff holds the running apps whose network the last
+	// EnsureCaddyNetworks pass left Caddy off (CaddyOffNetwork).
+	caddyNetMu sync.Mutex
+	caddyOff   map[string]bool
+
 	// caddyAdminWait replaces the wait for Caddy's admin API on the socket in
 	// MigrateCaddyAdminSocket (caddysocket.go). nil in production, where it
 	// is caddy.Client.WaitReady.
@@ -1760,12 +1765,22 @@ func (m *Manager) EnsureCaddyNetworks(ctx context.Context) {
 			running = append(running, inst.ID)
 		}
 	}
+	off := map[string]bool{}
+	defer func() {
+		m.caddyNetMu.Lock()
+		m.caddyOff = off
+		m.caddyNetMu.Unlock()
+	}()
 	if len(running) == 0 {
 		return
 	}
 	have, err := m.docker.ContainerNetworks(ctx, caddyContainer)
 	if err != nil {
 		slog.Warn("caddy networks: read the networks caddy is on", "err", err)
+		// Unknown: keep what the last pass found.
+		m.caddyNetMu.Lock()
+		off = m.caddyOff
+		m.caddyNetMu.Unlock()
 		return
 	}
 	for _, id := range running {
@@ -1774,16 +1789,36 @@ func (m *Manager) EnsureCaddyNetworks(ctx context.Context) {
 		}
 		unlock, ok := m.tryLockInstance(id)
 		if !ok {
+			// The operation holding the app handles Caddy's network itself.
+			// Until a pass sees Caddy on it, the app counts as off.
+			off[id] = true
 			continue
 		}
 		// Read the state again under the lock: the app may have been stopped
 		// or uninstalled since the list above.
 		if inst, err := m.store.Get(id); err == nil && inst.State == "running" {
 			slog.Info("caddy networks: reconnecting caddy to an app network", "instance_id", id)
-			m.connectCaddy(ctx, id)
+			if err := m.docker.NetworkConnect(ctx, "moose-app-"+id, caddyContainer); err != nil {
+				slog.Warn("connect caddy to the app network (retried on the next health tick)",
+					"instance_id", id, "err", err)
+				off[id] = true
+			}
 		}
 		unlock()
 	}
+}
+
+// CaddyOffNetwork reports whether the last EnsureCaddyNetworks pass left
+// Caddy off this running app's network: the connect failed, or the app was
+// held by an operation. Caddy then cannot reach the app, so its route answers
+// 502 whatever the app does, and the app-unresponsive probe must not read
+// that as the app failing (#613): a route written again after a Caddy
+// recreate would otherwise make a healthy app look down, and in time restart
+// it (#598).
+func (m *Manager) CaddyOffNetwork(id string) bool {
+	m.caddyNetMu.Lock()
+	defer m.caddyNetMu.Unlock()
+	return m.caddyOff[id]
 }
 
 // RestoreRoutes writes the Caddy route of each app again, after Caddy lost

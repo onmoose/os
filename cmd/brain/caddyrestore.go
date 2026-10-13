@@ -49,8 +49,9 @@ func (e caddyEdge) writeDashboard(ctx context.Context) error {
 // caddyMarker is the slice of caddy.Client the restorer uses.
 type caddyMarker interface {
 	Configured(ctx context.Context) (bool, error)
+	BeginConfig(ctx context.Context) (string, error)
 	RestoreServer(ctx context.Context) error
-	MarkConfigured(ctx context.Context) error
+	MarkConfigured(ctx context.Context, token string) error
 }
 
 // routeRestorer is the slice of lifecycle.Manager the restorer uses.
@@ -68,10 +69,13 @@ type routeRestorer interface {
 // It runs on the health tick, after EnsureCaddyNetworks and before the
 // probes. Each tick it asks Caddy for the mark the brain writes once its
 // config is in place (caddy.Client.Configured). When the mark is gone it
-// writes the config again, in the order the startup does: the server parts
-// (trusted proxies, the probe server, the catch-all), the TLS policy, the
-// dashboard route, every app route, then the mark. A failed server, TLS or
-// dashboard write stops there, with no mark, so the next tick starts again.
+// writes the config again, in the order the startup does: the trusted
+// proxies (caddy.Client.BeginConfig, which returns a token for this Caddy),
+// the probe server and the catch-all, the TLS policy, the dashboard route,
+// every app route, then the mark. The mark goes on only if Caddy is still the
+// one that got the writes (the token), so a recreate in the middle is seen on
+// the next tick. A failed server, TLS or dashboard write stops there, with no
+// mark, so the next tick starts again.
 // The apps RestoreRoutes could not write yet (lock held, install running, a
 // failed write) are kept and tried again on each tick until they are done.
 // The mark goes on even while some apps are owed, so that a second Caddy
@@ -116,6 +120,11 @@ func (r *caddyRestorer) check(ctx context.Context) {
 		return
 	}
 	slog.Warn("caddy: lost the brain's config (recreated or restarted); writing it again")
+	token, err := r.caddy.BeginConfig(ctx)
+	if err != nil {
+		slog.Warn("caddy restore: trusted proxies failed; trying again next tick", "err", err)
+		return
+	}
 	if err := r.caddy.RestoreServer(ctx); err != nil {
 		slog.Warn("caddy restore: server config failed; trying again next tick", "err", err)
 		return
@@ -129,7 +138,7 @@ func (r *caddyRestorer) check(ctx context.Context) {
 		slog.Warn("caddy restore: app routes failed; trying again next tick", "err", err)
 		return
 	}
-	if err := r.caddy.MarkConfigured(ctx); err != nil {
+	if err := r.caddy.MarkConfigured(ctx, token); err != nil {
 		slog.Warn("caddy restore: trying again next tick", "err", err)
 		return
 	}

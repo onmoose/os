@@ -204,3 +204,41 @@ func TestAppProbe_SocketSplashIsNoSample(t *testing.T) {
 		t.Fatalf("a splash answer = %v, want probeNoSample", got)
 	}
 }
+
+type offNetworks map[string]bool
+
+func (o offNetworks) CaddyOffNetwork(id string) bool { return o[id] }
+
+// An app whose network Caddy is off answers 502 from Caddy whatever it does.
+// That is no sample (#613), so it never raises, and the probe is not sent.
+// Once Caddy is back on the network the probe counts again.
+func TestAppProbe_CaddyOffNetworkIsNoSample(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	d, mgr, _, _ := gatedScenario(clk, "", nil)
+	sock := startProbeSocket(t, http.StatusBadGateway)
+	d.SetProbeSocket(sock.path)
+	off := offNetworks{}
+	inst, err := d.instances.List()
+	if err != nil || len(inst) == 0 {
+		t.Fatalf("no instances in the scenario: %v", err)
+	}
+	for _, i := range inst {
+		off[i.ID] = true
+	}
+	d.SetCaddyNetworks(off)
+	for i := 0; i < 3; i++ {
+		d.check(context.Background())
+	}
+	if len(unresponsiveIssues(mgr)) != 0 {
+		t.Fatalf("a 502 while Caddy is off the app network raised: %v", mgr.List())
+	}
+	if _, _, n := sock.seen(); n != 0 {
+		t.Fatalf("the probe was sent %d times while Caddy is off the app network", n)
+	}
+	d.SetCaddyNetworks(offNetworks{})
+	d.check(context.Background())
+	d.check(context.Background())
+	if len(unresponsiveIssues(mgr)) != 1 {
+		t.Fatalf("back on the network, a 502 must raise on the 2nd tick, got %v", mgr.List())
+	}
+}
