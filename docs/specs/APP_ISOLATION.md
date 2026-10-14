@@ -331,6 +331,8 @@ Used for:
 
 Apps run with **no cgroup cap by default** and may burst above their recommendation. Peaks should complete fast, not be throttled. CPU in particular is **never capped** — it's time-shared, so a CPU-hungry app simply runs slower and harms nothing; throttling it only makes it feel needlessly sluggish.
 
+> **Hosted profile exception.** On the hosted (cloud) profile, CPU *is* capped per instance. See `ENVIRONMENT.md` # Per-instance resource limits for the hosted profile's cgroup CPU capping.
+
 ### Control-plane protection (structural, not a cap)
 
 "Default unlimited" leaves one hole: a runaway app exhausting RAM could trip the kernel OOM-killer and take down the *brain*, removing the very UI the user needs to fix it. Closed structurally, independent of any app limit:
