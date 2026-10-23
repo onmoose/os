@@ -190,7 +190,7 @@ systemd-sysv 257.13-1~deb13u1 amd64
 systemd 257.13-1~deb13u1 amd64
 sysvinit-utils 3.14-4 amd64
 tar 1.35+dfsg-3.1 amd64
-tzdata 2026c-0+deb13u1 all
+tzdata 2026e-0+deb13u1 all
 ucf 3.0052 all
 udev 257.13-1~deb13u1 amd64
 util-linux 2.41.5-0+deb13u1 amd64
