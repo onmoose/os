@@ -8,8 +8,8 @@ base-files 13.8+deb13u7 amd64
 base-passwd 3.6.7 amd64
 bash 5.2.37-2+b10 amd64
 bsdutils 1:2.41.5-0+deb13u1 amd64
-ca-certificates 20250419 all
-containerd.io 2.4.1-2~debian.13~trixie amd64
+ca-certificates 20250419+deb13u1 all
+containerd.io 2.4.2-3~debian.13~trixie amd64
 coreutils 9.7-3 amd64
 cpio 2.15+dfsg-2 amd64
 dash 0.5.12-12 amd64
@@ -22,9 +22,9 @@ debconf 1.5.91 all
 debianutils 5.23.2 amd64
 diffutils 1:3.10-4 amd64
 dmsetup 2:1.02.205-2 amd64
-docker-ce-cli 5:29.9.0-1~debian.13~trixie amd64
-docker-ce 5:29.9.0-1~debian.13~trixie amd64
-docker-compose-plugin 5.6.0-1~debian.13~trixie amd64
+docker-ce-cli 5:29.9.2-1~debian.13~trixie amd64
+docker-ce 5:29.9.2-1~debian.13~trixie amd64
+docker-compose-plugin 5.6.1-1~debian.13~trixie amd64
 dpkg 1.22.22 amd64
 dracut-install 106-6 amd64
 e2fsprogs 1.47.2-3+b12 amd64
@@ -56,7 +56,7 @@ libaudit-common 1:4.0.2-2+deb13u1 all
 libaudit1 1:4.0.2-2+deb13u1 amd64
 libblkid1 2.41.5-0+deb13u1 amd64
 libbpf1 1:1.5.0-3 amd64
-libbrotli1 1.1.0-2+b7 amd64
+libbrotli1 1.1.0-2+deb13u1 amd64
 libbsd0 0.12.2-2 amd64
 libbz2-1.0 1.0.8-6 amd64
 libc-bin 2.41-12+deb13u4 amd64
@@ -67,7 +67,7 @@ libcap2 1:2.75-10+deb13u1+b3 amd64
 libcbor0.10 0.10.2-2 amd64
 libcom-err2 1.47.2-3+b12 amd64
 libcrypt1 1:4.4.38-1 amd64
-libcurl3t64-gnutls 8.14.1-2+deb13u5 amd64
+libcurl3t64-gnutls 8.14.1-2+deb13u7 amd64
 libdb5.3t64 5.3.28+dfsg2-9 amd64
 libdbus-1-3 1.16.2-2 amd64
 libdebconfclient0 0.280 amd64
@@ -76,7 +76,7 @@ libedit2 3.1-20250104-1 amd64
 libefiboot1t64 38-3.1+b1 amd64
 libefivar1t64 38-3.1+b1 amd64
 libelf1t64 0.192-4 amd64
-libexpat1 2.8.3-1~deb13u1 amd64
+libexpat1 2.9.0-1~deb13u1 amd64
 libext2fs2t64 1.47.2-3+b12 amd64
 libfdisk1 2.41.5-0+deb13u1 amd64
 libffi8 3.4.8-2 amd64
@@ -160,8 +160,8 @@ libwtmpdb0 0.73.0-3+deb13u1 amd64
 libxtables12 1.8.11-2 amd64
 libzstd1 1.5.7+dfsg-1 amd64
 linux-base 4.12.1 all
-linux-image-6.12.111+deb13-amd64 6.12.111-1 amd64
-linux-image-amd64 6.12.111-1 amd64
+linux-image-6.12.113+deb13-amd64 6.12.113-1 amd64
+linux-image-amd64 6.12.113-1 amd64
 login.defs 1:4.17.4-2 all
 logsave 1.47.2-3+b12 amd64
 mawk 1.3.4.20250131-1 amd64
@@ -190,7 +190,7 @@ systemd-sysv 257.13-1~deb13u1 amd64
 systemd 257.13-1~deb13u1 amd64
 sysvinit-utils 3.14-4 amd64
 tar 1.35+dfsg-3.1 amd64
-tzdata 2026c-0+deb13u1 all
+tzdata 2026e-0+deb13u1 all
 ucf 3.0052 all
 udev 257.13-1~deb13u1 amd64
 util-linux 2.41.5-0+deb13u1 amd64
