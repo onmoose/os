@@ -56,7 +56,7 @@ libaudit-common 1:4.0.2-2+deb13u1 all
 libaudit1 1:4.0.2-2+deb13u1 amd64
 libblkid1 2.41.5-0+deb13u1 amd64
 libbpf1 1:1.5.0-3 amd64
-libbrotli1 1.1.0-2+b7 amd64
+libbrotli1 1.1.0-2+deb13u1 amd64
 libbsd0 0.12.2-2 amd64
 libbz2-1.0 1.0.8-6 amd64
 libc-bin 2.41-12+deb13u4 amd64
