@@ -14,4 +14,4 @@
 containerd.io=2.4.2-3~debian.13~trixie
 docker-ce=5:29.9.2-1~debian.13~trixie
 docker-ce-cli=5:29.9.2-1~debian.13~trixie
-docker-compose-plugin=5.6.1-1~debian.13~trixie
+docker-compose-plugin=5.7.0-1~debian.13~trixie
