@@ -785,6 +785,16 @@ const SupportedManifestVersion = 1
 var ErrUnsupportedManifestVersion = errors.New("unsupported manifest_version")
 
 func Parse(data []byte) (*Manifest, error) {
+	// Read manifest_version first, on its own. A newer manifest_version may
+	// change the shape of other fields, so a full parse could fail with a
+	// type error or a missing field before the version is ever checked, and
+	// the update path would see a broken manifest, not one for a newer moose.
+	var head struct {
+		ManifestVersion int `yaml:"manifest_version"`
+	}
+	if err := yaml.Unmarshal(data, &head); err == nil && head.ManifestVersion != 0 && head.ManifestVersion != SupportedManifestVersion {
+		return nil, fmt.Errorf("%w: manifest_version %d (this build supports %d)", ErrUnsupportedManifestVersion, head.ManifestVersion, SupportedManifestVersion)
+	}
 	var m Manifest
 	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
