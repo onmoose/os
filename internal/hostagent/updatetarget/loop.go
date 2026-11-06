@@ -201,7 +201,8 @@ type Loop struct {
 		jobID string
 	}
 	// settled is the last night on which a tick inside the window started
-	// no stream B update (hold.go). While the brain holds the window for app
+	// no stream B update, or on which ControlPlaneDone told the brain stream
+	// B was done (hold.go). While the brain holds the window for app
 	// updates, a target that shows up later that night waits for the next
 	// one: the control-plane update restarts the brain, which would cut an
 	// app update short. Guarded by applyMu.

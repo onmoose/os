@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	_ "time/tzdata" // the DST tests must never skip for want of zone files
 
 	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/manifest"
@@ -512,6 +513,33 @@ func TestNightly_HostAgentProblems(t *testing.T) {
 	r.host.readErr = errors.New("host-agent unreachable")
 	if r.step(time.Date(2026, 11, 7, 3, 13, 0, 0, sto)) {
 		t.Fatal("an update ran with no update-target read")
+	}
+}
+
+// A failed read between two app updates keeps the hold, read against the
+// last good window and zone. Read in UTC, 03:15 Stockholm is 02:15, before
+// the hold starts, and the brain would clear the hold and let the OS switch
+// reboot the box with apps left to update.
+func TestNightly_ReadBlipKeepsTheHold(t *testing.T) {
+	sto := stockholm(t)
+	r := newNightRig(t, "Europe/Stockholm")
+	r.app(t, "a", 1, nil)
+	r.app(t, "b", 2, nil)
+	r.host.done("2026-11-07")
+	if !r.step(time.Date(2026, 11, 7, 3, 10, 0, 0, sto)) {
+		t.Fatal("no update for the first app")
+	}
+	holds, clears := r.host.counts()
+	r.host.readErr = errors.New("host-agent unreachable")
+	if r.step(time.Date(2026, 11, 7, 3, 15, 0, 0, sto)) {
+		t.Fatal("an update ran with no update-target read")
+	}
+	h2, c2 := r.host.counts()
+	if c2 != clears {
+		t.Fatalf("a failed read cleared the hold (clears %d -> %d)", clears, c2)
+	}
+	if h2 != holds+1 {
+		t.Fatalf("holds %d -> %d, want the hold renewed once on the failed read", holds, h2)
 	}
 }
 
