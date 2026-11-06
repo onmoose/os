@@ -3,7 +3,7 @@ package api
 // App updates (UPDATES.md # 4 and # 6, #631). POST .../update moves one app
 // to the catalog's new version as a job, with a rollback when the new version
 // fails. PUT .../auto-update turns the box's own updates of the app on or
-// off; the nightly window that reads it is #632. Both follow the app-control
+// off; the nightly window reads it (#632, lifecycle/nightly.go). Both follow the app-control
 // gate: the owner, or an admin for a household app.
 
 import (
@@ -44,6 +44,13 @@ type AppUpdateDTO struct {
 	FailedKind    string     `json:"failed_kind,omitempty"`
 	FailedMessage string     `json:"failed_message,omitempty"`
 	FailedAt      *time.Time `json:"failed_at,omitempty"`
+	// FailedCount is how many updates to FailedVersion failed in a row
+	// (#632). A good update and a person's Update set it back to 0.
+	FailedCount int `json:"failed_count,omitempty"`
+	// Paused is true when the nightly window stopped trying the available
+	// version: it failed 3 times in a row (UPDATES.md # 6 Failure
+	// signaling). The Update button still works and starts the count again.
+	Paused bool `json:"paused"`
 }
 
 func appUpdateDTO(i store.Instance) AppUpdateDTO {
@@ -55,6 +62,8 @@ func appUpdateDTO(i store.Instance) AppUpdateDTO {
 		FailedVersion:    i.UpdateFailure.Version,
 		FailedKind:       i.UpdateFailure.Kind,
 		FailedMessage:    i.UpdateFailure.Message,
+		FailedCount:      i.UpdateFailure.Count,
+		Paused:           i.UpdatePaused(),
 	}
 	if !i.UpdateFailure.At.IsZero() {
 		at := i.UpdateFailure.At
@@ -118,7 +127,9 @@ func (s *Server) updateApp(ctx context.Context, in *struct {
 	}
 	jobCtx := ctx // for the audit inside the job goroutine
 	job := s.jobs.run("app-update", func(job *Job) (map[string]any, error) {
-		err := s.life.Update(context.Background(), id, job.setStep)
+		// A person's Update starts the count of failures in a row again,
+		// so a paused app can be tried (#632).
+		err := s.life.UpdateByPerson(context.Background(), id, job.setStep)
 		if row, gerr := s.store.Get(id); gerr == nil && err == nil {
 			meta["new_version"] = row.Version
 		}

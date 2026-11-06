@@ -214,3 +214,62 @@ func mustGet(t *testing.T, s *Server, id string) store.Instance {
 	}
 	return r
 }
+
+// TestAppUpdateDTO_Paused: three failures in a row on the version the box
+// offers pause the window's updates, and the DTO says so (#632). A new
+// version is not paused.
+func TestAppUpdateDTO_Paused(t *testing.T) {
+	i := store.Instance{
+		Version: "1.0", State: "running",
+		Update:        store.UpdateCheck{Version: "2.0", Status: store.UpdateAvailable},
+		UpdateFailure: store.UpdateFailure{Version: "2.0", Kind: store.UpdateFailedHealth, Count: 2},
+	}
+	if d := appUpdateDTO(i); d.Paused || d.FailedCount != 2 {
+		t.Fatalf("two failures: %+v, want not paused with a count of 2", d)
+	}
+	i.UpdateFailure.Count = 3
+	if d := appUpdateDTO(i); !d.Paused || !d.CanApply {
+		t.Fatalf("three failures: %+v, want paused, and the Update button still there", d)
+	}
+	i.Update.Version = "2.1"
+	if appUpdateDTO(i).Paused {
+		t.Fatal("a new version is paused")
+	}
+}
+
+// TestUpdateApp_PausedCanBeUpdatedAndResetsTheCount: a person's Update runs
+// on a paused app, and the count of failures in a row starts again first
+// (#632).
+func TestUpdateApp_PausedCanBeUpdatedAndResetsTheCount(t *testing.T) {
+	s, id, _ := configServer(t, "u_owner", store.ScopeHousehold, "running", nil)
+	s.catalog = catalog.New(t.TempDir())
+	if err := s.store.SetInstanceUpdateCheck(id, store.UpdateCheck{Version: "2.0", Status: store.UpdateAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := s.store.RecordInstanceUpdateFailure(id, store.UpdateFailure{Version: "2.0", Kind: store.UpdateFailedHealth}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !mustGet(t, s, id).UpdatePaused() {
+		t.Fatal("setup: the app is not paused")
+	}
+	out, err := postUpdate(s, adminCtx("u_admin"), id)
+	if err != nil {
+		t.Fatalf("update a paused app: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		j, ok := s.jobs.get(out.Body.ID)
+		if !ok {
+			t.Fatal("job vanished")
+		}
+		if j.snapshot().Status != "running" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c := mustGet(t, s, id).UpdateFailure.Count; c != 0 {
+		t.Fatalf("count after a person's Update = %d, want 0", c)
+	}
+}

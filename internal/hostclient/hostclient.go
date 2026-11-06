@@ -245,6 +245,33 @@ func (c *Client) SystemUpdateTarget(ctx context.Context) (protocol.UpdateTarget,
 	return out, err
 }
 
+// SetUpdateHold sets or renews the brain's hold on the OS switch, until until
+// (PUT /v1/system/update-hold, #632, UPDATES.md # 7 Reboots). host-agent cuts
+// it to its lease and to the window's end minus its cap, and returns the end
+// it kept: the zero time when the hold is not live after the cuts. An older
+// host-agent with no such route answers an error, and then nothing holds
+// the switch.
+func (c *Client) SetUpdateHold(ctx context.Context, until time.Time) (time.Time, error) {
+	var out protocol.UpdateHold
+	if err := c.do(ctx, "PUT", protocol.UpdateHoldPath, protocol.UpdateHold{Until: until.UTC().Format(time.RFC3339)}, &out); err != nil {
+		return time.Time{}, err
+	}
+	if out.Until == "" {
+		return time.Time{}, nil
+	}
+	end, err := time.Parse(time.RFC3339, out.Until)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("host-agent %s: read the kept end: %w", protocol.UpdateHoldPath, err)
+	}
+	return end, nil
+}
+
+// ClearUpdateHold ends the brain's hold on the OS switch at once (DELETE
+// /v1/system/update-hold, #632). It succeeds when there was no hold.
+func (c *Client) ClearUpdateHold(ctx context.Context) error {
+	return c.do(ctx, "DELETE", protocol.UpdateHoldPath, nil, nil)
+}
+
 // SystemHealth returns host-agent's locus-B findings report across categories
 // (HEALTH.md # Detector catalog, BRAIN_HOST_PROTOCOL.md). host-agent always
 // returns 200 with a parseable payload, so a transport error here is genuinely

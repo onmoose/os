@@ -82,11 +82,22 @@ const update = computed(() => props.instance.update);
 const updateFailed = computed(() => !!update.value?.failed_version);
 const updateKnown = computed(() => !!update.value?.available_version);
 const showUpdate = computed(() => !failed.value && !updating.value && (updateFailed.value || updateKnown.value));
-const updateLabel = computed(() => (updateFailed.value ? "Update failed" : "Update available"));
+// Paused (#632): the nightly window tried the same version 3 times and it
+// failed each time, so it stopped trying. The Update button still works.
+const updatePaused = computed(() => !!update.value?.paused);
+const updateLabel = computed(() =>
+  updatePaused.value
+    ? "Update is failing repeatedly. Paused."
+    : updateFailed.value
+      ? "Update failed"
+      : "Update available",
+);
 const updateTitle = computed(() =>
-  updateFailed.value
-    ? `${props.instance.name} could not update to ${update.value?.failed_version}`
-    : `${props.instance.name} ${update.value?.available_version} is available`,
+  updatePaused.value
+    ? `${props.instance.name} could not update to ${update.value?.failed_version} several times in a row, so moose stopped trying. You can still update it from its settings.`
+    : updateFailed.value
+      ? `${props.instance.name} could not update to ${update.value?.failed_version}`
+      : `${props.instance.name} ${update.value?.available_version} is available`,
 );
 // Needs setup is a softer warning than a failure, so it gets the amber mark
 // only when no failure mark is already there.
