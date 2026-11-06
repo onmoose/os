@@ -95,10 +95,10 @@ var provisionedKinds = map[string]bool{"postgres": true, "mysql": true, "mariadb
 // mysqlTools names the per-image client binaries and root-password env var for
 // the MySQL family. The mariadb image ships mariadb-named binaries (the mysql
 // names are deprecated there); presence in this map is the "is MySQL family"
-// test.
-var mysqlTools = map[string]struct{ client, admin, rootPWVar string }{
-	"mysql":   {"mysql", "mysqladmin", "MYSQL_ROOT_PASSWORD"},
-	"mariadb": {"mariadb", "mariadb-admin", "MARIADB_ROOT_PASSWORD"},
+// test. dump is the logical-dump tool the pre-update snapshot runs (snapshot.go).
+var mysqlTools = map[string]struct{ client, admin, dump, rootPWVar string }{
+	"mysql":   {"mysql", "mysqladmin", "mysqldump", "MYSQL_ROOT_PASSWORD"},
+	"mariadb": {"mariadb", "mariadb-admin", "mariadb-dump", "MARIADB_ROOT_PASSWORD"},
 }
 
 // serviceName is the "<kind>-<version>" stem used for the container name, the
@@ -343,6 +343,19 @@ func clientWrapper(kind, version string) string {
 		return fmt.Sprintf(`MYSQL_PWD="$%s" exec %s -uroot -h %s "$@"`, t.rootPWVar, t.client, alias)
 	}
 	return fmt.Sprintf(`PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD" exec psql -h %s -U postgres -v ON_ERROR_STOP=1 "$@"`, alias)
+}
+
+// toolWrapper is clientWrapper for another of the engine's own tools (pg_dump,
+// pg_restore, mysqldump, mariadb-dump, or the mysql client): the same remap of
+// the superuser password from the --env-file into the tool's env var, and the
+// same TCP connection to the service's DNS alias. The SQL engines only; Valkey
+// has no per-app database to dump.
+func toolWrapper(kind, version, tool string) string {
+	alias := serviceDNSAlias(kind, version)
+	if t, ok := mysqlTools[kind]; ok {
+		return fmt.Sprintf(`MYSQL_PWD="$%s" exec %s -uroot -h %s "$@"`, t.rootPWVar, tool, alias)
+	}
+	return fmt.Sprintf(`PGPASSWORD="$POSTGRES_SUPERUSER_PASSWORD" exec %s -h %s -U postgres "$@"`, tool, alias)
 }
 
 // runServiceClient runs the service's own client (psql / mysql / mariadb /

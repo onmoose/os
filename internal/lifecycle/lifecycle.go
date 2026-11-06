@@ -175,6 +175,11 @@ type Manager struct {
 	// test cannot give a path to another uid.
 	chown func(path string, uid, gid int) error
 
+	// diskSpace reports the free and total bytes of the filesystem holding a
+	// path. statDiskSpace (statfs) in production; tests set a full disk to see
+	// the pre-update snapshot refuse (snapshot.go).
+	diskSpace func(path string) (free, total uint64, err error)
+
 	// healthWait is overridable in tests; production uses healthWaitTimeout.
 	healthWait time.Duration
 	// healthPoll is the inter-poll interval; production uses 2s.
@@ -230,6 +235,7 @@ func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd Caddy
 		admit: admission.Check, bus: bus, stateDir: stateDir,
 		sharedRoot: defaultSharedRoot,
 		chown:      os.Lchown,
+		diskSpace:  statDiskSpace,
 		healthWait: healthWaitTimeout, healthPoll: 2 * time.Second,
 		serviceReadyWait: serviceReadyTimeout,
 		instLocks:        map[string]*sync.Mutex{},
