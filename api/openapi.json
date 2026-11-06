@@ -655,6 +655,47 @@
         ],
         "type": "object"
       },
+      "AppUpdateDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "available_version": {
+            "type": "string"
+          },
+          "can_apply": {
+            "type": "boolean"
+          },
+          "failed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "failed_kind": {
+            "type": "string"
+          },
+          "failed_message": {
+            "type": "string"
+          },
+          "failed_version": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "needs_approval",
+              "service_major",
+              "needs_newer_moose",
+              "blocked"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "can_apply"
+        ],
+        "type": "object"
+      },
       "AppUseDTO": {
         "additionalProperties": false,
         "properties": {
@@ -2122,6 +2163,9 @@
           "auto_restart": {
             "type": "boolean"
           },
+          "auto_update": {
+            "type": "boolean"
+          },
           "exposure": {
             "enum": [
               "restricted",
@@ -2180,6 +2224,9 @@
           "state": {
             "type": "string"
           },
+          "update": {
+            "$ref": "#/components/schemas/AppUpdateDTO"
+          },
           "url": {
             "type": "string"
           },
@@ -2200,7 +2247,9 @@
           "scope",
           "exposure",
           "needs_setup",
-          "auto_restart"
+          "auto_restart",
+          "auto_update",
+          "update"
         ],
         "type": "object"
       },
@@ -3586,6 +3635,27 @@
         ],
         "type": "object"
       },
+      "Set-app-auto-updateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/Set-app-auto-updateRequest.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
       "Set-app-exposureRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4785,6 +4855,54 @@
         "summary": "Turn the automatic restart of an unresponsive app on or off (owner or admin)"
       }
     },
+    "/api/v1/apps/{id}/auto-update": {
+      "put": {
+        "operationId": "set-app-auto-update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Set-app-auto-updateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceDTO"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Turn the automatic update of an app on or off (owner or admin)"
+      }
+    },
     "/api/v1/apps/{id}/config": {
       "get": {
         "operationId": "get-app-config",
@@ -5077,6 +5195,44 @@
           }
         },
         "summary": "Stop a running app instance (job)"
+      }
+    },
+    "/api/v1/apps/{id}/update": {
+      "post": {
+        "operationId": "update-app",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Update an app to the catalog's new version (job; owner or admin)"
       }
     },
     "/api/v1/audit": {

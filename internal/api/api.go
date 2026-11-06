@@ -248,6 +248,7 @@ func (s *Server) registerAll(api huma.API) {
 	s.registerAppConfig(api)
 	s.registerAppExposure(api)
 	s.registerAppAutoRestart(api)
+	s.registerAppUpdate(api)
 }
 
 // OpenAPIDocument builds the brain's full REST surface against a throwaway mux
@@ -414,6 +415,13 @@ type InstanceDTO struct {
 	// it stays unresponsive (#598, HEALTH.md # Automatic restart). On unless
 	// the owner turned it off.
 	AutoRestart bool `json:"auto_restart"`
+	// AutoUpdate reports whether the box updates this app on its own
+	// (UPDATES.md # Per-app auto-update toggle, #631). On unless the owner
+	// turned it off.
+	AutoUpdate bool `json:"auto_update"`
+	// Update is what the box knows about a new version of the app, and the
+	// last update that did not go through (UPDATES.md # 6).
+	Update AppUpdateDTO `json:"update"`
 }
 
 func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
@@ -438,6 +446,7 @@ func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry)
 		Version: i.Version, State: i.State, URL: url,
 		OwnerUserID: i.OwnerUserID, OwnerUsername: ownerUsername, Scope: i.Scope,
 		Exposure: i.Exposure, AutoRestart: !i.AutoRestartOff,
+		AutoUpdate: !i.AutoUpdateOff, Update: appUpdateDTO(i),
 	}
 	if e != nil {
 		dto.IconURL = e.IconURL
@@ -1164,9 +1173,11 @@ func (s *Server) startApp(ctx context.Context, in *struct {
 	if err != nil {
 		return nil, err
 	}
-	// Legal from `stopped` (start) and `failed` (click-to-retry, #154) — both run
-	// the identical Start transaction. Any other state is an illegal transition.
-	if inst.State != "stopped" && inst.State != "failed" {
+	// Legal from `stopped` (start), `failed` (click-to-retry, #154) and
+	// `update_failed` (an update whose rollback did not bring the old version
+	// back, #631) — all run the Start transaction. Any other state is an
+	// illegal transition.
+	if inst.State != "stopped" && inst.State != "failed" && inst.State != "update_failed" {
 		return nil, huma.Error409Conflict("app is not stopped or failed")
 	}
 	job := s.jobs.run("app-start", func(job *Job) (map[string]any, error) {
