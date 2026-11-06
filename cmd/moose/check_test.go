@@ -150,6 +150,8 @@ func TestCheck_RejectsManifestRules(t *testing.T) {
 		{name: "service_user with folders", extra: "service_user: true\npermissions:\n  folders:\n    - folder: documents\n      mode: read\n", wantMsg: "service_user"},
 		{name: "image_user with devices", extra: "image_user: true\npermissions:\n  devices: [/dev/ttyUSB0]\n", wantMsg: "image_user"},
 		{name: "image_user with root_setup", extra: "image_user: true\nroot_setup: true\n", wantMsg: "image_user"},
+		{name: "overlapping data volumes", extra: "storage:\n  data_volumes: [./data, ./data/db]\n", wantMsg: "storage.data_volumes"},
+		{name: "storage path out of the app folder", extra: "storage:\n  cache_volumes: [../cache]\n", wantMsg: "storage.cache_volumes"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

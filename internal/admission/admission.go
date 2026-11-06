@@ -62,8 +62,8 @@ func Check(ctx context.Context, composeBytes []byte) error {
 // CheckManifest applies the manifest-side admission rules — declarations that
 // are illegal regardless of the compose content. Door-symmetric like Check:
 // lifecycle's shared install transaction runs it for both doors (a Door-2
-// synthetic manifest never sets service_user, root_setup or image_user, so it
-// passes trivially). `moose manifest check` runs it too, so catalog CI refuses
+// synthetic manifest never sets service_user, root_setup, image_user or the
+// storage lists, so it passes trivially). `moose manifest check` runs it too, so catalog CI refuses
 // the same manifests at publish time.
 func CheckManifest(man *manifest.Manifest) error {
 	// root_setup and image_user first: when a manifest also breaks the
@@ -82,7 +82,75 @@ func CheckManifest(man *manifest.Manifest) error {
 	if man.ServiceUser && len(man.Permissions.Folders) > 0 {
 		return reject("manifest sets service_user: true together with a folders grant — a folder app already runs as a managed non-root identity (APP_MANIFEST.md # B); remove service_user")
 	}
+	if _, _, err := StoragePaths(man.Storage); err != nil {
+		return err
+	}
 	return nil
+}
+
+// StoragePaths checks storage.data_volumes and storage.cache_volumes
+// (APP_MANIFEST.md # C) and returns them clean, as paths relative to the
+// instance dir. Each path must stay inside the app's folder and must not name
+// a file moose keeps there (manifest.CleanStoragePath). A cache volume may sit
+// inside a data volume, which is how a snapshot leaves a cache out of the data
+// it keeps. Any other overlap is refused: the same path twice, a data volume
+// inside another data volume, a cache volume inside another cache volume, a
+// data volume inside a cache volume, or a cache volume that holds a data
+// volume. The pre-update snapshot runs it too, on the manifest an instance was
+// installed with, so a manifest from before this rule is checked before its
+// data is kept.
+func StoragePaths(st manifest.Storage) (data, cache []string, err error) {
+	clean := func(field string, raw []string) ([]string, error) {
+		out := make([]string, 0, len(raw))
+		for _, r := range raw {
+			p, err := manifest.CleanStoragePath(r)
+			if err != nil {
+				return nil, reject("storage.%s entry %q %s", field, r, err.Error())
+			}
+			out = append(out, p)
+		}
+		return out, nil
+	}
+	if data, err = clean("data_volumes", st.DataVolumes); err != nil {
+		return nil, nil, err
+	}
+	if cache, err = clean("cache_volumes", st.CacheVolumes); err != nil {
+		return nil, nil, err
+	}
+	// sameList refuses two entries of one list that are equal or nest.
+	sameList := func(field string, list, raw []string) error {
+		for i := range list {
+			for j := range list {
+				if i == j {
+					continue
+				}
+				if list[i] == list[j] && i < j {
+					return reject("storage.%s lists %q twice. List each folder once", field, raw[i])
+				}
+				if list[i] != list[j] && manifest.PathWithin(list[j], list[i]) {
+					return reject("storage.%s entry %q is inside %q, which is already listed. List only %q", field, raw[j], raw[i], raw[i])
+				}
+			}
+		}
+		return nil
+	}
+	if err := sameList("data_volumes", data, st.DataVolumes); err != nil {
+		return nil, nil, err
+	}
+	if err := sameList("cache_volumes", cache, st.CacheVolumes); err != nil {
+		return nil, nil, err
+	}
+	for i, d := range data {
+		for j, c := range cache {
+			switch {
+			case d == c:
+				return nil, nil, reject("storage: %q is listed in both data_volumes and cache_volumes. A folder is either data to keep or a cache, not both", st.DataVolumes[i])
+			case manifest.PathWithin(d, c):
+				return nil, nil, reject("storage.data_volumes entry %q is inside cache_volumes entry %q. A cache may sit inside a data folder, not the other way round", st.DataVolumes[i], st.CacheVolumes[j])
+			}
+		}
+	}
+	return data, cache, nil
 }
 
 // checkRootSetup refuses root_setup: true together with a grant that puts the
