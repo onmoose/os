@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -86,6 +87,12 @@ type fakeDocker struct {
 	networkConnectErr    error
 	containerNetworksErr error
 
+	// networks is each network NetworkCreate made and its internal flag, as
+	// NetworkInspect reads it (#633). Like Docker, a create of a network that
+	// exists keeps the old flag. composeCreateErr forces ComposeCreate to fail.
+	networks         map[string]bool
+	composeCreateErr error
+
 	// runOneOff drives RunOneOff: it returns scripted output/error per invocation
 	// (matched on args). Default (nil) returns ("", nil) — provisioning only cares
 	// about the error. containerHealth, when set, overrides the readiness status
@@ -129,6 +136,7 @@ func newFakeDocker() *fakeDocker {
 		pullErr:   map[string]error{},
 		psManaged: map[string]bool{},
 		attached:  map[string]map[string]bool{},
+		networks:  map[string]bool{},
 	}
 }
 
@@ -310,6 +318,11 @@ func (f *fakeDocker) ComposeStop(_ context.Context, dir, project string) (string
 	return "", f.composeStopErr
 }
 
+func (f *fakeDocker) ComposeCreate(_ context.Context, dir, project string) (string, error) {
+	f.record("ComposeCreate", dir, project)
+	return "", f.composeCreateErr
+}
+
 func (f *fakeDocker) Inspect(_ context.Context, id, main string) (bool, string, error) {
 	f.record("Inspect", id, main)
 	if f.inspect != nil {
@@ -320,12 +333,49 @@ func (f *fakeDocker) Inspect(_ context.Context, id, main string) (bool, string, 
 
 func (f *fakeDocker) NetworkCreate(_ context.Context, name string, internal bool) error {
 	f.record("NetworkCreate", name, internal)
-	return f.networkCreateErr
+	if f.networkCreateErr != nil {
+		return f.networkCreateErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.networks[name]; !ok {
+		f.networks[name] = internal
+	}
+	return nil
 }
 
 func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 	f.record("NetworkRemove", name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.networks, name)
 	return nil
+}
+
+func (f *fakeDocker) NetworkInspect(_ context.Context, name string) (NetworkInfo, error) {
+	f.record("NetworkInspect", name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	internal, ok := f.networks[name]
+	if !ok {
+		return NetworkInfo{}, nil
+	}
+	info := NetworkInfo{Exists: true, Internal: internal}
+	for c, nets := range f.attached {
+		if nets[name] {
+			info.Containers = append(info.Containers, c)
+		}
+	}
+	sort.Strings(info.Containers)
+	return info, nil
+}
+
+// networkInternal is a network's flag; ok is false when it does not exist.
+func (f *fakeDocker) networkInternal(name string) (internal, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	internal, ok = f.networks[name]
+	return internal, ok
 }
 
 func (f *fakeDocker) NetworkConnect(_ context.Context, network, container string) error {

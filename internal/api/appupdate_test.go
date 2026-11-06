@@ -150,7 +150,7 @@ func TestUpdateApp_RunsAJobAndAudits(t *testing.T) {
 	if len(rows) != 1 || rows[0].Success || rows[0].ActorUserID != "u_admin" {
 		t.Fatalf("audit = %+v, want one failure by the admin", rows)
 	}
-	if row, _ := s.store.Get(id); row.Update != (store.UpdateCheck{}) {
+	if row, _ := s.store.Get(id); !row.Update.IsZero() {
 		t.Errorf("stale check left: %+v", row.Update)
 	}
 }

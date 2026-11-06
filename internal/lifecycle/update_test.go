@@ -146,7 +146,7 @@ func TestUpdateGood(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	r := e.row(t, inst.ID)
-	if r.State != "running" || r.Version != "2.0" || r.Update != (store.UpdateCheck{}) || r.UpdateFailure != (store.UpdateFailure{}) {
+	if r.State != "running" || r.Version != "2.0" || !r.Update.IsZero() || r.UpdateFailure != (store.UpdateFailure{}) {
 		t.Fatalf("row after update: state %q version %q update %+v failure %+v", r.State, r.Version, r.Update, r.UpdateFailure)
 	}
 	if !strings.Contains(e.onDisk(t, inst.ID), upImage2) {
@@ -385,18 +385,30 @@ func TestUpdateRefusals(t *testing.T) {
 		remap  bool
 		status string
 		reason string
+		wants  []store.AccessWant // what 2.0 asks for, for every class
 	}{
 		"internet widened": {
 			v2:     strings.Replace(v2(""), "internet: false", "internet: true", 1),
-			status: store.UpdateNeedsApproval, reason: "the internet",
+			status: store.UpdateNeedsApproval, reason: "waits until an admin allows it",
+			wants: []store.AccessWant{{Kind: store.WantInternet}},
 		},
 		"public path added": {
 			v2:     v2("access:\n  public_paths: [/api]\n"),
-			status: store.UpdateNeedsApproval, reason: "anyone can open /api",
+			status: store.UpdateNeedsApproval, reason: "asks for more access",
+			wants: []store.AccessWant{{Kind: store.WantPublicPath, Path: "/api"}},
 		},
 		"folder added": {
 			v2:     strings.Replace(v2(""), "  lan: false\n", "  lan: false\n  folders:\n    - folder: photos\n      mode: read\n", 1),
-			status: store.UpdateNeedsApproval, reason: "Photos",
+			status: store.UpdateNeedsApproval, reason: "asks for more access",
+			wants: []store.AccessWant{{Kind: store.WantFolder, Folder: "photos", Mode: "read", Change: store.FolderNew, Source: "shared"}},
+		},
+		"managed service major and wider": {
+			v1: upDatabase,
+			v2: strings.Replace(v2(strings.Replace(upDatabase, `"16"`, `"17"`, 1)), "internet: false", "internet: true", 1),
+			// The major move wins, and the list still says what it asks for
+			// (#635 needs it).
+			status: store.UpdateServiceMajor, reason: "postgres 17",
+			wants: []store.AccessWant{{Kind: store.WantInternet}},
 		},
 		"managed service major": {
 			v1:     upDatabase,
@@ -428,6 +440,9 @@ func TestUpdateRefusals(t *testing.T) {
 			r := e.row(t, inst.ID)
 			if r.Update.Status != tc.status || r.Update.Version != "2.0" || !strings.Contains(r.Update.Reason, tc.reason) {
 				t.Fatalf("check = %+v, want status %s with %q", r.Update, tc.status, tc.reason)
+			}
+			if !slices.Equal(r.Update.Wants, tc.wants) {
+				t.Fatalf("wants = %+v, want %+v", r.Update.Wants, tc.wants)
 			}
 			pulls := len(e.docker.pulled())
 			err := e.m.Update(context.Background(), inst.ID, nil)
@@ -499,7 +514,7 @@ func TestUpdateNoUpdateAndDoor2(t *testing.T) {
 		return e.cat.Load(ctx, id)
 	}
 	e.m.CheckUpdates(context.Background())
-	if r := e.row(t, custom.ID); r.Update != (store.UpdateCheck{}) || loads != 0 {
+	if r := e.row(t, custom.ID); !r.Update.IsZero() || loads != 0 {
 		t.Fatalf("Door-2 app: check %+v after %d loads", r.Update, loads)
 	}
 	if err := e.m.Update(context.Background(), custom.ID, nil); !errors.Is(err, ErrNoUpdate) {
@@ -747,14 +762,14 @@ func TestCheckUpdatesByVersionOnly(t *testing.T) {
 	ctx := context.Background()
 
 	e.m.CheckUpdates(ctx)
-	if r := e.row(t, inst.ID); r.Update != (store.UpdateCheck{}) || loads != 0 {
+	if r := e.row(t, inst.ID); !r.Update.IsZero() || loads != 0 {
 		t.Fatalf("same version: check %+v, %d loads", r.Update, loads)
 	}
 	// The same version with other digests (an index digest replaced by the
 	// amd64 one, APP_STORE.md) is no update.
 	e.publish(t, "1.0", upImage1, upDigest2, "")
 	e.m.CheckUpdates(ctx)
-	if r := e.row(t, inst.ID); r.Update != (store.UpdateCheck{}) || loads != 0 {
+	if r := e.row(t, inst.ID); !r.Update.IsZero() || loads != 0 {
 		t.Fatalf("digest change: check %+v, %d loads", r.Update, loads)
 	}
 
@@ -772,7 +787,7 @@ func TestCheckUpdatesByVersionOnly(t *testing.T) {
 	// The catalog back on the installed version clears it.
 	e.publish(t, "1.0", upImage1, upDigest1, "")
 	e.m.CheckUpdates(ctx)
-	if r := e.row(t, inst.ID); r.Update != (store.UpdateCheck{}) {
+	if r := e.row(t, inst.ID); !r.Update.IsZero() {
 		t.Fatalf("back to the installed version: check %+v", r.Update)
 	}
 }
@@ -794,7 +809,7 @@ func TestCheckUpdatesSkipsAMovedRow(t *testing.T) {
 		return e.cat.Load(ctx, id)
 	}
 	e.m.CheckUpdates(ctx)
-	if r := e.row(t, inst.ID); r.Version != "2.0" || r.Update != (store.UpdateCheck{}) {
+	if r := e.row(t, inst.ID); r.Version != "2.0" || !r.Update.IsZero() {
 		t.Fatalf("after an update finished mid-check: version %s, check %+v, want 2.0 and no update", r.Version, r.Update)
 	}
 
@@ -808,7 +823,7 @@ func TestCheckUpdatesSkipsAMovedRow(t *testing.T) {
 	}
 	e.m.CheckUpdates(ctx)
 	unlock()
-	if r := e.row(t, inst.ID); r.Update != (store.UpdateCheck{}) {
+	if r := e.row(t, inst.ID); !r.Update.IsZero() {
 		t.Fatalf("lock held: check %+v, want nothing stored", r.Update)
 	}
 	e.m.catalogLoad = e.cat.Load
