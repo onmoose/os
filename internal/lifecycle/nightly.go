@@ -91,6 +91,11 @@ type Nightly struct {
 	holdState int
 	// checkedNight is the night CheckUpdates last ran for.
 	checkedNight string
+	// lastWindow and lastLoc are the window and zone of the last good read,
+	// nil before the first one. A failed read uses them, so a blip does not
+	// read 03:30 Stockholm as 02:30 UTC and clear the hold.
+	lastWindow nightWindow
+	lastLoc    *time.Location
 	// said dedupes log lines that would repeat every minute.
 	said map[string]bool
 }
@@ -174,7 +179,20 @@ func (n *Nightly) Step(ctx context.Context) bool {
 	} else {
 		delete(n.said, "read-err")
 	}
-	w, loc := n.windowOf(t, readErr == nil)
+	if readErr != nil {
+		// The read says nothing about tonight. Keep a hold the loop already
+		// has, read against the last good window and zone, and never clear
+		// it here: a hold not renewed ends on its own within its lease.
+		if n.lastLoc != nil && n.holdState == holdHeld {
+			now := n.now().In(n.lastLoc)
+			if nt := n.lastWindow.night(now); !now.Before(nt.holdFrom) && now.Before(nt.ends) {
+				n.hold(ctx, now, nt)
+			}
+		}
+		return false
+	}
+	w, loc := n.windowOf(t)
+	n.lastWindow, n.lastLoc = w, loc
 	now := n.now().In(loc)
 	nt := w.night(now)
 
@@ -204,9 +222,6 @@ func (n *Nightly) Step(ctx context.Context) bool {
 	}
 	held := n.hold(ctx, now, nt)
 	if now.Before(nt.opens) {
-		return false
-	}
-	if readErr != nil {
 		return false
 	}
 	if done, why := controlPlaneDone(t, nt); !done {
@@ -354,11 +369,8 @@ func (n *Nightly) release(ctx context.Context) {
 // that is missing or unreadable falls back, the window to 03:00-04:00 and the
 // zone to UTC, with one warning: the brain runs in a container whose local
 // zone is not the box's.
-func (n *Nightly) windowOf(t protocol.UpdateTarget, read bool) (nightWindow, *time.Location) {
+func (n *Nightly) windowOf(t protocol.UpdateTarget) (nightWindow, *time.Location) {
 	w, loc := defaultNightWindow, time.UTC
-	if !read {
-		return w, loc
-	}
 	if t.Window == "" {
 		n.once("no-window", slog.LevelWarn, "nightly updates: host-agent names no update window; using the default", "window", w.String())
 	} else if pw, err := parseNightWindow(t.Window); err != nil {

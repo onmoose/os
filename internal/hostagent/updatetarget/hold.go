@@ -151,6 +151,25 @@ const SwitchWaitsForApps = "the switch waits for app updates to finish"
 // runs. The running pair and the job are read fresh, so a finished update is
 // seen at once, not at the next tick.
 func (l *Loop) ControlPlaneDone() (time.Time, bool) {
+	night, done := l.controlPlaneDone()
+	if done {
+		// The brain may start app updates now, so stream B is over for this
+		// night, even when the done came from a failed read of the source.
+		// A good target on a later tick then waits for the next night while
+		// the apps hold the window, as any late target does
+		// (applyControlPlane). Without this, a 03:00 blip would let the
+		// brain start an app update and a 03:15 target restart the brain in
+		// the middle of it.
+		l.applyMu.Lock()
+		if night.After(l.settled) {
+			l.settled = night
+		}
+		l.applyMu.Unlock()
+	}
+	return night, done
+}
+
+func (l *Loop) controlPlaneDone() (time.Time, bool) {
 	s := l.Snapshot()
 	if s.CheckedAt.IsZero() {
 		return time.Time{}, false
@@ -204,7 +223,8 @@ func (l *Loop) ControlPlaneDone() (time.Time, bool) {
 // Only a tick whose source answered settles the night: an unreachable source,
 // a refused answer or no target says nothing about tonight's control plane, so
 // one DNS blip at 03:00 must not make a good target that comes a tick later
-// wait a whole night (applyControlPlane).
+// wait a whole night (applyControlPlane). Once ControlPlaneDone has told the
+// brain the night is done, though, the night is settled whatever the outcome.
 func (l *Loop) settle(w Window, started bool) {
 	if started || l.Snapshot().Outcome != OutcomeOK {
 		return

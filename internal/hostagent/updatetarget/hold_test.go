@@ -323,6 +323,39 @@ func TestHold_BlipDoesNotSettleTheNight(t *testing.T) {
 	}
 }
 
+// After a blip, ControlPlaneDone tells the brain the night is done, so the
+// brain starts app updates and holds the window. A good target on a later
+// tick must then wait for the next night: applying it would restart the brain
+// in the middle of an app update. Once the hold ends, it applies.
+func TestHold_DoneAfterBlipSettlesTheNight(t *testing.T) {
+	ap := &fakeApplier{running: map[string]bool{}}
+	now := at(12, 3, 1)
+	src := &fakeSource{err: errors.New("dns: no such host")}
+	l := newLoop(src, fakeRunning{brain: brainRef, ui: uiRef}, ap, &now)
+	l.Tick(context.Background())
+	if _, done := l.ControlPlaneDone(); !done {
+		t.Fatal("ControlPlaneDone after a blip = false, want done")
+	}
+	l.SetHold(now.Add(protocol.UpdateHoldLease))
+	later := goodTarget()
+	later.Version, later.BrainImage, later.BrainDigest = "v0.7.1", "ghcr.io/onmoose/brain@"+digest("e"), digest("e")
+	src.target, src.err = later, nil
+	now = at(12, 3, 9)
+	l.Tick(context.Background())
+	if len(ap.calls) != 0 {
+		t.Fatalf("calls = %d, want the late target held for the next night while the apps update", len(ap.calls))
+	}
+	if _, done := l.ControlPlaneDone(); !done {
+		t.Fatal("ControlPlaneDone with the late target held = false, want still done")
+	}
+	l.ClearHold()
+	now = at(12, 3, 30)
+	l.Tick(context.Background())
+	if len(ap.calls) != 1 {
+		t.Fatalf("after the hold ended: calls = %d, want the target applied", len(ap.calls))
+	}
+}
+
 // While a hold is live, Run sleeps no longer than until the hold ends, or
 // until the window opens when that is sooner.
 func TestHoldWake(t *testing.T) {
