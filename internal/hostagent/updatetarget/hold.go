@@ -201,8 +201,12 @@ func (l *Loop) ControlPlaneDone() (time.Time, bool) {
 
 // settle marks tonight as a night whose stream B had nothing to start, when
 // the window is open. Called at the end of every tick that started nothing.
+// Only a tick whose source answered settles the night: an unreachable source,
+// a refused answer or no target says nothing about tonight's control plane, so
+// one DNS blip at 03:00 must not make a good target that comes a tick later
+// wait a whole night (applyControlPlane).
 func (l *Loop) settle(w Window, started bool) {
-	if started {
+	if started || l.Snapshot().Outcome != OutcomeOK {
 		return
 	}
 	now := l.now()

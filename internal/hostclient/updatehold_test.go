@@ -2,6 +2,7 @@ package hostclient
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -67,10 +68,13 @@ func TestUpdateHold(t *testing.T) {
 	}
 }
 
-// A host-agent with nothing to hold answers an error, which the brain logs.
+// A host-agent with nothing to hold answers 501 hold-unsupported, which the
+// client returns as ErrHoldUnsupported: the brain's apps then go without a
+// hold, where any other error makes them wait.
 func TestUpdateHold_Unsupported(t *testing.T) {
 	c := New(startHoldAgent(t, nil))
-	if _, err := c.SetUpdateHold(context.Background(), time.Now().Add(time.Minute)); err == nil {
-		t.Fatal("SetUpdateHold on a host-agent with no holder succeeded")
+	_, err := c.SetUpdateHold(context.Background(), time.Now().Add(time.Minute))
+	if !errors.Is(err, ErrHoldUnsupported) {
+		t.Fatalf("SetUpdateHold on a host-agent with no holder = %v, want ErrHoldUnsupported", err)
 	}
 }

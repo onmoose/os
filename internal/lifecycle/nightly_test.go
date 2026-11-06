@@ -7,11 +7,13 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/store"
@@ -478,20 +480,37 @@ func TestNightly_OldHostAgent(t *testing.T) {
 	}
 }
 
-// A host-agent that cannot hold (an older one) does not stop the app
-// updates, and a read that fails stops them until it works again.
+// A host-agent that knows the hold but did not take it makes the app
+// updates wait, since the OS switch could reboot the box in the middle of one.
+// An older host-agent (no control_plane_done_night on its read, and no hold
+// route) does not stop them. A read that fails stops them until it works
+// again.
 func TestNightly_HostAgentProblems(t *testing.T) {
 	sto := stockholm(t)
 	r := newNightRig(t, "Europe/Stockholm")
 	r.app(t, "a", 1, nil)
 	r.app(t, "b", 2, nil)
 	r.host.done("2026-11-07")
-	r.host.holdErr = errors.New("404 page not found")
-	if !r.step(time.Date(2026, 11, 7, 3, 10, 0, 0, sto)) {
-		t.Fatal("no update when host-agent cannot hold")
+	r.host.holdErr = errors.New("host-agent: connection reset")
+	if r.step(time.Date(2026, 11, 7, 3, 10, 0, 0, sto)) {
+		t.Fatal("an update ran although host-agent did not take the hold")
 	}
+	r.host.holdErr = nil
+	if !r.step(time.Date(2026, 11, 7, 3, 11, 0, 0, sto)) {
+		t.Fatal("no update once the hold was taken")
+	}
+
+	// An older host-agent: no done field, no hold route. One with no update
+	// loop answers 501 hold-unsupported the same way.
+	in := time.Date(2026, 11, 7, 3, 11, 30, 0, sto).UTC().Format(time.RFC3339)
+	r.host.target = protocol.UpdateTarget{State: protocol.UpdateTargetCurrent, AutoApply: true, CheckedAt: in, Window: "03:00-04:00", Zone: "Europe/Stockholm"}
+	r.host.holdErr = fmt.Errorf("%w: host-agent /v1/system/update-hold: 404 Not Found (host-agent-error)", hostclient.ErrHoldUnsupported)
+	if !r.step(time.Date(2026, 11, 7, 3, 12, 0, 0, sto)) {
+		t.Fatal("no update with an older host-agent that cannot hold")
+	}
+
 	r.host.readErr = errors.New("host-agent unreachable")
-	if r.step(time.Date(2026, 11, 7, 3, 11, 0, 0, sto)) {
+	if r.step(time.Date(2026, 11, 7, 3, 13, 0, 0, sto)) {
 		t.Fatal("an update ran with no update-target read")
 	}
 }

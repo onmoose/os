@@ -32,12 +32,14 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/store"
@@ -200,7 +202,7 @@ func (n *Nightly) Step(ctx context.Context) bool {
 		n.release(ctx)
 		return false
 	}
-	n.hold(ctx, now, nt)
+	held := n.hold(ctx, now, nt)
 	if now.Before(nt.opens) {
 		return false
 	}
@@ -210,6 +212,13 @@ func (n *Nightly) Step(ctx context.Context) bool {
 	if done, why := controlPlaneDone(t, nt); !done {
 		n.once("wait:"+nt.key+":"+why, slog.LevelInfo, "nightly updates: waiting for the control plane before the apps",
 			"night", nt.key, "step", why, "count", len(work))
+		return false
+	}
+	if !held {
+		// host-agent can hold the switch but did not take the hold this
+		// time, so the OS switch could reboot the box in the middle of the
+		// update. Wait for the next wake, a minute away (UPDATES.md # 7
+		// Reboots).
 		return false
 	}
 
@@ -273,25 +282,33 @@ func (n *Nightly) work(nightKey string) ([]store.Instance, error) {
 	return out, nil
 }
 
-// hold sets or renews the hold on the OS switch.
-func (n *Nightly) hold(ctx context.Context, now time.Time, nt night) {
+// hold sets or renews the hold on the OS switch. It reports whether the app
+// updates may go: host-agent took the hold, or it cannot hold the switch at
+// all (hostclient.ErrHoldUnsupported: an older host-agent, or one with no
+// update loop). A hold that failed this time says no.
+func (n *Nightly) hold(ctx context.Context, now time.Time, nt night) bool {
 	until := now.Add(protocol.UpdateHoldLease)
 	if until.After(nt.holdCap) {
 		until = nt.holdCap
 	}
 	if !until.After(now) {
-		return
+		return false
 	}
 	end, err := n.host.SetUpdateHold(ctx, until)
+	if errors.Is(err, hostclient.ErrHoldUnsupported) {
+		n.once("hold-unsupported", slog.LevelWarn, "nightly updates: this host-agent cannot hold the OS switch; app updates go without a hold", "err", err)
+		return true
+	}
 	if err != nil {
-		n.once("hold-err", slog.LevelWarn, "nightly updates: host-agent did not take the hold on the OS switch; app updates go on without it", "err", err)
-		return
+		n.once("hold-err", slog.LevelWarn, "nightly updates: host-agent did not take the hold on the OS switch; the app updates wait", "err", err)
+		return false
 	}
 	delete(n.said, "hold-err")
 	if n.holdState != holdHeld {
 		slog.Info("nightly updates: holding the OS switch for app updates", "night", nt.key, "until", end.Format(time.RFC3339))
 	}
 	n.holdState = holdHeld
+	return true
 }
 
 // keepHold renews the hold every tick while an update runs, which can take

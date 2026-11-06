@@ -302,6 +302,27 @@ func TestHold_LateTargetWaitsWhileAppsUpdate(t *testing.T) {
 	}
 }
 
+// A tick whose source did not answer does not settle the night: under a
+// hold, a good target that comes a tick after a blip still applies tonight.
+func TestHold_BlipDoesNotSettleTheNight(t *testing.T) {
+	for _, blip := range []error{errors.New("dns: no such host"), ErrNoTarget} {
+		ap := &fakeApplier{running: map[string]bool{}}
+		now := at(12, 3, 1)
+		src := &fakeSource{err: blip}
+		l := newLoop(src, fakeRunning{brain: brainRef, ui: uiRef}, ap, &now)
+		l.SetHold(now.Add(protocol.UpdateHoldLease))
+		l.Tick(context.Background())
+		later := goodTarget()
+		later.Version, later.BrainImage, later.BrainDigest = "v0.7.1", "ghcr.io/onmoose/brain@"+digest("e"), digest("e")
+		src.target, src.err = later, nil
+		now = at(12, 3, 9)
+		l.Tick(context.Background())
+		if len(ap.calls) != 1 {
+			t.Fatalf("after %v: calls = %d, want the target applied tonight", blip, len(ap.calls))
+		}
+	}
+}
+
 // While a hold is live, Run sleeps no longer than until the hold ends, or
 // until the window opens when that is sooner.
 func TestHoldWake(t *testing.T) {
