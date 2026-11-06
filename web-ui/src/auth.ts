@@ -212,6 +212,13 @@ export async function refreshCurrentUser() {
   }
 }
 
+// markUpdatePromptDismissed notes that the person closed the update prompt in
+// this session (#633). The brain keeps it on the session too (POST
+// /me/update-prompt/dismiss), so /me says the same after a reload.
+export function markUpdatePromptDismissed() {
+  if (currentUser.value) currentUser.value = { ...currentUser.value, update_prompt_dismissed: true };
+}
+
 export function useAuth() {
   return {
     currentUser: computed(() => currentUser.value),

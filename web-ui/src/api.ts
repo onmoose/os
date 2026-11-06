@@ -113,6 +113,9 @@ export type Exposure = Instance["exposure"];
 // AppUpdate is what the box knows about a new version of an installed app and
 // the last update that did not go through (UPDATES.md # 6, #631).
 export type AppUpdate = Instance["update"];
+// One piece of access a new version of an app asks for (#633). The words for
+// it are wantLines in installSteps.ts.
+export type AppAccessWant = Schemas["AppAccessWant"];
 export type Notification = Schemas["NotificationDTO"];
 export type AuditEvent = Schemas["AuditEventDTO"];
 // HealthIssue mirrors health.Issue (HEALTH.md # Issue shape) — the degraded-mode

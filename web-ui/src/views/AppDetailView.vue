@@ -92,6 +92,8 @@ const permissionIcons: Record<PermissionLine["kind"], unknown> = {
   gpu: Cpu,
   device: HardDrive,
   folder: Folder,
+  // Not on the install plan; the update lines have it (wantLines).
+  public_path: Globe,
 };
 
 // The split button's menu. Only admins outside single-user mode get the
