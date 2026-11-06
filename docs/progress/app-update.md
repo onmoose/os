@@ -1,0 +1,74 @@
+# Detect app updates, update one instance on request, and the auto-update toggle
+
+- **Status:** done
+- **Date:** 2026-11-06
+- **Specs touched:** `UPDATES.md` (# Auto-apply unless permissions expand, # Update mechanics per app step 6, # Pre-update snapshot # As built (#347), new # As built (#631), # Per-app auto-update toggle, # 6 Where updates appear, # 7 Compatibility matrix), `APP_LIFECYCLE.md` (# on-disk layout per instance, # reconciliation, # per-instance state machine, # update + rollback, # stop, start, uninstall, # concurrency), `APP_ISOLATION.md` (# User-namespace tiers), `APP_STORE.md` (the stored index-digest note), `BRAIN_UI_PROTOCOL.md` (the two routes, the job, the DTO, the event), `DASHBOARD.md` (# Tile, the app's settings page), `LOGGING.md` (`app.update`), `SERVICE_PROVISIONING.md` (# At app update), `DECISIONS.md` (2026-11-06), `docs/architecture.md`, `CLAUDE.md` (the `version`, `new_version` and `update_class` log fields)
+
+Closes #631, step 2 of the app-update work in #630. [pre-update-snapshot.md](pre-update-snapshot.md) (#347) built the snapshot, its restore and the 7-day cleanup, with no caller. This builds the caller: the box sees that the catalog has a new version of an installed app, sorts the update into a class, and updates one instance when a person asks, with a rollback to the old version on its old data when the new one fails. It also adds the per-app auto-update toggle, which the nightly window (#632) will read.
+
+## What was done
+
+- **The store** (`internal/store/updates.go`). Additive columns on `instances`: `auto_update_off` (default 0, so on for every instance, old rows too), the last check (`update_version`, `update_status`, `update_reason`), and the last update that did not go through (`update_failed_version`, `_kind`, `_message`, `_at`). A new table `instance_images_prev` holds the previous generation's pins, with `ON DELETE CASCADE`. `FinishInstanceUpdate` writes version, name, `running`, no check and no failure in one statement.
+- **The manifest.** `manifest.ErrUnsupportedManifestVersion` is the sentinel `Parse` returns for a `manifest_version` this brain cannot read. `manifest.CustomVersion` names the Door-2 version. The new files the brain keeps in the instance dir (`*.prev`, `update.json`) are reserved, so a `data_volumes` entry cannot name them.
+- **The catalog seam.** `catalog.OnChange` sets a callback the remote source runs after a sync that swapped in a new payload (not on a 304, not on a failed sync). `cmd/brain` sets it to run `lifecycle.Manager.CheckUpdates` on its own goroutine, and runs one check at startup. The catalog does not import lifecycle.
+- **The check** (`internal/lifecycle/updatecheck.go`). Versions only, never digests. A new version's manifest is loaded once and its class stored; a later check of the same version does not load it again. The one exception: a version parked as `needs_newer_moose` is looked at once more by each brain run, since this brain may be the newer moose. A Door-2 app is skipped. An app the catalog does not list keeps what was stored, because a brain that has not synced yet sees an empty catalog. One check runs at a time; a call while one runs makes it run once more.
+- **The classes** (`classifyUpdate`): `blocked` (a tier change through `tierKept`, the check behind `checkTierKept`; `service_user` turned on or off; a new required config field with no default and no value), `service_major` (an existing managed service to another kind or version), `needs_approval` (`widenedAccess`: internet, LAN, GPU, a new device, a new folder, read to write, pick-subfolder to whole, a new `access.public_paths` entry), else `available`. Each comes with a plain sentence.
+- **The transaction** (`internal/lifecycle/update.go`, `Manager.Update`). Under the instance lock and one of 3 shared install/update slots: load and classify, admit, write `updating`, pull (old version still running), the image-user check for the image tier, keep the previous generation, the "updating" splash, `compose stop`, `TakeSnapshot`, write the new manifest, compose, pins, config defaults, secrets and managed services, bind dirs, override and `.env`, `compose up -d`, wait healthy, flip the route, `FinishInstanceUpdate`. The health budget is `max(healthWait, start_period + 60s)`.
+- **Failures.** Before the stop: the row goes back to `running`, the failure is recorded, nothing else changed. At the stop or the snapshot: the old version is started again on its own files and data (`ErrSnapshotNoSpace` has its own message). After the new files are written: the rollback restores the snapshot, puts the `.prev` files and the previous pins back, drops the managed services, secrets and config defaults the new version added, and starts the old version. A good rollback ends `running` with the failure recorded; one that cannot bring the old version back ends `update_failed`.
+- **`update.json`** in the instance dir records how far an update got. `Reconcile` calls `recoverUpdates` first: an `updating` row with no record goes back to `running`; one with a record is undone like a rollback, its old version brought up, and the failure recorded as `interrupted`. A `Start` from `update_failed` finishes a rollback that did not finish before it starts the app.
+- **Images.** `inUseImageRefs` counts `instance_images_prev` too, and `Uninstall` removes the previous generation's images with the current ones. When an update replaces an older previous generation, or a rollback drops a failed version, those images are removed once nothing uses them.
+- **The global limit.** `Manager.heavy`, a semaphore of 3, taken by `install` and by `Update` for their whole run.
+- **The API** (`internal/api/appupdate.go`). `POST /api/v1/apps/{id}/update` → `202` with an `app-update` job; `409` with the stored sentence for no update, a non-`available` class, a stopped app, or a Door-2 app; `403` for a member on a household app. Audited as `app.update`: success, every job failure, and the `403` and `409` refusals. `PUT /api/v1/apps/{id}/auto-update` stores the toggle, shaped like `set-app-auto-restart` (not audited, for the same reason). The DTO gains `auto_update` and an `update` object (`available_version`, `status`, `reason`, `can_apply`, `failed_*`). `start-app` accepts `update_failed`. OpenAPI and the TS client are regenerated.
+- **Events.** State moves go through `emitState` (`updating`, then `running` or `update_failed`). A new `app.update_changed` event says a check or a failure changed what the box knows; the dashboard refetches apps on it.
+- **The dashboard.** The tile: a small arrow top-left (amber after a failed update) and an "Update available" or "Update failed" link; "Updating…" with no alert mark; `update_failed` shown and retried like `failed`. The app's page: an **Updates** section with the version, the new version or the reason, **Update to <version>**, the last failure, and the **Update it automatically** switch next to the automatic restart one. Activity names `app.update`.
+- **Caddy.** The splash has an "updating" page ("<app> is updating…", refreshes every 2 seconds).
+
+## How it maps to the specs
+
+- `UPDATES.md` # 4: detection by version (APP_STORE.md's index-digest note), the classes, "no snapshot, no update", the rollback, the toggle as stored. Step 6's budget is `max(120s, start_period + 60s)`, written into the spec. The window (#632), the approval (#633), the record and rollback button (#634) and the managed-database move (#635) are left out.
+- `UPDATES.md` # 7: an unsupported `manifest_version` parks the update as "needs a newer moose".
+- `APP_LIFECYCLE.md` # update + rollback: the real step order is now the spec (pull, stop, snapshot, then write), with crash recovery and the on-disk layout. # concurrency: the limit of 3 is built.
+- `APP_ISOLATION.md` # User-namespace tiers: the tier and the image-user checks run.
+- `DECISIONS.md` Door-2 flow: custom apps never update.
+
+## Design choices the specs did not settle
+
+These came from the maintainer's brief for this issue and are written into the specs.
+
+- **A rolled-back update ends `running`, not `update_failed`** (`DECISIONS.md` 2026-11-06). This refines the issue's wording ("ends ... in `update_failed`"): many paths read `running` as "the containers are up", and a rolled-back app is up. The failure is a record on the row. `update_failed` is for a rollback that could not bring the old version back.
+- **The previous generation is files next to the current ones plus a new pins table**, not a generation column, because `instance_images` has `(instance_id, service)` as its key.
+- **What blocks an update** includes a tier or identity change and a new required setting with no default, besides the issue's list. A new managed service is not a block: it is provisioned and dropped on rollback.
+- **An update needs a running app.** A stopped app gets `409` "Start the app before you update it", so a good update can be told from a broken one by its health.
+- **A new config field with a default gets the default**, as the install form prefills it, and loses it on a rollback.
+- **The image-user check compares bind-dir owners**, not services: it refuses only when a folder both versions use would need a new owner.
+- **Defaults for the tests.** `updateMargin` and `defaultStartPeriod` are fields, so the unit tests set them to 0 and keep `healthWait` as the only budget; `TestUpdateHealthBudget` checks the formula with the real values.
+- **The update's events.** The protocol's `update.available` example was a sketch; the built event is `app.update_changed`, a refetch trigger like the other app events.
+
+## Tests
+
+- `internal/store`: `TestAutoUpdateMigratesOnForAnOlderDatabase` (an old `instances` table gets the toggle on and no update or failure), `TestUpdateColumnsRoundTrip`, `TestPrevImagesCascade`.
+- `internal/catalog`: `TestRemoteOnChange` (one call per new payload, none on a 304 or a failed sync).
+- `internal/lifecycle` with the fakes (`update_test.go`): `TestUpdateGood` (version, manifest, pins, previous generation, snapshot, route; the pull runs before the stop), `TestUpdatePullFailureChangesNothing` (no stop, no up, files and pins unchanged), `TestUpdateHealthFailureRollsBack` (data, files, pins back; `running`; failure recorded; the failed image removed, the old one kept), `TestUpdateRollbackStartFailsIsUpdateFailed` (then Start runs the old version), `TestUpdateRestoreFailsKeepsRecordForRetry`, `TestUpdateNoSnapshotSpaceRestartsOld`, `TestUpdateRefusals` (internet, public path, folder, managed-service major, new required setting, tier change on a remapped daemon, `service_user` change), `TestUpdateUnsupportedManifestVersion` (and a newer brain run classifying it again), `TestUpdateNoUpdateAndDoor2` (same version, a Door-2 app, a stopped app), `TestUpdateImageUserChangeRefused` (refused after the pull, before the stop; the same user then updates), `TestUpdateNewManagedService` (kept on success, dropped with the new secret on rollback), `TestUpdateNewConfigDefault`, `TestUpdateKeepsSecrets`, `TestReconcileRecoversInterruptedUpdate`, `TestReconcileRecoversUpdateWithNoRecord`, `TestCheckUpdatesByVersionOnly` (a digest-only change is none; one load per version), `TestUpdateHealthBudget`, `TestHeavyLimit`, `TestUninstallAfterUpdateRemovesBothGenerations`.
+- `internal/api` (`appupdate_test.go`): `TestUpdateApp_Refusals409AreAudited` (six cases), `TestUpdateApp_Gates` (401, 403 audited, 404), `TestUpdateApp_RunsAJobAndAudits`, `TestSetAppAutoUpdate`, `TestAppUpdateDTO`.
+- **Real Docker** (`update_live_test.go`, build tag `dockerlive`): `go test ./internal/lifecycle/ -tags dockerlive -run TestLiveUpdate -v -timeout 900s`. `TestLiveUpdateFiles`: an alpine app at 1.0, a user file, an update to 2.0 (alpine 3.20 to 3.21) keeps the file; then a 3.0 that overwrites the file and never becomes healthy is rolled back, the cache shows 3.0 had changed the file, and 2.0 runs on the old file. `TestLiveUpdatePostgres`: the same with a managed Postgres 16; 3.0's migration runs (`UPDATE 2`, `CREATE TABLE`) before it fails, and after the rollback the rows and the table count are as before. Both passed on this machine.
+- Existing tests: none removed or weakened. `newTestEnv` now also sets the two update budget fields to 0, which only the update code reads.
+
+## Known gaps & deviations
+
+- **Nothing updates an app on its own yet.** The toggle is stored and shown; the nightly window that reads it is #632.
+- **The per-app network keeps its install-time `internet` setting.** A new version that turns `internet` off (a narrowing, so it auto-applies) still runs on a network with internet until it is reinstalled.
+- **Containers of a removed or added service can stay behind, stopped.** `compose up` with the new files does not remove services the new compose drops, and a rollback stops but does not remove the services the failed version added. They go at uninstall.
+- **Mail and AI bindings are not looked at.** A new version that drops mail support keeps its `MOOSE_MAIL_*` values; a new AI slot is left empty and shows as needs setup. `requires` groups and the fit check (`resources.recommended`) are not run again at update.
+- **The image-user check needs the old images in the local store.** If they were removed, the update is refused ("could not read who the new version runs as").
+- **A different version is an update, even an older one.** The check compares with `!=`, as the issue asks; a catalog that goes back a version offers it.
+- **A snapshot is pruned after 7 days even for an `update_failed` app.** A Start after that cannot finish the rollback and says so.
+- **A store write that fails after the new version is healthy rolls the update back**, because the row could not say what runs.
+- **The UI was type-checked and built (`make check-web`), not tried in a browser.** The real-Docker tests ran without the socket proxy and on a daemon with no remap.
+- **`app.update_changed` is a new event kind.** `BRAIN_UI_PROTOCOL.md` calls that an API-version change; the version was not bumped, as for the other kinds added since.
+
+## What's next
+
+- #632: the nightly window applies `available` updates of apps whose toggle is on, one at a time, holds the OS reboot until they are done, and stops after 3 failures of one version.
+- #633: the owner approves a `needs_approval` update; the approval is stored per version.
+- #634: Settings → Updates, the notifications, the rollback button within 7 days (it can use the `*.prev` files and `instance_images_prev`), and removing the previous images after 7 days.
+- #635: a managed database's major move during an update.

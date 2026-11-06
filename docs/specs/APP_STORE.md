@@ -118,7 +118,7 @@ What the box does with it (`APP_LIFECYCLE.md` # Locked: image digest pinning has
 - **`auth` is reserved.** A later catalog may add an optional `auth` field to a source, for a source that needs a login. This box knows no login, so it skips any source that sets `auth`.
 - **No `sources`, no change.** The box behaves exactly as before.
 
-**A stored pin may hold the older index digest.** A box that installed an app before the catalog switched to `amd64` digests stored the index digest. Nothing on the box compares a stored pin with the published one today: install pulls what the manifest promises, and an uninstall removes what the instance stored. When app update checks land (`UPDATES.md` # 4), they must not read that switch as a new version. They should compare by catalog version, or treat an index digest and the `amd64` entry inside it as the same image.
+**A stored pin may hold the older index digest.** A box that installed an app before the catalog switched to `amd64` digests stored the index digest. Nothing on the box compares a stored pin with the published one today: install pulls what the manifest promises, and an uninstall removes what the instance stored. The app update check (#631, `UPDATES.md` # 4 As built) compares by catalog version only and never by digest, so that switch never reads as a new version.
 
 ## Verification lives in the brain
 

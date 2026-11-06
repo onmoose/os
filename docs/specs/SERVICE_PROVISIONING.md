@@ -140,11 +140,13 @@ Per-app dumps mean per-app restore — restoring one app doesn't disturb others 
 
 #### At app update — same major version
 
-Same DB, same credentials. The pre-update snapshot dumps the database first, and a failed update restores it from that dump (`UPDATES.md` # Pre-update snapshot). Valkey is not dumped.
+Same DB, same credentials. The pre-update snapshot dumps the database first, and a failed update restores it from that dump (`UPDATES.md` # Pre-update snapshot). Valkey is not dumped. A managed service the new version declares and the old one did not is provisioned during the update, as at install, and dropped again when the update rolls back (#631).
 
 #### At app update — different major version (cross-version migration)
 
 When the new app version's manifest declares a different major (e.g., now needs Postgres 16 instead of 15):
+
+Not built yet (#635): the update check classifies such an update as `service_major`, and the box does not apply it (`UPDATES.md` # 4 As built (#631)).
 
 1. Brain auto-takes a backup of the app's current DB before doing anything.
 2. Brain spins up the new major version instance if not already running.

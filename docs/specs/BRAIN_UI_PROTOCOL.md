@@ -30,6 +30,7 @@ GET  /api/v1/apps/:id                      → instance detail (with needs_setup
 GET  /api/v1/apps/:id/config               → user-supplied config values (APP_MANIFEST.md # D4; secret fields masked), the app's AI bindings, and what is missing
 PUT  /api/v1/apps/:id/config               → update config values and AI bindings; rewrites override + restarts the app
 PUT  /api/v1/apps/:id/auto-restart         → turn the automatic restart of an unresponsive app on or off ({"enabled": bool}; owner or admin; echoes the app, whose auto_restart field reports it; a change of the setting also ends the brain giving up on the app, #620; HEALTH.md # Automatic restart, #598)
+PUT  /api/v1/apps/:id/auto-update          → turn the box's own updates of an app on or off ({"enabled": bool}; owner or admin; echoes the app, whose auto_update field reports it; on for every app by default; the nightly window that reads it is #632; UPDATES.md # Per-app auto-update toggle, #631)
 POST /api/v1/users                         → create user
 DELETE /api/v1/users/:id                   → delete a user (admin, elevation required); may start a job for the apps their accounts reached (see Pattern B)
 GET  /api/v1/settings/network              → current network config
@@ -222,6 +223,8 @@ POST /api/v1/jobs/j_a4f7b2/cancel
   { "job_id": "j_a4f7b2", "status": "cancelling" }
 ```
 
+**App update (#631, `UPDATES.md` # 4 As built).** `POST /api/v1/apps/{id}/update` (no body) → `202` with an `app-update` job, the same plumbing as `start-app`. Owner, or an admin for a household app (a member on a household app is `403`). It works whether the app's `auto_update` is on or off. It answers `409` with a plain sentence when the box has nothing it can apply: no update known, one that needs the owner's approval, a managed-database move, a manifest this moose cannot read, a blocked one (the reason the check stored), a stopped app, or a Door-2 app. The job's steps are `checking_update`, `resolving_digests`, `keeping_previous`, `stopping`, `taking_snapshot`, `writing_instance_dir`, `provisioning_services`, `generating_override`, `compose_up`, `waiting_healthy`, `flipping_route`. A failed job's `error.message` is a plain sentence that also says whether the old version was put back. Every request is audited as `app.update`, refusals included (`LOGGING.md`). The app's DTO (`GET /api/v1/apps`, `GET /api/v1/apps/{id}`) carries `auto_update` and an `update` object: `available_version`, `status` (`available`, `needs_approval`, `service_major`, `needs_newer_moose`, `blocked`), `reason`, `can_apply`, and the last failed update as `failed_version`, `failed_kind`, `failed_message`, `failed_at`. `state` may also be `updating` and `update_failed` (`APP_LIFECYCLE.md` # per-instance state machine), and `start-app` accepts `update_failed`.
+
 Status values: `running`, `completed`, `failed`, `cancelled`, `cancelling`, `stalled` — same vocabulary as host-agent jobs. On `completed`, the response carries `result`. On `failed`, an `error` with `code` + `message`.
 
 **Owner-scoping on install (`DASHBOARD.md` # the apps model).** `scope` is `"household"` or `"personal"`. Members may only install `personal` instances (a `household` request is `403`); admins choose, defaulting to `household` when omitted. The owner is always the calling user — there is no "install on behalf of" parameter. Installed instances carry `owner_user_id`, `owner_username`, and `scope` in the `GET /api/v1/apps` / `:id` DTO; `GET /api/v1/apps` is scoped to the caller (own personal + all household; admins see all), and `GET /api/v1/apps/:id` returns `404` (not `403`) for a personal instance the caller doesn't own, so existence isn't disclosed.
@@ -312,6 +315,8 @@ GET /api/v1/events
   event: health.issue_cleared
   data: {"id":"data-drive-missing"}
 ```
+
+As built (#631), the update events are one kind, `app.update_changed` with `{"instance_id": "..."}`: the update check found or cleared a version, or an update failure was recorded. Like the other app events it is a refetch trigger; the version and the class are on the app's DTO. The update's state moves (`updating`, back to `running`, `update_failed`) are `app.state_changed`. The `update.available` example above is the older sketch.
 
 One long-lived stream per dashboard tab. Carries typed events for: app lifecycle transitions, updates available / applied / failed, drift surfaces, peer / mesh events (when mesh ships), Tier-2 service state changes, **health issues raised / cleared / updated** (see `HEALTH.md`), user notifications.
 
