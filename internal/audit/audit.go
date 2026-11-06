@@ -83,6 +83,11 @@ const (
 	// back up, false when the restart failed.
 	ActionAppAutoRestart = "app.restart.auto"
 
+	// App update (UPDATES.md # 4, #631). An update changes what code the app
+	// runs, so it is elevation-class like install: it audits success, every
+	// failure of the job, and every refusal (403, 409).
+	ActionAppUpdate = "app.update"
+
 	// Device access (AUTH.md # Device access). Enabling SSH on an account changes
 	// who can get a shell on the box, so it is elevation-class and audits failure
 	// as well as success — the Activity view has to be able to answer "did someone

@@ -27,7 +27,7 @@ type Instance struct {
 	Name        string
 	Slug        string
 	Version     string
-	State       string // installing | running | stopped | failed | uninstalling
+	State       string // installing | running | stopped | failed | updating | update_failed | uninstalling
 	MDNSName    string
 	OwnerUserID string
 	Scope       string // ScopeHousehold | ScopePersonal
@@ -75,7 +75,17 @@ type Instance struct {
 	// which tells the brain to forget the restarts it made before.
 	AutoRestarts    int
 	LastAutoRestart time.Time
-	CreatedAt       time.Time
+	// AutoUpdateOff turns off the automatic update of the app (UPDATES.md #
+	// Per-app auto-update toggle, #631). The zero value is on, so every
+	// instance, new or from before the column, is updated by default. Off
+	// means the box never updates the app on its own; a person can still
+	// update it by hand.
+	AutoUpdateOff bool
+	// Update is what the last update check found for this instance, and
+	// UpdateFailure the last update that did not go through (updates.go).
+	Update        UpdateCheck
+	UpdateFailure UpdateFailure
+	CreatedAt     time.Time
 }
 
 const (
@@ -189,6 +199,14 @@ func (s *Store) migrate() error {
 			auto_restart_off INTEGER NOT NULL DEFAULT 0,
 			auto_restarts INTEGER NOT NULL DEFAULT 0,
 			auto_restart_last_at INTEGER NOT NULL DEFAULT 0,
+			auto_update_off INTEGER NOT NULL DEFAULT 0,
+			update_version TEXT NOT NULL DEFAULT '',
+			update_status TEXT NOT NULL DEFAULT '',
+			update_reason TEXT NOT NULL DEFAULT '',
+			update_failed_version TEXT NOT NULL DEFAULT '',
+			update_failed_kind TEXT NOT NULL DEFAULT '',
+			update_failed_message TEXT NOT NULL DEFAULT '',
+			update_failed_at INTEGER NOT NULL DEFAULT 0,
 			created_at  INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS instance_images (
@@ -196,6 +214,15 @@ func (s *Store) migrate() error {
 			service     TEXT NOT NULL,
 			image       TEXT NOT NULL,
 			digest      TEXT NOT NULL,
+			PRIMARY KEY (instance_id, service),
+			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
+		);
+		CREATE TABLE IF NOT EXISTS instance_images_prev (
+			instance_id TEXT NOT NULL,
+			service     TEXT NOT NULL,
+			image       TEXT NOT NULL,
+			digest      TEXT NOT NULL,
+			ref         TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (instance_id, service),
 			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
 		);
@@ -478,6 +505,16 @@ func (s *Store) migrate() error {
 		// No automatic restart yet for every app from before the columns (#620).
 		{"instances", "auto_restarts", "ALTER TABLE instances ADD COLUMN auto_restarts INTEGER NOT NULL DEFAULT 0"},
 		{"instances", "auto_restart_last_at", "ALTER TABLE instances ADD COLUMN auto_restart_last_at INTEGER NOT NULL DEFAULT 0"},
+		// Automatic update is on for every app from before the column, and no
+		// update was found or tried yet (#631).
+		{"instances", "auto_update_off", "ALTER TABLE instances ADD COLUMN auto_update_off INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_version", "ALTER TABLE instances ADD COLUMN update_version TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_status", "ALTER TABLE instances ADD COLUMN update_status TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_reason", "ALTER TABLE instances ADD COLUMN update_reason TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_failed_version", "ALTER TABLE instances ADD COLUMN update_failed_version TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_failed_kind", "ALTER TABLE instances ADD COLUMN update_failed_kind TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_failed_message", "ALTER TABLE instances ADD COLUMN update_failed_message TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_failed_at", "ALTER TABLE instances ADD COLUMN update_failed_at INTEGER NOT NULL DEFAULT 0"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
 		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
 		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
@@ -1105,7 +1142,7 @@ func (s *Store) Delete(id string) error {
 	return err
 }
 
-const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, created_at`
+const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, auto_update_off, update_version, update_status, update_reason, update_failed_version, update_failed_kind, update_failed_message, update_failed_at, created_at`
 
 func (s *Store) Get(id string) (Instance, error) {
 	return scan(s.db.QueryRow(
@@ -1758,8 +1795,10 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scan(row scanner) (Instance, error) {
 	var i Instance
-	var created, pendingRecreate, autoRestartOff, lastAutoRestart int64
-	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &autoRestartOff, &i.AutoRestarts, &lastAutoRestart, &created)
+	var created, pendingRecreate, autoRestartOff, lastAutoRestart, autoUpdateOff, failedAt int64
+	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &autoRestartOff, &i.AutoRestarts, &lastAutoRestart,
+		&autoUpdateOff, &i.Update.Version, &i.Update.Status, &i.Update.Reason,
+		&i.UpdateFailure.Version, &i.UpdateFailure.Kind, &i.UpdateFailure.Message, &failedAt, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, ErrNotFound
 	}
@@ -1770,6 +1809,10 @@ func scan(row scanner) (Instance, error) {
 	i.AutoRestartOff = autoRestartOff != 0
 	if lastAutoRestart != 0 {
 		i.LastAutoRestart = time.Unix(lastAutoRestart, 0)
+	}
+	i.AutoUpdateOff = autoUpdateOff != 0
+	if failedAt != 0 {
+		i.UpdateFailure.At = time.Unix(failedAt, 0)
 	}
 	i.CreatedAt = time.Unix(created, 0)
 	return i, nil

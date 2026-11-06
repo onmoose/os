@@ -5,6 +5,7 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -345,7 +346,10 @@ type Storage struct {
 // path may not be one of them or sit under one: a snapshot of them would hold
 // the brain's own files, and a restore would write over them.
 var reservedInstancePaths = []string{
-	"manifest.yml", "compose.yml", "compose.override.yml", "compose.override.yml.prev", ".env", "snapshots",
+	"manifest.yml", "compose.yml", "compose.override.yml", ".env", "snapshots",
+	// The previous generation an app update keeps, and its progress record
+	// (APP_LIFECYCLE.md # update + rollback).
+	"manifest.yml.prev", "compose.yml.prev", "compose.override.yml.prev", ".env.prev", "update.json",
 }
 
 // CleanStoragePath reads one data_volumes or cache_volumes entry and returns
@@ -770,7 +774,27 @@ var folderTaxonomy = map[string]bool{
 // when a manifest explicitly sets `listed: false` (APP_MANIFEST.md # A).
 func (m *Manifest) IsListed() bool { return m.Listed == nil || *m.Listed }
 
+// SupportedManifestVersion is the one manifest_version this brain reads.
+const SupportedManifestVersion = 1
+
+// ErrUnsupportedManifestVersion is the Parse error for a manifest whose
+// manifest_version this brain does not read. The app update path tells it
+// apart from other load errors: such an update is parked with "moose needs to
+// update first" until a newer brain arrives (UPDATES.md # 7 Compatibility
+// matrix). Every other Parse error is a broken manifest.
+var ErrUnsupportedManifestVersion = errors.New("unsupported manifest_version")
+
 func Parse(data []byte) (*Manifest, error) {
+	// Read manifest_version first, on its own. A newer manifest_version may
+	// change the shape of other fields, so a full parse could fail with a
+	// type error or a missing field before the version is ever checked, and
+	// the update path would see a broken manifest, not one for a newer moose.
+	var head struct {
+		ManifestVersion int `yaml:"manifest_version"`
+	}
+	if err := yaml.Unmarshal(data, &head); err == nil && head.ManifestVersion != 0 && head.ManifestVersion != SupportedManifestVersion {
+		return nil, fmt.Errorf("%w: manifest_version %d (this build supports %d)", ErrUnsupportedManifestVersion, head.ManifestVersion, SupportedManifestVersion)
+	}
 	var m Manifest
 	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
@@ -801,8 +825,8 @@ func (m *Manifest) validate() error {
 	case m.MainPort == 0:
 		return missing("main_port")
 	}
-	if m.ManifestVersion != 1 {
-		return fmt.Errorf("unsupported manifest_version %d (this build supports 1)", m.ManifestVersion)
+	if m.ManifestVersion != SupportedManifestVersion {
+		return fmt.Errorf("%w: manifest_version %d (this build supports %d)", ErrUnsupportedManifestVersion, m.ManifestVersion, SupportedManifestVersion)
 	}
 	// Slugs must be strict kebab-case so they stay parseable inside the
 	// `<slug>--<user>` personal-instance scheme (DASHBOARD.md # instance

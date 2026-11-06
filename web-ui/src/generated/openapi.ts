@@ -178,6 +178,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{id}/auto-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Turn the automatic update of an app on or off (owner or admin) */
+        put: operations["set-app-auto-update"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/{id}/config": {
         parameters: {
             query?: never;
@@ -275,6 +292,23 @@ export interface paths {
         put?: never;
         /** Stop a running app instance (job) */
         post: operations["stop-app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Update an app to the catalog's new version (job; owner or admin) */
+        post: operations["update-app"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1293,6 +1327,18 @@ export interface components {
             readonly $schema?: string;
             secrets: components["schemas"]["AppSecretDTO"][] | null;
         };
+        AppUpdateDTO: {
+            available_version?: string;
+            can_apply: boolean;
+            /** Format: date-time */
+            failed_at?: string;
+            failed_kind?: string;
+            failed_message?: string;
+            failed_version?: string;
+            reason?: string;
+            /** @enum {string} */
+            status?: "available" | "needs_approval" | "service_major" | "needs_newer_moose" | "blocked";
+        };
         AppUseDTO: {
             instance_id: string;
             name: string;
@@ -1747,6 +1793,7 @@ export interface components {
              */
             readonly $schema?: string;
             auto_restart: boolean;
+            auto_update: boolean;
             /** @enum {string} */
             exposure: "restricted" | "public";
             icon_glyph?: string;
@@ -1764,6 +1811,7 @@ export interface components {
             short_description?: string;
             slug: string;
             state: string;
+            update: components["schemas"]["AppUpdateDTO"];
             url: string;
             version: string;
         };
@@ -2204,6 +2252,15 @@ export interface components {
              * Format: uri
              * @description A URL to the JSON Schema for this object.
              * @example https://example.com/schemas/Set-app-auto-restartRequest.json
+             */
+            readonly $schema?: string;
+            enabled: boolean;
+        };
+        "Set-app-auto-updateRequest": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Set-app-auto-updateRequest.json
              */
             readonly $schema?: string;
             enabled: boolean;
@@ -2938,6 +2995,41 @@ export interface operations {
             };
         };
     };
+    "set-app-auto-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Set-app-auto-updateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstanceDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "get-app-config": {
         parameters: {
             query?: never;
@@ -3137,6 +3229,37 @@ export interface operations {
         };
     };
     "stop-app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "update-app": {
         parameters: {
             query?: never;
             header?: never;

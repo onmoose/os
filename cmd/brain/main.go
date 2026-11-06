@@ -336,6 +336,13 @@ func main() {
 	// Start the remote catalog's background sync loop (an immediate first sync,
 	// then one per interval), bound to the process-lifetime poll context. No-op for
 	// the appliance's baked disk catalog, so it's called unconditionally.
+	//
+	// App updates (UPDATES.md # 4, #631): each sync that swapped in a new
+	// payload makes the brain compare every installed app's version with the
+	// catalog's, and so does this start. The check loads a new manifest over
+	// the network, so it runs off the sync loop.
+	cat.OnSync(func() { go life.CheckUpdates(pollCtx) })
+	go life.CheckUpdates(pollCtx)
 	cat.StartRefresh(pollCtx)
 	pullSystemHealth(pollCtx, host, healthMgr, auditor, notifier, bus)
 	go systemHealthPollLoop(pollCtx, host, healthMgr, auditor, notifier, bus, cfg.healthPollPeriod)

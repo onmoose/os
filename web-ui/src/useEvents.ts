@@ -27,7 +27,7 @@ export function useEvents() {
 
   onMounted(() => {
     es = new EventSource("/api/v1/events", { withCredentials: true });
-    for (const kind of ["app.state_changed", "app.installed", "app.uninstalled"]) {
+    for (const kind of ["app.state_changed", "app.installed", "app.uninstalled", "app.update_changed"]) {
       es.addEventListener(kind, invalidateApps);
     }
     for (const kind of ["notification.created", "notification.updated"]) {

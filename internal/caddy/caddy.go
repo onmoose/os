@@ -380,7 +380,7 @@ func forwardAuthHandler(fa ForwardAuthConfig) map[string]any {
 // given lifecycle state (APP_LIFECYCLE.md # register early, with a splash).
 // The brain owns the route from install-time so the hostname never returns
 // connection-refused; the upstream is flipped to the real container once
-// healthy. State is one of "starting" | "stopped" | "failed".
+// healthy. State is one of "starting" | "updating" | "stopped" | "failed".
 func (c *Client) AddSplashRoute(ctx context.Context, instanceID, host, appName, state string) error {
 	splash := func(headers map[string]any) []any {
 		return []any{map[string]any{
@@ -563,6 +563,9 @@ func splashHTML(appName, state string) string {
 		msg = appName + " is stopped."
 	case "failed":
 		msg = appName + " failed to start."
+	case "updating":
+		msg = appName + " is updating…"
+		refresh = `<meta http-equiv="refresh" content="2">`
 	default: // starting
 		msg = appName + " is starting up…"
 		refresh = `<meta http-equiv="refresh" content="2">`

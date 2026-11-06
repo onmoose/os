@@ -71,7 +71,9 @@ const stopped = computed(() => app.value?.state === "stopped");
 // `failed` shares the Start control as a click-to-retry (#154): the brain runs
 // the identical Start transaction from `stopped` or `failed`. The logs below are
 // the failure reason, so a retry from here isn't blind.
-const failed = computed(() => app.value?.state === "failed");
+// `update_failed` (#631) is retried the same way: an update could not put the
+// old version back, and Start finishes that first.
+const failed = computed(() => app.value?.state === "failed" || app.value?.state === "update_failed");
 
 function invalidate() {
   qc.invalidateQueries({ queryKey: ["apps"] });
@@ -111,8 +113,41 @@ const uninstall = useMutation({
   },
 });
 
+// ── Updates (UPDATES.md # 4 and # 6, #631) ───────────────────────────────────
+// The brain finds a new version in the catalog and says whether it can apply
+// it (update.can_apply) or why not (update.reason). Update runs the same
+// transaction as the box's own updates, as a job: the app is down for a
+// moment, and a version that does not start is rolled back.
+const appUpdate = computed(() => app.value?.update ?? null);
+const updateApp = useMutation({
+  mutationFn: async () => awaitJob(await api.post<Job>(`/apps/${id.value}/update`)),
+  onSettled: invalidate,
+});
+const updating = computed(() => app.value?.state === "updating" || updateApp.isPending.value);
+const customApp = computed(() => app.value?.version === "custom");
+const updateSummary = computed(() => {
+  const u = appUpdate.value;
+  if (customApp.value) return "This app was added by hand, so moose has no newer version of it.";
+  if (updating.value) return "Updating. The app is down for a moment.";
+  if (!u?.available_version) return "This is the newest version in the app store.";
+  if (u.status === "available") return `Version ${u.available_version} is available.`;
+  return `Version ${u.available_version} is in the app store. ${u.reason ?? ""}`.trim();
+});
+const failedAt = computed(() => {
+  const at = appUpdate.value?.failed_at;
+  return at ? new Date(at).toLocaleString() : "";
+});
+
+// The box's own updates of this app. On by default; off means the user
+// updates it here, by hand.
+const autoUpdate = computed<boolean>(() => app.value?.auto_update ?? true);
+const setAutoUpdate = useMutation({
+  mutationFn: (enabled: boolean) => api.put<Instance>(`/apps/${id.value}/auto-update`, { enabled }),
+  onSettled: invalidate,
+});
+
 const busy = computed(
-  () => stop.isPending.value || start.isPending.value || uninstall.isPending.value,
+  () => stop.isPending.value || start.isPending.value || uninstall.isPending.value || updateApp.isPending.value,
 );
 
 // ── Access mode (#306/#307, ENVIRONMENT.md # Per-app owner-only access) ───────
@@ -668,6 +703,62 @@ const saveConfig = useMutation({
         </div>
         <p v-if="setAutoRestart.isError.value" class="text-sm text-destructive">
           Couldn't change automatic restart: {{ (setAutoRestart.error.value as Error)?.message }}
+        </p>
+      </section>
+
+      <!-- Updates (#631): the version, a new one if the app store has it, the
+           Update button when the brain can apply it, the last update that did
+           not go through, and the automatic update switch. -->
+      <section v-if="canControl" class="space-y-2">
+        <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Updates</h2>
+        <div class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">Version {{ app.version }}</div>
+            <div class="text-xs text-muted-foreground">{{ updateSummary }}</div>
+          </div>
+          <Button
+            v-if="appUpdate?.can_apply"
+            size="sm"
+            :disabled="busy || updating"
+            @click="updateApp.mutate()"
+          >
+            {{ updating ? "Updating…" : `Update to ${appUpdate.available_version}` }}
+          </Button>
+          <div
+            v-if="appUpdate?.failed_version && !updating"
+            class="flex w-full items-start gap-2 border-t border-border pt-3 text-xs text-amber-700"
+          >
+            <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              The update to {{ appUpdate.failed_version }} did not go through<template v-if="failedAt"> ({{ failedAt }})</template>.
+              {{ appUpdate.failed_message }}
+            </span>
+          </div>
+        </div>
+        <p v-if="updateApp.isError.value" class="text-sm text-destructive">
+          Couldn't update: {{ (updateApp.error.value as Error)?.message }}
+        </p>
+        <div v-if="!customApp" class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3">
+          <div class="min-w-0">
+            <div class="text-sm font-medium">Update it automatically</div>
+            <div class="text-xs text-muted-foreground">
+              When this is on, moose installs new versions of the app by itself. When it is off, you update the app here.
+            </div>
+          </div>
+          <SwitchRoot
+            :model-value="autoUpdate"
+            aria-label="Update the app automatically"
+            :disabled="setAutoUpdate.isPending.value"
+            class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-border bg-muted outline-none transition-colors data-[state=checked]:border-accent data-[state=checked]:bg-accent disabled:cursor-default"
+            @update:model-value="(on: boolean) => setAutoUpdate.mutate(on)"
+          >
+            <SwitchThumb
+              class="pointer-events-none block size-4 translate-x-0.5 rounded-full bg-card shadow transition-transform data-[state=checked]:translate-x-[1.125rem]"
+            />
+          </SwitchRoot>
+        </div>
+        <p v-if="setAutoUpdate.isError.value" class="text-sm text-destructive">
+          Couldn't change automatic update: {{ (setAutoUpdate.error.value as Error)?.message }}
         </p>
       </section>
 

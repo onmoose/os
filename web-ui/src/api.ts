@@ -110,6 +110,9 @@ export type Instance = Schemas["InstanceDTO"];
 // the brain DOES declare this one as an enum, so the generated schema carries the
 // literal union — derive from it rather than re-typing the values here.
 export type Exposure = Instance["exposure"];
+// AppUpdate is what the box knows about a new version of an installed app and
+// the last update that did not go through (UPDATES.md # 6, #631).
+export type AppUpdate = Instance["update"];
 export type Notification = Schemas["NotificationDTO"];
 export type AuditEvent = Schemas["AuditEventDTO"];
 // HealthIssue mirrors health.Issue (HEALTH.md # Issue shape) — the degraded-mode

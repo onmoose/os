@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-06 — A rolled-back app update ends in `running`; `update_failed` means the old version is down (#631)
+
+**Previously:** the per-instance state machine in `APP_LIFECYCLE.md` sent a failed update to `update_failed` and then "→ running (after rollback)", and the update transaction said a rollback ends with "mark `update_failed`". Issue #631 said the same: a failed update "ends with the old version running on its old data, in `update_failed`".
+**Now:** after a **good rollback** (the old version is healthy again on its old data) the row is `running`. The failure is kept apart from the state, in the instance's update-failure columns (the version that failed, the step, a short message, the time), which drive the tile badge and the list #634 shows, and a later good update clears them. **`update_failed` is the state when the rollback itself fails** and the old version is not running. It is treated like `failed`: the "failed" splash, and Start is the retry, which first finishes a rollback that did not finish. A brain that stops mid-update leaves an `updating` row, and the startup pass puts the old version back, so no row stays `updating`.
+**Why:** many paths read `running` as "the containers are up": the startup pass brings a `running` app back after a reboot, Stop is legal only from `running`, the health and automatic-restart loops watch only `running` apps, and the dashboard opens them. A rolled-back app is up. Parked in `update_failed` it would be treated as down: after a reboot the startup pass would not bring it back, it could not be stopped, and it would get no health checks. Keeping "the update failed" as a record next to the state gives the dashboard the same signal without breaking those paths.
+**Affected docs:** `APP_LIFECYCLE.md` (# per-instance state machine, # update + rollback, # on-disk layout per instance, # reconciliation, # stop, start, uninstall, # concurrency), `UPDATES.md` (# 4 As built (#631), # 6, # 7 Compatibility matrix), `APP_ISOLATION.md` (# User-namespace tiers), `APP_STORE.md`, `BRAIN_UI_PROTOCOL.md`, `DASHBOARD.md` (# Tile, Settings), `LOGGING.md`, `docs/architecture.md`.
+
+---
+
 ## 2026-10-13 — An app too big for the box is refused at install; a tight one needs "Install anyway" (#599)
 
 **Previously:** `resources.recommended` was advice only, never a gate (`APP_MANIFEST.md` # B2, `APP_ISOLATION.md` # Resource limits). The specs promised an install-time capacity check that was never built, and the brain did not even parse the block. The GPU gate in `APP_ISOLATION.md` # GPU was the one hard capacity refusal, and it named `recommended` as the case that is not one.

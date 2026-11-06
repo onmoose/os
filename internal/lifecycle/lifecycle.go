@@ -88,6 +88,11 @@ type FolderMount struct {
 	// (DASHBOARD.md # Folder grants carry an explicit destination path). Empty for
 	// a store (Door-1) mount, which keeps the fixed `/moose/<folder>` convention.
 	Target string
+
+	// hostPath is the host path an app update read back from the old override
+	// (update.go # mountsFromOverride). When set it is the bind source as it
+	// is, so an update binds exactly what the install bound.
+	hostPath string
 }
 
 // isolation is the resolved per-instance identity + folder binds writeOverride
@@ -121,6 +126,9 @@ type isolation struct {
 // shared tree, /srv/moose/shared in production) for a shared source, narrowed by
 // Subfolder when present.
 func (it *isolation) hostSource(mt FolderMount) string {
+	if mt.hostPath != "" {
+		return mt.hostPath
+	}
 	base := filepath.Join(it.sharedBase, folderDir[mt.Folder])
 	if mt.Source == sourcePersonal {
 		base = filepath.Join(it.home, folderDir[mt.Folder])
@@ -227,21 +235,74 @@ type Manager struct {
 	// MigrateCaddyAdminSocket (caddysocket.go). nil in production, where it
 	// is caddy.Client.WaitReady.
 	caddyAdminWait func(ctx context.Context, addr string) error
+
+	// heavy is the global limit on installs and updates running at once
+	// (APP_LIFECYCLE.md # concurrency): each takes a slot for its whole run.
+	// nil means no limit (a Manager built by hand in a test).
+	heavy chan struct{}
+
+	// updateMargin and defaultStartPeriod make the health budget of an
+	// update: the app's health_probe start_period (defaultStartPeriod when it
+	// declares none) plus updateMargin, and never less than healthWait
+	// (update.go # updateHealthBudget). Tests set both to 0 so the budget is
+	// healthWait.
+	updateMargin       time.Duration
+	defaultStartPeriod time.Duration
+
+	// catalogEntry and catalogLoad read the catalog for the update check and
+	// the update (updatecheck.go). The catalog's own Entry and Load in
+	// production; tests count the loads and script what they return.
+	catalogEntry func(id string) (catalog.Entry, error)
+	catalogLoad  func(ctx context.Context, id string) (*manifest.Manifest, []byte, error)
+
+	// checkMu guards checkRunning and checkAgain: one update check runs at a
+	// time, and a check asked for while one runs makes it run once more.
+	checkMu      sync.Mutex
+	checkRunning bool
+	checkAgain   bool
+	// parkedSeen is, per instance, the version this brain run already found
+	// it cannot read. Only the running check touches it.
+	parkedSeen map[string]string
+}
+
+// maxHeavyOps is how many installs and updates may run at once
+// (APP_LIFECYCLE.md # concurrency), to bound the load on a small box.
+const maxHeavyOps = 3
+
+// acquireHeavy takes one of the maxHeavyOps slots, waiting for one to free
+// up. The returned func gives it back.
+func (m *Manager) acquireHeavy(ctx context.Context) (func(), error) {
+	if m.heavy == nil {
+		return func() {}, nil
+	}
+	select {
+	case m.heavy <- struct{}{}:
+		return func() { <-m.heavy }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd CaddyDriver, docker DockerDriver, bus *events.Bus, stateDir string) *Manager {
-	return &Manager{
+	m := &Manager{
 		store: st, catalog: cat, host: host, caddy: cd, docker: docker,
 		admit: admission.Check, bus: bus, stateDir: stateDir,
 		sharedRoot: defaultSharedRoot,
 		chown:      os.Lchown,
 		diskSpace:  statDiskSpace,
 		healthWait: healthWaitTimeout, healthPoll: 2 * time.Second,
-		serviceReadyWait: serviceReadyTimeout,
-		instLocks:        map[string]*sync.Mutex{},
-		profile:          profile.Appliance,
-		brainUpstream:    defaultBrainUpstream,
+		serviceReadyWait:   serviceReadyTimeout,
+		instLocks:          map[string]*sync.Mutex{},
+		profile:            profile.Appliance,
+		brainUpstream:      defaultBrainUpstream,
+		heavy:              make(chan struct{}, maxHeavyOps),
+		updateMargin:       updateHealthMargin,
+		defaultStartPeriod: manifest.DefaultStartPeriod,
 	}
+	if cat != nil {
+		m.catalogEntry, m.catalogLoad = cat.Entry, cat.Load
+	}
+	return m
 }
 
 // defaultBrainUpstream is the compose service address the box Caddy dials for the
@@ -539,6 +600,12 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 			progress(s)
 		}
 	}
+	// At most maxHeavyOps installs and updates run at once.
+	release, err := m.acquireHeavy(ctx)
+	if err != nil {
+		return store.Instance{}, err
+	}
+	defer release()
 
 	// A mail-provider election is only meaningful for an app that declares
 	// mail support — the API validates this against the install plan, so this
@@ -826,32 +893,8 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// container runs as uid inside, and base for the caps tier, the
 	// container's own root. In the image tier each service's dirs go to base
 	// plus its image user's ids. The host tier keeps the real ids.
-	dirsBySvc, err := bindDirsByService(composeBytes)
-	if err != nil {
-		return rollback(fmt.Errorf("parse compose volumes: %w", err))
-	}
-	owners, err := iso.bindDirOwners(dirsBySvc)
-	if err != nil {
-		return rollback(fmt.Errorf("bind dir owner: %w", err))
-	}
-	relDirs := make([]string, 0, len(owners))
-	for rel := range owners {
-		relDirs = append(relDirs, rel)
-	}
-	sort.Strings(relDirs)
-	for _, rel := range relDirs {
-		ownUID, ownGID := owners[rel].uid, owners[rel].gid
-		dir := filepath.Join(m.instanceDir(id), filepath.FromSlash(rel))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return rollback(fmt.Errorf("create bind dir %q: %w", rel, err))
-		}
-		if err := m.chown(dir, ownUID, ownGID); err != nil {
-			if os.Geteuid() == 0 {
-				return rollback(fmt.Errorf("chown bind dir %q: %w", rel, err))
-			}
-			slog.Warn("bind dir chown skipped under unprivileged brain",
-				"instance_id", id, "dir", rel, "uid", ownUID, "gid", ownGID, "err", err)
-		}
+	if err := m.prepareBindDirs(id, composeBytes, iso); err != nil {
+		return rollback(err)
 	}
 
 	// Prepare each elected PERSONAL folder source so the app can write user
@@ -1070,6 +1113,12 @@ func (m *Manager) Uninstall(ctx context.Context, id string) error {
 	if err != nil {
 		slog.Warn("uninstall: read pinned images for reclaim", "instance_id", id, "err", err)
 	}
+	// The previous generation an update kept goes too (#631).
+	prevImages, err := m.store.GetInstancePrevImages(id)
+	if err != nil {
+		slog.Warn("uninstall: read previous image pins for reclaim", "instance_id", id, "err", err)
+	}
+	images = append(images, prevImages...)
 	// Same for managed-service grants: capture before the cascade so the per-app
 	// database+role can be dropped after the app's containers are down
 	// (SERVICE_PROVISIONING.md # At app uninstall). The shared service instance is
@@ -1181,8 +1230,15 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if inst.State != "stopped" && inst.State != "failed" {
+	if inst.State != "stopped" && inst.State != "failed" && inst.State != "update_failed" {
 		return fmt.Errorf("%w (state=%s)", ErrNotStartable, inst.State)
+	}
+	// An update whose rollback failed left its record: finish the rollback
+	// first, so the retry starts the old version on its old data (update.go).
+	if inst.State == "update_failed" {
+		if err := m.finishRollback(ctx, inst); err != nil {
+			return err
+		}
 	}
 	if inst.AutoRestarts > 0 || !inst.LastAutoRestart.IsZero() {
 		if err := m.store.ResetInstanceAutoRestarts(id, true); err != nil {
@@ -1446,6 +1502,40 @@ func (m *Manager) publishHost(ctx context.Context, inst store.Instance) (string,
 	return host, avahiOK
 }
 
+// prepareBindDirs creates every private bind dir of the compose and gives it
+// the owner the instance's isolation calls for (install step 6, and the
+// update). See the comment at its call in install for why.
+func (m *Manager) prepareBindDirs(id string, composeBytes []byte, iso isolation) error {
+	dirsBySvc, err := bindDirsByService(composeBytes)
+	if err != nil {
+		return fmt.Errorf("parse compose volumes: %w", err)
+	}
+	owners, err := iso.bindDirOwners(dirsBySvc)
+	if err != nil {
+		return fmt.Errorf("bind dir owner: %w", err)
+	}
+	relDirs := make([]string, 0, len(owners))
+	for rel := range owners {
+		relDirs = append(relDirs, rel)
+	}
+	sort.Strings(relDirs)
+	for _, rel := range relDirs {
+		ownUID, ownGID := owners[rel].uid, owners[rel].gid
+		dir := filepath.Join(m.instanceDir(id), filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create bind dir %q: %w", rel, err)
+		}
+		if err := m.chown(dir, ownUID, ownGID); err != nil {
+			if os.Geteuid() == 0 {
+				return fmt.Errorf("chown bind dir %q: %w", rel, err)
+			}
+			slog.Warn("bind dir chown skipped under unprivileged brain",
+				"instance_id", id, "dir", rel, "uid", ownUID, "gid", ownGID, "err", err)
+		}
+	}
+	return nil
+}
+
 // releaseServiceIdentity returns an allocated app-service identity to the
 // host's band. Best-effort like dropServiceGrants: a failed release leaks one
 // band slot (the host-side moose-svc account stays for manual cleanup) and is
@@ -1490,7 +1580,8 @@ func (m *Manager) reclaimImages(ctx context.Context, instanceID string, images [
 }
 
 // inUseImageRefs is the set of pinned `repo@sha256:…` references held by all
-// currently-installed instances — the "don't remove" guard for reclaimImages.
+// currently-installed instances, current and previous generation: the "don't
+// remove" guard for reclaimImages.
 func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 	insts, err := m.store.List()
 	if err != nil {
@@ -1502,7 +1593,13 @@ func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, img := range imgs {
+		// The previous generation an update keeps is still in use: a rollback
+		// puts it back (APP_LIFECYCLE.md # update + rollback).
+		prev, err := m.store.GetInstancePrevImages(inst.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, img := range append(imgs, prev...) {
 			refs[storedRef(img)] = true
 		}
 	}
@@ -1601,13 +1698,19 @@ func (m *Manager) WaitDocker(ctx context.Context, poll time.Duration) error {
 // is what fixes "brain restart drops routes" (EnsureServer resets the route
 // list at startup, then this re-adds them). Idempotent: safe to run repeatedly.
 //
-// Skeleton scope: handles running/stopped. Interrupted installing/uninstalling
-// states (crash mid-transaction) are left for the install-transaction rollback
-// and a future dangerous-op-aware pass.
+// An interrupted update (an `updating` row) is put back to the old version
+// first (recoverUpdates), and an update_failed row gets its "failed" splash.
+// Interrupted installing/uninstalling states (crash mid-transaction) are left
+// for the install-transaction rollback and a future dangerous-op-aware pass.
 func (m *Manager) Reconcile(ctx context.Context) error {
 	// Re-assert the shared managed-service instances first, so an app drifted to
 	// "no containers" comes back up against a live database.
 	m.reconcileServices(ctx)
+
+	// An update the brain did not finish (it stopped in the middle) is put
+	// back to the old version first, so the passes below see a running or an
+	// update_failed row, never an updating one (update.go).
+	m.recoverUpdates(ctx)
 
 	desired, err := m.store.List()
 	if err != nil {
@@ -1625,7 +1728,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		seen[inst.ID] = true
 		// An app installed before #608 is still on moose-ingress. Move it off
 		// before anything below runs compose up on its override.
-		if inst.State == "running" || inst.State == "stopped" || inst.State == "failed" {
+		if inst.State == "running" || inst.State == "stopped" || inst.State == "failed" || inst.State == "update_failed" {
 			if _, err := m.migrateOffIngress(ctx, inst.ID); err != nil {
 				slog.Warn("reconcile: move app off the control-plane network",
 					"instance_id", inst.ID, "err", err)
@@ -1721,7 +1824,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				}
 			}
 			splashes = append(splashes, inst)
-		case "failed":
+		case "failed", "update_failed":
 			splashes = append(splashes, inst)
 		}
 	}
@@ -1929,13 +2032,13 @@ func (m *Manager) restoreRoute(ctx context.Context, id string) bool {
 			slog.Warn("caddy restore: app route", "instance_id", id, "host", host, "upstream", upstream, "err", err)
 			return false
 		}
-	case "stopped", "failed":
+	case "stopped", "failed", "update_failed":
 		host := m.routeHost(inst)
 		appName := inst.Name
 		if man, err := m.loadInstanceManifest(id); err == nil {
 			appName = man.Name
 		}
-		if err := m.caddy.AddSplashRoute(ctx, id, host, appName, inst.State); err != nil {
+		if err := m.caddy.AddSplashRoute(ctx, id, host, appName, splashState(inst.State)); err != nil {
 			slog.Warn("caddy restore: splash route", "instance_id", id, "host", host, "err", err)
 			return false
 		}
@@ -1982,10 +2085,19 @@ func (m *Manager) reassertSplash(ctx context.Context, inst store.Instance) {
 	if man, err := m.loadInstanceManifest(inst.ID); err == nil {
 		appName = man.Name
 	}
-	if err := m.caddy.AddSplashRoute(ctx, inst.ID, host, appName, inst.State); err != nil {
+	if err := m.caddy.AddSplashRoute(ctx, inst.ID, host, appName, splashState(inst.State)); err != nil {
 		slog.Warn("reconcile: caddy splash route",
 			"instance_id", inst.ID, "host", host, "err", err)
 	}
+}
+
+// splashState is the splash a stopped or failed row's route shows. An update
+// whose rollback failed shows the "failed" page, as a failed install does.
+func splashState(state string) string {
+	if state == "update_failed" {
+		return "failed"
+	}
+	return state
 }
 
 func (m *Manager) teardownOrphan(ctx context.Context, id string) {

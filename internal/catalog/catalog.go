@@ -487,6 +487,19 @@ func (c *Catalog) StartRefresh(ctx context.Context) {
 	}
 }
 
+// OnSync sets fn to run after every sync of a remote catalog that reached the
+// catalog service, a 304 included, and never after a failed one. Running it on
+// a 304 too is what lets a check that failed last time try again. The brain uses it to look for app updates (UPDATES.md # 4, #631):
+// lifecycle reads the catalog, so the catalog cannot call into lifecycle, and
+// this callback is the seam between them. fn runs on the sync loop, so it
+// must return quickly. A disk-backed catalog never changes, so this is a
+// no-op there.
+func (c *Catalog) OnSync(fn func()) {
+	if r, ok := c.src.(*remoteSource); ok {
+		r.onSync.Store(&fn)
+	}
+}
+
 // Entry is the store-facing summary of one available app. It carries exactly what
 // the browse grid needs to render a card without a second fetch (APP_STORE.md #
 // Catalog schema): the identity, the one-liner, the categories, and an icon URL.

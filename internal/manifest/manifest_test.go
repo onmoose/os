@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -633,6 +634,25 @@ main_port: 80
 	_, err := Parse(src)
 	if err == nil || !strings.Contains(err.Error(), "manifest_version") {
 		t.Fatalf("want manifest_version error, got %v", err)
+	}
+}
+
+// A manifest_version 2 document whose other fields changed shape (a field
+// renamed, one turned into a map) is still known as a newer manifest, not a
+// broken one, so the update path can park it for a newer moose.
+func TestParseNewerManifestWithAnotherShape(t *testing.T) {
+	src := []byte(`
+id: x
+manifest_version: 2
+name: X
+version: "2"
+compose: c.yml
+main: {service: x, port: 80}
+permissions: [internet]
+`)
+	_, err := Parse(src)
+	if !errors.Is(err, ErrUnsupportedManifestVersion) {
+		t.Fatalf("Parse = %v, want ErrUnsupportedManifestVersion", err)
 	}
 }
 
