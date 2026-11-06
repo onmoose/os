@@ -842,10 +842,10 @@ func TestBrowseURLEscapesEnv(t *testing.T) {
 	}
 }
 
-// TestRemoteOnChange: the change callback runs once per new payload, never on
-// a 304 or a failed sync, so the brain looks for app updates only when the
-// catalog really moved (#631).
-func TestRemoteOnChange(t *testing.T) {
+// TestRemoteOnSync: the callback runs after every sync that reached the
+// catalog service, a 304 included, so an update check that failed gets another
+// try. It never runs after a failed sync.
+func TestRemoteOnSync(t *testing.T) {
 	cp := newFakeCP(t, testApps())
 	srv := cp.server()
 	defer srv.Close()
@@ -853,7 +853,7 @@ func TestRemoteOnChange(t *testing.T) {
 	c := NewRemote(RemoteOptions{BaseURL: srv.URL, Environment: "appliance", AssetCacheDir: t.TempDir()})
 	r := c.src.(*remoteSource)
 	calls := 0
-	c.OnChange(func() { calls++ })
+	c.OnSync(func() { calls++ })
 
 	if err := r.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -864,8 +864,8 @@ func TestRemoteOnChange(t *testing.T) {
 	if err := r.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 {
-		t.Fatalf("a 304 sync made %d calls, want still 1", calls)
+	if calls != 2 {
+		t.Fatalf("after a 304 sync: %d calls, want 2", calls)
 	}
 	cp.mu.Lock()
 	cp.failSync = true
@@ -873,8 +873,8 @@ func TestRemoteOnChange(t *testing.T) {
 	if err := r.syncOnce(context.Background()); err == nil {
 		t.Fatal("want a failed sync")
 	}
-	if calls != 1 {
-		t.Fatalf("a failed sync made %d calls, want still 1", calls)
+	if calls != 2 {
+		t.Fatalf("a failed sync made a call: %d calls, want still 2", calls)
 	}
 	apps := testApps()
 	apps[0].Version = "9.9"
@@ -885,7 +885,7 @@ func TestRemoteOnChange(t *testing.T) {
 	if err := r.syncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
-		t.Fatalf("a new payload made %d calls in all, want 2", calls)
+	if calls != 3 {
+		t.Fatalf("after a new payload: %d calls in all, want 3", calls)
 	}
 }

@@ -341,7 +341,7 @@ func main() {
 	// payload makes the brain compare every installed app's version with the
 	// catalog's, and so does this start. The check loads a new manifest over
 	// the network, so it runs off the sync loop.
-	cat.OnChange(func() { go life.CheckUpdates(pollCtx) })
+	cat.OnSync(func() { go life.CheckUpdates(pollCtx) })
 	go life.CheckUpdates(pollCtx)
 	cat.StartRefresh(pollCtx)
 	pullSystemHealth(pollCtx, host, healthMgr, auditor, notifier, bus)

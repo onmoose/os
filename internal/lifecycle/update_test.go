@@ -777,6 +777,47 @@ func TestCheckUpdatesByVersionOnly(t *testing.T) {
 	}
 }
 
+// TestCheckUpdatesSkipsAMovedRow: the check loads the new manifest with no
+// lock held, so an update may finish, or another operation may hold the app,
+// while it loads. Then it stores nothing, and the next check tries again.
+func TestCheckUpdatesSkipsAMovedRow(t *testing.T) {
+	e := newTestEnv(t)
+	inst := installUp(t, e, "")
+	ctx := context.Background()
+	e.publish(t, "2.0", upImage2, upDigest2, "")
+
+	// An update to 2.0 finishes while the check loads 2.0's manifest.
+	e.m.catalogLoad = func(ctx context.Context, id string) (*manifest.Manifest, []byte, error) {
+		if err := e.store.FinishInstanceUpdate(inst.ID, "2.0", inst.Name); err != nil {
+			t.Fatal(err)
+		}
+		return e.cat.Load(ctx, id)
+	}
+	e.m.CheckUpdates(ctx)
+	if r := e.row(t, inst.ID); r.Version != "2.0" || r.Update != (store.UpdateCheck{}) {
+		t.Fatalf("after an update finished mid-check: version %s, check %+v, want 2.0 and no update", r.Version, r.Update)
+	}
+
+	// Another operation holds the app while the check loads: nothing is
+	// stored, and the next check stores the result.
+	e.publish(t, "3.0", upImage2, upDigest2, "")
+	var unlock func()
+	e.m.catalogLoad = func(ctx context.Context, id string) (*manifest.Manifest, []byte, error) {
+		unlock = e.m.lockInstance(inst.ID)
+		return e.cat.Load(ctx, id)
+	}
+	e.m.CheckUpdates(ctx)
+	unlock()
+	if r := e.row(t, inst.ID); r.Update != (store.UpdateCheck{}) {
+		t.Fatalf("lock held: check %+v, want nothing stored", r.Update)
+	}
+	e.m.catalogLoad = e.cat.Load
+	e.m.CheckUpdates(ctx)
+	if r := e.row(t, inst.ID); r.Update.Version != "3.0" || r.Update.Status != store.UpdateAvailable {
+		t.Fatalf("next check: %+v, want 3.0 available", r.Update)
+	}
+}
+
 func TestUpdateHealthBudget(t *testing.T) {
 	m := &Manager{healthWait: healthWaitTimeout, updateMargin: updateHealthMargin, defaultStartPeriod: manifest.DefaultStartPeriod}
 	if got := m.updateHealthBudget(&manifest.Manifest{}); got != 120*time.Second {

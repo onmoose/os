@@ -9,8 +9,10 @@ package lifecycle
 // for an app does not fetch it again.
 //
 // The catalog cannot call into lifecycle (lifecycle reads the catalog), so
-// cmd/brain asks the catalog to call CheckUpdates after each sync that swapped
-// in a new payload (catalog.OnChange), and once at startup.
+// cmd/brain asks the catalog to call CheckUpdates after every sync that
+// reached the catalog service (catalog.OnSync), and once at startup. A version
+// already classified is skipped, so a sync that changed nothing costs no
+// manifest fetch, and a check that failed is tried again at the next sync.
 
 import (
 	"context"
@@ -100,8 +102,9 @@ func (m *Manager) checkUpdatesOnce(ctx context.Context) {
 		newMan, _, err := m.catalogLoad(ctx, inst.ManifestID)
 		if errors.Is(err, manifest.ErrUnsupportedManifestVersion) {
 			m.parkedSeen[inst.ID] = entry.Version
-			m.setUpdateCheck(inst, needsNewerMoose(entry.Version))
-			found++
+			if m.storeCheck(inst, needsNewerMoose(entry.Version)) {
+				found++
+			}
 			continue
 		}
 		if err != nil {
@@ -131,13 +134,40 @@ func (m *Manager) checkUpdatesOnce(ctx context.Context) {
 			continue
 		}
 		check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base)
-		m.setUpdateCheck(inst, check)
+		if !m.storeCheck(inst, check) {
+			continue
+		}
 		found++
 		slog.Info("update found", "instance_id", inst.ID, "manifest_id", inst.ManifestID, "version", inst.Version, "new_version", check.Version, "update_class", check.Status)
 	}
 	if found > 0 {
 		slog.Info("update check done", "count", found)
 	}
+}
+
+// storeCheck stores a check's result for inst, read before the check loaded
+// the new manifest. The check takes no lock while it loads, so an update or an
+// uninstall may have run since. storeCheck takes the instance's lock only if it
+// is free, reads the row again, and stores nothing when the row moved on: an
+// operation holds the lock, the row is gone, the installed version changed, or
+// the app is now being installed, updated or removed. The next sync checks
+// again. It reports whether it stored the result.
+func (m *Manager) storeCheck(inst store.Instance, check store.UpdateCheck) bool {
+	unlock, ok := m.tryLockInstance(inst.ID)
+	if !ok {
+		return false
+	}
+	defer unlock()
+	cur, err := m.store.Get(inst.ID)
+	if err != nil || cur.Version != inst.Version {
+		return false
+	}
+	switch cur.State {
+	case "installing", "uninstalling", "updating":
+		return false
+	}
+	m.setUpdateCheck(cur, check)
+	return true
 }
 
 func needsNewerMoose(version string) store.UpdateCheck {

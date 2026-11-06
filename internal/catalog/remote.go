@@ -135,9 +135,10 @@ type remoteSource struct {
 	// started guards startRefresh so a repeat call can't spawn a second sync loop.
 	started atomic.Bool
 
-	// onChange is called after a sync swapped in a payload that differs from
-	// the one before (OnChange). nil until cmd/brain sets it.
-	onChange atomic.Pointer[func()]
+	// onSync is called after every sync that reached the catalog service,
+	// a 304 included, and never after a failed one (OnSync). nil until
+	// cmd/brain sets it.
+	onSync atomic.Pointer[func()]
 
 	// assetLocks collapses concurrent cache-miss fetches of the same asset: a
 	// per-asset mutex serializes the check-fetch-write so N simultaneous requests
@@ -332,7 +333,10 @@ func (r *remoteSource) syncOnce(ctx context.Context) error {
 	}
 	defer drain(resp)
 	if resp.StatusCode == http.StatusNotModified {
-		return nil // nothing changed since the last sync
+		// Nothing changed since the last sync, but the callback still runs:
+		// an update check that failed last time gets another try.
+		r.callOnSync()
+		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("catalog: fetch browse payload: unexpected status %s", resp.Status)
@@ -356,11 +360,16 @@ func (r *remoteSource) syncOnce(ctx context.Context) error {
 	r.mu.Unlock()
 	if newETag != prev {
 		slog.Info("catalog: synced browse payload", "apps", len(f.Apps), "version", f.Version)
-		if fn := r.onChange.Load(); fn != nil {
-			(*fn)()
-		}
 	}
+	r.callOnSync()
 	return nil
+}
+
+// callOnSync runs the OnSync callback, if one is set.
+func (r *remoteSource) callOnSync() {
+	if fn := r.onSync.Load(); fn != nil {
+		(*fn)()
+	}
 }
 
 // quoteETag wraps a version token as a strong ETag, so the box's If-None-Match

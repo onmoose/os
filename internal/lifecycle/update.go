@@ -766,6 +766,9 @@ func (m *Manager) endBeforeStop(inst store.Instance, rec updateRecord, kind, msg
 // its own files and data.
 func (m *Manager) restartAfterStop(ctx context.Context, inst store.Instance, oldMan *manifest.Manifest, rec updateRecord, kind, msg string, cause error) error {
 	slog.Warn("app update failed; starting the old version again", "instance_id", inst.ID, "version", rec.From, "new_version", rec.To, "step", kind, "err", cause)
+	// The old version is stopped: start it again even when the caller's
+	// context is gone, as rollbackUpdate does.
+	ctx = context.WithoutCancel(ctx)
 	m.finishRecord(inst.ID, rec)
 	if err := m.startOld(ctx, inst, oldMan); err != nil {
 		m.endUpdateFailed(ctx, inst, oldMan, rec.To, kind, msg+". The old version did not start again either", err)
