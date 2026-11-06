@@ -58,6 +58,15 @@ type DockerDriver interface {
 	// DECISIONS.md 2026-06-14). --env-file carries the service superuser password
 	// out of host argv; --rm removes the container on exit.
 	RunOneOff(ctx context.Context, image, network, envFile string, args []string) (string, error)
+	// RunOneOffStream is RunOneOff with the client's stdout written to stdout
+	// and, when stdin is not nil, stdin fed to the client (`docker run --rm -i`).
+	// The pre-update snapshot uses it to stream a database dump out of the
+	// one-shot client and back into it on restore, so the dump never sits in
+	// the brain's memory and never needs a bind mount the client's remapped
+	// user could not write (UPDATES.md # Pre-update snapshot). The client's
+	// stderr comes back as the string, for the error message. Like RunOneOff it
+	// needs only the proxy's CONTAINERS + POST families (create, start, attach).
+	RunOneOffStream(ctx context.Context, image, network, envFile string, args []string, stdin io.Reader, stdout io.Writer) (string, error)
 	// ContainerHealth reads a container's healthcheck status by name
 	// (`docker inspect -f {{.State.Health.Status}}`): "healthy", "starting",
 	// "unhealthy", or "none" when the container declares no healthcheck. Used to
@@ -274,6 +283,21 @@ func (cliDocker) RunOneOff(ctx context.Context, image, network, envFile string, 
 	full := append([]string{"run", "--rm", "--network", network, "--env-file", envFile, image}, args...)
 	out, err := exec.CommandContext(ctx, "docker", full...).CombinedOutput()
 	return string(out), err
+}
+
+func (cliDocker) RunOneOffStream(ctx context.Context, image, network, envFile string, args []string, stdin io.Reader, stdout io.Writer) (string, error) {
+	full := []string{"run", "--rm"}
+	if stdin != nil {
+		full = append(full, "-i")
+	}
+	full = append(append(full, "--network", network, "--env-file", envFile, image), args...)
+	cmd := exec.CommandContext(ctx, "docker", full...)
+	var stderr bytes.Buffer
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
 }
 
 func (cliDocker) ContainerHealth(ctx context.Context, container string) (string, error) {

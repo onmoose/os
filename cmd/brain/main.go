@@ -383,6 +383,13 @@ func main() {
 	}
 	go notificationPruneLoop(pollCtx, st, cfg.notifyPrunePeriod)
 
+	// Drop pre-update snapshots older than 7 days (UPDATES.md # Pre-update
+	// snapshot): once at boot, then hourly. The brain has no scheduler, so this
+	// is a plain loop like the notification prune above. It skips an app whose
+	// lock is held, so it never removes a snapshot an update is using.
+	life.PruneSnapshots(time.Now())
+	go snapshotPruneLoop(pollCtx, life, snapshotPrunePeriod)
+
 	// Locus-C version check (HEALTH.md # Detector catalog): reconcile
 	// version-mismatch against host-agent's reported agent_version, once at
 	// startup (the first handshake) then on the same loose poll cadence.
@@ -930,6 +937,26 @@ func notificationPruneLoop(ctx context.Context, st *store.Store, interval time.D
 			if err := st.PruneNotifications(time.Now()); err != nil {
 				slog.Warn("notification prune failed; continuing", "err", err)
 			}
+		}
+	}
+}
+
+// snapshotPrunePeriod is how often the brain looks for pre-update snapshots
+// past their 7 days. Hourly keeps a snapshot at most an hour past its time, and
+// a pass reads only one small folder per app.
+const snapshotPrunePeriod = time.Hour
+
+// snapshotPruneLoop runs lifecycle.Manager.PruneSnapshots on a ticker. A pass
+// logs its own errors and never stops the loop.
+func snapshotPruneLoop(ctx context.Context, life *lifecycle.Manager, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			life.PruneSnapshots(time.Now())
 		}
 	}
 }

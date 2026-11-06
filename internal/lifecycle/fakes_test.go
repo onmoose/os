@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -95,6 +96,12 @@ type fakeDocker struct {
 	// fails). When both are set the error wins.
 	containerHealth    string
 	containerHealthErr error
+
+	// runStream drives RunOneOffStream. Default (nil) writes "dump:<last arg>"
+	// to stdout and drains stdin into streamed, so a snapshot test can check
+	// that a restore fed back the bytes the dump wrote.
+	runStream func(image, network, envFile string, args []string, stdin io.Reader, stdout io.Writer) (string, error)
+	streamed  []string
 
 	// usernsRemap is what UsernsRemap reports: whether the daemon runs with
 	// userns-remap. The zero value is no remap, like the dev loop's Docker.
@@ -252,6 +259,32 @@ func (f *fakeDocker) RunOneOff(_ context.Context, image, network, envFile string
 	f.record("RunOneOff", image, network, envFile, strings.Join(args, " "))
 	if f.runOneOff != nil {
 		return f.runOneOff(image, network, envFile, args)
+	}
+	// The snapshot's size query (dumpEstimate) reads a number back.
+	if q := strings.Join(args, " "); strings.Contains(q, "pg_database_size") || strings.Contains(q, "information_schema.tables") {
+		return "0", nil
+	}
+	return "", nil
+}
+
+func (f *fakeDocker) RunOneOffStream(_ context.Context, image, network, envFile string, args []string, stdin io.Reader, stdout io.Writer) (string, error) {
+	f.record("RunOneOffStream", image, network, envFile, strings.Join(args, " "))
+	if f.runStream != nil {
+		return f.runStream(image, network, envFile, args, stdin, stdout)
+	}
+	if stdin != nil {
+		b, err := io.ReadAll(stdin)
+		if err != nil {
+			return "", err
+		}
+		f.mu.Lock()
+		f.streamed = append(f.streamed, string(b))
+		f.mu.Unlock()
+	}
+	if stdout != nil && len(args) > 0 {
+		if _, err := io.WriteString(stdout, "dump:"+args[len(args)-1]); err != nil {
+			return "", err
+		}
 	}
 	return "", nil
 }

@@ -6,6 +6,7 @@ package manifest
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -69,9 +70,10 @@ type Manifest struct {
 	// (Door-2 always, Door-1 until the catalog publishes a digest).
 	Images map[string]ImageRef `yaml:"images,omitempty"`
 
-	// Storage holds the author's on-disk hints (APP_MANIFEST.md # Storage). v1
-	// reads only estimated_size — hoisted verbatim into Footprint; any other
-	// keys (e.g. data_volumes) live in the compose, not parsed here.
+	// Storage holds the author's on-disk hints (APP_MANIFEST.md # Storage):
+	// estimated_size, hoisted verbatim into Footprint, and the data_volumes and
+	// cache_volumes lists the pre-update snapshot reads (UPDATES.md #
+	// Pre-update snapshot). admission.CheckManifest checks the two lists.
 	Storage Storage `yaml:"storage,omitempty"`
 
 	// Resources is the memory and CPU the author recommends (APP_MANIFEST.md #
@@ -321,11 +323,66 @@ func (r *ImageRef) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// Storage is the author's on-disk hint block (APP_MANIFEST.md # Storage). v1
-// parses only estimated_size — a human-readable size string ("10GB") hoisted
-// verbatim into the catalog footprint; the brain does no unit math on it there.
+// Storage is the author's on-disk hint block (APP_MANIFEST.md # Storage).
+// EstimatedSize is a human-readable size string ("10GB") hoisted verbatim into
+// the catalog footprint; the brain does no unit math on it there.
+//
+// DataVolumes and CacheVolumes are paths relative to the instance dir, written
+// the way the compose writes its binds (./data/index). The pre-update snapshot
+// keeps the data volumes minus the cache volumes nested in them (UPDATES.md #
+// Pre-update snapshot). Parse keeps them as written; admission.CheckManifest
+// checks their shape and that they do not overlap, and CleanStoragePath is the
+// one place their form is read. tier and app_managed_user_content are not
+// modelled yet.
 type Storage struct {
-	EstimatedSize string `yaml:"estimated_size,omitempty" json:"estimated_size,omitempty"`
+	EstimatedSize string   `yaml:"estimated_size,omitempty" json:"estimated_size,omitempty"`
+	DataVolumes   []string `yaml:"data_volumes,omitempty" json:"-"`
+	CacheVolumes  []string `yaml:"cache_volumes,omitempty" json:"-"`
+}
+
+// reservedInstancePaths are the names the brain keeps for itself in the
+// instance dir (APP_LIFECYCLE.md # on-disk layout per instance). A storage
+// path may not be one of them or sit under one: a snapshot of them would hold
+// the brain's own files, and a restore would write over them.
+var reservedInstancePaths = []string{
+	"manifest.yml", "compose.yml", "compose.override.yml", "compose.override.yml.prev", ".env", "snapshots",
+}
+
+// CleanStoragePath reads one data_volumes or cache_volumes entry and returns
+// it as a clean, slash-separated path relative to the instance dir ("./data/x/"
+// becomes "data/x"). The error says, in plain words, why the path cannot be
+// used: it is empty, absolute, uses a variable, leaves the instance dir, is the
+// instance dir itself, or names a file the brain keeps there.
+func CleanStoragePath(raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	switch {
+	case p == "":
+		return "", fmt.Errorf("is empty")
+	case strings.HasPrefix(p, "/"):
+		return "", fmt.Errorf("is an absolute path; write it relative to the app's folder, like ./data/index")
+	case strings.Contains(p, "$"):
+		return "", fmt.Errorf("uses a variable; write it relative to the app's folder, like ./data/index")
+	case strings.Contains(p, `\`):
+		return "", fmt.Errorf("contains a backslash; use / between folders")
+	}
+	clean := path.Clean(p)
+	if clean == "." {
+		return "", fmt.Errorf("is the whole app folder; name the folders inside it, like ./data")
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("leaves the app's folder")
+	}
+	first, _, _ := strings.Cut(clean, "/")
+	if slices.Contains(reservedInstancePaths, first) {
+		return "", fmt.Errorf("names %s, which moose keeps for itself in the app's folder", first)
+	}
+	return clean, nil
+}
+
+// PathWithin reports whether path p is dir or sits under it. Both are clean,
+// slash-separated paths as CleanStoragePath returns them.
+func PathWithin(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 // Resources is the manifest's resources block. Only recommended exists: there
