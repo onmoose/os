@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/onmoose/os/internal/audit"
+	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
@@ -161,7 +162,7 @@ func TestSetAppAutoUpdate(t *testing.T) {
 	if row, _ := s.store.Get(id); row.AutoUpdateOff {
 		t.Fatal("a new app has automatic update off")
 	}
-	if dto := s.toDTO(mustGet(t, s, id), "", nil); !dto.AutoUpdate {
+	if dto := s.toDTO(context.Background(), mustGet(t, s, id), "", nil); !dto.AutoUpdate {
 		t.Fatal("DTO auto_update = false for a new app")
 	}
 	out, err := putAutoUpdate(s, memberCtx("u_owner"), id, false)
@@ -192,16 +193,16 @@ func TestAppUpdateDTO(t *testing.T) {
 		Update:        store.UpdateCheck{Version: "2.0", Status: store.UpdateAvailable},
 		UpdateFailure: store.UpdateFailure{Version: "1.9", Kind: store.UpdateFailedHealth, Message: "did not start", At: at},
 	}
-	d := appUpdateDTO(i)
+	d := appUpdateDTO(auth.Identity{}, i)
 	if !d.CanApply || d.AvailableVersion != "2.0" || d.FailedKind != "health" || d.FailedAt == nil || !d.FailedAt.Equal(at) {
 		t.Fatalf("dto = %+v", d)
 	}
 	i.State = "stopped"
-	if appUpdateDTO(i).CanApply {
+	if appUpdateDTO(auth.Identity{}, i).CanApply {
 		t.Error("a stopped app can apply an update")
 	}
 	i.State, i.Update.Status = "running", store.UpdateNeedsApproval
-	if appUpdateDTO(i).CanApply {
+	if appUpdateDTO(auth.Identity{}, i).CanApply {
 		t.Error("an update that needs approval can be applied")
 	}
 }
@@ -224,15 +225,15 @@ func TestAppUpdateDTO_Paused(t *testing.T) {
 		Update:        store.UpdateCheck{Version: "2.0", Status: store.UpdateAvailable},
 		UpdateFailure: store.UpdateFailure{Version: "2.0", Kind: store.UpdateFailedHealth, Count: 2},
 	}
-	if d := appUpdateDTO(i); d.Paused || d.FailedCount != 2 {
+	if d := appUpdateDTO(auth.Identity{}, i); d.Paused || d.FailedCount != 2 {
 		t.Fatalf("two failures: %+v, want not paused with a count of 2", d)
 	}
 	i.UpdateFailure.Count = 3
-	if d := appUpdateDTO(i); !d.Paused || !d.CanApply {
+	if d := appUpdateDTO(auth.Identity{}, i); !d.Paused || !d.CanApply {
 		t.Fatalf("three failures: %+v, want paused, and the Update button still there", d)
 	}
 	i.Update.Version = "2.1"
-	if appUpdateDTO(i).Paused {
+	if appUpdateDTO(auth.Identity{}, i).Paused {
 		t.Fatal("a new version is paused")
 	}
 }

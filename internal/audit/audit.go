@@ -88,6 +88,12 @@ const (
 	// failure of the job, and every refusal (403, 409).
 	ActionAppUpdate = "app.update"
 
+	// The owner's yes to an app update that asks for more access (UPDATES.md
+	// # 6, #633). It grants new access to someone's data, so it is
+	// elevation-class: it audits the yes, every refusal (403, 409) and every
+	// failure. The update it starts is then audited as app.update.
+	ActionAppUpdateApprove = "app.update_approve"
+
 	// Device access (AUTH.md # Device access). Enabling SSH on an account changes
 	// who can get a shell on the box, so it is elevation-class and audits failure
 	// as well as success — the Activity view has to be able to answer "did someone

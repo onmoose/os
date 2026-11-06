@@ -424,7 +424,9 @@ type InstanceDTO struct {
 	Update AppUpdateDTO `json:"update"`
 }
 
-func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
+// toDTO builds an app's DTO for the caller in ctx: the update's can_approve
+// depends on who asks.
+func (s *Server) toDTO(ctx context.Context, i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
 	// On hosted, the app's sole URL is public HTTPS at
 	// "<slug>.<box-id>.onmoose.io" (ENVIRONMENT.md # Networking & discovery) —
 	// no mDNS, no ".local" fallback. On appliance, prefer the name actually
@@ -441,12 +443,13 @@ func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry)
 	case i.Slug != "":
 		url = "http://" + i.Slug + protocol.AppHostSuffix
 	}
+	actor, _ := auth.FromContext(ctx)
 	dto := InstanceDTO{
 		ID: i.ID, ManifestID: i.ManifestID, Name: i.Name, Slug: i.Slug,
 		Version: i.Version, State: i.State, URL: url,
 		OwnerUserID: i.OwnerUserID, OwnerUsername: ownerUsername, Scope: i.Scope,
 		Exposure: i.Exposure, AutoRestart: !i.AutoRestartOff,
-		AutoUpdate: !i.AutoUpdateOff, Update: appUpdateDTO(i),
+		AutoUpdate: !i.AutoUpdateOff, Update: appUpdateDTO(actor, i),
 	}
 	if e != nil {
 		dto.IconURL = e.IconURL
@@ -703,7 +706,7 @@ func (s *Server) listApps(ctx context.Context, _ *struct{}) (*struct {
 		if e, err := s.catalog.Entry(i.ManifestID); err == nil {
 			ce = &e
 		}
-		dto := s.toDTO(i, names[i.OwnerUserID], ce)
+		dto := s.toDTO(ctx, i, names[i.OwnerUserID], ce)
 		// The tile badge is exposure + public paths together, the same pair the
 		// detail page's access label is built from — a list DTO carrying only the
 		// exposure would draw a fully closed app that is in fact partly open.
@@ -745,7 +748,7 @@ func (s *Server) getApp(ctx context.Context, in *struct {
 	if e, err := s.catalog.Entry(i.ManifestID); err == nil {
 		catEntry = &e
 	}
-	dto := s.toDTO(i, owner.Username, catEntry)
+	dto := s.toDTO(ctx, i, owner.Username, catEntry)
 	s.withPublicPaths(&dto)
 	dto.NeedsSetup = s.instanceNeedsSetup(i.ID)
 	// Mail enrichment for the rebind picker. The manifest comes from the

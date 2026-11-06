@@ -315,6 +315,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{id}/update/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Allow an update that asks for more access, and run it at once (job; the owner, or an admin for a household app) */
+        post: operations["approve-app-update"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{id}/update/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Keep the current version: the update prompt stops asking about this version (the owner, or an admin for a household app) */
+        post: operations["decline-app-update"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -754,6 +788,23 @@ export interface paths {
         put?: never;
         /** Check one public key the way Save will, without storing it (auth required) */
         post: operations["check-my-ssh-key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/update-prompt/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close the update prompt for this session; it comes back at the next sign-in */
+        post: operations["dismiss-update-prompt"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1256,6 +1307,19 @@ export interface components {
             provider_id: string;
             slot: string;
         };
+        AppAccessWant: {
+            /** @enum {string} */
+            change?: "new" | "write" | "whole";
+            device?: string;
+            folder?: string;
+            /** @enum {string} */
+            kind: "internet" | "lan" | "gpu" | "device" | "folder" | "public_path";
+            /** @enum {string} */
+            mode?: "read" | "write";
+            path?: string;
+            /** @enum {string} */
+            source?: "personal" | "shared";
+        };
         AppConfigDTO: {
             /**
              * Format: uri
@@ -1330,6 +1394,8 @@ export interface components {
         AppUpdateDTO: {
             available_version?: string;
             can_apply: boolean;
+            can_approve: boolean;
+            declined: boolean;
             /** Format: date-time */
             failed_at?: string;
             /** Format: int64 */
@@ -1341,6 +1407,7 @@ export interface components {
             reason?: string;
             /** @enum {string} */
             status?: "available" | "needs_approval" | "service_major" | "needs_newer_moose" | "blocked";
+            wants: components["schemas"]["AppAccessWant"][] | null;
         };
         AppUseDTO: {
             instance_id: string;
@@ -2482,6 +2549,15 @@ export interface components {
             ui_image: string;
             version?: string;
         };
+        UpdateVersionBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/UpdateVersionBody.json
+             */
+            readonly $schema?: string;
+            version: string;
+        };
         UserDTO: {
             /**
              * Format: uri
@@ -2497,6 +2573,7 @@ export interface components {
             owner?: boolean;
             role: string;
             single_user_mode?: boolean;
+            update_prompt_dismissed?: boolean;
             username: string;
         };
     };
@@ -3282,6 +3359,74 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Job"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "approve-app-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateVersionBody"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "decline-app-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateVersionBody"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
@@ -4217,6 +4362,33 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Check-my-ssh-keyResponse"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "dismiss-update-prompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

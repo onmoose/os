@@ -5,6 +5,13 @@ package api
 // fails. PUT .../auto-update turns the box's own updates of the app on or
 // off; the nightly window reads it (#632, lifecycle/nightly.go). Both follow the app-control
 // gate: the owner, or an admin for a household app.
+//
+// An update that asks for more access waits for a yes (#633). POST
+// .../update/approve says yes and runs the update at once, POST
+// .../update/decline says "Keep current version", and POST
+// /me/update-prompt/dismiss records that the person closed the prompt in this
+// session. The yes has a stricter gate than an update: only the owner for a
+// personal app, and an admin for a household app (approverOK).
 
 import (
 	"context"
@@ -16,6 +23,8 @@ import (
 	"github.com/onmoose/os/internal/audit"
 	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
 )
@@ -51,9 +60,57 @@ type AppUpdateDTO struct {
 	// version: it failed 3 times in a row (UPDATES.md # 6 Failure
 	// signaling). The Update button still works and starts the count again.
 	Paused bool `json:"paused"`
+	// Wants is the access the new version asks for that the installed one
+	// does not have (#633), for every status: the dashboard says each item
+	// in the install screen's words. Empty when it asks for no more.
+	Wants []AppAccessWant `json:"wants"`
+	// Declined is true when the owner said "Keep current version" to this
+	// version. The prompt does not ask about it again; the app's settings
+	// page still offers it.
+	Declined bool `json:"declined"`
+	// CanApprove is true when the caller may allow the update now with POST
+	// /apps/{id}/update/approve: it waits for an approval, the app is
+	// running, and the caller is the owner of a personal app or an admin for
+	// a household app. An admin looking at another person's app gets false.
+	CanApprove bool `json:"can_approve"`
 }
 
-func appUpdateDTO(i store.Instance) AppUpdateDTO {
+// AppAccessWant is one piece of access a new version asks for (#633).
+// Device is set for kind device; folder, mode (read or write, what the new
+// version gets), change (new: a folder it had no access to, write: read
+// becomes write, whole: one folder inside it becomes the whole folder) and
+// source (personal: the owner's own folder, shared: the household's shared
+// folder) for kind folder; path for kind public_path, a path anyone may open
+// with no sign-in.
+type AppAccessWant struct {
+	Kind   string `json:"kind" enum:"internet,lan,gpu,device,folder,public_path"`
+	Device string `json:"device,omitempty"`
+	Folder string `json:"folder,omitempty"`
+	Mode   string `json:"mode,omitempty" enum:"read,write"`
+	Change string `json:"change,omitempty" enum:"new,write,whole"`
+	Source string `json:"source,omitempty" enum:"personal,shared"`
+	Path   string `json:"path,omitempty"`
+}
+
+func accessWantDTOs(ws []store.AccessWant) []AppAccessWant {
+	out := make([]AppAccessWant, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, AppAccessWant(w))
+	}
+	return out
+}
+
+// approverOK is the gate for a yes to an update that asks for more access
+// (UPDATES.md # Who gets prompted): a personal app is its owner's to allow,
+// and an admin cannot allow it for them. A household app is an admin's.
+func approverOK(actor auth.Identity, i store.Instance) bool {
+	if i.Scope == store.ScopeHousehold {
+		return actor.IsAdmin()
+	}
+	return actor.User.ID == i.OwnerUserID
+}
+
+func appUpdateDTO(actor auth.Identity, i store.Instance) AppUpdateDTO {
 	d := AppUpdateDTO{
 		AvailableVersion: i.Update.Version,
 		Status:           i.Update.Status,
@@ -64,6 +121,9 @@ func appUpdateDTO(i store.Instance) AppUpdateDTO {
 		FailedMessage:    i.UpdateFailure.Message,
 		FailedCount:      i.UpdateFailure.Count,
 		Paused:           i.UpdatePaused(),
+		Wants:            accessWantDTOs(i.Update.Wants),
+		Declined:         i.UpdateDeclined != "" && i.UpdateDeclined == i.Update.Version,
+		CanApprove:       i.Update.Status == store.UpdateNeedsApproval && i.State == "running" && approverOK(actor, i),
 	}
 	if !i.UpdateFailure.At.IsZero() {
 		at := i.UpdateFailure.At
@@ -82,6 +142,27 @@ func (s *Server) registerAppUpdate(api huma.API) {
 		OperationID: "set-app-auto-update", Method: "PUT", Path: "/api/v1/apps/{id}/auto-update",
 		Summary: "Turn the automatic update of an app on or off (owner or admin)",
 	}, s.setAppAutoUpdate)
+	huma.Register(api, huma.Operation{
+		OperationID: "approve-app-update", Method: "POST", Path: "/api/v1/apps/{id}/update/approve",
+		Summary:       "Allow an update that asks for more access, and run it at once (job; the owner, or an admin for a household app)",
+		DefaultStatus: 202,
+	}, s.approveAppUpdate)
+	huma.Register(api, huma.Operation{
+		OperationID: "decline-app-update", Method: "POST", Path: "/api/v1/apps/{id}/update/decline",
+		Summary:       "Keep the current version: the update prompt stops asking about this version (the owner, or an admin for a household app)",
+		DefaultStatus: 204,
+	}, s.declineAppUpdate)
+	huma.Register(api, huma.Operation{
+		OperationID: "dismiss-update-prompt", Method: "POST", Path: "/api/v1/me/update-prompt/dismiss",
+		Summary:       "Close the update prompt for this session; it comes back at the next sign-in",
+		DefaultStatus: 204,
+	}, s.dismissUpdatePrompt)
+}
+
+// UpdateVersionBody names the version the person saw in the prompt or on the
+// app's page.
+type UpdateVersionBody struct {
+	Version string `json:"version" minLength:"1"`
 }
 
 func (s *Server) updateApp(ctx context.Context, in *struct {
@@ -125,8 +206,15 @@ func (s *Server) updateApp(ctx context.Context, in *struct {
 	case inst.Update.Status != store.UpdateAvailable:
 		return nil, refuse(inst.Update.Reason)
 	}
+	job := s.runUpdateJob(ctx, id, target, meta)
+	return &struct{ Body Job }{Body: job.snapshot()}, nil
+}
+
+// runUpdateJob runs a person's Update as a job and audits its outcome as
+// app.update. Both the Update button and an approval start it.
+func (s *Server) runUpdateJob(ctx context.Context, id string, target audit.Target, meta map[string]any) *Job {
 	jobCtx := ctx // for the audit inside the job goroutine
-	job := s.jobs.run("app-update", func(job *Job) (map[string]any, error) {
+	return s.jobs.run("app-update", func(job *Job) (map[string]any, error) {
 		// A person's Update starts the count of failures in a row again,
 		// so a paused app can be tried (#632).
 		err := s.life.UpdateByPerson(context.Background(), id, job.setStep)
@@ -139,7 +227,128 @@ func (s *Server) updateApp(ctx context.Context, in *struct {
 		}
 		return map[string]any{"instance_id": id}, nil
 	})
+}
+
+// loadForApproval loads the app and applies the approver gate. A member
+// asking about another person's personal app gets 404, as for every app
+// control. Anyone else who is not the approver gets 403, and audit (when it
+// is not nil) records the refusal.
+func (s *Server) loadForApproval(ctx context.Context, id string, audit func(store.Instance, string)) (auth.Identity, store.Instance, error) {
+	actor, ok := auth.FromContext(ctx)
+	if !ok {
+		return actor, store.Instance{}, huma.Error401Unauthorized("unauthenticated")
+	}
+	inst, err := s.store.Get(id)
+	if errors.Is(err, store.ErrNotFound) {
+		return actor, inst, huma.Error404NotFound("no such app")
+	}
+	if err != nil {
+		return actor, inst, huma.Error500InternalServerError("get failed", err)
+	}
+	if !canSee(actor, inst) {
+		return actor, inst, huma.Error404NotFound("no such app")
+	}
+	if !approverOK(actor, inst) {
+		msg := "Only the app's owner can allow this update."
+		if inst.Scope == store.ScopeHousehold {
+			msg = "Only an admin can allow an update of a household app."
+		}
+		if audit != nil {
+			audit(inst, msg)
+		}
+		return actor, inst, huma.Error403Forbidden(msg)
+	}
+	return actor, inst, nil
+}
+
+// approveAppUpdate is the owner's yes to an update that asks for more access
+// (UPDATES.md # 6 The permission-expansion prompt). It stores the approval
+// and runs the update at once as a job, whether the automatic update is on
+// or off. It is elevation-class: the yes, every refusal and every failure
+// are audited as app.update_approve, and the update itself as app.update.
+func (s *Server) approveAppUpdate(ctx context.Context, in *struct {
+	ID   string `path:"id"`
+	Body UpdateVersionBody
+}) (*struct{ Body Job }, error) {
+	id := in.ID
+	target := audit.Target{Kind: "app", ID: id}
+	meta := map[string]any{"new_version": in.Body.Version}
+	record := func(ok bool) { s.auditor.Record(ctx, audit.ActionAppUpdateApprove, target, meta, ok) }
+	actor, inst, err := s.loadForApproval(ctx, id, func(inst store.Instance, reason string) {
+		meta["version"], meta["reason"] = inst.Version, reason
+		meta["wants"] = accessWantDTOs(inst.Update.Wants)
+		record(false)
+	})
+	if err != nil {
+		return nil, err
+	}
+	meta["version"] = inst.Version
+	meta["wants"] = accessWantDTOs(inst.Update.Wants)
+	wants, err := s.life.ApproveUpdate(ctx, id, in.Body.Version, actor.User.ID)
+	if err != nil {
+		var refusal *lifecycle.UpdateRefusal
+		if errors.As(err, &refusal) {
+			meta["reason"] = refusal.Error()
+			record(false)
+			return nil, huma.Error409Conflict(refusal.Error())
+		}
+		meta["reason"] = "internal error"
+		record(false)
+		return nil, huma.Error500InternalServerError("moose could not store the approval", err)
+	}
+	meta["wants"] = accessWantDTOs(wants)
+	record(true)
+	updMeta := map[string]any{"version": inst.Version, "new_version": in.Body.Version}
+	job := s.runUpdateJob(ctx, id, target, updMeta)
 	return &struct{ Body Job }{Body: job.snapshot()}, nil
+}
+
+// declineAppUpdate is "Keep current version": the prompt does not ask about
+// this version again, and the app stays as it is. The app's settings page
+// still offers the update, and a new version that asks for more asks again.
+// It grants nothing, so it is not audited.
+func (s *Server) declineAppUpdate(ctx context.Context, in *struct {
+	ID   string `path:"id"`
+	Body UpdateVersionBody
+}) (*struct{}, error) {
+	_, inst, err := s.loadForApproval(ctx, in.ID, nil)
+	if err != nil {
+		return nil, err
+	}
+	if inst.Update.Status != store.UpdateNeedsApproval {
+		return nil, huma.Error409Conflict(lifecycle.ErrNothingToApprove.Error())
+	}
+	if inst.Update.Version != in.Body.Version {
+		return nil, huma.Error409Conflict(lifecycle.ErrApproveStale.Error())
+	}
+	if err := s.store.DeclineInstanceUpdate(in.ID, in.Body.Version); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("no such app")
+		}
+		return nil, huma.Error500InternalServerError("could not save the choice", err)
+	}
+	if s.bus != nil {
+		s.bus.Publish(events.AppUpdateChanged, map[string]any{"instance_id": in.ID})
+	}
+	return &struct{}{}, nil
+}
+
+// dismissUpdatePrompt records that the person closed the update prompt
+// without choosing. It is stored on the session, so it holds in every tab and
+// the prompt comes back at the next sign-in (a new session), not at the next
+// page load.
+func (s *Server) dismissUpdatePrompt(ctx context.Context, _ *struct{}) (*struct{}, error) {
+	actor, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("unauthenticated")
+	}
+	if err := s.store.DismissUpdatePrompt(actor.Session.Token); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error401Unauthorized("unauthenticated")
+		}
+		return nil, huma.Error500InternalServerError("could not save the choice", err)
+	}
+	return &struct{}{}, nil
 }
 
 // setAppAutoUpdate turns the box's own updates of one app on or off. Off
@@ -175,7 +384,7 @@ func (s *Server) setAppAutoUpdate(ctx context.Context, in *struct {
 			catEntry = &e
 		}
 	}
-	dto := s.toDTO(inst, owner.Username, catEntry)
+	dto := s.toDTO(ctx, inst, owner.Username, catEntry)
 	s.withPublicPaths(&dto)
 	return &struct{ Body InstanceDTO }{Body: dto}, nil
 }
