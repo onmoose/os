@@ -238,7 +238,10 @@ Built in #631 (`internal/lifecycle/update.go`), in this order:
 7.  Snapshot data_volumes + managed-service DBs → snapshots/pre-update-<old-version>.*
     (UPDATES.md # Pre-update snapshot)
 8.  Write the new manifest, compose and pins; new secrets; provision a new
-    managed service; bind dirs; new override + .env
+    managed service; bind dirs; make a new folder source ready; new
+    override + .env; make the app network again when its internal flag
+    does not match the new internet permission (then compose create
+    --force-recreate)
 9.  docker compose up -d                                          (bounded by the health budget)
 10. Wait healthy                                                  (the health budget)
 11. Flip Caddy to the real upstream; one row write: version, name, running,
@@ -246,6 +249,10 @@ Built in #631 (`internal/lifecycle/update.go`), in this order:
 ```
 
 The order is set by the snapshot (#347, `UPDATES.md` # Pre-update snapshot # As built): it needs the app stopped, and it reads the manifest **on disk** to find the data volumes. So the old version stops at step 6, after the pull (the downtime is only the switch, not the download), the snapshot comes next, and nothing new is written before it.
+
+**The folder binds of step 8** (#633) keep the host path the old override binds for every folder both versions declare, so an update binds exactly the source the installer elected. Only an update the owner allowed (`UPDATES.md` # Who gets prompted # As built (#633)) can change them: a folder the new version adds is bound with the install default (the owner's own folder for a personal app, the household's shared folder for a household app, the manifest's `default` subfolder for `pick-subfolder`) and made ready the way install does it (`prepareFolderSources`), and a `pick-subfolder` folder that becomes `whole` binds the whole folder from the same source.
+
+**The network of step 8** (#633). Docker cannot change the `--internal` flag of a network that exists, so when the flag of `moose-app-<id>` does not match the new version's `internet` permission (in either direction), the brain takes the containers on it now off it (Caddy), removes it, creates it with the new flag, puts them back, and makes the app's stopped containers again from the files on disk with `docker compose create --force-recreate`. That is needed because a container on a removed network cannot start, and compose does not see the change; `create` keeps their anonymous volumes and starts nothing. `update.json` records it first (`network_remade`), and a rollback, after it puts the previous files back, makes the network and the containers again for the old version's flag.
 
 **The health budget** of steps 9 and 10 is `max(120s, health_probe.start_period + 60s)`, with the 60s default `start_period` when the manifest declares no `health_probe` (`APP_MANIFEST.md` # B). With the defaults it is 120s, as for install. A slow app is not rolled back for being slow.
 

@@ -21,6 +21,15 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-06 — In the update prompt, "Keep current version" is a no for that version, and closing it is a dismissal until the next sign-in (#633)
+
+**Previously:** issue #633 said "Closing it counts as Keep" and that after "Keep current version" "the prompt comes back on the next login", so the two were one choice that came back at every sign-in.
+**Now:** they are two choices, as `UPDATES.md` # Who gets prompted already said ("A user who declines the prompt stays pinned to their current version ... The prompt re-surfaces if they dismiss without choosing; they can also accept later from the app's Settings page"). **Keep current version** stores a decline for that version on the instance: the prompt does not ask about that version again, the app's settings page still offers Allow & update, and a new version that still asks for more access asks again. **Closing the modal** (the X, Escape, a click outside) is a dismissal, stored on the session: the prompt comes back at the next sign-in, not at the next page load, and every tab of the session agrees.
+**Why:** the spec wins over the issue (`docs/dev/contributing.md`), and it keeps a real choice apart from "not now". If Keep came back at every sign-in, a person who chose to stay on a version would be asked the same question again and again, which teaches people to click through the one prompt the box has. Keeping the dismissal on the session, not in the browser, makes "next sign-in" mean the same thing on every device.
+**Affected docs:** `UPDATES.md` (# 4 Who gets prompted # As built (#633), # 6 The permission-expansion prompt), `BRAIN_UI_PROTOCOL.md`, `DASHBOARD.md`.
+
+---
+
 ## 2026-11-06 — A rolled-back app update ends in `running`; `update_failed` means the old version is down (#631)
 
 **Previously:** the per-instance state machine in `APP_LIFECYCLE.md` sent a failed update to `update_failed` and then "→ running (after rollback)", and the update transaction said a rollback ends with "mark `update_failed`". Issue #631 said the same: a failed update "ends with the old version running on its old data, in `update_failed`".
