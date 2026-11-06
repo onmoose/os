@@ -90,6 +90,16 @@ func TestWidenedAccess(t *testing.T) {
 			man:  accessMan(with(func(p *manifest.Permissions) { p.Folders[1].Scope = "whole" }), "/api/"),
 			want: []store.AccessWant{{Kind: store.WantFolder, Folder: "documents", Mode: "read", Change: store.FolderWhole, Source: sourcePersonal}},
 		},
+		// Both at once: the whole folder is the wider grant, and the mode
+		// rides on the item, so the prompt says "All of your Documents
+		// folder (can add, change, and delete files)".
+		"subfolder to whole, read to write": {
+			man: accessMan(with(func(p *manifest.Permissions) {
+				p.Folders[1].Scope = "whole"
+				p.Folders[1].Mode = "write"
+			}), "/api/"),
+			want: []store.AccessWant{{Kind: store.WantFolder, Folder: "documents", Mode: "write", Change: store.FolderWhole, Source: sourcePersonal}},
+		},
 		"write to read is narrower": {
 			man: accessMan(with(func(p *manifest.Permissions) { p.Folders[0].Mode = "read" }), "/api/"),
 		},
@@ -412,7 +422,7 @@ func TestApprovedUpdateBindsNewFolders(t *testing.T) {
 	e.m.CheckUpdates(ctx)
 	r := e.row(t, inst.ID)
 	want := []store.AccessWant{
-		{Kind: store.WantFolder, Folder: "documents", Mode: "write", Change: store.FolderWrite, Source: sourcePersonal},
+		{Kind: store.WantFolder, Folder: "documents", Mode: "write", Change: store.FolderWhole, Source: sourcePersonal},
 		{Kind: store.WantFolder, Folder: "movies", Mode: "read", Change: store.FolderNew, Source: sourcePersonal},
 	}
 	if r.Update.Status != store.UpdateNeedsApproval || !slices.Equal(r.Update.Wants, want) {

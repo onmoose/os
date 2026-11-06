@@ -339,10 +339,12 @@ func widenedAccess(had grantedAccess, newMan *manifest.Manifest, sources map[str
 		switch {
 		case !ok:
 			w.Change = store.FolderNew
-		case mode == "write" && was.Mode != "write":
-			w.Change = store.FolderWrite
+		// The whole folder comes first: it is the wider grant, and the item
+		// carries the new mode, so a folder that gets both says both.
 		case f.Scope != "pick-subfolder" && was.Scope == "pick-subfolder":
 			w.Change = store.FolderWhole
+		case mode == "write" && was.Mode != "write":
+			w.Change = store.FolderWrite
 		default:
 			continue
 		}

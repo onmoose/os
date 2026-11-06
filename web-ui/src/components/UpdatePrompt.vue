@@ -70,8 +70,12 @@ function invalidate(id: string) {
 
 // Every entry decided: the modal closes, and nothing is stored on the
 // session (there is nothing left to ask).
+// A failed Allow is not decided: the entry stays open with its error and
+// its two buttons, so the person sees what went wrong and can choose again.
 function closeIfDecided() {
-  const left = entries.value.some((e) => !choice.value[e.id] || choice.value[e.id] === "updating");
+  const left = entries.value.some(
+    (e) => !choice.value[e.id] || choice.value[e.id] === "updating" || choice.value[e.id] === "failed",
+  );
   if (!left) dialog.value?.close();
 }
 
