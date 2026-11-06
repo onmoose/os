@@ -13,6 +13,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// CustomVersion is the version every Door-2 synthetic manifest carries. Such
+// an app has no catalog entry, so the box never offers it an update
+// (UPDATES.md # 4, DECISIONS.md Door-2 flow).
+const CustomVersion = "custom"
+
 // Synthesize builds a manifest for a user-pasted (Door-2) compose
 // (APP_MANIFEST.md # Custom container — synthetic manifest). It infers the main
 // service when the compose has exactly one; otherwise the caller must name it.
@@ -53,7 +58,7 @@ func Synthesize(name string, composeBytes []byte, mainService string, mainPort i
 		ID:              slug + "-" + entropy(),
 		ManifestVersion: 1,
 		Name:            name,
-		Version:         "custom",
+		Version:         CustomVersion,
 		ComposeFile:     "compose.yml",
 		MainService:     mainService,
 		MainPort:        mainPort,

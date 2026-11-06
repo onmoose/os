@@ -135,6 +135,10 @@ type remoteSource struct {
 	// started guards startRefresh so a repeat call can't spawn a second sync loop.
 	started atomic.Bool
 
+	// onChange is called after a sync swapped in a payload that differs from
+	// the one before (OnChange). nil until cmd/brain sets it.
+	onChange atomic.Pointer[func()]
+
 	// assetLocks collapses concurrent cache-miss fetches of the same asset: a
 	// per-asset mutex serializes the check-fetch-write so N simultaneous requests
 	// for one uncached icon do one fetch, not N. assetLocksMu guards the map; the
@@ -352,6 +356,9 @@ func (r *remoteSource) syncOnce(ctx context.Context) error {
 	r.mu.Unlock()
 	if newETag != prev {
 		slog.Info("catalog: synced browse payload", "apps", len(f.Apps), "version", f.Version)
+		if fn := r.onChange.Load(); fn != nil {
+			(*fn)()
+		}
 	}
 	return nil
 }

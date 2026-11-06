@@ -841,3 +841,51 @@ func TestBrowseURLEscapesEnv(t *testing.T) {
 		t.Errorf("env round-trip = %q", u.Query().Get("env"))
 	}
 }
+
+// TestRemoteOnChange: the change callback runs once per new payload, never on
+// a 304 or a failed sync, so the brain looks for app updates only when the
+// catalog really moved (#631).
+func TestRemoteOnChange(t *testing.T) {
+	cp := newFakeCP(t, testApps())
+	srv := cp.server()
+	defer srv.Close()
+
+	c := NewRemote(RemoteOptions{BaseURL: srv.URL, Environment: "appliance", AssetCacheDir: t.TempDir()})
+	r := c.src.(*remoteSource)
+	calls := 0
+	c.OnChange(func() { calls++ })
+
+	if err := r.syncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("first sync: %d calls, want 1", calls)
+	}
+	if err := r.syncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("a 304 sync made %d calls, want still 1", calls)
+	}
+	cp.mu.Lock()
+	cp.failSync = true
+	cp.mu.Unlock()
+	if err := r.syncOnce(context.Background()); err == nil {
+		t.Fatal("want a failed sync")
+	}
+	if calls != 1 {
+		t.Fatalf("a failed sync made %d calls, want still 1", calls)
+	}
+	apps := testApps()
+	apps[0].Version = "9.9"
+	body, etag := makeSnapshot(t, apps)
+	cp.mu.Lock()
+	cp.failSync, cp.body, cp.etag = false, body, etag
+	cp.mu.Unlock()
+	if err := r.syncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("a new payload made %d calls in all, want 2", calls)
+	}
+}

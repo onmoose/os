@@ -17,6 +17,11 @@ const (
 	AppStateChanged Kind = "app.state_changed"
 	AppInstalled    Kind = "app.installed"
 	AppUninstalled  Kind = "app.uninstalled"
+	// AppUpdateChanged says what the box knows about an app's update changed:
+	// a check found a new version or cleared one, or an update failed and was
+	// recorded (UPDATES.md # 6, #631). Like the others, the payload
+	// ({instance_id}) is an advisory refetch trigger.
+	AppUpdateChanged Kind = "app.update_changed"
 	// Notification lifecycle (NOTIFICATIONS.md # Surfaces). created = a new
 	// notification appeared; updated covers read / resolve / dismiss. Payloads
 	// are advisory refetch triggers — the client re-reads its audience-scoped
