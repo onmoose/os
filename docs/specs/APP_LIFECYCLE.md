@@ -37,8 +37,10 @@ The Docker HTTP API (via the socket proxy) is used directly only for things the 
 ├── .env                      # moose-injected variables
 ├── data/                     # bind-mount root for all app data
 │   └── ...                   # subdirs per the compose's bind mounts
-└── snapshots/                # pre-update tar(s) of data_volumes + managed-service DB dumps
-    └── pre-update-<old-version>.tar  # see UPDATES.md # Pre-update snapshot
+└── snapshots/                # pre-update snapshot sets, kept 7 days (UPDATES.md # Pre-update snapshot)
+    ├── pre-update-<old-version>.tar               # data_volumes minus cache_volumes
+    ├── pre-update-<old-version>.<service>.pgdump  # a Postgres dump (.sql for MySQL/MariaDB)
+    └── pre-update-<old-version>.json              # what the set holds; written last
 ```
 
 The brain's install command is literally:
@@ -226,6 +228,8 @@ Failure handling:
 8. Wait healthy
 9. Mark state: running
 ```
+
+The snapshot, its restore and the 7-day cleanup are built (#347, `UPDATES.md` # Pre-update snapshot # As built); the transaction itself is #631. The snapshot needs the app stopped, so the old version's containers stop before step 4, not at step 7.
 
 If step 7 or 8 fails: stop new container, **restore the snapshot from step 4** (untar data_volumes; restore managed-service DB from dump), swap `.prev` override back, `up -d` again with the pinned previous digest, mark `update_failed`. One generation of rollback history — sufficient for the one-step-back UX, no n-deep history in v1. Snapshot + previous image are GC'd after 7 days.
 
