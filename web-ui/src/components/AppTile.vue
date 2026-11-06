@@ -15,11 +15,19 @@
 //               the app has no LLM provider, often after its account was
 //               deleted. The corner mark shows in amber, and a controller gets
 //               a "Needs setup" link to the app's settings screen.
+//   - updating: grayed with an "Updating" caption, no alert mark: the box is
+//               moving the app to a new version (#631).
+//   - update_failed: shown like failed. An update could not put the old
+//               version back, and retry is in the quick menu.
+//   - update badge (UPDATES.md # 6): a small arrow in the top-left corner when
+//               the catalog has a new version, amber when the last update did
+//               not go through. A controller gets a link to the app's page,
+//               where the Update button and the reason live.
 //
 // Icon rendering mirrors StoreAppCard: icon_url when present, AppGlyph fallback.
 import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { AlertTriangle, EllipsisVertical } from "lucide-vue-next";
+import { AlertTriangle, ArrowUpCircle, EllipsisVertical } from "lucide-vue-next";
 import type { Instance } from "../api";
 import { useAuth, isHosted } from "../auth";
 import AppGlyph from "./AppGlyph.vue";
@@ -30,7 +38,8 @@ const { singleUserMode, currentUser } = useAuth();
 
 const running = computed(() => props.instance.state === "running");
 const stopped = computed(() => props.instance.state === "stopped");
-const failed = computed(() => props.instance.state === "failed");
+const failed = computed(() => props.instance.state === "failed" || props.instance.state === "update_failed");
+const updating = computed(() => props.instance.state === "updating");
 const label = computed(() => (props.instance.scope === "household" ? "Shared" : "Personal"));
 
 // Mirrors the brain's control gate: admins anything, members only their own
@@ -62,8 +71,23 @@ const accessTitle = computed(() =>
 
 const brokenIcon = ref(false);
 
-// The corner alert is for trouble (failed/crashed), not a deliberate stop.
-const showAlert = computed(() => !running.value && !stopped.value);
+// The corner alert is for trouble (failed/crashed), not a deliberate stop or
+// an update in progress.
+const showAlert = computed(() => !running.value && !stopped.value && !updating.value);
+
+// The update badge: a new version is known, or the last update failed. A
+// failed update that was rolled back leaves the app running, so the tile
+// says so until an update goes through.
+const update = computed(() => props.instance.update);
+const updateFailed = computed(() => !!update.value?.failed_version);
+const updateKnown = computed(() => !!update.value?.available_version);
+const showUpdate = computed(() => !failed.value && !updating.value && (updateFailed.value || updateKnown.value));
+const updateLabel = computed(() => (updateFailed.value ? "Update failed" : "Update available"));
+const updateTitle = computed(() =>
+  updateFailed.value
+    ? `${props.instance.name} could not update to ${update.value?.failed_version}`
+    : `${props.instance.name} ${update.value?.available_version} is available`,
+);
 // Needs setup is a softer warning than a failure, so it gets the amber mark
 // only when no failure mark is already there.
 const needsSetup = computed(() => !!props.instance.needs_setup);
@@ -100,6 +124,15 @@ const menuOpen = ref(false);
       ]"
       :title="running ? `Open ${instance.name}` : `${instance.name} is ${instance.state}`"
     >
+      <span
+        v-if="showUpdate"
+        class="absolute left-3 top-3 size-4"
+        :class="updateFailed ? 'text-amber-600' : 'text-accent'"
+        :title="updateTitle"
+      >
+        <ArrowUpCircle class="size-full" aria-hidden="true" />
+        <span class="sr-only">{{ updateLabel }}</span>
+      </span>
       <AlertTriangle
         v-if="showAlert"
         class="absolute right-3 top-3 size-4 text-destructive"
@@ -162,6 +195,7 @@ const menuOpen = ref(false);
       >
         Service stopped
       </div>
+      <div v-else-if="updating" class="text-xs text-muted-foreground">Updating…</div>
       <div v-else-if="!singleUserMode" class="text-xs uppercase tracking-wide text-muted-foreground">{{ label }}</div>
     </div>
 
@@ -172,6 +206,17 @@ const menuOpen = ref(false);
       class="text-xs text-amber-700 underline underline-offset-2 hover:text-foreground"
     >
       Needs setup
+    </RouterLink>
+
+    <!-- An update is known or failed: the app's page has the Update button and
+         says why an update is not applied. -->
+    <RouterLink
+      v-if="showUpdate && canControl"
+      :to="`/settings/apps/${instance.id}`"
+      class="text-xs underline underline-offset-2 hover:text-foreground"
+      :class="updateFailed ? 'text-amber-700' : 'text-muted-foreground'"
+    >
+      {{ updateLabel }}
     </RouterLink>
 
     <!-- Don't retry blind: a controller can open the app page for the failure
