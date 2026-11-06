@@ -286,6 +286,12 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, id, version string) error
 		}
 	}
 
+	// Read the whole tar once before the data is cleared. A tar that is
+	// damaged on disk then fails here, while the app's data is still there.
+	if err := checkDataTar(ctx, filepath.Join(dir, snap.Tar), snap); err != nil {
+		return fmt.Errorf("the saved copy of the app's data cannot be read: %w", err)
+	}
+
 	instDir := m.instanceDir(id)
 	for _, p := range snap.Data {
 		if err := clearDataPath(instDir, p, cachesUnder(p, snap.Cache), slices.Contains(snap.Absent, p)); err != nil {
@@ -704,6 +710,37 @@ func clearDir(abs, rel string, keep []string) error {
 		}
 	}
 	return nil
+}
+
+// checkDataTar reads a snapshot tar to the end without writing anything. It
+// fails on a damaged or cut-off tar, and on an entry outside the snapshot's
+// data paths, the same names extractDataTar refuses.
+func checkDataTar(ctx context.Context, tarPath string, snap Snapshot) error {
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	tr := tar.NewReader(bufio.NewReader(f))
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		rel := path.Clean(strings.TrimSuffix(hdr.Name, "/"))
+		if _, err := manifest.CleanStoragePath(rel); err != nil || !inAny(rel, snap.Data) || inAny(rel, snap.Cache) {
+			return fmt.Errorf("the snapshot holds %q, which is not one of the app's data folders", hdr.Name)
+		}
+		if _, err := io.Copy(io.Discard, tr); err != nil {
+			return err
+		}
+	}
 }
 
 // extractDataTar unpacks a snapshot tar into the instance dir, after
