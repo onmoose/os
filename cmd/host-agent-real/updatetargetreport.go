@@ -149,6 +149,16 @@ func (r updateTargetReport) Read() protocol.UpdateTarget {
 	// failure instead would hide the fault that needs a human behind one that
 	// looks transient. The read failure is not dropped: it rides along in
 	// detail, because a box with two faults must not report one of them.
+	// Whether stream B is done for tonight (#632). Always sent, "" when it
+	// is not, so the brain can tell this host-agent from an older one.
+	done := r.controlPlaneDone()
+	out.ControlPlaneDoneNight = &done
+	if r.loop != nil {
+		if until, ok := r.loop.Hold(); ok {
+			out.HoldUntil = until.UTC().Format(time.RFC3339)
+		}
+	}
+
 	if r.loop == nil {
 		out.State, out.Detail = protocol.UpdateTargetDisabled, r.disabledErr
 		if runErr != nil {
@@ -196,6 +206,32 @@ func (r updateTargetReport) Read() protocol.UpdateTarget {
 		out.State = protocol.UpdateTargetUnknown
 	}
 	return out
+}
+
+// controlPlaneDone is the control_plane_done_night value: the night stream B
+// is done for, as YYYY-MM-DD, or "". With no loop there is no stream B to
+// wait for, so the night is done as soon as the window is open.
+func (r updateTargetReport) controlPlaneDone() string {
+	if r.loop != nil {
+		if night, ok := r.loop.ControlPlaneDone(); ok {
+			return night.Format(time.DateOnly)
+		}
+		return ""
+	}
+	loc := time.Local
+	if r.zone != nil {
+		if l, _ := r.zone(); l != nil {
+			loc = l
+		}
+	}
+	w := r.window
+	if w == (updatetarget.Window{}) {
+		w = updatetarget.DefaultWindow
+	}
+	if night, ok := updatetarget.NightOf(w, time.Now().In(loc)); ok {
+		return night.Format(time.DateOnly)
+	}
+	return ""
 }
 
 // offer converts a target to the wire shape. PublishedAt is omitted when the

@@ -158,6 +158,8 @@ type lockedApplier struct {
 	n  int
 }
 
+func (a *lockedApplier) JobRunning(string) bool { return false }
+
 func (a *lockedApplier) StartUpdate(string, string, string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

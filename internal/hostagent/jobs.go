@@ -286,7 +286,8 @@ var ErrNothingToApply = errors.New("there is no update to apply")
 // TargetApplier applies the target the update-target loop already fetched and
 // checked, now rather than in the window (#488). Consumer-side; the provider is
 // the loop (updatetarget.Loop.ApplyNow), adapted in cmd/host-agent-real. It
-// returns the job id of the update it started.
+// returns the job id of the update it started, or "" with a nil error when it
+// accepted an OS switch that waits for the brain's hold (#632).
 type TargetApplier interface {
 	ApplyTarget() (jobID string, err error)
 }
@@ -308,6 +309,14 @@ func (a *Agent) applyUpdateTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := a.TargetApplier.ApplyTarget()
+	if err == nil && id == "" {
+		// Accepted, and nothing started yet: the OS switch waits for the
+		// brain's hold (#632). The empty job id tells the caller to follow
+		// the update-target read instead of a job.
+		writeJSON(w, http.StatusAccepted, protocol.Job{Kind: protocol.JobKindOSSwitch, Status: protocol.JobStatusRunning,
+			StartedAt: a.jobs.now().UTC().Format(time.RFC3339)})
+		return
+	}
 	switch {
 	case errors.Is(err, errJobRunning):
 		writeErr(w, http.StatusConflict, protocol.ErrCodeJobRunning, err.Error())
