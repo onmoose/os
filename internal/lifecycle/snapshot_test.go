@@ -558,3 +558,30 @@ func TestSnapshotRestoreKeepsOwnersAsRoot(t *testing.T) {
 		t.Errorf("mode after restore = %v, want setuid 0750", fi.Mode())
 	}
 }
+
+// A tar that is cut off on disk is refused before anything is cleared, so the
+// app's current data is still there after the failed restore.
+func TestSnapshotRestoreDamagedTarKeepsData(t *testing.T) {
+	e := newTestEnv(t)
+	inst := installSnapApp(t, e, snapManifest, snapCompose)
+	data := filepath.Join(e.stateDir, "instances", inst.ID, "data")
+	writeSnapFile(t, filepath.Join(data, "big.bin"), strings.Repeat("x", 8192), 0o644)
+	if _, err := e.m.TakeSnapshot(context.Background(), inst.ID); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	writeSnapFile(t, filepath.Join(data, "big.bin"), "v2 data", 0o644)
+	tarPath := filepath.Join(e.m.snapshotsDir(inst.ID), "pre-update-1.4.tar")
+	fi, err := os.Stat(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(tarPath, fi.Size()/2); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.RestoreSnapshot(context.Background(), inst.ID, "1.4"); err == nil {
+		t.Fatal("restore of a cut-off tar succeeded")
+	}
+	if got := readSnapFile(t, filepath.Join(data, "big.bin")); got != "v2 data" {
+		t.Errorf("data after a refused restore = %q, want it untouched", got)
+	}
+}
