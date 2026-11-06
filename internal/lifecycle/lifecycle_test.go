@@ -68,6 +68,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	m.SetAdmitter(admission.CheckStructure)
 	// Keep timeout small so health-failure tests finish fast.
 	m.SetHealthTiming(200*time.Millisecond, 20*time.Millisecond)
+	// An update's health budget is then healthWait too (updateHealthBudget).
+	m.updateMargin, m.defaultStartPeriod = 0, 0
 	return &testEnv{
 		m: m, docker: docker, caddy: cd, host: host,
 		store: s, stateDir: stateDir, cat: cat, catDir: catDir,
