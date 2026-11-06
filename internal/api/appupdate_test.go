@@ -126,23 +126,25 @@ func TestUpdateApp_RunsAJobAndAudits(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	if out.Body.Kind != "app-update" || out.Body.ID == "" {
-		t.Fatalf("job = %+v", out.Body)
+		t.Fatalf("job kind %q id %q", out.Body.Kind, out.Body.ID)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	var job Job
+	var status string
+	var jobErr *JobError
 	for {
 		j, ok := s.jobs.get(out.Body.ID)
 		if !ok {
 			t.Fatal("job vanished")
 		}
-		job = j.snapshot()
-		if job.Status != "running" || time.Now().After(deadline) {
+		snap := j.snapshot()
+		status, jobErr = snap.Status, snap.Error
+		if status != "running" || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if job.Status != "failed" || job.Error == nil || !strings.Contains(job.Error.Message, "no update") {
-		t.Fatalf("job = %+v", job)
+	if status != "failed" || jobErr == nil || !strings.Contains(jobErr.Message, "no update") {
+		t.Fatalf("job status %q error %+v", status, jobErr)
 	}
 	rows := updateAudits(t, s)
 	if len(rows) != 1 || rows[0].Success || rows[0].ActorUserID != "u_admin" {

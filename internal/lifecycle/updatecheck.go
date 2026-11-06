@@ -60,6 +60,9 @@ func (m *Manager) checkUpdatesOnce(ctx context.Context) {
 		slog.Warn("update check: list instances", "err", err)
 		return
 	}
+	if m.parkedSeen == nil {
+		m.parkedSeen = map[string]string{}
+	}
 	base, baseRead := 0, false
 	found := 0
 	for _, inst := range insts {
@@ -87,10 +90,16 @@ func (m *Manager) checkUpdatesOnce(ctx context.Context) {
 			continue
 		}
 		if inst.Update.Version == entry.Version && inst.Update.Status != "" {
-			continue // this version is classified already
+			// This version is classified already. One parked for a newer
+			// moose is looked at once more by each brain run: this brain
+			// may be the newer moose.
+			if inst.Update.Status != store.UpdateNeedsNewerMoose || m.parkedSeen[inst.ID] == entry.Version {
+				continue
+			}
 		}
 		newMan, _, err := m.catalogLoad(ctx, inst.ManifestID)
 		if errors.Is(err, manifest.ErrUnsupportedManifestVersion) {
+			m.parkedSeen[inst.ID] = entry.Version
 			m.setUpdateCheck(inst, needsNewerMoose(entry.Version))
 			found++
 			continue
@@ -124,7 +133,7 @@ func (m *Manager) checkUpdatesOnce(ctx context.Context) {
 		check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base)
 		m.setUpdateCheck(inst, check)
 		found++
-		slog.Info("update found", "instance_id", inst.ID, "manifest_id", inst.ManifestID, "version", inst.Version, "new_version", check.Version, "action", check.Status)
+		slog.Info("update found", "instance_id", inst.ID, "manifest_id", inst.ManifestID, "version", inst.Version, "new_version", check.Version, "update_class", check.Status)
 	}
 	if found > 0 {
 		slog.Info("update check done", "count", found)

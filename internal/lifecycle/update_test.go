@@ -459,6 +459,25 @@ func TestUpdateUnsupportedManifestVersion(t *testing.T) {
 	if err := e.m.Update(context.Background(), inst.ID, nil); err == nil || !strings.Contains(err.Error(), "newer moose") {
 		t.Fatalf("update error = %v", err)
 	}
+
+	// A newer brain reads that manifest: its first check classifies the
+	// parked version again. A brain run asks once, not on every sync.
+	loads := 0
+	e.m.catalogLoad = func(context.Context, string) (*manifest.Manifest, []byte, error) {
+		loads++
+		return nil, nil, fmt.Errorf("%w: manifest_version 2", manifest.ErrUnsupportedManifestVersion)
+	}
+	e.m.CheckUpdates(context.Background())
+	if loads != 0 {
+		t.Fatalf("this brain run loaded the parked version again (%d loads)", loads)
+	}
+	e.m.parkedSeen = nil // a new brain run
+	e.publish(t, "3.0", upImage2, upDigest2, "")
+	e.m.catalogLoad = e.cat.Load
+	e.m.CheckUpdates(context.Background())
+	if r := e.row(t, inst.ID); r.Update.Status != store.UpdateAvailable || r.Update.Version != "3.0" {
+		t.Fatalf("a newer brain still parks it: %+v", r.Update)
+	}
 }
 
 func TestUpdateNoUpdateAndDoor2(t *testing.T) {
@@ -582,6 +601,33 @@ func TestUpdateNewManagedService(t *testing.T) {
 			t.Fatal("the old .env is not back")
 		}
 	})
+}
+
+// TestUpdateNewConfigDefault: a config field the new version adds gets its
+// default, and loses it again on a rollback.
+func TestUpdateNewConfigDefault(t *testing.T) {
+	field := "config:\n  - app_env: LOG_LEVEL\n    title: Log level\n    description: x\n    required: true\n    default: info\n"
+	for _, healthy := range []bool{true, false} {
+		e := newTestEnv(t)
+		inst := installUp(t, e, "")
+		e.newVersionMigrates(t, healthy)
+		e.publish(t, "2.0", upImage2, upDigest2, field)
+		e.m.CheckUpdates(context.Background())
+		if r := e.row(t, inst.ID); r.Update.Status != store.UpdateAvailable {
+			t.Fatalf("a required field with a default blocks the update: %+v", r.Update)
+		}
+		err := e.m.Update(context.Background(), inst.ID, nil)
+		if (err == nil) != healthy {
+			t.Fatalf("healthy %v: update error %v", healthy, err)
+		}
+		cfg, _ := e.store.GetInstanceConfig(inst.ID)
+		if healthy && (len(cfg) != 1 || cfg[0].AppEnv != "LOG_LEVEL" || cfg[0].Value != "info") {
+			t.Fatalf("after a good update the config is %+v, want LOG_LEVEL=info", cfg)
+		}
+		if !healthy && len(cfg) != 0 {
+			t.Fatalf("after a rollback the config is %+v, want none", cfg)
+		}
+	}
 }
 
 // TestUpdateKeepsSecrets: a secret the instance has keeps its value through

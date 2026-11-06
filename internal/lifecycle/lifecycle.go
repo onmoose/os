@@ -260,6 +260,9 @@ type Manager struct {
 	checkMu      sync.Mutex
 	checkRunning bool
 	checkAgain   bool
+	// parkedSeen is, per instance, the version this brain run already found
+	// it cannot read. Only the running check touches it.
+	parkedSeen map[string]string
 }
 
 // maxHeavyOps is how many installs and updates may run at once
@@ -1577,7 +1580,7 @@ func (m *Manager) reclaimImages(ctx context.Context, instanceID string, images [
 }
 
 // inUseImageRefs is the set of pinned `repo@sha256:…` references held by all
-// currently-installed instances, current and previous generation — the "don't
+// currently-installed instances, current and previous generation: the "don't
 // remove" guard for reclaimImages.
 func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 	insts, err := m.store.List()

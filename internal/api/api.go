@@ -1175,7 +1175,7 @@ func (s *Server) startApp(ctx context.Context, in *struct {
 	}
 	// Legal from `stopped` (start), `failed` (click-to-retry, #154) and
 	// `update_failed` (an update whose rollback did not bring the old version
-	// back, #631) — all run the Start transaction. Any other state is an
+	// back, #631). All three run the Start transaction. Any other state is an
 	// illegal transition.
 	if inst.State != "stopped" && inst.State != "failed" && inst.State != "update_failed" {
 		return nil, huma.Error409Conflict("app is not stopped or failed")

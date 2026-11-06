@@ -101,6 +101,9 @@ type updateRecord struct {
 	// rollback drops them.
 	AddedServices []string `json:"added_services,omitempty"`
 	AddedSecrets  []string `json:"added_secrets,omitempty"`
+	// AddedConfig is the config fields the new version adds that got their
+	// default, by app_env.
+	AddedConfig []string `json:"added_config,omitempty"`
 	// NewImages are the new version's pins; DroppedImages the previous
 	// generation this update replaced. Both are removed from the image store
 	// when nothing uses them any more.
@@ -199,7 +202,7 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 	check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base)
 	m.setUpdateCheck(inst, check)
 	if check.Status != store.UpdateAvailable {
-		slog.Info("update refused", "instance_id", id, "version", inst.Version, "new_version", newMan.Version, "action", check.Status)
+		slog.Info("update refused", "instance_id", id, "version", inst.Version, "new_version", newMan.Version, "update_class", check.Status)
 		return errors.New(check.Reason)
 	}
 	if err := m.admitUpdate(ctx, newMan, newCompose); err != nil {
@@ -513,8 +516,9 @@ func mountsFromOverride(override []byte, man *manifest.Manifest, sharedBase stri
 }
 
 // writeNewGeneration writes everything the new version runs from: manifest
-// and compose, the image pins, the secrets it adds, the managed services it
-// adds, the bind dirs, the override and the .env. rec is saved before a
+// and compose, the image pins, the defaults of the config fields it adds, the
+// secrets it adds, the managed services it adds, the bind dirs, the override
+// and the .env. rec is saved before a
 // service is provisioned or a secret stored, so a rollback knows what to
 // drop.
 func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, man *manifest.Manifest, composeBytes []byte, pins []servicePin, iso isolation, base int, rec *updateRecord, step func(string)) error {
@@ -524,6 +528,33 @@ func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, m
 	}
 	if err := m.store.SetInstanceImages(id, toInstanceImages(pins)); err != nil {
 		return fmt.Errorf("persist digests: %w", err)
+	}
+
+	// A config field the new version adds gets its default, as the install
+	// form prefills it. A field with no default and no value is left empty:
+	// classifyUpdate refused a required one.
+	cfg, err := m.store.GetInstanceConfig(id)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	hasValue := map[string]bool{}
+	for _, c := range cfg {
+		hasValue[c.AppEnv] = true
+	}
+	var defaults []store.InstanceConfig
+	for _, f := range man.Config {
+		if f.Default != "" && !hasValue[f.AppEnv] {
+			defaults = append(defaults, store.InstanceConfig{AppEnv: f.AppEnv, Value: f.Default, Secret: f.Secret})
+			rec.AddedConfig = append(rec.AddedConfig, f.AppEnv)
+		}
+	}
+	if len(defaults) > 0 {
+		if err := m.writeUpdateRecord(id, *rec); err != nil {
+			return err
+		}
+		if err := m.store.SetInstanceConfig(id, append(cfg, defaults...)); err != nil {
+			return fmt.Errorf("persist config: %w", err)
+		}
 	}
 
 	// New declared secrets are generated; the ones the instance has are kept
@@ -801,6 +832,23 @@ func (m *Manager) undoUpdate(ctx context.Context, id string, rec updateRecord) e
 		if len(drop) > 0 {
 			m.dropServiceGrants(ctx, id, drop)
 			if err := m.store.SetServiceGrants(id, keep); err != nil {
+				return err
+			}
+		}
+	}
+	if len(rec.AddedConfig) > 0 {
+		cfg, err := m.store.GetInstanceConfig(id)
+		if err != nil {
+			return err
+		}
+		var keep []store.InstanceConfig
+		for _, c := range cfg {
+			if !slices.Contains(rec.AddedConfig, c.AppEnv) {
+				keep = append(keep, c)
+			}
+		}
+		if len(keep) != len(cfg) {
+			if err := m.store.SetInstanceConfig(id, keep); err != nil {
 				return err
 			}
 		}
