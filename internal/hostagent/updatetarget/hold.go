@@ -140,8 +140,8 @@ func (l *Loop) holdWake(now time.Time) (time.Duration, bool) {
 	return d, true
 }
 
-// switchWaitsForApps is the OS detail while a hold keeps the switch waiting.
-const switchWaitsForApps = "the switch waits for app updates to finish"
+// SwitchWaitsForApps is the OS detail while a hold keeps the switch waiting.
+const SwitchWaitsForApps = "the switch waits for app updates to finish"
 
 // ControlPlaneDone reports whether stream B is finished for tonight's window,
 // and the night it is finished for (#632, protocol.UpdateTarget

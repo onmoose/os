@@ -118,6 +118,12 @@ func (r updateTargetReport) readOS() *protocol.OSUpdate {
 		}
 		out.Target = &protocol.OSRelease{Version: s.Target.Version, BundleURL: s.Target.BundleURL, BundleSHA256: s.Target.BundleSHA256}
 	}
+	// The refresh above reads the job and the record, which know nothing of
+	// the brain's hold (#632). An installed release that waits for it says
+	// so.
+	if _, held := r.loop.Hold(); held && out.State == protocol.OSUpdateInstalled {
+		out.Detail = updatetarget.SwitchWaitsForApps
+	}
 	return out
 }
 

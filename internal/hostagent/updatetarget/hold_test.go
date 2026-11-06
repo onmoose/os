@@ -36,7 +36,7 @@ func TestHold_KeepsTheSwitchButNotTheInstall(t *testing.T) {
 	if len(f.calls) != 1 || f.calls[0] {
 		t.Fatalf("with a live hold: Apply calls %v, want one with the window shut", f.calls)
 	}
-	if s := l.Snapshot().OS; s.State != protocol.OSUpdateInstalled || s.Detail != switchWaitsForApps {
+	if s := l.Snapshot().OS; s.State != protocol.OSUpdateInstalled || s.Detail != SwitchWaitsForApps {
 		t.Fatalf("OS snapshot = %+v, want installed and waiting for the apps", s)
 	}
 }
@@ -179,7 +179,7 @@ func TestApplyNow_WaitsForTheHold(t *testing.T) {
 			if !l.manualPending() || len(f.switches) != 0 {
 				t.Fatalf("pending %v, switches %d; want the switch waiting", l.manualPending(), len(f.switches))
 			}
-			if s := l.Snapshot().OS; s.State != protocol.OSUpdateWaiting || s.Detail != switchWaitsForApps {
+			if s := l.Snapshot().OS; s.State != protocol.OSUpdateWaiting || s.Detail != SwitchWaitsForApps {
 				t.Fatalf("OS snapshot = %+v, want waiting for the apps", s)
 			}
 			l.manualStep()

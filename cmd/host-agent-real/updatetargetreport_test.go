@@ -338,6 +338,15 @@ func TestReportOS(t *testing.T) {
 	if got.State != protocol.OSUpdateInstalled || got.Running != "0.15.0" || got.Slot != "A" || got.Target == nil || got.Target.Version != "0.15.1" || got.Last == nil {
 		t.Fatalf("report: %+v", got)
 	}
+	// Under the brain's hold (#632) the installed release says it waits for
+	// the apps, even though Peek knows nothing of the hold.
+	noon := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	l.Now = func() time.Time { return noon }
+	l.SetHold(noon.Add(time.Minute))
+	if got := r.Read().OS; got.State != protocol.OSUpdateInstalled || got.Detail != updatetarget.SwitchWaitsForApps {
+		t.Fatalf("under a hold: %+v, want installed and waiting for the apps", got)
+	}
+	l.ClearHold()
 	// Peek with nothing newer leaves the loop's word.
 	r.os = stubOS{}
 	if got := r.Read().OS; got.State != protocol.OSUpdateInstalling {

@@ -633,7 +633,7 @@ func (l *Loop) ApplyNow() (jobID string, err error) {
 		l.manualOS = &manualSwitch{rel: rel, night: night, until: now.Add(manualOSFor)}
 		detail := "the switch waits for the control-plane update to finish"
 		if !cp {
-			detail = switchWaitsForApps
+			detail = SwitchWaitsForApps
 		}
 		l.recordOS(OSSnapshot{State: protocol.OSUpdateWaiting, Detail: detail, Target: &rel})
 		l.wakeUp()
@@ -783,7 +783,7 @@ func (l *Loop) tickOS(t Target, w Window, cpBusy bool) {
 	open := w.Contains(now) && !cpBusy && !held
 	d := l.OS.Apply(rel, open, occurrenceNight(w, now))
 	if held && w.Contains(now) && d.State == protocol.OSUpdateInstalled {
-		d.Detail = switchWaitsForApps
+		d.Detail = SwitchWaitsForApps
 	}
 	l.recordOS(OSSnapshot{State: d.State, Detail: d.Detail, Target: &rel})
 	l.quietOS(slog.LevelInfo, "decision:"+rel.Version+":"+d.State+":"+d.Detail, "os update: "+d.State,
