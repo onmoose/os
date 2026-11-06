@@ -260,6 +260,10 @@ func (f *fakeDocker) RunOneOff(_ context.Context, image, network, envFile string
 	if f.runOneOff != nil {
 		return f.runOneOff(image, network, envFile, args)
 	}
+	// The snapshot's size query (dumpEstimate) reads a number back.
+	if q := strings.Join(args, " "); strings.Contains(q, "pg_database_size") || strings.Contains(q, "information_schema.tables") {
+		return "0", nil
+	}
 	return "", nil
 }
 

@@ -328,6 +328,55 @@ func TestSnapshotDumpFailureLeavesNothing(t *testing.T) {
 	}
 }
 
+// A database too big for the drive refuses the snapshot before anything is
+// written: the dump is counted ahead from the database's size, not only the tar.
+func TestSnapshotNoSpaceForDatabase(t *testing.T) {
+	e := newTestEnv(t)
+	inst := installDBApp(t, e, "dbapp")
+	// 100 KB drive, 50 KB used; the database alone is 60 KB.
+	e.m.diskSpace = func(string) (uint64, uint64, error) { return 50 << 10, 100 << 10, nil }
+	e.docker.runOneOff = func(_, _, _ string, args []string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "pg_database_size") {
+			return "61440\n", nil
+		}
+		return "", nil
+	}
+	if _, err := e.m.TakeSnapshot(context.Background(), inst.ID); !errors.Is(err, ErrSnapshotNoSpace) {
+		t.Fatalf("snapshot err = %v, want ErrSnapshotNoSpace", err)
+	}
+	if e.docker.hasCall("RunOneOffStream") {
+		t.Errorf("a refused snapshot still dumped: %v", e.docker.Calls())
+	}
+	if files := snapshotFiles(t, e, inst.ID); len(files) != 0 {
+		t.Errorf("a refused snapshot left %v", files)
+	}
+}
+
+// A dump that fails because the drive filled up is reported as
+// ErrSnapshotNoSpace, not as a plain dump failure, and leaves nothing behind.
+func TestSnapshotDumpFillsDrive(t *testing.T) {
+	e := newTestEnv(t)
+	inst := installDBApp(t, e, "dbapp")
+	full := false
+	e.m.diskSpace = func(string) (uint64, uint64, error) {
+		if full {
+			return 0, 100 << 20, nil
+		}
+		return 90 << 20, 100 << 20, nil
+	}
+	e.docker.runStream = func(_, _, _ string, _ []string, _ io.Reader, w io.Writer) (string, error) {
+		full = true
+		return "pg_dump: error: could not write to output file", errors.New("exit status 1")
+	}
+	_, err := e.m.TakeSnapshot(context.Background(), inst.ID)
+	if !errors.Is(err, ErrSnapshotNoSpace) || !strings.Contains(err.Error(), "could not write") {
+		t.Fatalf("snapshot err = %v, want ErrSnapshotNoSpace with the dump's error", err)
+	}
+	if files := snapshotFiles(t, e, inst.ID); len(files) != 0 {
+		t.Errorf("a failed snapshot left %v", files)
+	}
+}
+
 // A drive too full to take the tar refuses the snapshot with ErrSnapshotNoSpace.
 func TestSnapshotNoSpace(t *testing.T) {
 	e := newTestEnv(t)

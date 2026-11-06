@@ -46,6 +46,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,7 +59,7 @@ import (
 // works for (UPDATES.md # 4).
 const SnapshotKeep = 7 * 24 * time.Hour
 
-// snapshotMaxUsedPercent is how full the drive may be once the tar is written.
+// snapshotMaxUsedPercent is how full the drive may be once the snapshot is written.
 // It is the disk-full threshold (HEALTH.md # Detector catalog), so a snapshot
 // never pushes the box into disk-full by itself.
 const snapshotMaxUsedPercent = 95
@@ -191,13 +192,25 @@ func (m *Manager) TakeSnapshot(ctx context.Context, id string) (Snapshot, error)
 		return Snapshot{}, err
 	}
 	snap.Data, snap.Absent = data, absent
+	// The dumps count too, measured ahead from each database's size, so a large
+	// database cannot push the drive past the threshold half way through.
+	for _, g := range grants {
+		if g.Kind == "valkey" {
+			continue
+		}
+		est, err := m.dumpEstimate(ctx, g)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("measure the %s database: %w", g.LogicalName, err)
+		}
+		size += est
+	}
 	if err := m.checkSnapshotSpace(dir, size); err != nil {
 		return Snapshot{}, err
 	}
 	if err := writeFileSynced(filepath.Join(dir, snap.Tar), func(w io.Writer) error {
 		return writeDataTar(ctx, w, instDir, data, cache)
 	}); err != nil {
-		return Snapshot{}, fmt.Errorf("write the data snapshot: %w", err)
+		return Snapshot{}, m.noSpaceOr(dir, fmt.Errorf("write the data snapshot: %w", err))
 	}
 
 	for _, g := range grants {
@@ -211,7 +224,12 @@ func (m *Manager) TakeSnapshot(ctx context.Context, id string) (Snapshot, error)
 		if err := writeFileSynced(filepath.Join(dir, d.File), func(w io.Writer) error {
 			return m.dumpDatabase(ctx, g, w)
 		}); err != nil {
-			return Snapshot{}, fmt.Errorf("dump the %s database: %w", g.LogicalName, err)
+			return Snapshot{}, m.noSpaceOr(dir, fmt.Errorf("dump the %s database: %w", g.LogicalName, err))
+		}
+		// The estimate can be low (a MySQL dump is text). Stop as soon as the
+		// drive is past the threshold, and say it is full.
+		if err := m.checkSnapshotSpace(dir, 0); err != nil {
+			return Snapshot{}, err
 		}
 		snap.Dumps = append(snap.Dumps, d)
 	}
@@ -504,6 +522,51 @@ func (m *Manager) checkSnapshotSpace(dir string, need int64) error {
 		return fmt.Errorf("%w (it needs about %d MB)", ErrSnapshotNoSpace, need>>20+1)
 	}
 	return nil
+}
+
+// noSpaceOr reports a failed snapshot write as ErrSnapshotNoSpace when the
+// drive is now past the threshold. A full drive does not always come back as
+// ENOSPC: a dump fails inside the client container's stream, and the error
+// that reaches the brain is the container's. So the drive is asked instead.
+func (m *Manager) noSpaceOr(dir string, err error) error {
+	if errors.Is(err, ErrSnapshotNoSpace) {
+		return err
+	}
+	if full := m.checkSnapshotSpace(dir, 0); full != nil {
+		return fmt.Errorf("%w: %w", full, err)
+	}
+	return err
+}
+
+// dumpTextFactor is how much bigger than its database a MySQL-family dump may
+// be: it is SQL text, and --hex-blob writes each binary byte as two.
+const dumpTextFactor = 2
+
+// dumpEstimate is the bytes a database's dump may take: the database's own
+// size for Postgres (the custom format is compressed, so it is smaller), and
+// dumpTextFactor times the size of its tables and indexes for the MySQL family.
+func (m *Manager) dumpEstimate(ctx context.Context, g store.ServiceGrant) (int64, error) {
+	var args []string
+	factor := int64(1)
+	switch {
+	case g.Kind == "postgres":
+		args = []string{"-tA", "-c", fmt.Sprintf("SELECT pg_database_size('%s')", g.DBName)}
+	case mysqlTools[g.Kind].dump != "":
+		args = []string{"-N", "-B", "-e", fmt.Sprintf(
+			"SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = '%s'", g.DBName)}
+		factor = dumpTextFactor
+	default:
+		return 0, fmt.Errorf("no dump for managed service kind %q", g.Kind)
+	}
+	out, err := m.runServiceClient(ctx, g.Kind, g.Version, args...)
+	if err != nil {
+		return 0, fmt.Errorf("%w\n%s", err, strings.TrimSpace(out))
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("unexpected size %q", strings.TrimSpace(out))
+	}
+	return n * factor, nil
 }
 
 // writeDataTar writes the data paths, minus the cache paths, as a tar. Entry
