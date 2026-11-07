@@ -3319,22 +3319,35 @@ app-update)
         au_has "$(au_app)" auto_update false || fail "app-update: automatic updates are on after Go back: $(au_app | cut -c1-600)"
         echo "cloud-assertions: app-update: GO BACK OK (back on 2.0 with rows '$(au_rows)', automatic updates off)"
 
-        # C. THE NIGHT. A window that opens in about six minutes, so the
-        #    brain's hold (from 15 minutes before) is in place before host-
-        #    agent's first tick in it. With the OS bundle installed into
-        #    slot B, that tick would switch at once without the hold.
-        # One reading of the clock, so the window and its open time agree.
-        opens_min="$(date -d '+6 minutes' '+%Y-%m-%d %H:%M')"
-        opens_at="$(date -d "${opens_min}:00" +%s)"
-        opens="$(date -d "@$opens_at" +%H:%M)"; ends="$(date -d "@$((opens_at + 1800))" +%H:%M)"
-        au_target "$opens-$ends" "$([ "$os_mode" = full ] && echo os)"
+        # C. THE NIGHT. First the work: the catalog moves to 4.0 and the
+        #    owner turns automatic updates on, while the window is still 12
+        #    hours away, so no brain restart sits between the window and the
+        #    hold. Slot B must be installed by now (the setup's answer named
+        #    the bundle), or the hold would have nothing to keep waiting.
         if [ "$os_mode" = full ]; then
-            for _i in $(seq 1 300); do grep -q "installed into the other slot" <<<"$(ha_log)" && break; [ "$(date +%s)" -ge "$((opens_at - 60))" ] && break; sleep 1; done
+            for _i in $(seq 1 300); do grep -q "installed into the other slot" <<<"$(ha_log)" && break; sleep 1; done
+            grep -q "installed into the other slot" <<<"$(ha_log)" \
+                || fail "app-update: the OS bundle is not installed into slot B before the night: $(ha_log | grep -i 'os update' | tail -4 | tr '\n' ' ')"
         fi
         au_catalog 4.0
         au_has "$(au_app)" status '"available"' || fail "app-update: 4.0 is not classified available: $(au_app | cut -c1-600)"
         au_on="$(full_send PUT "/api/v1/apps/$AU_ID/auto-update" "$apex" "$session_cookie" '{"enabled":true}' 2>/dev/null)"
         grep -q ' 200' <<<"$(status_of "$au_on")" || fail "app-update: turning automatic updates on failed: $(status_of "$au_on")"
+        #    Then the window: it opens in about six minutes and lasts an
+        #    hour. host-agent ticks once when au_target restarts it, before
+        #    the window, and then sleeps about 15 minutes (13 to 17 with its
+        #    jitter): a new hold does not wake it. So its first tick in the
+        #    window comes 7 to 11 minutes after the window opens. With slot
+        #    B installed, that tick would switch at once without the hold.
+        #    The hour keeps the brain's cut-off (20 minutes before the end)
+        #    well after that tick.
+        # One reading of the clock, so the window and its open time agree.
+        opens_min="$(date -d '+6 minutes' '+%Y-%m-%d %H:%M')"
+        opens_at="$(date -d "${opens_min}:00" +%s)"
+        opens="$(date -d "@$opens_at" +%H:%M)"; ends="$(date -d "@$((opens_at + 3600))" +%H:%M)"
+        au_target "$opens-$ends" "$([ "$os_mode" = full ] && echo os)"
+        # The brain reads the new window on its next one-minute step and
+        # holds from 15 minutes before it opens.
         rd=""
         for _i in $(seq 1 150); do rd="$(au_read)"; grep -q '"hold_until":"20' <<<"$rd" && break; sleep 1; done
         grep -q '"hold_until":"20' <<<"$rd" || fail "app-update: the brain did not hold the OS switch before the window: $(cut -c1-400 <<<"$rd")"
@@ -3346,7 +3359,9 @@ app-update)
             || fail "app-update: could not keep the session and the app for slot B in $OS_STATE_DIR"
         [ "$os_mode" = full ] && set_os_stage 2
         a=""
-        for _i in $(seq 1 900); do
+        # Up to 30 minutes: the window opens in about five, and host-agent's
+        # first tick in it can come 11 minutes after that.
+        for _i in $(seq 1 1800); do
             a="$(au_app)"
             au_has "$a" version '"4.0"' && au_has "$a" state '"running"' && break
             sleep 1

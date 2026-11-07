@@ -593,7 +593,7 @@ jobs:
       #     switches and the app is checked on slot B. An image that loses app data
       #     on an update, applies more access without a yes, or reboots in the
       #     middle of an app update must never be published. It is the longest
-      #     boot: it waits about six minutes for its window.
+      #     boot: it waits for its window and for host-agent's first tick in it.
       #
       # The frozen-identity boot stays out: it is orthogonal (it checks a re-delivered
       # seed is ignored on a later boot) and has shown a flaky false "re-ingested"

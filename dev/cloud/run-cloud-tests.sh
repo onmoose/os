@@ -798,10 +798,11 @@ if should_run os-revert; then
     echo "boot os-revert OK: slot B never came up, the safety net rebooted the box and it went back to slot A on its own; then slot B panicked before userspace and GRUB skipped it (box_id=${BOX_ID_OS_REVERT})"
 fi
 # The app-update boot (#630) uses the same bundle disk and in-guest source. Its
-# first stage runs five app installs and updates, then waits about six minutes
-# for the window, so it gets 45 minutes.
+# first stage runs an install and four updates, then waits for the window and
+# for host-agent's first tick in it (up to about 17 minutes), so it gets 55
+# minutes, inside the boot job's 75.
 if should_run app-update; then
-    os_boot app-update "$BOX_ID_APP_UPDATE" 2700
+    os_boot app-update "$BOX_ID_APP_UPDATE" 3300
     echo "boot app-update OK: upnote updated by hand, rolled back from a broken update, approved, gone back, then updated by the nightly window before the OS switch, and on slot B on its data (box_id=${BOX_ID_APP_UPDATE})"
 fi
 
