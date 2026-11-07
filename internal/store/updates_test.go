@@ -536,3 +536,73 @@ func TestLastUpdateColumnsMigrateOnAnOlderDatabase(t *testing.T) {
 		t.Fatalf("migrated user: %v %v", at, err)
 	}
 }
+
+// TestMoveServiceGrant: a move points the grant at the new version and keeps
+// the old one as retired; the move back undoes both, and can run again; the
+// names count as taken on both versions while both rows exist (#635).
+func TestMoveServiceGrant(t *testing.T) {
+	s := open(t)
+	if err := s.Create(sample("a", "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	g := ServiceGrant{LogicalName: "database", Kind: "postgres", Version: "15", DBName: "app_ab12", RoleName: "app_ab12", Password: "pw"}
+	if err := s.SetServiceGrants("a", []ServiceGrant{g}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MoveServiceGrant("a", "nope", "18", time.Now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("move of a missing grant = %v, want ErrNotFound", err)
+	}
+	at := time.Unix(1_800_000_000, 0)
+	if err := s.MoveServiceGrant("a", "database", "18", at); err != nil {
+		t.Fatal(err)
+	}
+	grants, _ := s.GetServiceGrants("a")
+	want := g
+	want.Version = "18"
+	if len(grants) != 1 || grants[0] != want {
+		t.Fatalf("grant = %+v, want %+v", grants, want)
+	}
+	retired, err := s.GetRetiredServiceGrants("a")
+	if err != nil || len(retired) != 1 || retired[0].ServiceGrant != g || !retired[0].RetiredAt.Equal(at) {
+		t.Fatalf("retired = %+v %v", retired, err)
+	}
+	for _, v := range []string{"15", "18"} {
+		if taken, err := s.ServiceNamesTaken("postgres", v, "app_ab12", "x"); err != nil || !taken {
+			t.Fatalf("taken on %s = %v %v, want true", v, taken, err)
+		}
+	}
+	if taken, _ := s.ServiceNamesTaken("postgres", "17", "app_ab12", "app_ab12"); taken {
+		t.Fatal("taken on 17, where no grant is")
+	}
+
+	for range 2 {
+		if err := s.MoveServiceGrantBack("a", "database", "15"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if grants, _ := s.GetServiceGrants("a"); len(grants) != 1 || grants[0] != g {
+		t.Fatalf("grant after the move back = %+v", grants)
+	}
+	if retired, _ := s.GetRetiredServiceGrants("a"); len(retired) != 0 {
+		t.Fatalf("retired after the move back = %+v", retired)
+	}
+
+	if err := s.MoveServiceGrant("a", "database", "18", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRetiredServiceGrant("a", "database", "15"); err != nil {
+		t.Fatal(err)
+	}
+	if retired, _ := s.GetRetiredServiceGrants("a"); len(retired) != 0 {
+		t.Fatalf("retired after the delete = %+v", retired)
+	}
+	if err := s.MoveServiceGrant("a", "database", "19", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete("a"); err != nil {
+		t.Fatal(err)
+	}
+	if retired, _ := s.GetRetiredServiceGrants("a"); len(retired) != 0 {
+		t.Fatalf("retired grants survived the delete: %+v", retired)
+	}
+}

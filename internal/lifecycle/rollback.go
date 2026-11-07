@@ -135,6 +135,14 @@ func (m *Manager) rollback(ctx context.Context, id string, step func(string)) er
 	if err != nil {
 		return err
 	}
+	// A database the update moved to a newer major goes back to the old one,
+	// which is kept for the same 7 days (#635).
+	if kept, err := m.retiredGrantsKept(id, prev.MovedServices); err != nil {
+		return err
+	} else if !kept {
+		slog.Warn("rollback: the old database of a moved service is gone", "instance_id", id)
+		return ErrNoRollback
+	}
 
 	// The record says a rollback is under way, so the startup pass and a
 	// Start finish it. The snapshot is complete and the previous generation
@@ -143,7 +151,7 @@ func (m *Manager) rollback(ctx context.Context, id string, step func(string)) er
 		From: prev.From, To: prev.To, Rollback: true,
 		PrevKept: true, SnapshotTaken: true, Writing: true,
 		AddedServices: prev.AddedServices, AddedSecrets: prev.AddedSecrets, AddedConfig: prev.AddedConfig,
-		NetworkRemade: prev.NetworkRemade, NewImages: curPins,
+		MovedServices: prev.MovedServices, NetworkRemade: prev.NetworkRemade, NewImages: curPins,
 	}
 	prevState := inst.State
 	if err := m.store.SetState(id, "updating"); err != nil {

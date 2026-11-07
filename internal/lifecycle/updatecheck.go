@@ -103,7 +103,10 @@ func (m *Manager) checkUpdatesOnce(ctx context.Context) {
 			// before #633, and is classified again for the list.
 			parked := inst.Update.Status == store.UpdateNeedsNewerMoose && m.parkedSeen[inst.ID] != entry.Version
 			unlisted := inst.Update.Status == store.UpdateNeedsApproval && len(inst.Update.Wants) == 0
-			if !parked && !unlisted {
+			// A class only a brain from before #635 wrote: this brain moves
+			// the database, so the update is classified again.
+			legacy := inst.Update.Status == store.UpdateServiceMajor
+			if !parked && !unlisted && !legacy {
 				continue
 			}
 		}
@@ -191,12 +194,14 @@ func needsNewerMoose(version string) store.UpdateCheck {
 
 // classifyUpdate sorts an update into its class (UPDATES.md # 4). The order
 // is: a refusal (another isolation tier or identity, a new required setting
-// moose cannot fill in), then a managed-service major move (#635), then wider
-// access that the owner has not accepted (#633). Anything else can be applied.
+// moose cannot fill in, a managed database on another engine or an older
+// major), then wider access that the owner has not accepted (#633). Anything
+// else can be applied; a managed database on a newer major is moved during the
+// update (#635).
 //
 // The access the new version asks for (Wants) is worked out first and stored
-// with every class, so a service-major update that also asks for more access
-// says so. sources is where each folder the instance binds now comes from
+// with every class, so a refused update that also asks for more access says
+// so. sources is where each folder the instance binds now comes from
 // (instanceFolderSources). An update that asks for more access is available
 // when the owner's approval on the row covers it (approvalCovers).
 func classifyUpdate(inst store.Instance, oldMan, newMan *manifest.Manifest, grants []store.ServiceGrant, cfg []store.InstanceConfig, base int, sources map[string]string) store.UpdateCheck {
@@ -232,19 +237,11 @@ func classifyUpdate(inst store.Instance, oldMan, newMan *manifest.Manifest, gran
 		}
 	}
 
-	// A managed service that moves to another version needs its data moved
-	// (#635). A new one is fine: the update provisions it.
-	for _, g := range grants {
-		dep, ok := newMan.Services[g.LogicalName]
-		if !ok {
-			continue
-		}
-		kind, version := normalizeEngine(dep.Type, dep.Version)
-		if kind != g.Kind || version != g.Version {
-			c.Status = store.UpdateServiceMajor
-			c.Reason = fmt.Sprintf("This version needs %s %s for its data, and the app has %s %s. moose cannot move the data to a new database version yet", kind, version, g.Kind, g.Version)
-			return c
-		}
+	// A managed database on a newer major of the same engine is moved during
+	// the update (#635, servicemove.go). Another engine and an older major are
+	// refused. A new service is fine: the update provisions it.
+	if _, err := serviceMoves(grants, newMan); err != nil {
+		return blocked(err.Error())
 	}
 
 	if len(c.Wants) > 0 && !approvalCovers(inst, newMan, sources) {

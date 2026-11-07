@@ -1142,6 +1142,15 @@ func (m *Manager) Uninstall(ctx context.Context, id string) error {
 	if err != nil {
 		slog.Warn("uninstall: read service grants for drop", "instance_id", id, "err", err)
 	}
+	// And the old databases an update moved off, kept for the rollback by
+	// hand (#635).
+	retired, err := m.store.GetRetiredServiceGrants(id)
+	if err != nil {
+		slog.Warn("uninstall: read retired service grants for drop", "instance_id", id, "err", err)
+	}
+	for _, r := range retired {
+		grants = append(grants, r.ServiceGrant)
+	}
 	_ = m.store.SetState(id, "uninstalling")
 	m.emitState(inst, inst.State)
 	if err := m.teardown(ctx, inst, true); err != nil {

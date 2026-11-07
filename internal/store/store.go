@@ -319,6 +319,22 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (instance_id, logical_name),
 			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
 		);
+		-- service_grants_retired: a per-app database an update moved off, to a
+		-- new major version (#635). The database stays on the old major for the
+		-- 7 days of the rollback by hand, then the prune drops it. The names and
+		-- the password are the grant's own: the move keeps them.
+		CREATE TABLE IF NOT EXISTS service_grants_retired (
+			instance_id  TEXT    NOT NULL,
+			logical_name TEXT    NOT NULL,
+			kind         TEXT    NOT NULL,
+			version      TEXT    NOT NULL,
+			db_name      TEXT    NOT NULL,
+			role_name    TEXT    NOT NULL,
+			password     TEXT    NOT NULL,
+			retired_at   INTEGER NOT NULL,
+			PRIMARY KEY (instance_id, logical_name, version),
+			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
+		);
 		-- instance_mail_bindings: which provider a mail-capable app sends
 		-- through — at most one per instance; an unbound instance gets no
 		-- MOOSE_MAIL_* vars at all. Cascades with the app instance, and with

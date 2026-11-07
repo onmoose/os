@@ -156,12 +156,19 @@ func TestClassifyUpdateWithApproval(t *testing.T) {
 		t.Fatalf("beyond the approval: %+v", c)
 	}
 
-	// A managed database's major move wins, and the list is still stored.
+	// A managed database's major move is no class of its own (#635): an
+	// update that moves it and asks for more access waits for the yes, and
+	// one that is refused (an older major) still stores the list.
 	grants := []store.ServiceGrant{{LogicalName: "database", Kind: "postgres", Version: "16"}}
 	v5 := &manifest.Manifest{Version: "5.0", Permissions: manifest.Permissions{LAN: true},
 		Services: map[string]manifest.ServiceDep{"database": {Type: "postgres", Version: "17"}}}
-	if c := classifyUpdate(inst, oldMan, v5, grants, nil, 0, nil); c.Status != store.UpdateServiceMajor || !slices.Equal(c.Wants, []store.AccessWant{{Kind: store.WantLAN}}) {
-		t.Fatalf("service major: %+v", c)
+	if c := classifyUpdate(inst, oldMan, v5, grants, nil, 0, nil); c.Status != store.UpdateNeedsApproval || !slices.Equal(c.Wants, []store.AccessWant{{Kind: store.WantLAN}}) {
+		t.Fatalf("service major and wider: %+v", c)
+	}
+	v6 := &manifest.Manifest{Version: "6.0", Permissions: manifest.Permissions{LAN: true},
+		Services: map[string]manifest.ServiceDep{"database": {Type: "postgres", Version: "15"}}}
+	if c := classifyUpdate(inst, oldMan, v6, grants, nil, 0, nil); c.Status != store.UpdateBlocked || !slices.Equal(c.Wants, []store.AccessWant{{Kind: store.WantLAN}}) {
+		t.Fatalf("older major and wider: %+v", c)
 	}
 
 	// A household app waits for an admin.
