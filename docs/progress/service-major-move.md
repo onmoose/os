@@ -53,6 +53,10 @@ Closes #635, step 6 and the last child of #630. [update-results.md](update-resul
 - **The free-space check is an estimate**: the database's size on the old major. A restore that fills the drive fails and rolls back.
 - **A move that failed half way can leave the new major's role behind** when its drop fails during the rollback. It is logged, holds no data the app uses, and the next move of the same app drops it first.
 
+- **Review findings dismissed** (the Sonnet self-review):
+  - *The old database could be dropped before the rollback button closes.* It can't. The button's 7 days start at the snapshot (`LastUpdate.At = snap.CreatedAt`). The old database's 7 days start at the move, which comes after the snapshot. So the database outlives the button, and the prune drops it sooner only when there is nothing left to roll back to.
+  - *Delete the retired row before dropping its database.* Kept as it is. With the order flipped, a failed drop would leave a database that no row names, and nothing would ever clean it up. With the current order, a failed delete leaves a row whose rollback fails in the restore and rolls back cleanly, and the next prune tries the delete again.
+
 ## What's next
 
 - #630's own Done when: the OS-and-app night in the QEMU lane, and a check on a running box that a newer catalog version is applied in the window.
