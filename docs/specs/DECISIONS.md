@@ -21,6 +21,13 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-07 — After a database major move, the old database stays for 7 days (#635)
+
+**Previously:** `SERVICE_PROVISIONING.md` # At app update, different major version, step 5: the old database and role on the previous major are dropped as soon as the app runs on the new one.
+**Now:** the old database and role stay on the old major for 7 days, then the hourly prune drops them, with the snapshot and the previous generation. The move keeps the database's and the role's names and password, so pointing the app back is one store write.
+**Why:** the rollback by hand (#634) puts an app back on the version before its last good update for 7 days. That version needs its database on the old major. Dropped at once, the button would be there and would not work for any update that moved a database.
+**Affected docs:** `SERVICE_PROVISIONING.md` (# At app update, different major version, # Catalog), `UPDATES.md` (# 4 As built (#635), # 7 Rollback summary).
+
 ## 2026-11-07 — No Settings → Updates page, and no "update available" on the tile (#634)
 
 **Previously:** `UPDATES.md` # 6 had three surfaces: a tile badge when a new version is available, a Settings → Updates page with the aggregate view and the rollback button, and the toast.
