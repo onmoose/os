@@ -490,7 +490,7 @@ func TestAppUpdateFailedWording(t *testing.T) {
 	if fs.raised[1].Summary != "Photos update is paused" || fs.raised[1].DedupKey != "app-update:i_1:paused:2.0" {
 		t.Fatalf("paused: %+v", fs.raised[1])
 	}
-	if !strings.Contains(fs.raised[2].Body, "did not start again") {
+	if !strings.Contains(fs.raised[2].Body, "did not start again") || fs.raised[2].ActionLabel != "Go to app settings" {
 		t.Fatalf("still down: %+v", fs.raised[2])
 	}
 	for _, r := range fs.raised {

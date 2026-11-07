@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // NotificationBell is the dashboard-chrome bell (NOTIFICATIONS.md # Surfaces):
 // an unread-count badge plus a click-to-open dropdown inbox — reverse-chron,
-// severity-colored, grouped unread/read, with relative time, an action hint,
-// and per-row dismiss. Live updates ride the global SSE channel via useEvents
+// severity-colored, grouped unread/read, with relative time, an action link
+// to the notification's route, and per-row dismiss. Live updates ride the global SSE channel via useEvents
 // (wired in Dashboard.vue), which invalidates the queries this composable owns.
 import { ref, computed, onMounted, onUnmounted } from "vue";
+import { useRouter } from "vue-router";
 import { useNotifications } from "./useNotifications";
 import { relativeTime } from "./utils";
 import type { Notification } from "./api";
@@ -28,10 +29,18 @@ function toggle() {
   open.value = !open.value;
 }
 
+const router = useRouter();
+
 function onRowClick(n: Notification) {
   if (!n.read) markRead.mutate(n.id);
-  // No client router in v1 — action_route deep-links are deferred (progress
-  // 0027). The action label is shown as an intent hint, not a live link.
+}
+
+// The action opens the notification's route (an app's settings page, the
+// Storage page, ...), marks it read and closes the dropdown.
+function onAction(n: Notification) {
+  if (!n.read) markRead.mutate(n.id);
+  open.value = false;
+  if (n.action_route) router.push(n.action_route);
 }
 
 // Click-outside closes the dropdown (no modal — the bell waits to be looked at).
@@ -91,7 +100,14 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
               <div class="row-meta">
                 <span class="time">{{ relativeTime(n.ts) }}</span>
                 <span v-if="n.resolved_at" class="resolved">resolved</span>
-                <span v-if="n.action_label" class="action">{{ n.action_label }} →</span>
+                <button
+                  v-if="n.action_label && n.action_route"
+                  type="button"
+                  class="action"
+                  @click.stop="onAction(n)"
+                >
+                  {{ n.action_label }}
+                </button>
               </div>
             </div>
             <button class="dismiss" title="Dismiss" @click.stop="dismiss.mutate(n.id)">×</button>
@@ -210,7 +226,15 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
 .row-body { font-size: 0.78rem; color: var(--color-muted-foreground); margin-top: 2px; }
 .row-meta { display: flex; gap: 0.5rem; align-items: center; margin-top: 4px; font-size: 0.72rem; color: var(--color-muted-foreground); }
 .resolved { color: var(--color-success); }
-.action { color: var(--color-accent); }
+.action {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+}
+.action:hover { text-decoration: underline; }
 .dismiss {
   flex: 0 0 auto;
   border: none;
