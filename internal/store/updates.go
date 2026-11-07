@@ -315,7 +315,7 @@ func (s *Store) MarkInstanceUpdateByWindow(id string, failed bool) error {
 }
 
 // AckInstanceUpdateFailure closes the tile's banner about the last failed
-// update (#634). The failure stays on the row and in Settings → Updates.
+// update (#634). The failure stays on the row and on the app's page.
 func (s *Store) AckInstanceUpdateFailure(id string) error {
 	return s.updateOne(`UPDATE instances SET update_failed_acked=1 WHERE id=?`, id)
 }

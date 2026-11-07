@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // The post-update toast (UPDATES.md # 6 Post-update toast, #634). On the
 // first dashboard load after a night with app updates: "3 apps updated
-// overnight", with a link to the list in Settings → Updates. Not modal, and it
-// goes away by itself.
+// overnight", with a link to the app's settings page (or the installed apps
+// list when there are several). Not modal, and it goes away by itself.
 //
 // It shows once: the brain keeps when the person last saw it (updates_seen_at
 // on /me, POST /me/updates-seen), so it does not show again on the next page
@@ -34,8 +34,11 @@ watch(
     const list = overnightUpdates(data.apps, user);
     if (list.length === 0) return;
     const [first] = list;
-    const message = list.length === 1 && first ? `${first.name} updated overnight` : `${list.length} apps updated overnight`;
-    pushSuccessToast(message, { label: "See what changed", to: "/settings/updates" });
+    if (list.length === 1 && first) {
+      pushSuccessToast(`${first.name} updated overnight`, { label: "See what changed", to: `/settings/apps/${first.id}` });
+    } else {
+      pushSuccessToast(`${list.length} apps updated overnight`, { label: "See your apps", to: "/settings/apps" });
+    }
     try {
       await api.post("/me/updates-seen");
       markUpdatesSeen(Math.floor(Date.now() / 1000));

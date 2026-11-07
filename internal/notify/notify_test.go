@@ -454,7 +454,7 @@ func TestAppUpdateRouting(t *testing.T) {
 		t.Fatalf("raised %d, want 2 (the ownerless one is dropped)", len(fs.raised))
 	}
 	if got := fs.raised[0]; got.Audience != AudienceUser || got.UserID != "u_1" || got.Severity != SeverityInfo ||
-		got.Category != CategoryUpdates || got.DedupKey != "app-update:i_1:applied:2.0" || got.ActionRoute != "/settings/updates" {
+		got.Category != CategoryUpdates || got.DedupKey != "app-update:i_1:applied:2.0" || got.ActionRoute != "/settings/apps/i_1" {
 		t.Fatalf("applied: %+v", got)
 	}
 	if got := fs.raised[1]; got.Audience != AudienceAdmins || got.UserID != "" || got.Severity != SeverityError {

@@ -108,7 +108,7 @@ const start = useMutation({
 const confirmingUninstall = ref(false);
 
 // Logs start collapsed. They're a drill-down, not the first thing on the page.
-// A link to #logs (View logs in Settings → Updates, #634) opens them.
+// A link to #logs (View logs under a failed update, #634) opens them.
 const logsOpen = ref(route.hash === "#logs");
 watch(
   () => route.hash,
@@ -799,6 +799,7 @@ const saveConfig = useMutation({
               <template v-if="appUpdate.paused">
                 Update is failing repeatedly. Paused. moose no longer tries it at night, but you can still update the app here.
               </template>
+              <RouterLink :to="{ hash: '#logs' }" class="underline underline-offset-2 hover:text-foreground">View logs</RouterLink>
             </span>
           </div>
         </div>

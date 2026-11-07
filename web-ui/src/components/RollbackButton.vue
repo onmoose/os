@@ -10,7 +10,7 @@
 // window does not apply the same version again the next night (DECISIONS.md
 // 2026-11-07). The dialog says so.
 //
-// Used on the app's settings page and in Settings → Updates.
+// Used on the app's settings page, under Updates.
 import { computed, ref } from "vue";
 import { useMutation, useQueryClient } from "@tanstack/vue-query";
 import { api, waitForJob, type Instance, type Job } from "@/api";

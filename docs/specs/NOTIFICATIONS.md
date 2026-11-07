@@ -177,7 +177,7 @@ When the underlying HEALTH issue clears, the brain marks the notification resolv
 ## Surfaces (dashboard)
 
 - **Bell in the dashboard chrome**, always present, with an unread-count badge. Scoped to the current user per the routing rules above.
-- **Dropdown inbox** on click: reverse-chronological list, severity-colored, grouped by read/unread. Each row: summary, relative time, and the `action` link if present (deep-links to the relevant surface — Storage page, app card, Settings → Updates, Activity view).
+- **Dropdown inbox** on click: reverse-chronological list, severity-colored, grouped by read/unread. Each row: summary, relative time, and the `action` link if present (deep-links to the relevant surface — Storage page, app card, an app's settings page, Activity view).
 - **Live updates** over the existing global SSE channel (`BRAIN_UI_PROTOCOL.md`) — new notifications appear without a refresh; the badge updates in place. New `event kind`s: `notification.created`, `notification.updated` (read/resolve/dismiss).
 - **No modal, no forced interrupt.** Consistent with HEALTH — the bell waits to be looked at. The one pre-existing exception stays where it is: the app permission-expansion **modal on next login** (`UPDATES.md`) is a separate, deliberate interrupt; the bell additionally carries a persistent `warning` notification for the same event so it isn't lost if the modal is dismissed.
 - **Relationship to toasts:** an in-the-moment toast and a persisted notification can describe the same event (e.g. "app updated"). The toast is fire-and-forget; the notification is the durable copy. The brain decides per source whether to also toast; the dashboard does not synthesize toasts from notifications.
@@ -207,7 +207,7 @@ When email-on-file lands (its own `NEXT.md` Tier-2 item) and/or the mobile app s
 ## Knock-ons to other docs
 
 - **`HEALTH.md`** — issue raise/clear becomes the primary notification trigger. No change to the issue model; the brain's issue-raise path additionally emits a notification for allowlisted issue types. Worth a one-line cross-reference there.
-- **`UPDATES.md`** — the update outcomes it already surfaces (tile badges, Settings → Updates, toasts) additionally produce notifications per the list. The post-update toast and the notification are the durable/ephemeral pair described above.
+- **`UPDATES.md`** — the update outcomes it already surfaces (the tile banner, the app's settings page, toasts) additionally produce notifications per the list. The post-update toast and the notification are the durable/ephemeral pair described above.
 - **`LOGGING.md`** — the allowlisted security/account audit actions fan out to a notification in addition to the `audit_events` row. The audit row stays the system of record; the notification is the prunable, read-stateful copy.
 - **`BRAIN_UI_PROTOCOL.md`** — new `/api/v1/notifications` endpoint family (list, mark-read, dismiss, per-category mute) and new SSE `kind`s (`notification.created`, `notification.updated`).
 - **`WEB_UI.md`** — bell + dropdown inbox in the chrome; `useNotifications()` composable wrapping the list + unread-count `useQuery`s (notifications are server state → TanStack Query, not Pinia, per `WEB_UI.md`'s "server state lives in Query" rule; the dropdown open-state is component-local ephemeral state); SSE subscription invalidates those queries; unread-badge logic.

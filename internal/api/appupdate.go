@@ -490,7 +490,7 @@ func (s *Server) rollbackApp(ctx context.Context, in *struct {
 
 // acknowledgeAppUpdateFailure closes the tile's banner about the last failed
 // update (UPDATES.md # 6 Failure signaling: "persistent until acknowledged").
-// The failure stays in Settings → Updates and on the app's page. It is a view
+// The failure stays on the app's page. It is a view
 // choice that changes no access, so it is not audited.
 func (s *Server) acknowledgeAppUpdateFailure(ctx context.Context, in *struct {
 	ID string `path:"id"`

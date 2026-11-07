@@ -21,6 +21,13 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-07 — No Settings → Updates page, and no "update available" on the tile (#634)
+
+**Previously:** `UPDATES.md` # 6 had three surfaces: a tile badge when a new version is available, a Settings → Updates page with the aggregate view and the rollback button, and the toast.
+**Now:** the tile shows nothing about a new version. It shows a banner only when an update failed. There is no Settings → Updates page: each app's settings page already has the version, the update, a failure with View logs, and the rollback button. The notifications and the toast link there. The toast stays.
+**Why:** the maintainer's call after trying the UI. The page repeated what the app's page already says, and a badge for every new version is noise on the home screen: most updates apply on their own at night.
+**Affected docs:** `UPDATES.md` (# 6, # Locked decisions), `SETTINGS.md`, `DASHBOARD.md`, `NOTIFICATIONS.md`, `NEXT.md`, `docs/architecture.md`.
+
 ## 2026-11-07 — A rollback by hand turns the app's automatic update off (#634)
 
 **Previously:** no spec said what happens after a person rolls an app back by hand. The catalog still offers the version they left, so the nightly window would apply it again the next night.

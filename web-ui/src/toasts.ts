@@ -14,7 +14,7 @@ import { reactive } from "vue";
 export type ToastVariant = "error" | "success";
 
 // ToastLink is an optional link on a toast: the overnight-updates toast links
-// to the list in Settings → Updates (UPDATES.md # 6 Post-update toast, #634).
+// to the app's page, or the apps list (UPDATES.md # 6 Post-update toast, #634).
 export interface ToastLink {
   label: string;
   to: string;

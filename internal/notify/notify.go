@@ -463,14 +463,15 @@ func AppUpdateDedupKey(instanceID, kind, version string) string {
 	return "app-update:" + instanceID + ":" + kind + ":" + version
 }
 
-// updatesRoute is where an update notification links: Settings → Updates.
-const updatesRoute = "/settings/updates"
+// appRoute is where an update notification links: the app's settings page,
+// which shows the update, the failure and the rollback button (#634).
+func appRoute(instanceID string) string { return "/settings/apps/" + instanceID }
 
 // AppUpdateApplied tells the owner that the nightly window updated their app.
 func (n *Notifier) AppUpdateApplied(u AppUpdate) {
 	n.raiseAppUpdate(u, "applied", SeverityInfo,
 		u.Name+" updated to "+u.To,
-		"moose updated "+u.Name+" from version "+u.From+" to "+u.To+" overnight. If something does not work as before, you can go back to "+u.From+" from Settings → Updates for 7 days.")
+		"moose updated "+u.Name+" from version "+u.From+" to "+u.To+" overnight. If something does not work as before, you can go back to "+u.From+" from the app's settings for 7 days.")
 	n.AppUpdateDone(u.InstanceID, u.To)
 }
 
@@ -499,7 +500,7 @@ func (n *Notifier) AppUpdateFailed(u AppUpdate) {
 	body := "moose tried to update " + u.Name + " to version " + u.To + " overnight. It did not work, so moose went back to " + u.From + ". Your data is as it was before the update. moose tries again tomorrow night."
 	if u.Paused {
 		kind, summary = "paused", u.Name+" update is paused"
-		body = "moose tried to update " + u.Name + " to version " + u.To + " three nights in a row, and it did not work. " + u.Name + " still runs version " + u.From + ". moose stopped trying. You can still update it by hand from Settings → Updates."
+		body = "moose tried to update " + u.Name + " to version " + u.To + " three nights in a row, and it did not work. " + u.Name + " still runs version " + u.From + ". moose stopped trying. You can still update it by hand from the app's settings."
 	}
 	if u.StillDown {
 		body = "moose tried to update " + u.Name + " to version " + u.To + " overnight. It did not work, and the old version did not start again. Open the app's settings to start it."
@@ -513,7 +514,7 @@ func (n *Notifier) AppUpdateFailed(u AppUpdate) {
 func (n *Notifier) AppUpdateNeedsApproval(u AppUpdate) {
 	n.raiseAppUpdate(u, "approval", SeverityWarning,
 		u.Name+" "+u.To+" wants new access",
-		"Version "+u.To+" of "+u.Name+" asks for more access than "+u.From+" has. moose does not update it until you allow it. See what it asks for in Settings → Updates.")
+		"Version "+u.To+" of "+u.Name+" asks for more access than "+u.From+" has. moose does not update it until you allow it. See what it asks for in the app's settings.")
 }
 
 func (n *Notifier) raiseAppUpdate(u AppUpdate, kind string, sev Severity, summary, body string) {
@@ -529,8 +530,8 @@ func (n *Notifier) raiseAppUpdate(u AppUpdate, kind string, sev Severity, summar
 		Variant:     VariantActionable,
 		Summary:     summary,
 		Body:        body,
-		ActionLabel: "Open Updates",
-		ActionRoute: updatesRoute,
+		ActionLabel: "Open app settings",
+		ActionRoute: appRoute(u.InstanceID),
 	}
 	if u.Household {
 		note.Audience, note.UserID = AudienceAdmins, ""
