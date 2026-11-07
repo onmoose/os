@@ -8,7 +8,7 @@ Follows [review-agent-brief.md](review-agent-brief.md). Closes #645. Debian fixe
 
 ## What was done
 
-- **`BRAIN_RUNTIME_IMAGE`** in `dev/control-plane/images.lock` moves to `debian:trixie-slim@sha256:a72b4433…` (Debian 13.7, built 2026-11-04), which has apt 3.0.4. The same pin is the brain image's runtime base. The brain never runs apt at run time, so that copy was low risk, but it moves too.
+- **`BRAIN_RUNTIME_IMAGE`** in `dev/control-plane/images.lock` moves to `debian:trixie-slim@sha256:a72b4433…` (Debian 13.7, built 2026-11-04), which has apt 3.0.4. The same pin is the brain image's runtime base. The brain never runs apt at run time, so that copy was low risk, but it moves too. That changes the brain image bytes, so the new base reaches boxes with the next control-plane release.
 - **`rauc_run` fetches over https.** The slim image has no CA store, so it mounts the build host's CA bundle read-only (`/etc/ssl/certs/ca-certificates.crt`, or `/etc/pki/tls/certs/ca-bundle.crt`) and points apt at it with `Acquire::https::CaInfo`. Without that setting OpenSSL finds no trust store in the image and every fetch fails. With no bundle on the host, `rauc_run` stops with an error. It never falls back to http.
 - **Tested** by running `rauc_run` locally against the locked snapshot: apt 3.0.4, all three sources on https, rauc 1.13 installed. `make brain-image` builds on the new base, and the pin test passes. `CI / Cloud image` (publish=false) runs on the PR.
 
