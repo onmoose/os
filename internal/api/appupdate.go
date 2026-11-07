@@ -73,6 +73,24 @@ type AppUpdateDTO struct {
 	// running, and the caller is the owner of a personal app or an admin for
 	// a household app. An admin looking at another person's app gets false.
 	CanApprove bool `json:"can_approve"`
+	// FailedOvernight is true when the nightly window made the update that
+	// failed, so the tile can say "last night" (#634). FailedAcked is true
+	// once a person closed the tile's banner about the failure.
+	FailedOvernight bool `json:"failed_overnight"`
+	FailedAcked     bool `json:"failed_acked"`
+	// The last good update, while it can be rolled back by hand (#634):
+	// the version the app ran before it, when, and whether the nightly
+	// window made it. Empty when there is nothing to roll back to.
+	UpdatedFrom      string     `json:"updated_from,omitempty"`
+	UpdatedAt        *time.Time `json:"updated_at,omitempty"`
+	UpdatedOvernight bool       `json:"updated_overnight"`
+	// RollbackUntil is when the rollback by hand ends: 7 days after the
+	// update. CanRollback is true when the caller may roll the app back now
+	// with POST /apps/{id}/rollback: there is a version to go back to inside
+	// its 7 days, the app is running, stopped or failed, and the caller is
+	// the owner, or an admin for a household app.
+	RollbackUntil *time.Time `json:"rollback_until,omitempty"`
+	CanRollback   bool       `json:"can_rollback"`
 }
 
 // AppAccessWant is one piece of access a new version asks for (#633).
@@ -129,7 +147,20 @@ func appUpdateDTO(actor auth.Identity, i store.Instance) AppUpdateDTO {
 		at := i.UpdateFailure.At
 		d.FailedAt = &at
 	}
+	d.FailedOvernight, d.FailedAcked = i.UpdateFailure.ByWindow, i.UpdateFailure.Acked
+	if until, ok := lifecycle.RollbackUntil(i, time.Now()); ok {
+		at := i.LastUpdate.At
+		d.UpdatedFrom, d.UpdatedAt, d.UpdatedOvernight = i.LastUpdate.From, &at, i.LastUpdate.ByWindow
+		d.RollbackUntil = &until
+		d.CanRollback = lifecycle.RollbackState(i.State) && controlOK(actor, i)
+	}
 	return d
+}
+
+// controlOK is the app-control gate (authorizeAppMutation) for a caller who
+// can see the app: a household app is an admin's to control.
+func controlOK(actor auth.Identity, i store.Instance) bool {
+	return actor.IsAdmin() || (i.Scope != store.ScopeHousehold && actor.User.ID == i.OwnerUserID)
 }
 
 func (s *Server) registerAppUpdate(api huma.API) {
@@ -152,6 +183,21 @@ func (s *Server) registerAppUpdate(api huma.API) {
 		Summary:       "Keep the current version: the update prompt stops asking about this version (the owner, or an admin for a household app)",
 		DefaultStatus: 204,
 	}, s.declineAppUpdate)
+	huma.Register(api, huma.Operation{
+		OperationID: "rollback-app", Method: "POST", Path: "/api/v1/apps/{id}/rollback",
+		Summary:       "Put an app back on the version it ran before its last update, with the data it had then, for 7 days after the update (job; owner or admin)",
+		DefaultStatus: 202,
+	}, s.rollbackApp)
+	huma.Register(api, huma.Operation{
+		OperationID: "acknowledge-app-update-failure", Method: "POST", Path: "/api/v1/apps/{id}/update/acknowledge",
+		Summary:       "Close the tile's banner about the app's last failed update (owner or admin)",
+		DefaultStatus: 204,
+	}, s.acknowledgeAppUpdateFailure)
+	huma.Register(api, huma.Operation{
+		OperationID: "mark-updates-seen", Method: "POST", Path: "/api/v1/me/updates-seen",
+		Summary:       "Record that the person saw the toast about the apps updated overnight, so it shows once",
+		DefaultStatus: 204,
+	}, s.markUpdatesSeen)
 	huma.Register(api, huma.Operation{
 		OperationID: "dismiss-update-prompt", Method: "POST", Path: "/api/v1/me/update-prompt/dismiss",
 		Summary:       "Close the update prompt for this session; it comes back at the next sign-in",
@@ -387,4 +433,97 @@ func (s *Server) setAppAutoUpdate(ctx context.Context, in *struct {
 	dto := s.toDTO(ctx, inst, owner.Username, catEntry)
 	s.withPublicPaths(&dto)
 	return &struct{ Body InstanceDTO }{Body: dto}, nil
+}
+
+// rollbackApp is the rollback by hand (UPDATES.md # 4, # 6, #634). It puts
+// the app back on the version it ran before its last update, on the data it
+// had then, as a job. Data written since the update is lost: the dashboard
+// says so before it calls this. It has the app-control gate (the owner, or an
+// admin for a household app), and it is elevation-class: success, every
+// failure and every refusal are audited as app.update_rollback.
+func (s *Server) rollbackApp(ctx context.Context, in *struct {
+	ID string `path:"id"`
+}) (*struct{ Body Job }, error) {
+	id := in.ID
+	actor, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("unauthenticated")
+	}
+	inst, err := s.store.Get(id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, huma.Error404NotFound("no such app")
+	}
+	if err != nil {
+		return nil, huma.Error500InternalServerError("get failed", err)
+	}
+	if !canSee(actor, inst) {
+		return nil, huma.Error404NotFound("no such app")
+	}
+	target := audit.Target{Kind: "app", ID: id}
+	meta := map[string]any{"version": inst.Version, "new_version": inst.LastUpdate.From}
+	if !controlOK(actor, inst) {
+		s.auditor.Record(ctx, audit.ActionAppUpdateRollback, target, meta, false)
+		return nil, huma.Error403Forbidden("only an admin can roll back a household app")
+	}
+	refuse := func(reason string) error {
+		meta["reason"] = reason
+		s.auditor.Record(ctx, audit.ActionAppUpdateRollback, target, meta, false)
+		return huma.Error409Conflict(reason)
+	}
+	if _, ok := lifecycle.RollbackUntil(inst, time.Now()); !ok {
+		return nil, refuse("There is no earlier version of this app to go back to.")
+	}
+	if !lifecycle.RollbackState(inst.State) {
+		return nil, refuse("The app is busy. Try again when it has finished.")
+	}
+	jobCtx := ctx // for the audit inside the job goroutine
+	job := s.jobs.run("app-rollback", func(job *Job) (map[string]any, error) {
+		err := s.life.Rollback(context.Background(), id, job.setStep)
+		s.auditor.Record(jobCtx, audit.ActionAppUpdateRollback, target, meta, err == nil)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"instance_id": id}, nil
+	})
+	return &struct{ Body Job }{Body: job.snapshot()}, nil
+}
+
+// acknowledgeAppUpdateFailure closes the tile's banner about the last failed
+// update (UPDATES.md # 6 Failure signaling: "persistent until acknowledged").
+// The failure stays in Settings → Updates and on the app's page. It is a view
+// choice that changes no access, so it is not audited.
+func (s *Server) acknowledgeAppUpdateFailure(ctx context.Context, in *struct {
+	ID string `path:"id"`
+}) (*struct{}, error) {
+	if _, err := s.authorizeAppMutation(ctx, in.ID); err != nil {
+		return nil, err
+	}
+	if err := s.store.AckInstanceUpdateFailure(in.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("no such app")
+		}
+		return nil, huma.Error500InternalServerError("could not save the choice", err)
+	}
+	if s.bus != nil {
+		s.bus.Publish(events.AppUpdateChanged, map[string]any{"instance_id": in.ID})
+	}
+	return &struct{}{}, nil
+}
+
+// markUpdatesSeen records that the person saw the toast about the apps the
+// nightly window updated (UPDATES.md # 6 Post-update toast): the dashboard
+// shows it once, for the updates after this time. Stored per person, so it
+// shows once on any device.
+func (s *Server) markUpdatesSeen(ctx context.Context, _ *struct{}) (*struct{}, error) {
+	actor, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("unauthenticated")
+	}
+	if err := s.store.SetUpdatesSeen(actor.User.ID, time.Now()); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error401Unauthorized("unauthenticated")
+		}
+		return nil, huma.Error500InternalServerError("could not save the choice", err)
+	}
+	return &struct{}{}, nil
 }

@@ -509,7 +509,11 @@ components:
           type: boolean
         can_approve:
           type: boolean
+        can_rollback:
+          type: boolean
         declined:
+          type: boolean
+        failed_acked:
           type: boolean
         failed_at:
           format: date-time
@@ -521,11 +525,16 @@ components:
           type: string
         failed_message:
           type: string
+        failed_overnight:
+          type: boolean
         failed_version:
           type: string
         paused:
           type: boolean
         reason:
+          type: string
+        rollback_until:
+          format: date-time
           type: string
         status:
           enum:
@@ -535,6 +544,13 @@ components:
             - needs_newer_moose
             - blocked
           type: string
+        updated_at:
+          format: date-time
+          type: string
+        updated_from:
+          type: string
+        updated_overnight:
+          type: boolean
         wants:
           items:
             $ref: "#/components/schemas/AppAccessWant"
@@ -547,6 +563,10 @@ components:
         - wants
         - declined
         - can_approve
+        - failed_overnight
+        - failed_acked
+        - updated_overnight
+        - can_rollback
       type: object
     AppUseDTO:
       additionalProperties: false
@@ -3110,6 +3130,9 @@ components:
           type: boolean
         update_prompt_dismissed:
           type: boolean
+        updates_seen_at:
+          format: int64
+          type: integer
         username:
           type: string
       required:
@@ -3600,6 +3623,29 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Bind an app to one of the caller's outgoing-mail providers (empty provider_id unbinds)
+  /api/v1/apps/{id}/rollback:
+    post:
+      operationId: rollback-app
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+          description: Accepted
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Put an app back on the version it ran before its last update, with the data it had then, for 7 days after the update (job; owner or admin)
   /api/v1/apps/{id}/secrets:
     get:
       operationId: get-app-secrets
@@ -3692,6 +3738,25 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Update an app to the catalog's new version (job; owner or admin)
+  /api/v1/apps/{id}/update/acknowledge:
+    post:
+      operationId: acknowledge-app-update-failure
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: No Content
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Close the tile's banner about the app's last failed update (owner or admin)
   /api/v1/apps/{id}/update/approve:
     post:
       operationId: approve-app-update
@@ -4389,6 +4454,19 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Close the update prompt for this session; it comes back at the next sign-in
+  /api/v1/me/updates-seen:
+    post:
+      operationId: mark-updates-seen
+      responses:
+        "204":
+          description: No Content
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Record that the person saw the toast about the apps updated overnight, so it shows once
   /api/v1/notifications:
     get:
       operationId: list-notifications

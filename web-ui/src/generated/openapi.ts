@@ -247,6 +247,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Put an app back on the version it ran before its last update, with the data it had then, for 7 days after the update (job; owner or admin) */
+        post: operations["rollback-app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/{id}/secrets": {
         parameters: {
             query?: never;
@@ -309,6 +326,23 @@ export interface paths {
         put?: never;
         /** Update an app to the catalog's new version (job; owner or admin) */
         post: operations["update-app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{id}/update/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close the tile's banner about the app's last failed update (owner or admin) */
+        post: operations["acknowledge-app-update-failure"];
         delete?: never;
         options?: never;
         head?: never;
@@ -805,6 +839,23 @@ export interface paths {
         put?: never;
         /** Close the update prompt for this session; it comes back at the next sign-in */
         post: operations["dismiss-update-prompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/updates-seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record that the person saw the toast about the apps updated overnight, so it shows once */
+        post: operations["mark-updates-seen"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1395,18 +1446,27 @@ export interface components {
             available_version?: string;
             can_apply: boolean;
             can_approve: boolean;
+            can_rollback: boolean;
             declined: boolean;
+            failed_acked: boolean;
             /** Format: date-time */
             failed_at?: string;
             /** Format: int64 */
             failed_count?: number;
             failed_kind?: string;
             failed_message?: string;
+            failed_overnight: boolean;
             failed_version?: string;
             paused: boolean;
             reason?: string;
+            /** Format: date-time */
+            rollback_until?: string;
             /** @enum {string} */
             status?: "available" | "needs_approval" | "service_major" | "needs_newer_moose" | "blocked";
+            /** Format: date-time */
+            updated_at?: string;
+            updated_from?: string;
+            updated_overnight: boolean;
             wants: components["schemas"]["AppAccessWant"][] | null;
         };
         AppUseDTO: {
@@ -2574,6 +2634,8 @@ export interface components {
             role: string;
             single_user_mode?: boolean;
             update_prompt_dismissed?: boolean;
+            /** Format: int64 */
+            updates_seen_at?: number;
             username: string;
         };
     };
@@ -3247,6 +3309,37 @@ export interface operations {
             };
         };
     };
+    "rollback-app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "get-app-secrets": {
         parameters: {
             query?: never;
@@ -3359,6 +3452,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Job"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "acknowledge-app-update-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
@@ -4375,6 +4497,33 @@ export interface operations {
         };
     };
     "dismiss-update-prompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mark-updates-seen": {
         parameters: {
             query?: never;
             header?: never;
