@@ -1,6 +1,27 @@
 # Code review
 
-Source of truth for reviewing a PR on moose. Used both by contributors running a self-review on their own open PR (Step 7 of [`contributing.md`](contributing.md)) and by a dedicated review agent. The lenses here define what "reviewed" means on this project.
+Source of truth for reviewing a PR on moose. Used both by contributors running a self-review on their own open PR (Step 7 of [`contributing.md`](contributing.md)) and by a review agent, started as # The review agent below says. The lenses here define what "reviewed" means on this project.
+
+## The review agent
+
+The self-review (Step 7 of [`contributing.md`](contributing.md), half 1) is done by a new agent that you start for it. It must have:
+
+- **A fresh context.** It gets no conversation history, so it has no stake in the choices the author made. A fork of your session does not count: it carries your whole conversation.
+- **Sonnet as its model.** Set the model when you start it (in Claude Code, the Agent tool with `model: "sonnet"`).
+- **This brief, as its prompt**, with `<N>` and `<slug>` filled in:
+
+```
+You review pull request #<N> in the moose repo, with no other context. Do not edit files, commit, push or post on the PR. Only report.
+1. Read docs/dev/code-review.md end to end, and follow it: what to read first, the lenses, the severity levels, the prior review comments rule.
+2. Read what it says to read before the diff: the issue the PR closes, docs/progress/<slug>.md, the spec sections that entry names, and CLAUDE.md.
+3. Read the existing review comments (gh pr view <N> --comments, and gh api repos/onmoose/os/pulls/<N>/comments) and confirm, dismiss or extend each one. If Greptile has not posted yet, say so.
+4. Read the whole diff (git fetch origin, then git diff origin/dev...origin/<head branch>). Review all of it: test code, fixtures, CI workflows, lane scripts and docs are part of the change, and on some PRs they are the whole change. Never skip a file because it is a test, a fixture or markdown.
+5. Check claims against the code. When the diff or the progress entry says how other code behaves (a field name, a timing, an order of steps), open that code and check it. A claim you did not check is a Question, not a finding.
+6. Check the docs rules in CLAUDE.md: plain English (B1), no em dashes in new text, no hard-wrapped markdown, the doc maps and the progress index updated.
+Report findings most severe first: severity, file:line, what is wrong, a concrete failure scenario, a fix. Then what you checked and found fine. Under 900 words.
+```
+
+**Do not use the `/code-review` skill for this.** It runs as a fork of your session, so it sees your whole conversation and runs on your session's model, whatever model you ask for. At its low effort it also skips tests, fixtures and markdown. On #643, a PR of test-lane code and docs, it reported nothing, and a Sonnet agent with this brief then found a Block.
 
 ## Before you start
 

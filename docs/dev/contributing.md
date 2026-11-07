@@ -119,13 +119,7 @@ PR body must include **`Closes #<N>`** — do not delete this line. It is the on
 
 A finished self-review has **two halves**, and the PR is not ready for the maintainer until both have been read and acted on.
 
-**Half 1 — a fresh review agent.** It receives only the diff and your progress document — no conversation history — so it has no attachment to the implementation choices you made. In Claude Code, run:
-
-```
-/code-review low Read docs/progress/<your-slug>.md first for context, then review the diff per docs/dev/code-review.md.
-```
-
-`/code-review low` spawns a fresh subagent with no access to your conversation history, which is what makes it impartial. The `low` effort level limits output to high-confidence findings — fast and cheap. Use `high` or `max` for a particularly complex or risky slice.
+**Half 1: the review agent.** A new agent, on Sonnet, with a fresh context: it gets no conversation history, so it has no attachment to the choices you made. It reads [`code-review.md`](code-review.md) end to end and follows it, reviews the whole diff (test code, fixtures, CI and docs included), and checks the diff's claims against the code. Start it with the brief in [`code-review.md`](code-review.md) # The review agent, filled in with your PR number and progress entry. Do not use the `/code-review` skill: it is a fork of your session, so it sees your history and runs on your model, and at low effort it skips tests and docs.
 
 **Half 2 — Greptile.** It runs automatically on the open PR and posts its review as a **PR comment a few minutes after the PR opens**, so it is usually not there the moment you look. Read it with `gh pr view <N> --comments` (plus `gh api repos/{owner}/{repo}/pulls/<N>/comments` for line-level comments), then confirm, dismiss, or extend each finding per [`code-review.md`](code-review.md) # Prior review comments.
 
@@ -319,7 +313,7 @@ In step 5, resolve `VERSION` to the new `X.Y.Z`: that is now the last released v
 - [ ] Schema changes additive-only; no dropped or renamed columns.
 - [ ] No swallowed errors (`_ = err`); user-facing error messages are plain English, not raw Go error strings.
 - [ ] Commits are logical units with "why" messages; no micro-commit or WIP history.
-- [ ] PR opened first, then self-review run — **both halves**: the fresh agent (`/code-review low` with the progress doc as context per [`code-review.md`](code-review.md)) **and** Greptile's PR comment, which lands minutes after the PR opens and is not optional. All Block findings addressed, disagreements noted in Known gaps.
+- [ ] PR opened first, then self-review run — **both halves**: the review agent (Sonnet, fresh context, the brief in [`code-review.md`](code-review.md) # The review agent) **and** Greptile's PR comment, which lands minutes after the PR opens and is not optional. All Block findings addressed, disagreements noted in Known gaps.
 - [ ] Branched off a fresh `dev` (`git checkout dev && git pull` before branching); branch named `<area>/<N>-<short-slug>`.
 - [ ] One PR closes exactly one issue; if scope grew, the issue was split first.
 - [ ] Review feedback addressed with fixup commits on the existing branch, not a new PR; if the PR was replaced, the old one was closed first with "Supersedes #<N>".
