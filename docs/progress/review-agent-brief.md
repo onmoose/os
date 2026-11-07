@@ -9,7 +9,7 @@ Follows [app-update-boot.md](app-update-boot.md) (#643). Step 7 of `contributing
 ## What was done
 
 - **`code-review.md` # The review agent.** What the self-review agent must be (a new agent with a fresh context, on Sonnet), and the brief to start it with, filled in with the PR number and the progress entry. The brief reads `code-review.md` first and follows it, reads the existing review comments, reviews the whole diff with tests, fixtures, CI and docs included, checks the diff's claims against the code, and checks the docs rules.
-- **`contributing.md` # Step 7 and the checklist, and `CLAUDE.md`,** point at that section, and say not to use the `/code-review` skill, and why.
+- **`contributing.md` # Step 7 and the checklist, and `CLAUDE.md`,** only point at that section. `code-review.md` holds the whole rule, including why the `/code-review` skill is not used, so it is written down once.
 - **The brief lives in the docs, not in a tool's config** (such as a `.claude/agents/` file), so every contributor and every tool reads the same rule (`CLAUDE.md` # Documentation discipline).
 
 ## Known gaps
