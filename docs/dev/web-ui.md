@@ -69,6 +69,8 @@ web-ui/
     ├── installSteps.ts     # the install flow as pages: plan -> pages, AI needs,
     │                       #   the key picked in advance, the session-storage
     │                       #   draft, and the page that owns a 422
+    ├── updates.ts          # the words for app update outcomes (#634): the failed
+    │                       #   step, the tile banner, which apps the toast counts
     │
     ├── views/              # one component per route (lazy-loaded)
     │   ├── HomeView.vue        # installed-app grid
@@ -90,6 +92,7 @@ web-ui/
     │       ├── ActivitySection.vue       # audit-log browser (all users)
     │       ├── UsersSection.vue          # admin-only user management
     │       ├── InstalledAppDetailSection.vue # one app: controls, email, secrets, settings + AI service pickers, logs
+    │       ├── UpdatesSection.vue        # what the app updates did, what waits, what failed, Go back (#634)
     │       ├── LLMProvidersSection.vue   # /settings/ai, Integrations → AI services: the user's own AI accounts (add: ServiceGrid + AIKeyForm)
     │       ├── EmailSection.vue          # Integrations → Email: the user's own SMTP account list
     │       ├── EmailAddSection.vue       # /email/add + /email/add/:preset (MailServiceGrid + MailAddForm; /settings/mail/* redirect here)
@@ -119,6 +122,9 @@ web-ui/
         ├── ToastHost.vue
         ├── UpdatePrompt.vue    # the update prompt (#633): mounted in AppShell, opens once per
         │                       #   session for updates that ask for more access
+        ├── UpdatesToast.vue    # "3 apps updated overnight" (#634): mounted in AppShell, once per person
+        ├── RollbackButton.vue  # Go back to <version> with its confirm dialog (#634): the app's
+        │                       #   settings page and Settings → Updates
         ├── PermissionList.vue  # one line per permission, write access in red; used by the
         │                       #   install info box, the update prompt, the app's settings, Users
         ├── ui/                 # owned base parts: Button, Heading, ConfirmDialog

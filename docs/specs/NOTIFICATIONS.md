@@ -127,9 +127,9 @@ The curated set of events that produce a notification. New entries are added by 
 | OS / host-agent / brain+UI update available | info | **Admin only** |
 | System update applied; reboot pending > 7 days | info | Admin |
 | OS update applied, or reverted to the previous release (built on hosted, #563: one notification per outcome, read off host-agent's update-target report; replaces the row above) | info, or warning when reverted | Admin |
-| App auto-updated overnight | info | **Owner** (Tier-2 → Admin) |
-| App update needs permission approval | warning | **Owner** (mirrors the existing on-login modal) |
-| App update failed / rolled back | error | **Owner** (Tier-2 → Admin) |
+| App auto-updated overnight (built, #634: the nightly window's good update; a household app's go to the admins) | info | **Owner** (Tier-2 → Admin) |
+| App update needs permission approval (built, #634: once per version, when the check first finds it; to whoever may allow it) | warning | **Owner** (mirrors the existing on-login modal) |
+| App update failed / rolled back (built, #634: the window's failure, and a separate "update is paused" after the third in a row) | error | **Owner** (Tier-2 → Admin) |
 
 **Security / account** — source: allowlisted audit actions
 
