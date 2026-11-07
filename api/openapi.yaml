@@ -473,12 +473,17 @@ components:
         failed_at:
           format: date-time
           type: string
+        failed_count:
+          format: int64
+          type: integer
         failed_kind:
           type: string
         failed_message:
           type: string
         failed_version:
           type: string
+        paused:
+          type: boolean
         reason:
           type: string
         status:
@@ -491,6 +496,7 @@ components:
           type: string
       required:
         - can_apply
+        - paused
       type: object
     AppUseDTO:
       additionalProperties: false
@@ -2962,6 +2968,8 @@ components:
         detail:
           type: string
         from:
+          type: string
+        hold_until:
           type: string
         last:
           $ref: "#/components/schemas/ControlPlaneOutcomeDTO"

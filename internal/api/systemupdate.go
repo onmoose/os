@@ -166,6 +166,10 @@ type UpdateTargetDTO struct {
 	// OS is stream A's last decision, beside stream B's above (UPDATES.md #
 	// 1, #563). Absent when host-agent reports nothing about the OS.
 	OS *OSUpdateDTO `json:"os,omitempty"`
+	// HoldUntil is when the brain's own hold on the OS switch ends, RFC3339,
+	// while one is live (#632): the box is updating apps, and the OS switch
+	// and its restart wait. Absent when there is no hold.
+	HoldUntil string `json:"hold_until,omitempty"`
 }
 
 // OSUpdateDTO is stream A on the update-target read: the OS this box runs,
@@ -282,6 +286,7 @@ func (s *Server) getSystemUpdateTarget(ctx context.Context, _ *struct{}) (*struc
 		Zone:       t.Zone,
 		Last:       controlPlaneOutcomeDTO(t.Last),
 		OS:         osUpdateDTO(t.OS),
+		HoldUntil:  t.HoldUntil,
 	}
 	if t.Target != nil {
 		out.Target = &UpdateTargetOfferDTO{

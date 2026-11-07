@@ -102,6 +102,10 @@ func startUpdateTarget(brainCfg brainlaunch.Config, a *hostagent.Agent, poller *
 	// POST /v1/jobs/system-update-target: an admin's Update now applies the
 	// target this loop checked (#488).
 	a.TargetApplier = loopApplier{loop}
+	// PUT and DELETE /v1/system/update-hold: the brain holds the OS switch
+	// while it updates apps (#632). The loop cuts every hold to the lease
+	// and the cap itself.
+	a.UpdateHold = loop
 	ctx, cancel := context.WithCancel(context.Background())
 	go loop.Run(ctx)
 	// The window here is the local setting. A source that names its own window
@@ -154,6 +158,10 @@ func repositories() updatetarget.Repositories {
 // what puts a target-driven update under the same single job lock as an
 // admin-triggered one (hostagent.Agent.StartUpdate).
 type agentApplier struct{ a *hostagent.Agent }
+
+// JobRunning reports whether the update job still runs, for the loop's
+// "stream B is done tonight" (updatetarget.Loop.ControlPlaneDone).
+func (ap agentApplier) JobRunning(id string) bool { return ap.a.JobRunning(id) }
 
 func (ap agentApplier) StartUpdate(brainRef, uiRef, version string) (string, error) {
 	job, err := ap.a.StartUpdateTo(brainRef, uiRef, version)

@@ -439,6 +439,11 @@ type Agent struct {
 	// TargetApplier, when non-nil, backs POST /v1/jobs/system-update-target:
 	// apply the loop's checked target now (#488). Nil is a 501.
 	TargetApplier TargetApplier
+	// UpdateHold, when non-nil, backs PUT and DELETE /v1/system/update-hold:
+	// the brain's hold on the OS switch while it updates apps (#632). The
+	// update-target loop in cmd/host-agent-real, an in-memory hold in the
+	// fake. Nil is a 501.
+	UpdateHold UpdateHolder
 	// LastUpdate, when non-nil, keeps the outcome of every control-plane
 	// update on disk, so it outlives the brain the update replaced (#488).
 	LastUpdate LastUpdateSaver
@@ -495,6 +500,8 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/system/resources", a.systemResources)
 	mux.HandleFunc("GET /v1/system/gpu", a.systemGPU)
 	mux.HandleFunc("GET /v1/system/update-target", a.systemUpdateTarget)
+	mux.HandleFunc("PUT "+protocol.UpdateHoldPath, a.setUpdateHold)
+	mux.HandleFunc("DELETE "+protocol.UpdateHoldPath, a.clearUpdateHold)
 	mux.HandleFunc("POST /v1/auth/verify-password", a.verifyPassword)
 	mux.HandleFunc("POST /v1/auth/set-password", a.setPassword)
 	mux.HandleFunc("POST /v1/auth/set-role", a.setRole)

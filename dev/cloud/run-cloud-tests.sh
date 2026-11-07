@@ -138,7 +138,8 @@ BOX_ID_OS_REVERT=wren-maple
 # All of these are in the gate: see ci-cloud-image.yml.
 #   - `os-update` and `os-revert` (#563) prove the A/B OS update on the booted
 #     image. `os-update`: a wrong digest is refused, the bundle installs into
-#     slot B ahead of the window, the box switches in the window, boots slot B
+#     slot B ahead of the window, a hold like the brain's keeps Update now from
+#     switching until it is cleared (#632), the box switches, boots slot B
 #     and marks it good, with the owner, an app, the SSH host keys and the data
 #     intact. `os-revert`: the same bundle, but host-agent cannot start on
 #     slot B, so the image's safety-net timer reboots the box and it comes back

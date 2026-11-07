@@ -83,8 +83,10 @@ type Instance struct {
 	AutoUpdateOff bool
 	// Update is what the last update check found for this instance, and
 	// UpdateFailure the last update that did not go through (updates.go).
+	// UpdateTry is the last try of the nightly window (#632).
 	Update        UpdateCheck
 	UpdateFailure UpdateFailure
+	UpdateTry     UpdateTry
 	CreatedAt     time.Time
 }
 
@@ -207,6 +209,9 @@ func (s *Store) migrate() error {
 			update_failed_kind TEXT NOT NULL DEFAULT '',
 			update_failed_message TEXT NOT NULL DEFAULT '',
 			update_failed_at INTEGER NOT NULL DEFAULT 0,
+			update_failed_count INTEGER NOT NULL DEFAULT 0,
+			update_tried_version TEXT NOT NULL DEFAULT '',
+			update_tried_night TEXT NOT NULL DEFAULT '',
 			created_at  INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS instance_images (
@@ -515,6 +520,11 @@ func (s *Store) migrate() error {
 		{"instances", "update_failed_kind", "ALTER TABLE instances ADD COLUMN update_failed_kind TEXT NOT NULL DEFAULT ''"},
 		{"instances", "update_failed_message", "ALTER TABLE instances ADD COLUMN update_failed_message TEXT NOT NULL DEFAULT ''"},
 		{"instances", "update_failed_at", "ALTER TABLE instances ADD COLUMN update_failed_at INTEGER NOT NULL DEFAULT 0"},
+		// No failure in a row and no try by the nightly window yet, for every
+		// app from before the columns (#632).
+		{"instances", "update_failed_count", "ALTER TABLE instances ADD COLUMN update_failed_count INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_tried_version", "ALTER TABLE instances ADD COLUMN update_tried_version TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_tried_night", "ALTER TABLE instances ADD COLUMN update_tried_night TEXT NOT NULL DEFAULT ''"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
 		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
 		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
@@ -1142,7 +1152,7 @@ func (s *Store) Delete(id string) error {
 	return err
 }
 
-const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, auto_update_off, update_version, update_status, update_reason, update_failed_version, update_failed_kind, update_failed_message, update_failed_at, created_at`
+const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, auto_update_off, update_version, update_status, update_reason, update_failed_version, update_failed_kind, update_failed_message, update_failed_at, update_failed_count, update_tried_version, update_tried_night, created_at`
 
 func (s *Store) Get(id string) (Instance, error) {
 	return scan(s.db.QueryRow(
@@ -1798,7 +1808,8 @@ func scan(row scanner) (Instance, error) {
 	var created, pendingRecreate, autoRestartOff, lastAutoRestart, autoUpdateOff, failedAt int64
 	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &autoRestartOff, &i.AutoRestarts, &lastAutoRestart,
 		&autoUpdateOff, &i.Update.Version, &i.Update.Status, &i.Update.Reason,
-		&i.UpdateFailure.Version, &i.UpdateFailure.Kind, &i.UpdateFailure.Message, &failedAt, &created)
+		&i.UpdateFailure.Version, &i.UpdateFailure.Kind, &i.UpdateFailure.Message, &failedAt, &i.UpdateFailure.Count,
+		&i.UpdateTry.Version, &i.UpdateTry.Night, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, ErrNotFound
 	}

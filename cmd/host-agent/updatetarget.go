@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/onmoose/os/internal/hostagent"
@@ -37,7 +38,7 @@ func fakeUpdateTarget() protocol.UpdateTarget {
 		Running:    protocol.ControlPlanePair{Brain: fakeRunningBrain, UI: fakeRunningUI},
 		CheckedAt:  time.Now().UTC().Format(time.RFC3339),
 		From:       "default",
-		Window:     "03:00-04:00",
+		Window:     fakeWindow().String(),
 		WindowFrom: "default",
 		Profile:    "appliance",
 	}
@@ -49,8 +50,9 @@ func fakeUpdateTarget() protocol.UpdateTarget {
 	}
 
 	out.OS = fakeOSUpdate()
-	// The dev machine's own zone, read the way the real loop reads it.
-	_, out.Zone = updatetarget.SystemZone()
+	// The dev machine's own zone, read the way the real loop reads it, or
+	// UTC when it cannot be named.
+	_, out.Zone = fakeZone()
 	if os.Getenv("MOOSE_FAKE_UPDATE_PROFILE") == "hosted" {
 		out.Profile, out.AutoApply = "hosted", true
 	}
@@ -219,4 +221,120 @@ func (f fakeTargetApplier) ApplyTarget() (string, error) {
 	}
 	idc <- job.ID
 	return job.ID, nil
+}
+
+// fakeWindow is the window the fake reports: MOOSE_FAKE_UPDATE_WINDOW, or the
+// default when it is unset or cannot be read.
+func fakeWindow() updatetarget.Window {
+	w, err := updatetarget.ParseWindow(os.Getenv("MOOSE_FAKE_UPDATE_WINDOW"))
+	if err != nil {
+		slog.Warn("host-agent (fake): MOOSE_FAKE_UPDATE_WINDOW is not HH:MM-HH:MM; using the default", "err", err)
+		return updatetarget.DefaultWindow
+	}
+	return w
+}
+
+// fakeZone is the dev machine's zone, the way the real loop reads it, or UTC
+// when it cannot be named. A real box always names its zone; a nameless one
+// would send the brain to its fallback.
+func fakeZone() (*time.Location, string) {
+	loc, name := updatetarget.SystemZone()
+	if name == "" {
+		return time.UTC, "UTC"
+	}
+	return loc, name
+}
+
+// fakeHold is the fake's side of PUT and DELETE /v1/system/update-hold
+// (#632). It cuts a hold the way the real loop does, to the lease and to the
+// window's end minus the cap, so a brain in dev sees the same answers.
+type fakeHold struct {
+	r   *hostagent.FakeUpdateTargetReporter
+	mu  sync.Mutex
+	end time.Time
+	now func() time.Time
+}
+
+func newFakeHold(r *hostagent.FakeUpdateTargetReporter) *fakeHold {
+	return &fakeHold{r: r, now: time.Now}
+}
+
+// window is the window and zone of the current report.
+func (h *fakeHold) window() (updatetarget.Window, *time.Location) {
+	rep := h.r.Read()
+	w, err := updatetarget.ParseWindow(rep.Window)
+	if err != nil {
+		w = updatetarget.DefaultWindow
+	}
+	loc := time.UTC
+	if l, err := time.LoadLocation(rep.Zone); err == nil && rep.Zone != "" {
+		loc = l
+	}
+	return w, loc
+}
+
+func (h *fakeHold) SetHold(until time.Time) time.Time {
+	w, loc := h.window()
+	now := h.now().In(loc)
+	end := until
+	if lim := now.Add(protocol.UpdateHoldLease); end.After(lim) {
+		end = lim
+	}
+	if limit := updatetarget.HoldCap(w, now); end.After(limit) {
+		end = limit
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !end.After(now) {
+		h.end = time.Time{}
+		return time.Time{}
+	}
+	if !h.end.After(now) {
+		slog.Info("host-agent (fake): the brain holds the OS switch", "until", end.Format(time.RFC3339))
+	}
+	h.end = end
+	return end
+}
+
+func (h *fakeHold) ClearHold() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.end.After(h.now()) {
+		slog.Info("host-agent (fake): the brain cleared its hold on the OS switch")
+	}
+	h.end = time.Time{}
+}
+
+// live is the end of the live hold, or false.
+func (h *fakeHold) live() (time.Time, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.end.After(h.now()) {
+		return time.Time{}, false
+	}
+	return h.end, true
+}
+
+// fakeReport is the fake's GET /v1/system/update-target: the canned report,
+// plus the two fields that move with the clock (#632). The fake has no
+// control plane that applies in the window, so stream B is done whenever
+// the window is open and nothing waits to apply.
+type fakeReport struct {
+	r    *hostagent.FakeUpdateTargetReporter
+	hold *fakeHold
+}
+
+func (f fakeReport) Read() protocol.UpdateTarget {
+	out := f.r.Read()
+	w, loc := f.hold.window()
+	done := ""
+	pending := out.AutoApply && out.State == protocol.UpdateTargetAvailable
+	if night, ok := updatetarget.NightOf(w, f.hold.now().In(loc)); ok && !pending {
+		done = night.Format(time.DateOnly)
+	}
+	out.ControlPlaneDoneNight = &done
+	if end, ok := f.hold.live(); ok {
+		out.HoldUntil = end.UTC().Format(time.RFC3339)
+	}
+	return out
 }

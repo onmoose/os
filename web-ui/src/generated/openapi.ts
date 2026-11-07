@@ -1332,9 +1332,12 @@ export interface components {
             can_apply: boolean;
             /** Format: date-time */
             failed_at?: string;
+            /** Format: int64 */
+            failed_count?: number;
             failed_kind?: string;
             failed_message?: string;
             failed_version?: string;
+            paused: boolean;
             reason?: string;
             /** @enum {string} */
             status?: "available" | "needs_approval" | "service_major" | "needs_newer_moose" | "blocked";
@@ -2461,6 +2464,7 @@ export interface components {
             checked_at?: string;
             detail?: string;
             from?: string;
+            hold_until?: string;
             last?: components["schemas"]["ControlPlaneOutcomeDTO"];
             os?: components["schemas"]["OSUpdateDTO"];
             profile?: string;

@@ -509,3 +509,16 @@ func TestUpdateTarget_ZoneAndLast(t *testing.T) {
 		t.Errorf("last = %+v, want the reverted health failure", b.Last)
 	}
 }
+
+// The brain's hold on the OS switch reaches the dashboard (#632).
+func TestUpdateTarget_HoldUntil(t *testing.T) {
+	h := newUpdateHarness(t)
+	h.target = protocol.UpdateTarget{State: protocol.UpdateTargetCurrent, HoldUntil: "2026-11-07T02:20:00Z"}
+	out, err := h.readTarget(adminCtx("u_admin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Body.HoldUntil != "2026-11-07T02:20:00Z" {
+		t.Fatalf("hold_until = %q, want the hold's end", out.Body.HoldUntil)
+	}
+}

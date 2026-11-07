@@ -245,6 +245,54 @@ func (c *Client) SystemUpdateTarget(ctx context.Context) (protocol.UpdateTarget,
 	return out, err
 }
 
+// SetUpdateHold sets or renews the brain's hold on the OS switch, until until
+// (PUT /v1/system/update-hold, #632, UPDATES.md # 7 Reboots). host-agent cuts
+// it to its lease and to the window's end minus its cap, and returns the end
+// it kept: the zero time when the hold is not live after the cuts. An older
+// host-agent with no such route answers an error, and then nothing holds
+// the switch.
+//
+// ErrHoldUnsupported means this host-agent cannot hold the switch at all: one
+// from before #632 (404 or 405), or one with no update loop (501
+// hold-unsupported), which has no switch to hold either. Any other error is a
+// hold that failed this time.
+func (c *Client) SetUpdateHold(ctx context.Context, until time.Time) (time.Time, error) {
+	resp, err := c.request(ctx, "PUT", protocol.UpdateHoldPath, protocol.UpdateHold{Until: until.UTC().Format(time.RFC3339)})
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound, resp.StatusCode == http.StatusMethodNotAllowed, resp.StatusCode == http.StatusNotImplemented:
+		return time.Time{}, fmt.Errorf("%w: %w", ErrHoldUnsupported, statusErr(protocol.UpdateHoldPath, resp))
+	case resp.StatusCode >= 300:
+		return time.Time{}, statusErr(protocol.UpdateHoldPath, resp)
+	}
+	var out protocol.UpdateHold
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return time.Time{}, fmt.Errorf("host-agent %s: read the answer: %w", protocol.UpdateHoldPath, err)
+	}
+	if out.Until == "" {
+		return time.Time{}, nil
+	}
+	end, err := time.Parse(time.RFC3339, out.Until)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("host-agent %s: read the kept end: %w", protocol.UpdateHoldPath, err)
+	}
+	return end, nil
+}
+
+// ErrHoldUnsupported is returned by SetUpdateHold when this host-agent cannot
+// hold the OS switch at all. The nightly loop then runs its app updates
+// without a hold, and waits on any other error (UPDATES.md # 7 Reboots).
+var ErrHoldUnsupported = errors.New("host-agent cannot hold the OS switch")
+
+// ClearUpdateHold ends the brain's hold on the OS switch at once (DELETE
+// /v1/system/update-hold, #632). It succeeds when there was no hold.
+func (c *Client) ClearUpdateHold(ctx context.Context) error {
+	return c.do(ctx, "DELETE", protocol.UpdateHoldPath, nil, nil)
+}
+
 // SystemHealth returns host-agent's locus-B findings report across categories
 // (HEALTH.md # Detector catalog, BRAIN_HOST_PROTOCOL.md). host-agent always
 // returns 200 with a parseable payload, so a transport error here is genuinely

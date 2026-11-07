@@ -47,6 +47,11 @@
 //	                    (default) or any OS state. With "installed" and the
 //	                    hosted profile, Update now also plays the OS switch
 //	                    and its restart (#509).
+//	MOOSE_FAKE_UPDATE_WINDOW: the update window that report names, in
+//	                    HH:MM-HH:MM (default 03:00-04:00). The brain's nightly
+//	                    app updates read it (#632), so a wide window such as
+//	                    00:00-23:59 lets them run in dev. The zone is the dev
+//	                    machine's, or UTC when it cannot be named.
 package main
 
 import (
@@ -164,7 +169,11 @@ func main() {
 	// the dev box's real network.
 	a.Net = hostagent.NewFakeNetState(netstate.LANInterface{Name: "eth0", Index: 2, IPv4: "192.168.1.20"})
 	updateReport := hostagent.NewFakeUpdateTargetReporter(fakeUpdateTarget())
-	a.UpdateTarget = updateReport
+	// The brain's hold on the OS switch (#632). The fake has no switch, so
+	// the hold is only kept and reported, with the real cuts.
+	hold := newFakeHold(updateReport)
+	a.UpdateTarget = fakeReport{r: updateReport, hold: hold}
+	a.UpdateHold = hold
 	a.TargetApplier = fakeTargetApplier{a: a, r: updateReport}
 
 	mux := http.NewServeMux()

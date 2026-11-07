@@ -2,6 +2,8 @@
 // host-agent (BRAIN_HOST_PROTOCOL.md). HTTP/JSON over a UNIX socket.
 package protocol
 
+import "time"
+
 // SocketPath is the production socket location. In dev the brain and the
 // fake host-agent agree on a path via MOOSE_AGENT_SOCK.
 const SocketPath = "/var/run/moose/agent.sock"
@@ -700,6 +702,50 @@ type UpdateTarget struct {
 	// OS is stream A's last decision, beside stream B's above (UPDATES.md # 1,
 	// #563). Nil when this host-agent reports nothing about the OS.
 	OS *OSUpdate `json:"os,omitempty"`
+	// ControlPlaneDoneNight says stream B is finished for tonight's window
+	// (#632): the night it is done for, as "YYYY-MM-DD", the date the window
+	// opened on. It is the date when the window is open, the loop checked its
+	// source inside this window, and stream B will do nothing more tonight:
+	// there was nothing to do (current, none, refused, unreachable, disabled,
+	// or the appliance, which never applies in the window), or tonight's one
+	// attempt is over and no update job runs. It is "" otherwise. The brain
+	// starts the night's app updates only when it names tonight
+	// (UPDATES.md # 7).
+	//
+	// A pointer, so the brain can tell a host-agent that knows the field (it
+	// always sends it, "" included) from an older one that does not send it,
+	// and then falls back to its own reading of state and checked_at.
+	ControlPlaneDoneNight *string `json:"control_plane_done_night,omitempty"`
+	// HoldUntil is when the brain's hold on the OS switch ends, RFC3339, while
+	// one is live (PUT /v1/system/update-hold, #632). Empty when there is no
+	// hold. While it is set, stream A installs but does not switch.
+	HoldUntil string `json:"hold_until,omitempty"`
+}
+
+// UpdateHoldPath is the brain's hold on the OS switch (#632, UPDATES.md # 7
+// Reboots). PUT with an UpdateHold sets or renews it; DELETE clears it. The
+// hold is a lease: host-agent keeps it in memory, cuts it to at most
+// HoldLease from now and to the window's end minus HoldCapBeforeEnd, and lets
+// it end on its own, so a brain that stops renewing it cannot block the OS
+// switch for the night.
+const UpdateHoldPath = "/v1/system/update-hold"
+
+// UpdateHoldLease is the longest one hold lasts. The brain renews its hold
+// about every minute, so a brain that dies lets it end within this time and
+// the OS switch still goes that night. host-agent enforces it too.
+const UpdateHoldLease = 10 * time.Minute
+
+// UpdateHoldCapBeforeEnd is how long before the window's end every hold ends,
+// whatever the brain asks for. It leaves the switch and its reboot time inside
+// the window, so a brain bug cannot push the OS update to the next night.
+// host-agent enforces it itself.
+const UpdateHoldCapBeforeEnd = 5 * time.Minute
+
+// UpdateHold is the body of PUT /v1/system/update-hold and its answer. Until
+// is RFC3339. In the answer it is the end host-agent kept after its cuts, or
+// "" when the hold is not live (an until in the past, or past the cap).
+type UpdateHold struct {
+	Until string `json:"until"`
 }
 
 // OSUpdate is stream A on GET /v1/system/update-target: the OS image this box

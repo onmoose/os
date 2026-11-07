@@ -58,7 +58,11 @@ type fakeApplier struct {
 	calls    [][2]string
 	versions []string
 	err      error
+	// running names the jobs that still run, for JobRunning.
+	running map[string]bool
 }
+
+func (a *fakeApplier) JobRunning(id string) bool { return a.running[id] }
 
 func (a *fakeApplier) StartUpdate(brainRef, uiRef, version string) (string, error) {
 	a.calls = append(a.calls, [2]string{brainRef, uiRef})

@@ -22,6 +22,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	// The zone database, inside the binary. The nightly app updates read
+	// the update window in the box's zone (lifecycle/nightly.go), and the
+	// brain's image need not carry zone files for that.
+	_ "time/tzdata"
 
 	"golang.org/x/mod/semver"
 
@@ -396,6 +400,14 @@ func main() {
 	// lock is held, so it never removes a snapshot an update is using.
 	life.PruneSnapshots(time.Now())
 	go snapshotPruneLoop(pollCtx, life, snapshotPrunePeriod)
+
+	// The nightly app updates (UPDATES.md # 4 Update window, # 7, #632):
+	// every minute, inside the update window host-agent names, after the
+	// control plane is done for the night, one app at a time. It holds the
+	// OS switch on host-agent while it has work, so the reboot goes last.
+	// Everything it needs across a night is in SQLite, because the
+	// control-plane update restarts the brain.
+	go life.NewNightly(host).Run(pollCtx)
 
 	// Locus-C version check (HEALTH.md # Detector catalog): reconcile
 	// version-mismatch against host-agent's reported agent_version, once at

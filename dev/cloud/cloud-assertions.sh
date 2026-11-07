@@ -761,6 +761,18 @@ caddy_probe() { # METHOD PATH HOST [BODY] -> full response
         print while <$s>;' "$CADDY_PROBE_SOCK" "$@"
 }
 
+# host-agent's own socket, for the few calls only the brain makes, such as the
+# hold on the OS switch (#632). Same perl as above: any method, an optional
+# JSON body.
+AGENT_SOCK=/var/run/moose/agent.sock
+agent_req() { # METHOD PATH [BODY] -> full response
+    perl -MIO::Socket::UNIX -e '
+        my ($sock, $m, $p, $b) = @ARGV; $b = "" unless defined $b;
+        my $s = IO::Socket::UNIX->new(Peer => $sock) or die "connect $sock: $!\n";
+        print $s "$m $p HTTP/1.0\r\nHost: agent\r\nContent-Type: application/json\r\nContent-Length: " . length($b) . "\r\n\r\n$b";
+        print while <$s>;' "$AGENT_SOCK" "$@"
+}
+
 # Wait for a line matching a fixed pattern in the brain's container log. The brain
 # writes each milestone to stdout ONCE at startup, but `docker logs` reads the
 # daemon's json-file, which buffers the container's stream before flushing to disk
@@ -3300,12 +3312,36 @@ UNIT
         date +%s > "$OS_STATE_DIR/switch-at"
         set_os_stage 2
         if [ "$MODE" = os-update ]; then
+            # First THE BRAIN'S HOLD (#632). A hold on host-agent's socket, as
+            #     the brain sends while it updates apps, keeps the switch
+            #     waiting, Update now's included; clearing it lets the switch
+            #     go at once. The brain itself has no app work here, so after
+            #     its first wake it leaves the hold alone.
+            hold_until="$(date -u -d '+10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+            hold_resp="$(agent_req PUT /v1/system/update-hold "{\"until\":\"${hold_until}\"}" 2>&1 || true)"
+            grep -q ' 200' <<<"$(status_of "$hold_resp")" && grep -q '"until":"20' <<<"$hold_resp" \
+                || fail "$MODE: host-agent did not take the hold: $(tr -d '\r' <<<"$hold_resp" | tr '\n' ' ' | cut -c1-300)"
             # The answer carries only an OS part, so stream B has nothing to
-            # do and Update now is the OS switch alone.
+            # do and Update now is the OS switch alone. With the hold live it
+            # is accepted, and the switch waits.
             apply_resp="$(full_send POST /api/v1/system/update-target/apply "$apex" "$session_cookie" "" 2>/dev/null || true)"
             grep -q ' 202' <<<"$(status_of "$apply_resp")" \
-                || fail "$MODE: Update now was not accepted with slot B installed: status='$(status_of "$apply_resp")' $(tail -1 <<<"$apply_resp")"
-            echo "cloud-assertions: $MODE: UPDATE NOW accepted with the window shut ($shut); waiting for host-agent to switch to slot B and reboot"
+                || fail "$MODE: Update now was not accepted with slot B installed and a hold: status='$(status_of "$apply_resp")' $(tail -1 <<<"$apply_resp")"
+            wait_ha "an admin asked to switch now; waiting first" 60 "the switch did not wait for the hold"
+            # Long enough for three of the loop's 10 s retries.
+            for _i in $(seq 1 35); do
+                ha_log | grep -q 'switching now, as an admin asked' && fail "$MODE: the box switched while the brain's hold was live"
+                sleep 1
+            done
+            [ "$(grubvar ORDER)" = "A B" ] || fail "$MODE: the boot order moved while the hold was live: ORDER='$(grubvar ORDER)'"
+            held_read="$(os_read)"
+            grep -q '"hold_until":"' <<<"$held_read" || fail "$MODE: the update-target read does not show the hold: $(cut -c1-400 <<<"$held_read")"
+            [ "$(os_field "$held_read" state)" = installed ] && grep -q 'the switch waits for app updates' <<<"$held_read" \
+                || fail "$MODE: under the hold the read says os.state '$(os_field "$held_read" state)', detail '$(os_field "$held_read" detail)'; want installed and waiting for app updates"
+            echo "cloud-assertions: $MODE: HOLD OK (with the brain's hold live, Update now was accepted and the switch waited 35 s; the read shows hold_until and says the switch waits for app updates)"
+            clear_resp="$(agent_req DELETE /v1/system/update-hold 2>&1 || true)"
+            grep -q ' 204' <<<"$(status_of "$clear_resp")" || fail "$MODE: host-agent did not clear the hold: $(status_of "$clear_resp")"
+            echo "cloud-assertions: $MODE: hold cleared; waiting for host-agent to switch to slot B and reboot (window shut: $shut)"
         else
             write_os_target "$os_sum" "00:00-23:59"
             systemctl restart host-agent.service

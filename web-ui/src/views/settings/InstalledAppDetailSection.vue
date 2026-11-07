@@ -708,7 +708,8 @@ const saveConfig = useMutation({
 
       <!-- Updates (#631): the version, a new one if the app store has it, the
            Update button when the brain can apply it, the last update that did
-           not go through, and the automatic update switch. -->
+           not go through (and, #632, whether the nightly window paused it),
+           and the automatic update switch. -->
       <section v-if="canControl" class="space-y-2">
         <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Updates</h2>
         <div class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
@@ -732,6 +733,9 @@ const saveConfig = useMutation({
             <span>
               The update to {{ appUpdate.failed_version }} did not go through<template v-if="failedAt"> ({{ failedAt }})</template>.
               {{ appUpdate.failed_message }}
+              <template v-if="appUpdate.paused">
+                Update is failing repeatedly. Paused. moose no longer tries it at night, but you can still update the app here.
+              </template>
             </span>
           </div>
         </div>
@@ -742,7 +746,7 @@ const saveConfig = useMutation({
           <div class="min-w-0">
             <div class="text-sm font-medium">Update it automatically</div>
             <div class="text-xs text-muted-foreground">
-              When this is on, moose installs new versions of the app by itself. When it is off, you update the app here.
+              When this is on, moose installs new versions of the app by itself, at night in the update window. When it is off, you update the app here.
             </div>
           </div>
           <SwitchRoot

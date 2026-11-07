@@ -137,3 +137,122 @@ func TestPrevImagesCascade(t *testing.T) {
 		t.Fatalf("prev pins survived the delete: %v", got)
 	}
 }
+
+// TestNightlyColumnsMigrateForAnOlderDatabase opens an instances table with
+// #631's update columns and none of #632's, the way a box running #631 has
+// it. The instance has no try by the window and no failure in a row, so the
+// window may try it tonight and it is not paused (#632).
+func TestNightlyColumnsMigrateForAnOlderDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "moose.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if _, err := old.Exec(`
+		CREATE TABLE instances (
+			id          TEXT PRIMARY KEY,
+			manifest_id TEXT NOT NULL,
+			name        TEXT NOT NULL,
+			slug        TEXT NOT NULL UNIQUE,
+			version     TEXT NOT NULL,
+			state       TEXT NOT NULL,
+			mdns_name   TEXT NOT NULL DEFAULT '',
+			auto_update_off INTEGER NOT NULL DEFAULT 0,
+			update_version TEXT NOT NULL DEFAULT '',
+			update_status TEXT NOT NULL DEFAULT '',
+			update_reason TEXT NOT NULL DEFAULT '',
+			update_failed_version TEXT NOT NULL DEFAULT '',
+			update_failed_kind TEXT NOT NULL DEFAULT '',
+			update_failed_message TEXT NOT NULL DEFAULT '',
+			update_failed_at INTEGER NOT NULL DEFAULT 0,
+			created_at  INTEGER NOT NULL
+		);
+		INSERT INTO instances (id, manifest_id, name, slug, version, state, update_version, update_status,
+			update_failed_version, update_failed_kind, update_failed_at, created_at)
+		VALUES ('i_1','whoami','Whoami','whoami','1','running','2','available','2','health',1700000100,1700000000);
+	`); err != nil {
+		t.Fatalf("seed old schema: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store on the old db: %v", err)
+	}
+	defer s.Close()
+	row, err := s.Get("i_1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if row.UpdateTry != (UpdateTry{}) || row.UpdateFailure.Count != 0 || row.UpdatePaused() {
+		t.Fatalf("migrated row: try %+v, count %d, paused %v; want no try, no count, not paused",
+			row.UpdateTry, row.UpdateFailure.Count, row.UpdatePaused())
+	}
+	// The old failure is kept, and the next failure of the same version is
+	// the first one counted.
+	if err := s.RecordInstanceUpdateFailure("i_1", UpdateFailure{Version: "2", Kind: UpdateFailedHealth}); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Get("i_1"); row.UpdateFailure.Count != 1 {
+		t.Fatalf("count after one failure on an old row = %d, want 1", row.UpdateFailure.Count)
+	}
+}
+
+// TestUpdateFailCount counts failures in a row on one version: another
+// version starts again at 1, a reset and a good update set it to 0, and the
+// pause comes at UpdatePauseAfter on the version the box offers.
+func TestUpdateFailCount(t *testing.T) {
+	s := open(t)
+	if err := s.Create(sample("a", "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetInstanceUpdateCheck("a", UpdateCheck{Version: "2.0", Status: UpdateAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	fail := func(v string) Instance {
+		t.Helper()
+		if err := s.RecordInstanceUpdateFailure("a", UpdateFailure{Version: v, Kind: UpdateFailedHealth, Message: "x"}); err != nil {
+			t.Fatal(err)
+		}
+		row, _ := s.Get("a")
+		return row
+	}
+	if row := fail("2.0"); row.UpdateFailure.Count != 1 || row.UpdatePaused() {
+		t.Fatalf("one failure: count %d paused %v", row.UpdateFailure.Count, row.UpdatePaused())
+	}
+	fail("2.0")
+	if row := fail("2.0"); row.UpdateFailure.Count != 3 || !row.UpdatePaused() {
+		t.Fatalf("three failures: count %d paused %v, want 3 and paused", row.UpdateFailure.Count, row.UpdatePaused())
+	}
+	// A new catalog version is not paused, and its first failure counts 1.
+	if err := s.SetInstanceUpdateCheck("a", UpdateCheck{Version: "2.1", Status: UpdateAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Get("a"); row.UpdatePaused() {
+		t.Fatal("a new version is paused")
+	}
+	if row := fail("2.1"); row.UpdateFailure.Count != 1 {
+		t.Fatalf("first failure of a new version: count %d, want 1", row.UpdateFailure.Count)
+	}
+	fail("2.1")
+	if err := s.ResetInstanceUpdateFailCount("a"); err != nil {
+		t.Fatal(err)
+	}
+	if row := fail("2.1"); row.UpdateFailure.Count != 1 {
+		t.Fatalf("a failure after a reset: count %d, want 1", row.UpdateFailure.Count)
+	}
+	if err := s.RecordInstanceUpdateTry("a", "2.1", "2026-11-07"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishInstanceUpdate("a", "2.1", "Alpha"); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := s.Get("a")
+	if row.UpdateFailure.Count != 0 || row.UpdateTry != (UpdateTry{Version: "2.1", Night: "2026-11-07"}) {
+		t.Fatalf("after a good update: count %d try %+v; want 0 and the try kept", row.UpdateFailure.Count, row.UpdateTry)
+	}
+	if err := s.RecordInstanceUpdateTry("missing", "1", "2026-11-07"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing row: %v, want ErrNotFound", err)
+	}
+}
