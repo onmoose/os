@@ -45,7 +45,7 @@ CADDY_ACMEDNS_BASE_IMAGE=caddy:2.10.0-alpine@sha256:ae4458638da8e1a91aafffb231c5
 # apt-gets docker-ce-cli from a live index, so the image is pinned, not
 # reproducible. web-ui's npm ci is locked by package-lock.json.
 BRAIN_BUILDER_IMAGE=golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
-BRAIN_RUNTIME_IMAGE=debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+BRAIN_RUNTIME_IMAGE=debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 UI_BUILDER_IMAGE=node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
 # moose-ui's runtime base is CADDY_IMAGE above — the same pin, not a second copy,
 # so the UI and the proxy always run the same Caddy bytes.
