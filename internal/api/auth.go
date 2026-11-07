@@ -109,6 +109,11 @@ type UserDTO struct {
 	// (issue #469). False (and omitted) on appliance and for every other account,
 	// so appliance responses stay byte-unchanged.
 	Owner bool `json:"owner,omitempty"`
+	// UpdatePromptDismissed is true when the person closed the update
+	// prompt in this session without choosing (#633). Only GET /me sets it;
+	// a new session starts without it, so the prompt comes back at the next
+	// sign-in.
+	UpdatePromptDismissed bool `json:"update_prompt_dismissed,omitempty"`
 }
 
 func userDTO(u store.User) UserDTO {
@@ -659,6 +664,7 @@ func (s *Server) me(ctx context.Context, _ *struct{}) (*struct{ Body UserDTO }, 
 	if err != nil {
 		return nil, huma.Error500InternalServerError("user count")
 	}
+	dto.UpdatePromptDismissed = id.Session.UpdatePromptDismissed
 	return &struct{ Body UserDTO }{Body: dto}, nil
 }
 

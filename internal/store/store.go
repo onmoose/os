@@ -87,7 +87,12 @@ type Instance struct {
 	Update        UpdateCheck
 	UpdateFailure UpdateFailure
 	UpdateTry     UpdateTry
-	CreatedAt     time.Time
+	// UpdateApproval is the owner's yes to an update that asks for more
+	// access, and UpdateDeclined the version they said "Keep current version"
+	// to (#633, updates.go). A good update clears both.
+	UpdateApproval UpdateApproval
+	UpdateDeclined string
+	CreatedAt      time.Time
 }
 
 const (
@@ -151,6 +156,10 @@ type Session struct {
 	LastSeenAt    time.Time
 	ExpiresAt     time.Time // absolute hard cap (90 days from issue)
 	ElevatedUntil time.Time // zero value means not elevated
+	// UpdatePromptDismissed is set when the person closed the update prompt
+	// in this session without choosing (#633). A new login is a new session,
+	// so the prompt comes back then.
+	UpdatePromptDismissed bool
 }
 
 // ErrConflict signals a uniqueness collision (duplicate username, second
@@ -212,6 +221,12 @@ func (s *Store) migrate() error {
 			update_failed_count INTEGER NOT NULL DEFAULT 0,
 			update_tried_version TEXT NOT NULL DEFAULT '',
 			update_tried_night TEXT NOT NULL DEFAULT '',
+			update_wants TEXT NOT NULL DEFAULT '',
+			update_approved_version TEXT NOT NULL DEFAULT '',
+			update_approved_access TEXT NOT NULL DEFAULT '',
+			update_approved_by TEXT NOT NULL DEFAULT '',
+			update_approved_at INTEGER NOT NULL DEFAULT 0,
+			update_declined_version TEXT NOT NULL DEFAULT '',
 			created_at  INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS instance_images (
@@ -525,6 +540,16 @@ func (s *Store) migrate() error {
 		{"instances", "update_failed_count", "ALTER TABLE instances ADD COLUMN update_failed_count INTEGER NOT NULL DEFAULT 0"},
 		{"instances", "update_tried_version", "ALTER TABLE instances ADD COLUMN update_tried_version TEXT NOT NULL DEFAULT ''"},
 		{"instances", "update_tried_night", "ALTER TABLE instances ADD COLUMN update_tried_night TEXT NOT NULL DEFAULT ''"},
+		// No access asked for, no approval and no decline yet, for every app
+		// from before the columns (#633). A session from before its column has
+		// not closed the update prompt.
+		{"instances", "update_wants", "ALTER TABLE instances ADD COLUMN update_wants TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_approved_version", "ALTER TABLE instances ADD COLUMN update_approved_version TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_approved_access", "ALTER TABLE instances ADD COLUMN update_approved_access TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_approved_by", "ALTER TABLE instances ADD COLUMN update_approved_by TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_approved_at", "ALTER TABLE instances ADD COLUMN update_approved_at INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_declined_version", "ALTER TABLE instances ADD COLUMN update_declined_version TEXT NOT NULL DEFAULT ''"},
+		{"sessions", "update_prompt_dismissed", "ALTER TABLE sessions ADD COLUMN update_prompt_dismissed INTEGER NOT NULL DEFAULT 0"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
 		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
 		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
@@ -1152,7 +1177,7 @@ func (s *Store) Delete(id string) error {
 	return err
 }
 
-const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, auto_update_off, update_version, update_status, update_reason, update_failed_version, update_failed_kind, update_failed_message, update_failed_at, update_failed_count, update_tried_version, update_tried_night, created_at`
+const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, auto_update_off, update_version, update_status, update_reason, update_failed_version, update_failed_kind, update_failed_message, update_failed_at, update_failed_count, update_tried_version, update_tried_night, update_wants, update_approved_version, update_approved_access, update_approved_by, update_approved_at, update_declined_version, created_at`
 
 func (s *Store) Get(id string) (Instance, error) {
 	return scan(s.db.QueryRow(
@@ -1533,11 +1558,11 @@ func (s *Store) CreateSession(sess Session) error {
 // middleware maps that to 401.
 func (s *Store) GetSession(token string) (Session, error) {
 	var sess Session
-	var created, lastSeen, expiresAt, elevatedUntil int64
+	var created, lastSeen, expiresAt, elevatedUntil, dismissed int64
 	err := s.db.QueryRow(
-		`SELECT token, user_id, created_at, last_seen_at, expires_at, elevated_until
+		`SELECT token, user_id, created_at, last_seen_at, expires_at, elevated_until, update_prompt_dismissed
 		 FROM sessions WHERE token=?`, token,
-	).Scan(&sess.Token, &sess.UserID, &created, &lastSeen, &expiresAt, &elevatedUntil)
+	).Scan(&sess.Token, &sess.UserID, &created, &lastSeen, &expiresAt, &elevatedUntil, &dismissed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -1548,7 +1573,14 @@ func (s *Store) GetSession(token string) (Session, error) {
 	sess.LastSeenAt = time.Unix(lastSeen, 0)
 	sess.ExpiresAt = time.Unix(expiresAt, 0)
 	sess.ElevatedUntil = time.Unix(elevatedUntil, 0)
+	sess.UpdatePromptDismissed = dismissed != 0
 	return sess, nil
+}
+
+// DismissUpdatePrompt marks that the person closed the update prompt in this
+// session without choosing (#633). ErrNotFound when the session is gone.
+func (s *Store) DismissUpdatePrompt(token string) error {
+	return s.updateOne(`UPDATE sessions SET update_prompt_dismissed=1 WHERE token=?`, token)
 }
 
 // SetSessionForwardAuthToken stamps a session with its hosted forward-auth token
@@ -1805,11 +1837,13 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scan(row scanner) (Instance, error) {
 	var i Instance
-	var created, pendingRecreate, autoRestartOff, lastAutoRestart, autoUpdateOff, failedAt int64
+	var created, pendingRecreate, autoRestartOff, lastAutoRestart, autoUpdateOff, failedAt, approvedAt int64
+	var wants string
 	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &autoRestartOff, &i.AutoRestarts, &lastAutoRestart,
 		&autoUpdateOff, &i.Update.Version, &i.Update.Status, &i.Update.Reason,
 		&i.UpdateFailure.Version, &i.UpdateFailure.Kind, &i.UpdateFailure.Message, &failedAt, &i.UpdateFailure.Count,
-		&i.UpdateTry.Version, &i.UpdateTry.Night, &created)
+		&i.UpdateTry.Version, &i.UpdateTry.Night,
+		&wants, &i.UpdateApproval.Version, &i.UpdateApproval.Access, &i.UpdateApproval.By, &approvedAt, &i.UpdateDeclined, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, ErrNotFound
 	}
@@ -1824,6 +1858,12 @@ func scan(row scanner) (Instance, error) {
 	i.AutoUpdateOff = autoUpdateOff != 0
 	if failedAt != 0 {
 		i.UpdateFailure.At = time.Unix(failedAt, 0)
+	}
+	if approvedAt != 0 {
+		i.UpdateApproval.At = time.Unix(approvedAt, 0)
+	}
+	if i.Update.Wants, err = decodeWants(wants); err != nil {
+		return Instance{}, err
 	}
 	i.CreatedAt = time.Unix(created, 0)
 	return i, nil

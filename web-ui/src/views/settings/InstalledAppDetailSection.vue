@@ -31,6 +31,8 @@ import { useAuth, isHosted } from "@/auth";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
 import AppLogs from "@/components/AppLogs.vue";
 import Button from "@/components/ui/Button.vue";
+import PermissionList from "@/components/PermissionList.vue";
+import { wantLines } from "@/installSteps";
 
 const route = useRoute();
 const router = useRouter();
@@ -123,7 +125,25 @@ const updateApp = useMutation({
   mutationFn: async () => awaitJob(await api.post<Job>(`/apps/${id.value}/update`)),
   onSettled: invalidate,
 });
-const updating = computed(() => app.value?.state === "updating" || updateApp.isPending.value);
+// An update that asks for more access (#633) waits for a yes: the owner of
+// a personal app, an admin for a household app (update.can_approve). The
+// lines are the install screen's words (wantLines). Allow & update runs the
+// same job as Update. Someone who cannot allow it (an admin looking at
+// another person's app) is told whose yes it waits for.
+const wants = computed(() => wantLines(appUpdate.value?.wants));
+const needsApproval = computed(() => appUpdate.value?.status === "needs_approval");
+const approveUpdate = useMutation({
+  mutationFn: async () =>
+    awaitJob(await api.post<Job>(`/apps/${id.value}/update/approve`, { version: appUpdate.value?.available_version })),
+  onSettled: invalidate,
+});
+const waitsFor = computed(() => {
+  if (app.value?.scope === "household") return "It waits for an admin to allow it.";
+  return `It waits for ${app.value?.owner_username || "its owner"} to allow it. Only they can allow it.`;
+});
+const updating = computed(
+  () => app.value?.state === "updating" || updateApp.isPending.value || approveUpdate.isPending.value,
+);
 const customApp = computed(() => app.value?.version === "custom");
 const updateSummary = computed(() => {
   const u = appUpdate.value;
@@ -147,7 +167,12 @@ const setAutoUpdate = useMutation({
 });
 
 const busy = computed(
-  () => stop.isPending.value || start.isPending.value || uninstall.isPending.value || updateApp.isPending.value,
+  () =>
+    stop.isPending.value ||
+    start.isPending.value ||
+    uninstall.isPending.value ||
+    updateApp.isPending.value ||
+    approveUpdate.isPending.value,
 );
 
 // ── Access mode (#306/#307, ENVIRONMENT.md # Per-app owner-only access) ───────
@@ -709,7 +734,8 @@ const saveConfig = useMutation({
       <!-- Updates (#631): the version, a new one if the app store has it, the
            Update button when the brain can apply it, the last update that did
            not go through (and, #632, whether the nightly window paused it),
-           and the automatic update switch. -->
+           and the automatic update switch. An update that asks for more
+           access (#633) shows what it wants and Allow & update. -->
       <section v-if="canControl" class="space-y-2">
         <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Updates</h2>
         <div class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
@@ -725,6 +751,23 @@ const saveConfig = useMutation({
           >
             {{ updating ? "Updating…" : `Update to ${appUpdate.available_version}` }}
           </Button>
+          <Button
+            v-else-if="needsApproval && appUpdate?.can_approve"
+            size="sm"
+            :disabled="busy || updating"
+            @click="approveUpdate.mutate()"
+          >
+            {{ updating ? "Updating…" : "Allow & update" }}
+          </Button>
+          <div
+            v-if="needsApproval && wants.length > 0 && !updating"
+            class="w-full space-y-1 border-t border-border pt-3 text-xs text-muted-foreground"
+          >
+            <p class="font-medium text-foreground">{{ app.name }} {{ appUpdate?.available_version }} wants new access:</p>
+            <PermissionList :lines="wants" />
+            <p v-if="!appUpdate?.can_approve">{{ waitsFor }}</p>
+            <p v-else-if="appUpdate?.declined">You chose to keep the current version. You can still allow it here.</p>
+          </div>
           <div
             v-if="appUpdate?.failed_version && !updating"
             class="flex w-full items-start gap-2 border-t border-border pt-3 text-xs text-amber-700"
@@ -741,6 +784,9 @@ const saveConfig = useMutation({
         </div>
         <p v-if="updateApp.isError.value" class="text-sm text-destructive">
           Couldn't update: {{ (updateApp.error.value as Error)?.message }}
+        </p>
+        <p v-if="approveUpdate.isError.value" class="text-sm text-destructive">
+          Couldn't update: {{ (approveUpdate.error.value as Error)?.message }}
         </p>
         <div v-if="!customApp" class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3">
           <div class="min-w-0">

@@ -104,6 +104,10 @@ type updateRecord struct {
 	// AddedConfig is the config fields the new version adds that got their
 	// default, by app_env.
 	AddedConfig []string `json:"added_config,omitempty"`
+	// NetworkRemade: the app's own network was made again for the new
+	// version's internet permission; a rollback makes it again for the old
+	// one (#633).
+	NetworkRemade bool `json:"network_remade,omitempty"`
 	// NewImages are the new version's pins; DroppedImages the previous
 	// generation this update replaced. Both are removed from the image store
 	// when nothing uses them any more.
@@ -199,7 +203,14 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 	if err != nil {
 		return err
 	}
-	check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base)
+	sources, err := m.instanceFolderSources(id)
+	if err != nil {
+		return fmt.Errorf("read the app's folders: %w", err)
+	}
+	// The class is worked out again here, under the lock, with the manifest
+	// this update applies: an update that asks for more access than the
+	// owner allowed is never applied, whoever starts it (#633).
+	check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources)
 	m.setUpdateCheck(inst, check)
 	if check.Status != store.UpdateAvailable {
 		slog.Info("update refused", "instance_id", id, "version", inst.Version, "new_version", newMan.Version, "update_class", check.Status)
@@ -250,7 +261,7 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 			return errors.New(plainOr(err, "moose could not read who the new version runs as"))
 		}
 	}
-	iso, err := m.updateIsolation(ctx, inst, newMan, wk, base, newIDs)
+	iso, err := m.updateIsolation(ctx, inst, oldMan, newMan, wk, base, newIDs)
 	if err != nil {
 		m.endBeforeStop(inst, rec, store.UpdateFailedRefused, plainOr(err, "moose could not prepare the new version"), err)
 		return errors.New(plainOr(err, "moose could not prepare the new version"))
@@ -413,7 +424,7 @@ func (m *Manager) checkImageUsersKept(ctx context.Context, inst store.Instance, 
 // the same rules as install, from what the instance already has: its
 // allocated service identity, its owner's home, and the folder sources the
 // installer elected, read back from the old override (mountsFromOverride).
-func (m *Manager) updateIsolation(ctx context.Context, inst store.Instance, man *manifest.Manifest, wk protocol.WellKnownIdentityResponse, base int, ids map[string]imageIDs) (isolation, error) {
+func (m *Manager) updateIsolation(ctx context.Context, inst store.Instance, oldMan, man *manifest.Manifest, wk protocol.WellKnownIdentityResponse, base int, ids map[string]imageIDs) (isolation, error) {
 	iso := isolation{uid: os.Geteuid(), gid: os.Getegid(), sharedBase: m.sharedRoot, tier: inst.UsernsTier, remapBase: base, imageIDs: ids}
 	if man.Permissions.GPU {
 		g, err := m.host.SystemGPU(ctx)
@@ -434,7 +445,7 @@ func (m *Manager) updateIsolation(ctx context.Context, inst store.Instance, man 
 		if err != nil {
 			return iso, fmt.Errorf("read the override: %w", err)
 		}
-		mounts, err := mountsFromOverride(override, man, m.sharedRoot)
+		mounts, err := mountsFromOverride(override, oldMan, man, inst.Scope, m.sharedRoot)
 		if err != nil {
 			return iso, err
 		}
@@ -463,12 +474,10 @@ func (m *Manager) updateIsolation(ctx context.Context, inst store.Instance, man 
 	return iso, nil
 }
 
-// mountsFromOverride reads back the folder binds an install wrote: each
-// `<host path>:/moose/<folder>:<mode>` volume of the old override, for the
-// folders the new manifest still declares. The host path is kept as it is,
-// so the update binds exactly the source the installer elected. The mode
-// comes from the new manifest when the override is written.
-func mountsFromOverride(override []byte, man *manifest.Manifest, sharedBase string) ([]FolderMount, error) {
+// folderBinds reads back the folder binds an install wrote: each
+// `<host path>:/moose/<folder>:<mode>` volume of an override, by folder, with
+// the host path as it is and its source (shared when it is under sharedBase).
+func folderBinds(override []byte, sharedBase string) (map[string]FolderMount, error) {
 	var doc struct {
 		Services map[string]struct {
 			Volumes []string `yaml:"volumes"`
@@ -477,17 +486,12 @@ func mountsFromOverride(override []byte, man *manifest.Manifest, sharedBase stri
 	if err := yaml.Unmarshal(override, &doc); err != nil {
 		return nil, fmt.Errorf("parse the override: %w", err)
 	}
-	declared := map[string]bool{}
-	for _, f := range man.Permissions.Folders {
-		declared[f.Folder] = true
-	}
 	names := make([]string, 0, len(doc.Services))
 	for name := range doc.Services {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	seen := map[string]bool{}
-	var out []FolderMount
+	out := map[string]FolderMount{}
 	for _, name := range names {
 		for _, v := range doc.Services[name].Volumes {
 			i := strings.LastIndex(v, ":")
@@ -501,15 +505,55 @@ func mountsFromOverride(override []byte, man *manifest.Manifest, sharedBase stri
 			}
 			src, dest := rest[:j], rest[j+1:]
 			folder, ok := strings.CutPrefix(dest, "/moose/")
-			if !ok || !declared[folder] || seen[folder] {
+			if _, seen := out[folder]; !ok || seen {
 				continue
 			}
-			seen[folder] = true
 			source := sourcePersonal
 			if src == sharedBase || strings.HasPrefix(src, sharedBase+"/") {
 				source = sourceShared
 			}
-			out = append(out, FolderMount{Folder: folder, Source: source, hostPath: src})
+			out[folder] = FolderMount{Folder: folder, Source: source, hostPath: src}
+		}
+	}
+	return out, nil
+}
+
+// mountsFromOverride is the folder binds of the new version, in the order the
+// new manifest declares its folders. A folder the old override binds keeps
+// its host path as it is, so the update binds exactly the source the
+// installer elected. Two cases change the bind, and only an update the owner
+// approved has them (#633, UPDATES.md # As built (#633)):
+//
+//   - A folder the new version adds gets the install default: the owner's own
+//     folder for a personal app, the household's shared folder for a household
+//     app, and for a pick-subfolder folder the manifest's default subfolder.
+//   - A folder whose scope widens from pick-subfolder to whole binds the
+//     whole folder, from the same source.
+//
+// The mode comes from the new manifest when the override is written.
+func mountsFromOverride(override []byte, oldMan, man *manifest.Manifest, scope, sharedBase string) ([]FolderMount, error) {
+	binds, err := folderBinds(override, sharedBase)
+	if err != nil {
+		return nil, err
+	}
+	wasSub := map[string]bool{}
+	for _, f := range oldMan.Permissions.Folders {
+		wasSub[f.Folder] = f.Scope == "pick-subfolder"
+	}
+	out := make([]FolderMount, 0, len(man.Permissions.Folders))
+	for _, f := range man.Permissions.Folders {
+		b, ok := binds[f.Folder]
+		switch {
+		case !ok:
+			mt := FolderMount{Folder: f.Folder, Source: defaultFolderSource(scope)}
+			if f.Scope == "pick-subfolder" {
+				mt.Subfolder = f.Default
+			}
+			out = append(out, mt)
+		case wasSub[f.Folder] && f.Scope != "pick-subfolder":
+			out = append(out, FolderMount{Folder: f.Folder, Source: b.Source})
+		default:
+			out = append(out, b)
 		}
 	}
 	return out, nil
@@ -624,6 +668,27 @@ func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, m
 	if err := m.prepareBindDirs(id, composeBytes, iso); err != nil {
 		return err
 	}
+	// A folder bind that is not the old one (a new folder, or a whole folder
+	// in place of one folder in it) is made ready the way install does it.
+	var fresh []FolderMount
+	for _, mt := range iso.mounts {
+		if mt.hostPath == "" {
+			fresh = append(fresh, mt)
+		}
+	}
+	if len(fresh) > 0 {
+		username := ""
+		if inst.Scope == store.ScopePersonal {
+			owner, err := m.store.GetUser(inst.OwnerUserID)
+			if err != nil {
+				return fmt.Errorf("read the app's owner: %w", err)
+			}
+			username = owner.Username
+		}
+		if err := m.prepareFolderSources(ctx, id, username, iso, fresh); err != nil {
+			return err
+		}
+	}
 	lim, err := m.store.GetResourceLimits(id)
 	if err != nil {
 		return fmt.Errorf("get resource limits: %w", err)
@@ -634,9 +699,64 @@ func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, m
 	if err := m.writeEnv(id, inst.Slug, iso); err != nil {
 		return fmt.Errorf("env: %w", err)
 	}
-	// The per-app network exists from install; this only makes sure.
-	if err := m.docker.NetworkCreate(ctx, "moose-app-"+id, !man.Permissions.Internet); err != nil {
+	// The per-app network exists from install. Its internal flag must follow
+	// the new version's internet permission, in both directions (#633).
+	// Docker cannot change the flag of a network, so a network with the wrong
+	// one is made again, and the app's stopped containers are made again on
+	// it. rec says so first, so a rollback puts the old flag back.
+	net, err := m.docker.NetworkInspect(ctx, appNetwork(id))
+	if err != nil {
+		return fmt.Errorf("inspect network: %w", err)
+	}
+	if want := !man.Permissions.Internet; !net.Exists || net.Internal != want {
+		rec.NetworkRemade = true
+		if err := m.writeUpdateRecord(id, *rec); err != nil {
+			return err
+		}
+		if err := m.remakeAppNetwork(ctx, id, net, want); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func appNetwork(id string) string { return "moose-app-" + id }
+
+// remakeAppNetwork makes the app's own network again with internal as its
+// flag, and then the app's containers, which must be stopped, from the files
+// on disk without starting them. A container on a removed network cannot
+// start, and compose does not see that the network changed, so it must make
+// them again (`docker compose create --force-recreate`, which keeps their
+// anonymous volumes). The containers on the network now (Caddy) are taken off
+// first, because Docker does not remove a network a container is on, and put
+// back after.
+func (m *Manager) remakeAppNetwork(ctx context.Context, id string, net NetworkInfo, internal bool) error {
+	name := appNetwork(id)
+	if net.Exists {
+		for _, c := range net.Containers {
+			if err := m.docker.NetworkDisconnect(ctx, name, c); err != nil {
+				return fmt.Errorf("take %s off the app network: %w", c, err)
+			}
+		}
+		if err := m.docker.NetworkRemove(ctx, name); err != nil {
+			return fmt.Errorf("remove the app network: %w", err)
+		}
+	}
+	if err := m.docker.NetworkCreate(ctx, name, internal); err != nil {
 		return fmt.Errorf("create network: %w", err)
+	}
+	for _, c := range net.Containers {
+		if err := m.docker.NetworkConnect(ctx, name, c); err != nil {
+			slog.Warn("update: put a container back on the app network", "instance_id", id, "name", c, "err", err)
+		}
+	}
+	if out, err := m.docker.ComposeCreate(ctx, m.instanceDir(id), "moose-"+id); err != nil {
+		return fmt.Errorf("make the app's containers again on the new network: %w\n%s", err, out)
+	}
+	if internal {
+		slog.Info("app network made again, with no internet access", "instance_id", id)
+	} else {
+		slog.Info("app network made again, with internet access", "instance_id", id)
 	}
 	return nil
 }
@@ -817,6 +937,22 @@ func (m *Manager) undoUpdate(ctx context.Context, id string, rec updateRecord) e
 	if rec.PrevKept && rec.Writing {
 		if err := m.putPreviousBack(id); err != nil {
 			return fmt.Errorf("put the previous version back: %w", err)
+		}
+	}
+	if rec.NetworkRemade {
+		// The old files are back: the network follows the old version's
+		// internet permission again, and the containers are made again on
+		// it. This always runs, so an undo that stopped half way finishes.
+		old, err := m.loadInstanceManifest(id)
+		if err != nil {
+			return fmt.Errorf("read the old manifest: %w", err)
+		}
+		net, err := m.docker.NetworkInspect(ctx, appNetwork(id))
+		if err != nil {
+			return fmt.Errorf("inspect network: %w", err)
+		}
+		if err := m.remakeAppNetwork(ctx, id, net, !old.Permissions.Internet); err != nil {
+			return err
 		}
 	}
 	if len(rec.AddedServices) > 0 {
@@ -1021,7 +1157,7 @@ func (m *Manager) markUpdateFailedAtStartup(inst store.Instance, version, msg st
 
 // setUpdateCheck stores what a check found, when it differs from the row.
 func (m *Manager) setUpdateCheck(inst store.Instance, check store.UpdateCheck) {
-	if inst.Update == check {
+	if inst.Update.Equal(check) {
 		return
 	}
 	if err := m.store.SetInstanceUpdateCheck(inst.ID, check); err != nil {

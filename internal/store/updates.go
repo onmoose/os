@@ -7,6 +7,9 @@ package store
 // rollback puts back.
 
 import (
+	"encoding/json"
+	"fmt"
+	"slices"
 	"time"
 )
 
@@ -16,7 +19,7 @@ const (
 	// window (#632), or when a person asks.
 	UpdateAvailable = "available"
 	// UpdateNeedsApproval widens permissions or public paths; the owner must
-	// approve it first (#633).
+	// approve it first (#633). An approved update is UpdateAvailable.
 	UpdateNeedsApproval = "needs_approval"
 	// UpdateServiceMajor moves a managed service to a new major version,
 	// which needs a database migration the box does not do yet (#635).
@@ -33,10 +36,77 @@ const (
 // from the installed one, how it was classified, and, for a status other than
 // UpdateAvailable, a plain sentence that says why it is not applied. The zero
 // value means no update.
+//
+// Wants is the access the new version asks for that the installed one does
+// not have (#633). It is filled in for every class, so a service-major update
+// that also asks for more access says so (#635). Empty means the same or
+// less access.
 type UpdateCheck struct {
 	Version string
 	Status  string
 	Reason  string
+	Wants   []AccessWant
+}
+
+// Equal reports whether two checks say the same thing.
+func (c UpdateCheck) Equal(o UpdateCheck) bool {
+	return c.Version == o.Version && c.Status == o.Status && c.Reason == o.Reason && slices.Equal(c.Wants, o.Wants)
+}
+
+// IsZero reports whether the check found no update.
+func (c UpdateCheck) IsZero() bool { return c.Equal(UpdateCheck{}) }
+
+// Access want kinds: what kind of access a new version asks for.
+const (
+	WantInternet   = "internet"
+	WantLAN        = "lan"
+	WantGPU        = "gpu"
+	WantDevice     = "device"
+	WantFolder     = "folder"
+	WantPublicPath = "public_path"
+)
+
+// Folder changes a WantFolder names.
+const (
+	FolderNew   = "new"   // a folder the installed version has no access to
+	FolderWrite = "write" // read access becomes write access
+	FolderWhole = "whole" // one folder inside it becomes the whole folder
+)
+
+// AccessWant is one piece of access a new version of an app asks for that the
+// installed version does not have (UPDATES.md # Auto-apply unless permissions
+// expand). The dashboard says it in the install screen's words, so the brain
+// sends it as data, not as a sentence.
+//
+// Device is set for WantDevice. Folder, Mode (read or write, the new
+// version's), Change (FolderNew, FolderWrite or FolderWhole) and Source
+// (personal or shared, the folder the update binds) are set for WantFolder.
+// Path is set for WantPublicPath.
+type AccessWant struct {
+	Kind   string `json:"kind"`
+	Device string `json:"device,omitempty"`
+	Folder string `json:"folder,omitempty"`
+	Mode   string `json:"mode,omitempty"`
+	Change string `json:"change,omitempty"`
+	Source string `json:"source,omitempty"`
+	Path   string `json:"path,omitempty"`
+}
+
+// UpdateApproval is the owner's yes to an update that asks for more access
+// (#633): the version they saw, the access they accepted (the new manifest's
+// permissions and public paths, as JSON in lifecycle's shape), who said yes
+// and when. An update is covered when it asks for no more than Access. A good
+// update clears it.
+type UpdateApproval struct {
+	Version string
+	Access  string
+	By      string
+	At      time.Time
+}
+
+// Same reports whether two approvals are the same yes.
+func (a UpdateApproval) Same(o UpdateApproval) bool {
+	return a.Version == o.Version && a.Access == o.Access && a.By == o.By && a.At.Unix() == o.At.Unix()
 }
 
 // Update failure kinds: the step that broke.
@@ -115,8 +185,53 @@ func (s *Store) SetInstanceAutoUpdate(id string, on bool) error {
 // SetInstanceUpdateCheck stores what an update check found. The zero
 // UpdateCheck clears it.
 func (s *Store) SetInstanceUpdateCheck(id string, c UpdateCheck) error {
-	return s.updateOne(`UPDATE instances SET update_version=?, update_status=?, update_reason=? WHERE id=?`,
-		c.Version, c.Status, c.Reason, id)
+	wants, err := encodeWants(c.Wants)
+	if err != nil {
+		return err
+	}
+	return s.updateOne(`UPDATE instances SET update_version=?, update_status=?, update_reason=?, update_wants=? WHERE id=?`,
+		c.Version, c.Status, c.Reason, wants, id)
+}
+
+// ApproveInstanceUpdate stores the owner's yes to an update that asks for
+// more access, and clears a decline: the yes replaces it (#633).
+func (s *Store) ApproveInstanceUpdate(id string, a UpdateApproval) error {
+	at := int64(0)
+	if !a.At.IsZero() {
+		at = a.At.Unix()
+	}
+	return s.updateOne(`UPDATE instances SET update_approved_version=?, update_approved_access=?, update_approved_by=?, update_approved_at=?,
+		update_declined_version='' WHERE id=?`, a.Version, a.Access, a.By, at, id)
+}
+
+// DeclineInstanceUpdate stores the owner's "Keep current version" for one
+// version (#633). The prompt does not ask about that version again; the app's
+// settings page still offers it.
+func (s *Store) DeclineInstanceUpdate(id, version string) error {
+	return s.updateOne(`UPDATE instances SET update_declined_version=? WHERE id=?`, version, id)
+}
+
+// encodeWants is the update_wants column: ” for none, else JSON.
+func encodeWants(w []AccessWant) (string, error) {
+	if len(w) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(w)
+	if err != nil {
+		return "", fmt.Errorf("encode update wants: %w", err)
+	}
+	return string(b), nil
+}
+
+func decodeWants(s string) ([]AccessWant, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var w []AccessWant
+	if err := json.Unmarshal([]byte(s), &w); err != nil {
+		return nil, fmt.Errorf("decode update wants: %w", err)
+	}
+	return w, nil
 }
 
 // RecordInstanceUpdateFailure stores the last update that did not go through
@@ -136,11 +251,13 @@ func (s *Store) RecordInstanceUpdateFailure(id string, f UpdateFailure) error {
 
 // FinishInstanceUpdate records a good update in one write: the new version
 // and name, the state running, no known update and no failure, so no
-// failure in a row either.
+// failure in a row either. The owner's approval and decline go too: they were
+// about the installed version's access, which has just changed (#633).
 func (s *Store) FinishInstanceUpdate(id, version, name string) error {
 	return s.updateOne(`UPDATE instances SET version=?, name=?, state='running',
-		update_version='', update_status='', update_reason='',
-		update_failed_version='', update_failed_kind='', update_failed_message='', update_failed_at=0, update_failed_count=0
+		update_version='', update_status='', update_reason='', update_wants='',
+		update_failed_version='', update_failed_kind='', update_failed_message='', update_failed_at=0, update_failed_count=0,
+		update_approved_version='', update_approved_access='', update_approved_by='', update_approved_at=0, update_declined_version=''
 		WHERE id=?`, version, name, id)
 }
 

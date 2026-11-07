@@ -586,6 +586,70 @@ func customMounts(folders []manifest.Folder, scope string) []FolderMount {
 // install is the shared transaction both doors converge on (APP_MANIFEST.md #
 // one model, two doors): a manifest + verbatim compose pair, whether loaded
 // from the catalog or synthesized from a pasted compose.
+// prepareFolderSources makes each folder source in mounts ready before the
+// app binds it. Install calls it for every folder, and an update for each
+// folder bind that is new (#633). username is the owner's, for a personal
+// source.
+func (m *Manager) prepareFolderSources(ctx context.Context, id, username string, iso isolation, mounts []FolderMount) error {
+	// Prepare each elected PERSONAL folder source so the app can write user
+	// content into it. A docker-created bind source is root:root (the same
+	// daemon behavior as the private bind dirs of the app), so a folder that does not
+	// exist yet, such as ~/Documents on a new account or the pick-subfolder
+	// ~/Documents/Notebooks for Jupyter, would land root-owned, and the
+	// cap_drop:ALL container, running as the owner UID, could not write it.
+	//
+	// host-agent does this, not the brain (#519). The brain runs in a container
+	// that does not mount /home, so a MkdirAll + chown here made the folder in
+	// the container's own filesystem and never on the host. Mounting /home into
+	// the brain would give the LAN-facing brain every user's private files; a
+	// narrow named op keeps home access in host-agent, where
+	// BRAIN_HOST_PROTOCOL.md already puts it. host-agent creates each missing
+	// level owned by the owner, sets the owner of the last level, and never
+	// follows a symlink. Under the fake host-agent (make dev) it creates the
+	// folder in the operator's own home. SHARED sources are prepared below, by
+	// a different rule.
+	for _, mt := range mounts {
+		if mt.Source != sourcePersonal {
+			continue
+		}
+		rel := folderDir[mt.Folder]
+		if mt.Subfolder != "" {
+			rel += "/" + filepath.ToSlash(filepath.Clean(mt.Subfolder))
+		}
+		if err := m.host.PrepareUserFolder(ctx, username, rel); err != nil {
+			return fmt.Errorf("prepare folder source %q: %w", iso.hostSource(mt), err)
+		}
+	}
+
+	// Prepare each elected SHARED folder source (#156). Unlike a personal source,
+	// owned by the runtime UID so that MkdirAll + chown is enough, the household
+	// shared tree is root:moose-shared, mode 02770 setgid (STORAGE.md # user
+	// content): the brain creates the elected <Folder>[/<subfolder>] beneath the
+	// shared root, owning each NEW dir to the moose-shared group with the setgid
+	// bit, never chowning to a runtime UID and never re-owning a pre-existing
+	// parent. The moose-app container reaches it through its moose-shared
+	// group_add (writeOverride), with no per-UID ownership. Writing under the shared
+	// tree needs root, so this runs only under the production brain (euid 0); the
+	// unprivileged native dev brain can't create the shared tree, so household
+	// shared-folder apps are out of the inner loop: skip with a warning, leaving
+	// dev behavior unchanged (APP_ISOLATION.md # User content).
+	for _, mt := range mounts {
+		if mt.Source != sourceShared {
+			continue
+		}
+		src := iso.hostSource(mt)
+		if os.Geteuid() != 0 {
+			slog.Warn("shared folder source prep skipped under unprivileged brain (out-of-inner-loop, #156)",
+				"instance_id", id, "src", src)
+			continue
+		}
+		if err := prepareSharedSource(iso.sharedBase, src, iso.sharedGID); err != nil {
+			return fmt.Errorf("prepare shared source %q: %w", src, err)
+		}
+	}
+	return nil
+}
+
 // ErrNoGPU is the `gpu: true` install capacity refusal (APP_ISOLATION.md #
 // GPU): the manifest requires a GPU and the host reports none. Raised before
 // the instance row, any Docker work, or the override exist — nothing to roll
@@ -897,61 +961,8 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		return rollback(err)
 	}
 
-	// Prepare each elected PERSONAL folder source so the app can write user
-	// content into it. A docker-created bind source is root:root (the same
-	// daemon behavior as the private bind dirs above), so a folder that does not
-	// exist yet, such as ~/Documents on a new account or the pick-subfolder
-	// ~/Documents/Notebooks for Jupyter, would land root-owned, and the
-	// cap_drop:ALL container, running as the owner UID, could not write it.
-	//
-	// host-agent does this, not the brain (#519). The brain runs in a container
-	// that does not mount /home, so a MkdirAll + chown here made the folder in
-	// the container's own filesystem and never on the host. Mounting /home into
-	// the brain would give the LAN-facing brain every user's private files; a
-	// narrow named op keeps home access in host-agent, where
-	// BRAIN_HOST_PROTOCOL.md already puts it. host-agent creates each missing
-	// level owned by the owner, sets the owner of the last level, and never
-	// follows a symlink. Under the fake host-agent (make dev) it creates the
-	// folder in the operator's own home. SHARED sources are prepared below, by
-	// a different rule.
-	for _, mt := range iso.mounts {
-		if mt.Source != sourcePersonal {
-			continue
-		}
-		rel := folderDir[mt.Folder]
-		if mt.Subfolder != "" {
-			rel += "/" + filepath.ToSlash(filepath.Clean(mt.Subfolder))
-		}
-		if err := m.host.PrepareUserFolder(ctx, owner.Username, rel); err != nil {
-			return rollback(fmt.Errorf("prepare folder source %q: %w", iso.hostSource(mt), err))
-		}
-	}
-
-	// Prepare each elected SHARED folder source (#156). Unlike a personal source
-	// — owned by the runtime UID, so MkdirAll + chown suffices — the household
-	// shared tree is root:moose-shared, mode 02770 setgid (STORAGE.md # user
-	// content): the brain creates the elected <Folder>[/<subfolder>] beneath the
-	// shared root, owning each NEW dir to the moose-shared group with the setgid
-	// bit, never chowning to a runtime UID and never re-owning a pre-existing
-	// parent. The moose-app container reaches it through its moose-shared
-	// group_add (writeOverride) — no per-UID ownership. Writing under the shared
-	// tree needs root, so this runs only under the production brain (euid 0); the
-	// unprivileged native dev brain can't create the shared tree, so household
-	// shared-folder apps are out of the inner loop — skip with a warning, leaving
-	// dev behavior unchanged (APP_ISOLATION.md # User content).
-	for _, mt := range iso.mounts {
-		if mt.Source != sourceShared {
-			continue
-		}
-		src := iso.hostSource(mt)
-		if os.Geteuid() != 0 {
-			slog.Warn("shared folder source prep skipped under unprivileged brain (out-of-inner-loop, #156)",
-				"instance_id", id, "src", src)
-			continue
-		}
-		if err := prepareSharedSource(iso.sharedBase, src, iso.sharedGID); err != nil {
-			return rollback(fmt.Errorf("prepare shared source %q: %w", src, err))
-		}
+	if err := m.prepareFolderSources(ctx, id, owner.Username, iso, iso.mounts); err != nil {
+		return rollback(err)
 	}
 
 	// 7. Generate override (with pins + isolation + any resource policy) + .env.

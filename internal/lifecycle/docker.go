@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,12 @@ type DockerDriver interface {
 	ComposeUp(ctx context.Context, dir, project string) (string, error)
 	ComposeDown(ctx context.Context, dir, project string) (string, error)
 	ComposeStop(ctx context.Context, dir, project string) (string, error)
+	// ComposeCreate makes the project's containers again from the files on
+	// disk without starting them (`docker compose create --force-recreate`).
+	// It keeps their anonymous volumes. An update runs it after it made the
+	// app's network again, because a container on a removed network cannot
+	// start and compose does not see the change (#633).
+	ComposeCreate(ctx context.Context, dir, project string) (string, error)
 	// ServiceUp brings up a managed-service compose project
 	// (SERVICE_PROVISIONING.md # Tier 1). Unlike ComposeUp it uses only the
 	// generated compose.yml + .env (no per-app override): a service instance is a
@@ -75,6 +82,11 @@ type DockerDriver interface {
 	ContainerHealth(ctx context.Context, container string) (string, error)
 	Inspect(ctx context.Context, instanceID, mainService string) (running bool, health string, err error)
 	NetworkCreate(ctx context.Context, name string, internal bool) error
+	// NetworkInspect reads whether a network exists, whether it is internal
+	// (no route out), and the containers on it now, by name. An update reads
+	// it to make the app's network follow the internet permission (#633).
+	// Needs only the proxy's NETWORKS family.
+	NetworkInspect(ctx context.Context, name string) (NetworkInfo, error)
 	NetworkRemove(ctx context.Context, name string) error
 	// NetworkConnect attaches an existing container to a network, and
 	// NetworkDisconnect detaches it. The brain uses them to put Caddy on each
@@ -125,6 +137,14 @@ type DockerDriver interface {
 	// moose.instance_id labels, so one left by a brain that stopped half way
 	// can be found and removed.
 	ImageUserFiles(ctx context.Context, instanceID, ref string) (passwd, group []byte, err error)
+}
+
+// NetworkInfo is what NetworkInspect reads. Containers are the names of the
+// containers attached now; a stopped container is not attached.
+type NetworkInfo struct {
+	Exists     bool
+	Internal   bool
+	Containers []string
 }
 
 // ManagedContainer is one managed container's identity and liveness, as read
@@ -240,6 +260,10 @@ func (cliDocker) ComposeStop(ctx context.Context, dir, project string) (string, 
 	return composeRun(ctx, dir, project, "stop")
 }
 
+func (cliDocker) ComposeCreate(ctx context.Context, dir, project string) (string, error) {
+	return composeRun(ctx, dir, project, "create", "--force-recreate")
+}
+
 func composeRun(ctx context.Context, dir, project string, args ...string) (string, error) {
 	base := []string{
 		"compose",
@@ -344,6 +368,40 @@ func (cliDocker) NetworkCreate(ctx context.Context, name string, internal bool) 
 		return fmt.Errorf("%w: %s", err, out)
 	}
 	return nil
+}
+
+func (cliDocker) NetworkInspect(ctx context.Context, name string) (NetworkInfo, error) {
+	out, err := exec.CommandContext(ctx, "docker", "network", "inspect", name).CombinedOutput()
+	if err != nil {
+		if strings.Contains(strings.ToLower(string(out)), "not found") {
+			return NetworkInfo{}, nil
+		}
+		return NetworkInfo{}, fmt.Errorf("inspect network %s: %w: %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return parseNetworkInspect(out)
+}
+
+// parseNetworkInspect reads `docker network inspect <name>`: an array of one
+// network, with its Internal flag and its attached containers by id.
+func parseNetworkInspect(out []byte) (NetworkInfo, error) {
+	var nets []struct {
+		Internal   bool `json:"Internal"`
+		Containers map[string]struct {
+			Name string `json:"Name"`
+		} `json:"Containers"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &nets); err != nil {
+		return NetworkInfo{}, fmt.Errorf("parse network inspect: %w", err)
+	}
+	if len(nets) == 0 {
+		return NetworkInfo{}, nil
+	}
+	info := NetworkInfo{Exists: true, Internal: nets[0].Internal}
+	for _, c := range nets[0].Containers {
+		info.Containers = append(info.Containers, c.Name)
+	}
+	sort.Strings(info.Containers)
+	return info, nil
 }
 
 func (cliDocker) NetworkRemove(ctx context.Context, name string) error {

@@ -51,7 +51,7 @@ func (s *Server) setAppAutoRestart(ctx context.Context, in *struct {
 	if e, err := s.catalog.Entry(inst.ManifestID); err == nil {
 		catEntry = &e
 	}
-	dto := s.toDTO(inst, owner.Username, catEntry)
+	dto := s.toDTO(ctx, inst, owner.Username, catEntry)
 	s.withPublicPaths(&dto)
 	return &struct{ Body InstanceDTO }{Body: dto}, nil
 }

@@ -18,10 +18,12 @@
 import { ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
-import { api, ApiError, waitForJobOk, type AccountDeleted, type User } from "@/api";
+import { api, ApiError, waitForJobOk, type AccountDeleted, type Instance, type User } from "@/api";
 import { withElevation } from "@/elevate";
 import { useAuth } from "@/auth";
+import { wantLines } from "@/installSteps";
 import Button from "@/components/ui/Button.vue";
+import PermissionList from "@/components/PermissionList.vue";
 
 const router = useRouter();
 const qc = useQueryClient();
@@ -41,6 +43,21 @@ const users = useQuery({
   queryKey: ["users"],
   queryFn: () => api.get<{ users: User[] }>("/users"),
 });
+
+// ── updates that wait for a person (UPDATES.md # 6 Admin visibility, #633) ────
+// An admin's GET /apps holds every app, so the apps whose update waits for
+// one person's yes are a filter by owner: their personal apps with an update
+// that asks for more access, the ones they said "Keep" to as well. Read-only:
+// only the owner can allow it, and the brain refuses an admin who tries.
+const apps = useQuery({
+  queryKey: ["apps"],
+  queryFn: () => api.get<{ apps: Instance[] }>("/apps"),
+});
+function waitingFor(userId: string): Instance[] {
+  return (apps.data.value?.apps ?? []).filter(
+    (a) => a.scope === "personal" && a.owner_user_id === userId && a.update.status === "needs_approval",
+  );
+}
 
 // ── create form ────────────────────────────────────────────────────────────────
 const newName = ref("");
@@ -345,6 +362,19 @@ const doResetPassword = useMutation({
               Save
             </Button>
             <Button variant="ghost" size="sm" @click="resetFor = null; resetPasswordValue = ''">Cancel</Button>
+          </div>
+
+          <!-- Updates that wait for this person's yes (read-only). -->
+          <div v-if="waitingFor(u.id).length > 0" class="space-y-2 border-t border-border pt-3 text-xs text-muted-foreground">
+            <p class="font-medium text-foreground">Updates that wait for {{ u.display_name }} to allow them:</p>
+            <div v-for="a in waitingFor(u.id)" :key="a.id" class="space-y-1">
+              <p>
+                {{ a.name }} {{ a.update.available_version }} wants new access<template v-if="a.update.declined">
+                  ({{ u.display_name }} chose to keep {{ a.version }} for now)</template>:
+              </p>
+              <PermissionList :lines="wantLines(a.update.wants)" />
+            </div>
+            <p>Only {{ u.display_name }} can allow these updates.</p>
           </div>
 
           <!-- Per-row guard / error message -->

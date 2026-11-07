@@ -15,6 +15,7 @@ import { computed } from "vue";
 import { TriangleAlert } from "lucide-vue-next";
 import type { AppFit, InstallPlanFootprint, InstallPlanPermissions } from "../../api";
 import FitNotice from "../FitNotice.vue";
+import PermissionList from "../PermissionList.vue";
 import { formatSize } from "../../utils";
 import { permissionLines, spaceTight } from "../../installSteps";
 
@@ -41,15 +42,7 @@ const tight = computed(() => spaceTight(props.footprint));
     <FitNotice :fit="fit" />
     <template v-if="lines.length > 0">
       <p class="font-medium text-foreground">{{ appName }} needs these permissions:</p>
-      <ul class="list-disc space-y-0.5 pl-5">
-        <li
-          v-for="l in lines"
-          :key="l.key"
-          :class="l.danger ? 'font-medium text-destructive marker:text-destructive' : ''"
-        >
-          {{ l.text }}
-        </li>
-      </ul>
+      <PermissionList :lines="lines" />
     </template>
     <p v-else>{{ appName }} needs no special permissions.</p>
   </div>

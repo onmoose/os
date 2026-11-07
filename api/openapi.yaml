@@ -287,6 +287,43 @@ components:
         - mine
         - provider_id
       type: object
+    AppAccessWant:
+      additionalProperties: false
+      properties:
+        change:
+          enum:
+            - new
+            - write
+            - whole
+          type: string
+        device:
+          type: string
+        folder:
+          type: string
+        kind:
+          enum:
+            - internet
+            - lan
+            - gpu
+            - device
+            - folder
+            - public_path
+          type: string
+        mode:
+          enum:
+            - read
+            - write
+          type: string
+        path:
+          type: string
+        source:
+          enum:
+            - personal
+            - shared
+          type: string
+      required:
+        - kind
+      type: object
     AppConfigDTO:
       additionalProperties: false
       properties:
@@ -470,6 +507,10 @@ components:
           type: string
         can_apply:
           type: boolean
+        can_approve:
+          type: boolean
+        declined:
+          type: boolean
         failed_at:
           format: date-time
           type: string
@@ -494,9 +535,18 @@ components:
             - needs_newer_moose
             - blocked
           type: string
+        wants:
+          items:
+            $ref: "#/components/schemas/AppAccessWant"
+          type:
+            - array
+            - "null"
       required:
         - can_apply
         - paused
+        - wants
+        - declined
+        - can_approve
       type: object
     AppUseDTO:
       additionalProperties: false
@@ -3017,6 +3067,22 @@ components:
         - brain_image
         - ui_image
       type: object
+    UpdateVersionBody:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/UpdateVersionBody.json
+          format: uri
+          readOnly: true
+          type: string
+        version:
+          minLength: 1
+          type: string
+      required:
+        - version
+      type: object
     UserDTO:
       additionalProperties: false
       properties:
@@ -3041,6 +3107,8 @@ components:
         role:
           type: string
         single_user_mode:
+          type: boolean
+        update_prompt_dismissed:
           type: boolean
         username:
           type: string
@@ -3624,6 +3692,60 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Update an app to the catalog's new version (job; owner or admin)
+  /api/v1/apps/{id}/update/approve:
+    post:
+      operationId: approve-app-update
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVersionBody"
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+          description: Accepted
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Allow an update that asks for more access, and run it at once (job; the owner, or an admin for a household app)
+  /api/v1/apps/{id}/update/decline:
+    post:
+      operationId: decline-app-update
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVersionBody"
+        required: true
+      responses:
+        "204":
+          description: No Content
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: "Keep the current version: the update prompt stops asking about this version (the owner, or an admin for a household app)"
   /api/v1/audit:
     get:
       operationId: list-audit
@@ -4254,6 +4376,19 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Check one public key the way Save will, without storing it (auth required)
+  /api/v1/me/update-prompt/dismiss:
+    post:
+      operationId: dismiss-update-prompt
+      responses:
+        "204":
+          description: No Content
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Close the update prompt for this session; it comes back at the next sign-in
   /api/v1/notifications:
     get:
       operationId: list-notifications

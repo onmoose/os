@@ -34,6 +34,7 @@ import (
 type liveUpdateEnv struct {
 	m        *Manager
 	st       *store.Store
+	host     *fakeHost
 	catDir   string
 	stateDir string
 }
@@ -48,7 +49,9 @@ func newLiveUpdateEnv(t *testing.T) *liveUpdateEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	docker := NewCLIDocker()
-	m := NewManager(st, catalog.New(catDir), newFakeHost(), newFakeCaddy(), docker, events.NewBus(), stateDir)
+	host := newFakeHost()
+	host.homeRoot = t.TempDir()
+	m := NewManager(st, catalog.New(catDir), host, newFakeCaddy(), docker, events.NewBus(), stateDir)
 	m.SetAdmitter(admission.Check)
 	// A short budget, so the failing version is rolled back in seconds.
 	m.SetHealthTiming(30*time.Second, time.Second)
@@ -60,7 +63,7 @@ func newLiveUpdateEnv(t *testing.T) *liveUpdateEnv {
 		_ = exec.Command("docker", "network", "rm", ingressNetwork).Run()
 		_ = exec.Command("docker", "run", "--rm", "-v", stateDir+":/s", "alpine", "rm", "-rf", "/s/services", "/s/instances").Run()
 	})
-	return &liveUpdateEnv{m: m, st: st, catDir: catDir, stateDir: stateDir}
+	return &liveUpdateEnv{m: m, st: st, host: host, catDir: catDir, stateDir: stateDir}
 }
 
 func (e *liveUpdateEnv) publish(t *testing.T, id, manifestYAML, compose string) {
