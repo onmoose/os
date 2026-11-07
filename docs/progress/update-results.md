@@ -71,6 +71,7 @@ Closes #634, step 5 of the app-update work in #630. [update-approval.md](update-
   - Allow & update left the approval notification open. Every good update now resolves it (`AppUpdateDone`, `TestAPersonsUpdateResolvesItsNotifications`).
   - The window's mark was written after the update's last event. The nightly report now sends `app.update_changed` again after the mark.
   - Each of the two new tests for the first two fails with its fix turned off.
+  - Greptile's second pass: when `undo_done` cannot be written, the older copy is no longer put back, so the window it named cannot open. The way back to that version is then lost, and the log says so (`TestNoUndoMarkNoOlderCopy`).
 - **One generation only.** After a rollback by hand there is nothing more to go back to, as the spec says.
 
 ## What's next

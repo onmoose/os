@@ -553,3 +553,28 @@ func TestAPersonsUpdateResolvesItsNotifications(t *testing.T) {
 		t.Fatalf("done %v", fn.done)
 	}
 }
+
+// TestNoUndoMarkNoOlderCopy: when the record cannot be marked undo_done, the
+// older copy is not put back into .prev, so a second undo could never copy
+// it over the current files.
+func TestNoUndoMarkNoOlderCopy(t *testing.T) {
+	e := newTestEnv(t)
+	inst := updateTo2(t, e)
+	id := inst.ID
+	kept, err := e.m.keepOlder(id)
+	if err != nil || !kept {
+		t.Fatalf("keepOlder: %v %v", kept, err)
+	}
+	prev, _ := e.store.GetInstancePrevImages(id)
+	// update.json cannot be written: a directory sits where it goes.
+	if err := os.Mkdir(filepath.Join(e.m.instanceDir(id), updateRecordFile+".tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.m.finishRecord(id, updateRecord{From: "2.0", To: "3.0", PrevKept: true, OlderKept: true, DroppedImages: prev})
+	if e.exists(id, "compose.yml.prev") || e.exists(id, "compose.yml.prev"+olderSuffix) {
+		t.Fatal("the older copy was put back without the undo mark")
+	}
+	if r := e.row(t, id); r.LastUpdate != (store.LastUpdate{}) {
+		t.Fatalf("still a rollback point: %+v", r.LastUpdate)
+	}
+}

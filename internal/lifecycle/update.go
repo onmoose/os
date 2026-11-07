@@ -1184,7 +1184,11 @@ func (m *Manager) finishRecord(id string, rec updateRecord) {
 	if !rec.UndoDone {
 		rec.UndoDone = true
 		if err := m.writeUpdateRecord(id, rec); err != nil {
-			slog.Warn("update: mark the undo done", "instance_id", id, "err", err)
+			// Without the mark, a brain that stops next would run the undo
+			// again over an older .prev. So the older copy is not put back:
+			// the way back to it is lost, but the current files stay right.
+			slog.Warn("update: could not mark the undo done; the older version can no longer be rolled back to", "instance_id", id, "err", err)
+			rec.OlderKept = false
 		}
 	}
 	m.endPrevious(id, rec)
