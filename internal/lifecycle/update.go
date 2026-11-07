@@ -169,6 +169,9 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 		return err
 	}
 	defer release()
+	// The names a database move holds go when the update has ended,
+	// rollback included (#635).
+	defer m.releaseMoveNames(id)
 
 	inst, err := m.store.Get(id)
 	if err != nil {

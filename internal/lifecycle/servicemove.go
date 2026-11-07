@@ -179,7 +179,7 @@ func (m *Manager) moveServices(ctx context.Context, id string, moves []movedServ
 		if !ok || d.Kind != g.Kind || d.Version != g.Version || d.DBName != g.DBName {
 			return &serviceMoveError{plain, fmt.Errorf("the snapshot holds no dump of the %s database", mv.Service)}
 		}
-		taken, err := m.store.ServiceNamesTaken(g.Kind, mv.To, g.DBName, g.RoleName)
+		taken, err := m.reserveMoveNames(id, g.Kind, mv.To, g.DBName, g.RoleName)
 		if err != nil {
 			return err
 		}
@@ -210,6 +210,46 @@ func (m *Manager) moveServices(ctx context.Context, id string, moves []movedServ
 			"kind", mv.Kind, "version", mv.From, "new_version", mv.To)
 	}
 	return nil
+}
+
+// reserveMoveNames holds dbName and roleName on kind and version for
+// instance id, until releaseMoveNames. It reports true, and holds nothing,
+// when a grant in the store or another update that runs now holds either
+// name there. The check and the hold are one step under moveMu, so two
+// updates cannot both pass it for the same names.
+func (m *Manager) reserveMoveNames(id, kind, version, dbName, roleName string) (bool, error) {
+	m.moveMu.Lock()
+	defer m.moveMu.Unlock()
+	keys := []string{kind + "/" + version + "/" + dbName, kind + "/" + version + "/" + roleName}
+	for _, k := range keys {
+		if owner, ok := m.moveNames[k]; ok && owner != id {
+			return true, nil
+		}
+	}
+	taken, err := m.store.ServiceNamesTaken(kind, version, dbName, roleName)
+	if err != nil || taken {
+		return taken, err
+	}
+	if m.moveNames == nil {
+		m.moveNames = map[string]string{}
+	}
+	for _, k := range keys {
+		m.moveNames[k] = id
+	}
+	return false, nil
+}
+
+// releaseMoveNames lets go of every name instance id holds for a database
+// move. The update calls it when it ends, after any rollback: by then the
+// names are in the store (the grant points there) or dropped.
+func (m *Manager) releaseMoveNames(id string) {
+	m.moveMu.Lock()
+	defer m.moveMu.Unlock()
+	for k, owner := range m.moveNames {
+		if owner == id {
+			delete(m.moveNames, k)
+		}
+	}
 }
 
 // moveService makes g's database on version to and fills it from the dump

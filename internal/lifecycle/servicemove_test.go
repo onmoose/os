@@ -378,3 +378,83 @@ func TestCompareVersions(t *testing.T) {
 		}
 	}
 }
+
+// TestMoveNamesAreHeldUntilTheUpdateEnds: two updates that run at once cannot
+// both take the same names on a new major (#635). The second one is refused
+// until the first lets go.
+func TestMoveNamesAreHeldUntilTheUpdateEnds(t *testing.T) {
+	e := newTestEnv(t)
+	if taken, err := e.m.reserveMoveNames("a", "postgres", "18", "app_ab12", "app_ab12"); err != nil || taken {
+		t.Fatalf("first hold = %v %v, want free", taken, err)
+	}
+	if taken, _ := e.m.reserveMoveNames("a", "postgres", "18", "app_ab12", "app_ab12"); taken {
+		t.Fatal("the same update was refused its own names")
+	}
+	if taken, _ := e.m.reserveMoveNames("b", "postgres", "18", "app_ab12", "app_ab12"); !taken {
+		t.Fatal("a second update got names the first one holds")
+	}
+	if taken, _ := e.m.reserveMoveNames("b", "postgres", "17", "app_ab12", "app_ab12"); taken {
+		t.Fatal("the names were refused on another major")
+	}
+	e.m.releaseMoveNames("a")
+	if taken, _ := e.m.reserveMoveNames("b", "postgres", "18", "app_ab12", "app_ab12"); taken {
+		t.Fatal("the names are still held after the first update ended")
+	}
+}
+
+// TestUpdateAlwaysLetsTheNamesGo: an update that moved a database, good or
+// rolled back, holds no names once it has ended.
+func TestUpdateAlwaysLetsTheNamesGo(t *testing.T) {
+	for _, bad := range []bool{false, true} {
+		e := newTestEnv(t)
+		inst, _ := installUpDB(t, e)
+		if bad {
+			e.versionsMigrate(t, "2.0")
+		} else {
+			e.versionsMigrate(t)
+		}
+		e.publish(t, "2.0", upImage2, upDigest2, upDatabase17)
+		_ = e.m.Update(context.Background(), inst.ID, nil)
+		if n := len(e.m.moveNames); n != 0 {
+			t.Fatalf("bad=%v: %d names still held after the update", bad, n)
+		}
+	}
+}
+
+// TestUpdateMoveRefusedWhenTheDriveIsFull: the snapshot fits, but the copy
+// of the database on the new major would leave the drive too full. Nothing is
+// made on the new major, and the old version runs again on its database.
+func TestUpdateMoveRefusedWhenTheDriveIsFull(t *testing.T) {
+	e := newTestEnv(t)
+	inst, _ := installUpDB(t, e)
+	e.versionsMigrate(t)
+	e.publish(t, "2.0", upImage2, upDigest2, upDatabase17)
+	// The database is 10 KB. The snapshots dir has room; the state dir, which
+	// holds the services, is 94% full, so 10 KB more crosses 95%.
+	e.docker.runOneOff = func(_, _, _ string, args []string) (string, error) {
+		if q := strings.Join(args, " "); strings.Contains(q, "pg_database_size") {
+			return "10240", nil
+		}
+		return "", nil
+	}
+	e.m.diskSpace = func(dir string) (uint64, uint64, error) {
+		if dir == e.m.stateDir {
+			return 6 << 10, 100 << 10, nil
+		}
+		return 90 << 10, 100 << 10, nil
+	}
+	err := e.m.Update(context.Background(), inst.ID, nil)
+	if err == nil || !strings.Contains(err.Error(), "not enough free space on the drive to move the app's data to Postgres") {
+		t.Fatalf("update error = %v, want the space message", err)
+	}
+	if len(e.oneOffs("postgres:17")) != 0 {
+		t.Fatalf("something ran on 17: %v", e.oneOffs("postgres:17"))
+	}
+	r := e.row(t, inst.ID)
+	if r.State != "running" || r.Version != "1.0" {
+		t.Fatalf("row: state %q version %q", r.State, r.Version)
+	}
+	if grants, _ := e.store.GetServiceGrants(inst.ID); grants[0].Version != "16" {
+		t.Fatalf("grant = %+v, want 16", grants)
+	}
+}

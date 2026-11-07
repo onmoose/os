@@ -267,6 +267,14 @@ type Manager struct {
 	// parkedSeen is, per instance, the version this brain run already found
 	// it cannot read. Only the running check touches it.
 	parkedSeen map[string]string
+
+	// moveMu guards moveNames: the database and role names a database move
+	// holds on its new major, by "<kind>/<version>/<name>", with the instance
+	// that holds them (#635). The store holds them only once the grant
+	// points there, so this keeps two updates that run at once from taking,
+	// dropping or filling the same names. Released when the update ends.
+	moveMu    sync.Mutex
+	moveNames map[string]string
 }
 
 // maxHeavyOps is how many installs and updates may run at once
