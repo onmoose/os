@@ -3306,6 +3306,7 @@ app-update)
         [ "$AU_ST" = completed ] || fail "app-update: the approved update to 3.1 ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
         au_running 3.1
         au_rows_are "row-1.0 row-2.0 row-3.1"
+        grep -qx 3.1 "$(au_inst)/data/starts.txt" || fail "app-update: 3.1 wrote no line to data/starts.txt: '$(au_starts)'"
         echo "cloud-assertions: app-update: APPROVAL OK (3.1 waited for the owner, a plain Update was refused, the owner was told; after the yes it runs 3.1)"
 
         # B3. GO BACK. The app returns to 2.0 with the data from just before
@@ -3316,8 +3317,10 @@ app-update)
         [ "$AU_ST" = completed ] || fail "app-update: Go back ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
         au_running 2.0
         au_rows_are "row-1.0 row-2.0"
+        grep -qx 3.1 "$(au_inst)/data/starts.txt" && fail "app-update: data/starts.txt still has 3.1's line after Go back: '$(au_starts)'"
+        grep -qx 1.0 "$(au_inst)/data/starts.txt" || fail "app-update: data/starts.txt lost 1.0's line after Go back: '$(au_starts)'"
         au_has "$(au_app)" auto_update false || fail "app-update: automatic updates are on after Go back: $(au_app | cut -c1-600)"
-        echo "cloud-assertions: app-update: GO BACK OK (back on 2.0 with rows '$(au_rows)', automatic updates off)"
+        echo "cloud-assertions: app-update: GO BACK OK (back on 2.0 with rows '$(au_rows)' and starts '$(au_starts)', automatic updates off)"
 
         # C. THE NIGHT. First the work: the catalog moves to 4.0 and the
         #    owner turns automatic updates on, while the window is still 12
@@ -3397,10 +3400,19 @@ app-update)
         a="$(au_app)"
         au_has "$a" updated_overnight true && au_has "$a" updated_from '"2.0"' \
             || fail "app-update: the app does not say it was updated overnight from 2.0: $(cut -c1-600 <<<"$a")"
+        # The order: the update ran on slot A, before this boot. A switch that
+        # came too early would leave the update to slot B, inside the same
+        # window, and every check above would still pass. updated_at is when
+        # the update took its snapshot, at its start.
+        up_at="$(json_str_of "$a" updated_at)"
+        up_s="$(date -d "$up_at" +%s 2>/dev/null || true)"
+        boot_s="$(awk '/^btime /{print $2}' /proc/stat)"
+        [ -n "$up_s" ] && [ -n "$boot_s" ] && [ "$up_s" -lt "$boot_s" ] \
+            || fail "app-update: the update to 4.0 did not run on slot A before the switch: updated_at '$up_at' ($up_s), slot B booted at $boot_s"
         nb=""
         for _i in $(seq 1 60); do nb="$(full_get /api/v1/notifications "$apex" "$session_cookie" 2>/dev/null || true)"; grep -q ' updated to 4.0' <<<"$nb" && break; sleep 1; done
         grep -q ' updated to 4.0' <<<"$nb" || fail "app-update: the owner was not told of the overnight update: $(sed '1,/^\r*$/d' <<<"$nb" | cut -c1-400)"
-        echo "cloud-assertions: app-update: SLOT B OK (the box switched after the app update: on slot B, marked good; upnote 4.0 runs on rows '$(au_rows)', updated overnight from 2.0, the owner told)"
+        echo "cloud-assertions: app-update: SLOT B OK (the box switched after the app update: updated at $up_at, slot B booted $(( boot_s - up_s )) s later and marked good; upnote 4.0 runs on rows '$(au_rows)', updated overnight from 2.0, the owner told)"
     fi
     ;;
 os-update|os-revert)
