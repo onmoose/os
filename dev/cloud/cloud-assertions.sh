@@ -46,6 +46,11 @@
 #                      caps-tier app's data kept across a container recreate
 #     remap-reboot     the same disk booted again: every check of `remap` again
 #                      on what the box brought back, and the caps-tier data kept
+#     app-update       app updates (#630): an update by hand on the old data, a
+#                      broken update rolled back from the snapshot, an update
+#                      that waits for the owner's yes, Go back, and a nightly
+#                      update that the OS switch waits for, then the same disk
+#                      on slot B. Its own overlay, like the OS update boots.
 #
 # On PASS the script powers the box off cleanly (the serial-only analogue of the
 # medium lane's SSH `systemctl poweroff`) so the brain's SQLite box-id write flushes
@@ -228,8 +233,8 @@ OS_STATE_DIR=/var/lib/moose/test/os
 os_stage() { cat "$OS_STATE_DIR/stage" 2>/dev/null || echo 1; }
 set_os_stage() { mkdir -p "$OS_STATE_DIR" && echo "$1" > "$OS_STATE_DIR/stage" && sync; }
 case "$MODE" in
-os-update|os-revert) ;;
-*) [ "$BOOTED" = A ] || fail "layout: booted slot '$BOOTED', want A (only the OS update boots leave slot A)" ;;
+os-update|os-revert|app-update) ;;
+*) [ "$BOOTED" = A ] || fail "layout: booted slot '$BOOTED', want A (only the OS update boots and app-update leave slot A)" ;;
 esac
 
 # The broken slot of the os-revert boot (#563). host-agent is kept from starting
@@ -809,6 +814,7 @@ update)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 ssh)      DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 remap|remap-reboot) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 os-update|os-revert) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+app-update) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 esac
 echo "cloud-assertions: probing control plane at Host=$DASH_HOST (mode=$MODE)"
 
@@ -3090,6 +3096,323 @@ remap|remap-reboot)
         remap_checks
         [ "$RS_TOKEN_NOW" = "$rs_token" ] || fail "remap-reboot: rootsetup lost its data on a reboot: token '$rs_token' became '$RS_TOKEN_NOW'"
         echo "cloud-assertions: remap-reboot: every tier checked again after a real reboot of the same disk; the caps-tier app kept its data (token $rs_token)"
+    fi
+    ;;
+app-update)
+    # APP UPDATES ON A BOOTED BOX (#630, UPDATES.md # 4, APP_LIFECYCLE.md #
+    # update + rollback). The only proof of the app update path with the
+    # socket proxy, the userns remap and a real managed Postgres together. The
+    # app is upnote (dev/cloud/test/catalog/upnote): each version adds the row
+    # row-<version> to its database and its version to data/starts.txt. A new
+    # catalog version reaches the box as a file the boot copies over the
+    # staged catalog, then a brain restart, which reads it and checks for
+    # updates. Two stages, one per slot:
+    #   1 (slot A) A: update 1.0 to 2.0 by hand; B: 3.0 is broken and rolls
+    #              back, 3.1 asks for internet and waits for the owner's yes,
+    #              then Go back to 2.0; C: the nightly window applies 4.0
+    #              while the app's hold keeps the OS switch waiting, then the
+    #              box switches to slot B and reboots.
+    #   2 (slot B) the app on 4.0 on its data, marked as updated overnight,
+    #              and the owner told.
+    # On a run that publishes the OS (os_mode=refuse) RAUC refuses the test
+    # bundle, so stage 1 runs the night with no OS part and ends there.
+    [ -f "$SEED" ] || fail "app-update: $SEED absent"
+    box_id="$(json_str "$SEED" box_id)"
+    apex="${box_id}.onmoose.io"
+    os_cred="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.os_test" 2>/dev/null || true)"
+    IFS=: read -r os_mode os_ver os_sum <<<"$os_cred"
+    [ -n "$os_ver" ] && [ -n "$os_sum" ] || fail "app-update: moose.os_test credential missing or malformed ('$os_cred')"
+    stage="$(os_stage)"
+    target_dir=/var/lib/moose/test-target
+    au_inst() { echo "/var/lib/moose/state/instances/$AU_ID"; }
+    ha_log() { journalctl -u host-agent.service -b --no-pager -o short-unix 2>&1; }
+    # The admin read of what host-agent decided, body only.
+    au_read() { sed '1,/^\r*$/d' <<<"$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)" | tr -d '\r'; }
+    # The app as the brain reports it, body only (one line of JSON).
+    au_app() { sed '1,/^\r*$/d' <<<"$(full_get "/api/v1/apps/$AU_ID" "$apex" "$session_cookie" 2>/dev/null || true)" | tr -d '\r'; }
+    # au_has DOC KEY VALUE: the document has "KEY":VALUE (VALUE as JSON).
+    au_has() { grep -qF "\"$2\":$3" <<<"$1"; }
+    au_rows() { docker exec moose-svc-postgres-16 psql -U postgres -d "$AU_DB" -tAc 'select v from upnote_rows order by v' 2>&1 | tr '\n' ' ' | sed 's/ $//'; }
+    au_starts() { tr '\n' ' ' < "$(au_inst)/data/starts.txt" 2>/dev/null | sed 's/ $//'; }
+    au_ctr() {
+        AU_CTR=""
+        for _i in $(seq 1 180); do
+            AU_CTR="$(docker ps --filter "label=moose.instance_id=$AU_ID" --filter "label=com.docker.compose.service=upnote" --filter status=running --format '{{.Names}}' | head -1)"
+            [ -n "$AU_CTR" ] && return 0
+            sleep 1
+        done
+        fail "app-update: no running upnote container: $(docker ps -a --filter "label=moose.instance_id=$AU_ID" --format '{{.Names}} {{.Status}}' | tr '\n' ' ')"
+    }
+    # au_job RESPONSE WHAT waits for the job the response started and sets
+    # AU_ST and AU_JR. WATCH, when set, runs every second while it waits.
+    au_job() {
+        local job; AU_ST=""; AU_JR=""
+        job="$(json_str_of "$1" job_id)"
+        [ -n "$job" ] || fail "app-update: $2 did not start: status='$(status_of "$1")' body=$(tail -1 <<<"$1" | cut -c1-400)"
+        for _i in $(seq 1 600); do
+            AU_JR="$(full_get "/api/v1/jobs/${job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+            AU_ST="$(json_str_of "$AU_JR" status)"
+            case "$AU_ST" in completed|failed|cancelled|stalled) return 0 ;; esac
+            [ -n "${WATCH:-}" ] && $WATCH
+            sleep 1
+        done
+        fail "app-update: $2 did not end in 600 s (last status '$AU_ST')"
+    }
+    # au_running VERSION: the app is running on VERSION, in its container.
+    au_running() {
+        local a=""
+        for _i in $(seq 1 120); do
+            a="$(au_app)"
+            au_has "$a" state '"running"' && au_has "$a" version "\"$1\"" && break
+            sleep 1
+        done
+        au_has "$a" state '"running"' && au_has "$a" version "\"$1\"" \
+            || fail "app-update: the app is not running on $1: $(cut -c1-600 <<<"$a")"
+        au_ctr
+        [ "$(docker inspect "$AU_CTR" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^UPNOTE_VERSION=//p')" = "$1" ] \
+            || fail "app-update: the upnote container does not run $1: $(docker inspect "$AU_CTR" --format '{{.Config.Env}}' | cut -c1-300)"
+        # Still in the default tier after the update: remapped, root inside.
+        [ -z "$(docker inspect "$AU_CTR" --format '{{.HostConfig.UsernsMode}}')" ] && [ "$(host_uid_of "$AU_CTR")" = "$remap_base" ] \
+            || fail "app-update: upnote $1 is not remapped: UsernsMode='$(docker inspect "$AU_CTR" --format '{{.HostConfig.UsernsMode}}')' host uid '$(host_uid_of "$AU_CTR")'"
+    }
+    # au_rows_are WANT: the database holds exactly these rows, once the app
+    # has written its own.
+    au_rows_are() {
+        local r=""
+        for _i in $(seq 1 120); do r="$(au_rows)"; [ "$r" = "$1" ] && return 0; sleep 1; done
+        fail "app-update: the rows are '$r', want '$1'"
+    }
+    # au_catalog VERSION: the catalog now has upnote VERSION. The brain reads
+    # the staged file at startup only, and checks for updates there.
+    au_catalog() {
+        cp "/var/lib/moose/test-catalogs/upnote-$1.json" /var/lib/moose/catalog-seed.json || fail "app-update: no test catalog for upnote $1"
+        docker restart moose-brain >/dev/null || fail "app-update: could not restart the brain"
+        local a=""
+        for _i in $(seq 1 180); do
+            a="$(au_app)"
+            au_has "$a" available_version "\"$1\"" && return 0
+            sleep 1
+        done
+        fail "app-update: after the catalog moved to $1 the brain offers no update to it: $(cut -c1-600 <<<"$a")"
+    }
+    # au_target WINDOW [os]: the answer the in-guest source serves, with the
+    # OS bundle when the second word is os.
+    au_target() {
+        if [ "${2:-}" = os ]; then
+            printf '{"version":"os-test","window":"%s","os":[{"version":"%s","bundle_url":"http://127.0.0.1:5001/bundles/os-test.raucb","bundle_sha256":"%s"}]}\n' \
+                "$1" "$os_ver" "$os_sum" > "$target_dir/target.json"
+        else
+            printf '{"version":"os-test","window":"%s"}\n' "$1" > "$target_dir/target.json"
+        fi
+        systemctl restart host-agent.service || fail "app-update: could not restart host-agent"
+        local rd=""
+        for _i in $(seq 1 120); do rd="$(au_read)"; grep -qF "\"window\":\"$1\"" <<<"$rd" && return 0; sleep 1; done
+        fail "app-update: host-agent did not take the window $1 from the answer: $(cut -c1-400 <<<"$rd")"
+    }
+
+    if [ "$stage" = 1 ]; then
+        [ "$BOOTED" = A ] || fail "app-update: the first boot is on slot '$BOOTED', want A"
+        sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token" 2>/dev/null || true)"
+        [ -n "$sso_token" ] || fail "app-update: moose.sso_token credential missing"
+        sso_resp="$(full_get "/_moose/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
+        grep -q ' 303' <<<"$(status_of "$sso_resp")" || fail "app-update: SSO landing did not 303: status='$(status_of "$sso_resp")'"
+        session_cookie="$(cookie_val "$sso_resp" moose_session)"
+        [ -n "$session_cookie" ] || fail "app-update: no moose_session cookie from the SSO landing"
+
+        # The in-guest update source, with a window twelve hours away, so
+        # nothing updates on its own before phase C, whatever the hour of
+        # the run. The default window (03:00-04:00) would otherwise be live
+        # for a run that starts near 03:00. The bundle disk is mounted for
+        # phase C; with os_mode=full host-agent installs it into slot B ahead
+        # of the window, as on a real night.
+        mkdir -p "$target_dir/bundles"
+        bdev="$(blkid -L moose-os-test 2>/dev/null || true)"
+        [ -n "$bdev" ] || fail "app-update: no disk labelled moose-os-test (the harness's bundle disk)"
+        mount -o ro "$bdev" "$target_dir/bundles" || fail "app-update: cannot mount the bundle disk $bdev"
+        mkdir -p /etc/systemd/system/host-agent.service.d
+        printf '[Service]\nEnvironment=MOOSE_UPDATE_OS_URL_PREFIX=http://127.0.0.1:5001/\n' > /etc/systemd/system/host-agent.service.d/30-os-update-test.conf
+        systemctl daemon-reload
+        caddy_image="$(docker inspect -f '{{.Config.Image}}' moose-caddy 2>/dev/null || true)"
+        docker rm -f moose-test-target >/dev/null 2>&1 || true
+        printf '{"version":"os-test"}\n' > "$target_dir/target.json"
+        docker run -d --restart unless-stopped --name moose-test-target -p 127.0.0.1:5001:80 -v "$target_dir":/srv:ro "$caddy_image" \
+            caddy file-server --root /srv --listen :80 >/dev/null 2>&1 || fail "app-update: could not start the in-guest file server"
+        for _i in $(seq 1 60); do grep -q ' 200' <<<"$(http_status_addr 127.0.0.1 5001 /target.json 2>/dev/null)" && break; sleep 1; done
+        shut="$(printf '%02d:00-%02d:01' $(( (10#$(date +%H) + 12) % 24 )) $(( (10#$(date +%H) + 12) % 24 )))"
+        au_target "$shut" "$([ "$os_mode" = full ] && echo os)"
+
+        # The managed Postgres and upnote run postgres:16, test-only like
+        # the remap boot's.
+        docker load -i /var/lib/moose/test-images/postgres-16.tar >/dev/null 2>&1 \
+            || fail "app-update: docker load postgres-16.tar failed: $(docker load -i /var/lib/moose/test-images/postgres-16.tar 2>&1 | tail -2)"
+        resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"upnote","scope":"personal"}' 2>/dev/null)"
+        au_job "$resp" "install upnote 1.0"
+        [ "$AU_ST" = completed ] || fail "app-update: install upnote 1.0 ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
+        AU_ID="$(json_str_of "$AU_JR" instance_id)"
+        [ -n "$AU_ID" ] || fail "app-update: install completed with no instance id"
+        AU_DB="$(sed -n 's/^MOOSE_SERVICE_DATABASE_NAME=//p' "$(au_inst)/.env")"
+        [ -n "$AU_DB" ] || fail "app-update: upnote's .env names no MOOSE_SERVICE_DATABASE_NAME"
+        # Automatic updates off until phase C: phases A and B are by hand.
+        au_off="$(full_send PUT "/api/v1/apps/$AU_ID/auto-update" "$apex" "$session_cookie" '{"enabled":false}' 2>/dev/null)"
+        grep -q ' 200' <<<"$(status_of "$au_off")" || fail "app-update: turning automatic updates off failed: $(status_of "$au_off")"
+        au_running 1.0
+        au_rows_are "row-1.0"
+        echo "cloud-assertions: app-update: upnote 1.0 installed ($AU_ID) on the managed Postgres (database $AU_DB), remapped; rows: $(au_rows); starts: $(au_starts)"
+
+        # A. AN UPDATE BY HAND, 1.0 to 2.0. The new version runs on the old
+        #    data, and the snapshot of that data is kept for Go back.
+        au_catalog 2.0
+        au_has "$(au_app)" status '"available"' || fail "app-update: 2.0 is not classified available: $(au_app | cut -c1-600)"
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/update" "$apex" "$session_cookie" '' 2>/dev/null)"
+        au_job "$resp" "the update to 2.0"
+        [ "$AU_ST" = completed ] || fail "app-update: the update to 2.0 ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
+        au_running 2.0
+        au_rows_are "row-1.0 row-2.0"
+        [ "$(au_starts)" = "1.0 2.0" ] || fail "app-update: data/starts.txt says '$(au_starts)' after the update to 2.0, want '1.0 2.0'"
+        snap="$(au_inst)/snapshots/pre-update-1.0"
+        [ -s "$snap.json" ] && [ -s "$snap.tar" ] && ls "$snap".*.pgdump >/dev/null 2>&1 \
+            || fail "app-update: no complete snapshot of 1.0: $(ls -la "$(au_inst)/snapshots" 2>&1 | tr '\n' ' ')"
+        echo "cloud-assertions: app-update: UPDATE OK (1.0 to 2.0 by hand: running 2.0 on the old row and file, snapshot pre-update-1.0 kept: $(cd "$(au_inst)/snapshots" && ls | tr '\n' ' '))"
+
+        # B1. A BROKEN UPDATE, 2.0 to 3.0. 3.0 writes its row and its line,
+        #     then reports unhealthy. The update must put 2.0 back on the data
+        #     from before it: the restore goes through the socket proxy.
+        au_catalog 3.0
+        saw3=""
+        au_watch3() { [ -n "$saw3" ] && return 0; grep -qw 'row-3.0' <<<"$(au_rows)" && grep -qx 3.0 "$(au_inst)/data/starts.txt" 2>/dev/null && saw3=yes; return 0; }
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/update" "$apex" "$session_cookie" '' 2>/dev/null)"
+        WATCH=au_watch3 au_job "$resp" "the update to 3.0"
+        [ -n "$saw3" ] || fail "app-update: 3.0 never wrote its row and its line, so the rollback proves nothing (job '$AU_ST')"
+        au_running 2.0
+        a="$(au_app)"
+        au_has "$a" failed_version '"3.0"' || fail "app-update: the failed update to 3.0 is not recorded: $(cut -c1-600 <<<"$a")"
+        au_rows_are "row-1.0 row-2.0"
+        grep -qx 3.0 "$(au_inst)/data/starts.txt" && fail "app-update: data/starts.txt still has 3.0's line after the rollback: '$(au_starts)'"
+        echo "cloud-assertions: app-update: ROLLBACK OK (3.0 wrote its row and line, went unhealthy, job '$AU_ST'; back on 2.0 with rows '$(au_rows)' and starts '$(au_starts)', failure recorded)"
+
+        # B2. AN UPDATE THAT ASKS FOR MORE, 2.0 to 3.1 (internet). It waits
+        #     for the owner, who is told, and a plain Update is refused.
+        au_catalog 3.1
+        a="$(au_app)"
+        au_has "$a" status '"needs_approval"' || fail "app-update: 3.1 is not classified needs_approval: $(cut -c1-600 <<<"$a")"
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/update" "$apex" "$session_cookie" '' 2>/dev/null)"
+        grep -qE ' 4[0-9][0-9]' <<<"$(status_of "$resp")" || fail "app-update: a plain Update of 3.1 was not refused: $(status_of "$resp")"
+        au_running 2.0
+        nb=""
+        for _i in $(seq 1 60); do nb="$(full_get /api/v1/notifications "$apex" "$session_cookie" 2>/dev/null || true)"; grep -q ' 3.1 wants new access' <<<"$nb" && break; sleep 1; done
+        grep -q ' 3.1 wants new access' <<<"$nb" || fail "app-update: the owner was not told that 3.1 wants new access: $(sed '1,/^\r*$/d' <<<"$nb" | cut -c1-400)"
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/update/approve" "$apex" "$session_cookie" '{"version":"3.1"}' 2>/dev/null)"
+        au_job "$resp" "the approved update to 3.1"
+        [ "$AU_ST" = completed ] || fail "app-update: the approved update to 3.1 ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
+        au_running 3.1
+        au_rows_are "row-1.0 row-2.0 row-3.1"
+        grep -qx 3.1 "$(au_inst)/data/starts.txt" || fail "app-update: 3.1 wrote no line to data/starts.txt: '$(au_starts)'"
+        echo "cloud-assertions: app-update: APPROVAL OK (3.1 waited for the owner, a plain Update was refused, the owner was told; after the yes it runs 3.1)"
+
+        # B3. GO BACK. The app returns to 2.0 with the data from just before
+        #     3.1, and its automatic updates stay off.
+        au_has "$(au_app)" can_rollback true || fail "app-update: no Go back offered after the update to 3.1: $(au_app | cut -c1-600)"
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/rollback" "$apex" "$session_cookie" '' 2>/dev/null)"
+        au_job "$resp" "Go back"
+        [ "$AU_ST" = completed ] || fail "app-update: Go back ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
+        au_running 2.0
+        au_rows_are "row-1.0 row-2.0"
+        grep -qx 3.1 "$(au_inst)/data/starts.txt" && fail "app-update: data/starts.txt still has 3.1's line after Go back: '$(au_starts)'"
+        grep -qx 1.0 "$(au_inst)/data/starts.txt" || fail "app-update: data/starts.txt lost 1.0's line after Go back: '$(au_starts)'"
+        au_has "$(au_app)" auto_update false || fail "app-update: automatic updates are on after Go back: $(au_app | cut -c1-600)"
+        echo "cloud-assertions: app-update: GO BACK OK (back on 2.0 with rows '$(au_rows)' and starts '$(au_starts)', automatic updates off)"
+
+        # C. THE NIGHT. First the work: the catalog moves to 4.0 and the
+        #    owner turns automatic updates on, while the window is still 12
+        #    hours away, so no brain restart sits between the window and the
+        #    hold. Slot B must be installed by now (the setup's answer named
+        #    the bundle), or the hold would have nothing to keep waiting.
+        if [ "$os_mode" = full ]; then
+            for _i in $(seq 1 300); do grep -q "installed into the other slot" <<<"$(ha_log)" && break; sleep 1; done
+            grep -q "installed into the other slot" <<<"$(ha_log)" \
+                || fail "app-update: the OS bundle is not installed into slot B before the night: $(ha_log | grep -i 'os update' | tail -4 | tr '\n' ' ')"
+        fi
+        au_catalog 4.0
+        au_has "$(au_app)" status '"available"' || fail "app-update: 4.0 is not classified available: $(au_app | cut -c1-600)"
+        au_on="$(full_send PUT "/api/v1/apps/$AU_ID/auto-update" "$apex" "$session_cookie" '{"enabled":true}' 2>/dev/null)"
+        grep -q ' 200' <<<"$(status_of "$au_on")" || fail "app-update: turning automatic updates on failed: $(status_of "$au_on")"
+        #    Then the window: it opens in about six minutes and lasts an
+        #    hour. host-agent ticks once when au_target restarts it, before
+        #    the window, and then sleeps about 15 minutes (13 to 17 with its
+        #    jitter): a new hold does not wake it. So its first tick in the
+        #    window comes 7 to 11 minutes after the window opens. With slot
+        #    B installed, that tick would switch at once without the hold.
+        #    The hour keeps the brain's cut-off (20 minutes before the end)
+        #    well after that tick.
+        # One reading of the clock, so the window and its open time agree.
+        opens_min="$(date -d '+6 minutes' '+%Y-%m-%d %H:%M')"
+        opens_at="$(date -d "${opens_min}:00" +%s)"
+        opens="$(date -d "@$opens_at" +%H:%M)"; ends="$(date -d "@$((opens_at + 3600))" +%H:%M)"
+        au_target "$opens-$ends" "$([ "$os_mode" = full ] && echo os)"
+        # The brain reads the new window on its next one-minute step and
+        # holds from 15 minutes before it opens.
+        rd=""
+        for _i in $(seq 1 150); do rd="$(au_read)"; grep -q '"hold_until":"20' <<<"$rd" && break; sleep 1; done
+        grep -q '"hold_until":"20' <<<"$rd" || fail "app-update: the brain did not hold the OS switch before the window: $(cut -c1-400 <<<"$rd")"
+        [ "$(date +%s)" -lt "$opens_at" ] || fail "app-update: the hold came only after the window opened, so this run does not prove the order"
+        au_running 2.0
+        echo "cloud-assertions: app-update: HOLD OK (the brain holds the OS switch before the window $opens-$ends opens; still on 2.0)"
+        mkdir -p "$OS_STATE_DIR" && chmod 700 "$OS_STATE_DIR"
+        printf 'session_cookie=%q\nAU_ID=%q\nAU_DB=%q\nos_mode=%q\n' "$session_cookie" "$AU_ID" "$AU_DB" "$os_mode" > "$OS_STATE_DIR/app-update" \
+            || fail "app-update: could not keep the session and the app for slot B in $OS_STATE_DIR"
+        [ "$os_mode" = full ] && set_os_stage 2
+        a=""
+        # Up to 30 minutes: the window opens in about five, and host-agent's
+        # first tick in it can come 11 minutes after that.
+        for _i in $(seq 1 1800); do
+            a="$(au_app)"
+            au_has "$a" version '"4.0"' && au_has "$a" state '"running"' && break
+            sleep 1
+        done
+        au_has "$a" version '"4.0"' || fail "app-update: the window did not update the app to 4.0: $(cut -c1-600 <<<"$a"); brain: $(docker logs moose-brain 2>&1 | grep -i 'nightly' | tail -5 | tr '\n' ' ')"
+        [ "$(date +%s)" -ge "$opens_at" ] || fail "app-update: the app updated before the window opened"
+        echo "cloud-assertions: app-update: NIGHT OK (the window updated the app to 4.0 at $(date +%H:%M:%S), before any OS switch)"
+        if [ "$os_mode" = full ]; then
+            echo "cloud-assertions: app-update: waiting for host-agent to switch to slot B and reboot"
+            sleep 900
+            fail "app-update: host-agent never switched slots after the app update: $(ha_log | grep -i 'os update' | tail -6 | tr '\n' ' ')"
+        fi
+        # os_mode=refuse: no OS part, so the night ends here. The hold must
+        # be gone once the app has no work left.
+        for _i in $(seq 1 120); do rd="$(au_read)"; grep -q '"hold_until":"20' <<<"$rd" || break; sleep 1; done
+        grep -q '"hold_until":"20' <<<"$rd" && fail "app-update: the hold is still live after the night's app work: $(cut -c1-400 <<<"$rd")"
+        au_running 4.0
+        au_rows_are "row-1.0 row-2.0 row-4.0"
+        echo "cloud-assertions: app-update: NO OS PART (os_mode=refuse): the night ended with the app on 4.0 and the hold cleared"
+    else
+        # 2. SLOT B, after the switch the app's hold let go.
+        [ "$stage" = 2 ] && [ "$BOOTED" = B ] || fail "app-update: stage $stage booted slot '$BOOTED', want stage 2 on slot B"
+        [ -s "$OS_STATE_DIR/app-update" ] || fail "app-update: slot A left no session and app for slot B in $OS_STATE_DIR/app-update"
+        # shellcheck disable=SC1090
+        . "$OS_STATE_DIR/app-update"
+        for _i in $(seq 1 300); do grep -q "the new slot is healthy and marked good" <<<"$(ha_log)" && break; sleep 1; done
+        grep -q "the new slot is healthy and marked good" <<<"$(ha_log)" || fail "app-update: host-agent did not mark slot B good"
+        me=""
+        for _i in $(seq 1 90); do me="$(status_of "$(full_get /api/v1/me "$apex" "$session_cookie" 2>/dev/null || true)")"; grep -q ' 200' <<<"$me" && break; sleep 1; done
+        grep -q ' 200' <<<"$me" || fail "app-update: the owner's session does not work on slot B (status '$me')"
+        au_running 4.0
+        au_rows_are "row-1.0 row-2.0 row-4.0"
+        a="$(au_app)"
+        au_has "$a" updated_overnight true && au_has "$a" updated_from '"2.0"' \
+            || fail "app-update: the app does not say it was updated overnight from 2.0: $(cut -c1-600 <<<"$a")"
+        # The order: the update ran on slot A, before this boot. A switch that
+        # came too early would leave the update to slot B, inside the same
+        # window, and every check above would still pass. updated_at is when
+        # the update took its snapshot, at its start.
+        up_at="$(json_str_of "$a" updated_at)"
+        up_s="$(date -d "$up_at" +%s 2>/dev/null || true)"
+        boot_s="$(awk '/^btime /{print $2}' /proc/stat)"
+        [ -n "$up_s" ] && [ -n "$boot_s" ] && [ "$up_s" -lt "$boot_s" ] \
+            || fail "app-update: the update to 4.0 did not run on slot A before the switch: updated_at '$up_at' ($up_s), slot B booted at $boot_s"
+        nb=""
+        for _i in $(seq 1 60); do nb="$(full_get /api/v1/notifications "$apex" "$session_cookie" 2>/dev/null || true)"; grep -q ' updated to 4.0' <<<"$nb" && break; sleep 1; done
+        grep -q ' updated to 4.0' <<<"$nb" || fail "app-update: the owner was not told of the overnight update: $(sed '1,/^\r*$/d' <<<"$nb" | cut -c1-400)"
+        echo "cloud-assertions: app-update: SLOT B OK (the box switched after the app update: updated at $up_at, slot B booted $(( boot_s - up_s )) s later and marked good; upnote 4.0 runs on rows '$(au_rows)', updated overnight from 2.0, the owner told)"
     fi
     ;;
 os-update|os-revert)
