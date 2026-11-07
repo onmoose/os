@@ -270,6 +270,9 @@ func (n *Nightly) report(inst store.Instance, nightKey string, started time.Time
 		if err := n.m.store.MarkInstanceUpdateByWindow(inst.ID, false); err != nil && !errors.Is(err, store.ErrNotFound) {
 			slog.Warn("nightly update: mark the update as the window's", "instance_id", inst.ID, "err", err)
 		}
+		// The update's own event went before the mark: tell the dashboard
+		// again, so it does not keep a read without it.
+		n.m.publishUpdateChanged(inst.ID)
 		n.m.notify(func(u UpdateNotifier) {
 			u.AppUpdateApplied(updateNote(row, inst.Version, row.Version))
 		})
@@ -296,6 +299,7 @@ func (n *Nightly) report(inst store.Instance, nightKey string, started time.Time
 	if err := n.m.store.MarkInstanceUpdateByWindow(inst.ID, true); err != nil && !errors.Is(err, store.ErrNotFound) {
 		slog.Warn("nightly update: mark the failure as the window's", "instance_id", inst.ID, "err", err)
 	}
+	n.m.publishUpdateChanged(inst.ID)
 	note := updateNote(row, row.Version, f.Version)
 	note.Paused, note.StillDown = row.UpdatePaused(), row.State == "update_failed"
 	n.m.notify(func(u UpdateNotifier) { u.AppUpdateFailed(note) })
@@ -307,6 +311,9 @@ type UpdateNotifier interface {
 	AppUpdateApplied(notify.AppUpdate)
 	AppUpdateFailed(notify.AppUpdate)
 	AppUpdateNeedsApproval(notify.AppUpdate)
+	// AppUpdateDone resolves the failures and the wait for a yes of a
+	// version once it is installed, by the window or by a person.
+	AppUpdateDone(instanceID, version string)
 }
 
 // SetUpdateNotifier sets who is told about app update outcomes. cmd/brain

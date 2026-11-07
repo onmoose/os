@@ -131,6 +131,11 @@ type updateRecord struct {
 	// Rollback: this record is a rollback by hand to From, not an update
 	// (#634). A brain that stops in the middle finishes it at the next start.
 	Rollback bool `json:"rollback,omitempty"`
+	// UndoDone: the undo finished, and the previous generation may already
+	// hold the older copy again. A brain that stops after this must not run
+	// the undo again, or it would copy that older version over the current
+	// files; it only finishes the record.
+	UndoDone bool `json:"undo_done,omitempty"`
 }
 
 // updateHealthBudget is how long an update waits for the new version: its
@@ -381,6 +386,9 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 	}
 	m.keepGoodRecord(id, rec)
 	m.reclaimImages(ctx, id, rec.DroppedImages)
+	// Whoever started it, the failures and the wait for a yes of this
+	// version are over (#634).
+	m.notify(func(u UpdateNotifier) { u.AppUpdateDone(id, newMan.Version) })
 	prev := inst.State
 	inst.State, inst.Version, inst.Name = "running", newMan.Version, newMan.Name
 	m.emitState(inst, prev)
@@ -1161,10 +1169,24 @@ func (m *Manager) undoUpdate(ctx context.Context, id string, rec updateRecord) e
 	return nil
 }
 
+// undoOnce is undoUpdate, unless the record says the undo already finished.
+func (m *Manager) undoOnce(ctx context.Context, id string, rec updateRecord) error {
+	if rec.UndoDone {
+		return nil
+	}
+	return m.undoUpdate(ctx, id, rec)
+}
+
 // finishRecord ends a rollback whose undo is done: the previous generation
 // (now the current one) goes, or the older one comes back in its place, then
 // the record, and the new version's images go when nothing uses them.
 func (m *Manager) finishRecord(id string, rec updateRecord) {
+	if !rec.UndoDone {
+		rec.UndoDone = true
+		if err := m.writeUpdateRecord(id, rec); err != nil {
+			slog.Warn("update: mark the undo done", "instance_id", id, "err", err)
+		}
+	}
 	m.endPrevious(id, rec)
 	m.removeUpdateRecord(id)
 }
@@ -1233,11 +1255,15 @@ func (m *Manager) finishRollback(ctx context.Context, inst store.Instance) error
 	if !ok {
 		return nil
 	}
-	if err := m.undoUpdate(ctx, inst.ID, rec); err != nil {
+	if err := m.undoOnce(ctx, inst.ID, rec); err != nil {
 		slog.Error("update rollback failed again", "instance_id", inst.ID, "version", rec.From, "err", err)
 		return errors.New("moose still cannot put the old version of the app back. See the app's logs")
 	}
 	if rec.Rollback {
+		if err := m.restampFromStore(inst.ID); err != nil {
+			slog.Error("update rollback: bring the old files up to date", "instance_id", inst.ID, "err", err)
+			return errors.New("moose could not bring the app's settings up to date. Try again")
+		}
 		if err := m.recordRollback(inst.ID, rec); err != nil {
 			return errors.New("moose could not record the rollback. Try again")
 		}
@@ -1279,7 +1305,7 @@ func (m *Manager) recoverUpdates(ctx context.Context) {
 			m.recoverRollback(ctx, inst, rec)
 			continue
 		}
-		if err := m.undoUpdate(ctx, inst.ID, rec); err != nil {
+		if err := m.undoOnce(ctx, inst.ID, rec); err != nil {
 			slog.Error("reconcile: could not put the old version back", "instance_id", inst.ID, "version", rec.From, "err", err)
 			m.markUpdateFailedAtStartup(inst, rec.To, "The update did not finish, and moose could not put the old version back")
 			continue

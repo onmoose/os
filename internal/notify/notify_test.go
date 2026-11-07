@@ -465,8 +465,9 @@ func TestAppUpdateRouting(t *testing.T) {
 	if !slices.Equal(fs.resolved, want) {
 		t.Fatalf("resolved %v, want %v", fs.resolved, want)
 	}
-	if len(pub.events) != 2 {
-		t.Fatalf("published %d, want 2", len(pub.events))
+	// Two created, and one updated for the resolves of the good update.
+	if len(pub.events) != 3 {
+		t.Fatalf("published %d, want 3", len(pub.events))
 	}
 }
 

@@ -64,6 +64,13 @@ Closes #634, step 5 of the app-update work in #630. [update-approval.md](update-
   - A missing `compose.override.yml.prev` breaking `keepOlder`: install and every update always write the override and `.env`, and `keepPrevious` already needs all four files, so a previous generation always has them.
   - `recoverRollback` marking an app running when `compose up` fails: the row is `running` after `FinishInstanceRollback`, and the startup pass then runs `compose up -d` for every `running` row with no containers, as it does after `recoverUpdates`.
   - The job's audit using the request context: `audit.Record` only reads values from it (actor, client IP), which outlive a cancel, the same as `runUpdateJob`.
+- **Greptile's findings, all five fixed in this PR:**
+  - A failed update's undo could run again after a crash and copy the older generation (already back in `.prev`) over the current files. The record now says `undo_done` before the older copy is put back, and recovery skips the undo then (`TestRecoveryAfterTheUndoDoesNotRunItAgain`).
+  - A rollback put back the old override and `.env`, so a setting or an AI or email account changed or deleted since the update came back. The rollback now writes the environment and the mail lines again from the store (`restampFromStore`, `TestRollbackTakesTheCurrentAccountValues`).
+  - The prune removed the snapshot of an unfinished rollback past the 7 days. It now skips an app with `update.json` before the snapshot too (`TestPruneKeepsTheSnapshotOfAnUnfinishedRollback`). This also closes #631's gap that an `update_failed` app lost its snapshot after 7 days.
+  - Allow & update left the approval notification open. Every good update now resolves it (`AppUpdateDone`, `TestAPersonsUpdateResolvesItsNotifications`).
+  - The window's mark was written after the update's last event. The nightly report now sends `app.update_changed` again after the mark.
+  - Each of the two new tests for the first two fails with its fix turned off.
 - **One generation only.** After a rollback by hand there is nothing more to go back to, as the spec says.
 
 ## What's next

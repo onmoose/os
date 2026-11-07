@@ -174,6 +174,11 @@ func (m *Manager) rollback(ctx context.Context, id string, step func(string)) er
 		m.endRollbackFailed(ctx, inst, oldMan)
 		return fmt.Errorf("moose could not go back to version %s. Start the app to try again", rec.From)
 	}
+	if err := m.restampFromStore(id); err != nil {
+		slog.Error("app rollback: bring the old files up to date", "instance_id", id, "err", err)
+		m.endRollbackFailed(ctx, inst, oldMan)
+		return fmt.Errorf("moose could not go back to version %s. Start the app to try again", rec.From)
+	}
 	// The old files and data are back: the row says so first (the brain
 	// commits first), then the previous generation goes.
 	if err := m.recordRollback(id, rec); err != nil {
@@ -242,8 +247,13 @@ func (m *Manager) endRollbackFailed(ctx context.Context, inst store.Instance, ma
 // recoverRollback finishes, at startup, a rollback the brain did not finish.
 // The undo can run again, so it simply runs it to its end.
 func (m *Manager) recoverRollback(ctx context.Context, inst store.Instance, rec updateRecord) {
-	if err := m.undoUpdate(ctx, inst.ID, rec); err != nil {
+	if err := m.undoOnce(ctx, inst.ID, rec); err != nil {
 		slog.Error("reconcile: could not finish a rollback", "instance_id", inst.ID, "version", rec.From, "err", err)
+		m.setStateAtStartup(inst, "update_failed")
+		return
+	}
+	if err := m.restampFromStore(inst.ID); err != nil {
+		slog.Error("reconcile: could not bring a rollback's files up to date", "instance_id", inst.ID, "err", err)
 		m.setStateAtStartup(inst, "update_failed")
 		return
 	}
@@ -259,6 +269,27 @@ func (m *Manager) recoverRollback(ctx context.Context, inst store.Instance, rec 
 	m.emitState(inst, "updating")
 	m.publishUpdateChanged(inst.ID)
 	slog.Info("reconcile: rollback finished", "instance_id", inst.ID, "version", rec.To, "new_version", rec.From)
+}
+
+// restampFromStore brings the files a rollback put back up to date with the
+// store. The .prev files are as they were before the update, but the app's
+// settings and its AI and email accounts may have changed since: an account
+// deleted or moved in those days must not come back with the old files. So
+// the override's environment is written again from the stored config values,
+// and the .env's MOOSE_MAIL_* lines from the current mail binding, the way an
+// account change does it (restamp.go).
+func (m *Manager) restampFromStore(id string) error {
+	man, err := m.loadInstanceManifest(id)
+	if err != nil {
+		return fmt.Errorf("read the manifest: %w", err)
+	}
+	if err := m.restampConfigEnv(id, man); err != nil {
+		return fmt.Errorf("rewrite the override: %w", err)
+	}
+	if err := m.rewriteEnvMail(id); err != nil {
+		return fmt.Errorf("rewrite the env: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) setStateAtStartup(inst store.Instance, state string) {

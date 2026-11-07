@@ -471,12 +471,23 @@ func (n *Notifier) AppUpdateApplied(u AppUpdate) {
 	n.raiseAppUpdate(u, "applied", SeverityInfo,
 		u.Name+" updated to "+u.To,
 		"moose updated "+u.Name+" from version "+u.From+" to "+u.To+" overnight. If something does not work as before, you can go back to "+u.From+" from Settings → Updates for 7 days.")
-	// The failures and the wait for a yes are about the version the app now
-	// runs, so they are done.
+	n.AppUpdateDone(u.InstanceID, u.To)
+}
+
+// AppUpdateDone resolves the failures and the wait for a yes of a version
+// that is now installed, whoever installed it: the nightly window, Update,
+// or Allow & update. It tells nobody anything new.
+func (n *Notifier) AppUpdateDone(instanceID, version string) {
+	resolved := false
 	for _, kind := range []string{"failed", "paused", "approval"} {
-		if err := n.store.ResolveNotification(AppUpdateDedupKey(u.InstanceID, kind, u.To), n.now()); err != nil {
-			slog.Error("notify: resolve failed", "instance_id", u.InstanceID, "err", err)
+		if err := n.store.ResolveNotification(AppUpdateDedupKey(instanceID, kind, version), n.now()); err != nil {
+			slog.Error("notify: resolve failed", "instance_id", instanceID, "err", err)
+			continue
 		}
+		resolved = true
+	}
+	if resolved {
+		n.publish(events.NotificationUpdated, map[string]any{"dedup_key": AppUpdateDedupKey(instanceID, "approval", version)})
 	}
 }
 

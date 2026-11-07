@@ -334,6 +334,12 @@ func (m *Manager) PruneSnapshots(now time.Time) int {
 		if !ok {
 			continue
 		}
+		// An update or a rollback that did not finish (update.json) still
+		// needs its snapshot: a Start finishes it from there (#634).
+		if _, ok, err := m.readUpdateRecord(inst.ID); ok || err != nil {
+			unlock()
+			continue
+		}
 		removed += pruneSnapshotDir(m.snapshotsDir(inst.ID), now)
 		// The previous generation and its images go with the snapshot, so
 		// the rollback button goes when what it needs goes (#634).

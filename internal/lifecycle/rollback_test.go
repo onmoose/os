@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/notify"
 	"github.com/onmoose/os/internal/store"
 )
@@ -363,6 +364,7 @@ func TestPruneLeavesAnUnfinishedRollback(t *testing.T) {
 type fakeUpdateNotifier struct {
 	mu                         sync.Mutex
 	applied, failed, approvals []notify.AppUpdate
+	done                       []string
 }
 
 func (f *fakeUpdateNotifier) AppUpdateApplied(u notify.AppUpdate) {
@@ -375,6 +377,12 @@ func (f *fakeUpdateNotifier) AppUpdateFailed(u notify.AppUpdate) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failed = append(f.failed, u)
+}
+
+func (f *fakeUpdateNotifier) AppUpdateDone(id, version string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.done = append(f.done, id+"@"+version)
 }
 
 func (f *fakeUpdateNotifier) AppUpdateNeedsApproval(u notify.AppUpdate) {
@@ -444,5 +452,104 @@ func TestCheckTellsANewApprovalOnce(t *testing.T) {
 	}
 	if len(fn.approvals) != 1 || fn.approvals[0].To != "2.0" || fn.approvals[0].From != "1.0" {
 		t.Fatalf("approvals %+v", fn.approvals)
+	}
+}
+
+// TestRecoveryAfterTheUndoDoesNotRunItAgain: a failed 2.0 to 3.0 update
+// whose undo finished, and whose older copy (1.0) is back in .prev, when the
+// brain stopped before update.json was removed. The startup pass must not
+// copy .prev (now 1.0) over the current files: the app stays on 2.0.
+func TestRecoveryAfterTheUndoDoesNotRunItAgain(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	inst := updateTo2(t, e)
+	id := inst.ID
+	prev, _ := e.store.GetInstancePrevImages(id)
+	cur, _ := e.store.GetInstanceImages(id)
+	rec := updateRecord{From: "2.0", To: "3.0", PrevKept: true, Writing: true, OlderKept: true, UndoDone: true,
+		DroppedImages: prev, NewImages: []store.InstanceImage{{Service: "app", Image: upImage3, Digest: upDigest3}}}
+	if err := e.m.writeUpdateRecord(id, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetState(id, "updating"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.onDisk(t, id), upImage2) {
+		t.Fatal("the startup pass copied the older version over the current files")
+	}
+	if pins, _ := e.store.GetInstanceImages(id); !slices.Equal(pinDigests(t, pins), pinDigests(t, cur)) {
+		t.Fatalf("pins %v, want 2.0's", pins)
+	}
+	if r := e.row(t, id); r.State != "running" || r.Version != "2.0" || e.exists(id, updateRecordFile) {
+		t.Fatalf("state %q version %q", r.State, r.Version)
+	}
+}
+
+// TestRollbackTakesTheCurrentAccountValues: a setting changed after the
+// update (as an AI account delete clears its key) must not come back with the
+// old override when the app is rolled back.
+func TestRollbackTakesTheCurrentAccountValues(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	inst := installUp(t, e, "config:\n  - app_env: API_KEY\n    title: Key\n    description: The key.\n    service: app\n")
+	if err := e.store.SetInstanceConfig(inst.ID, []store.InstanceConfig{{AppEnv: "API_KEY", Value: "old-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.restampConfigEnv(inst.ID, mustManifest(t, e, inst.ID)); err != nil {
+		t.Fatal(err)
+	}
+	e.versionsMigrate(t)
+	e.publish(t, "2.0", upImage2, upDigest2, "config:\n  - app_env: API_KEY\n    title: Key\n    description: The key.\n    service: app\n")
+	if err := e.m.Update(ctx, inst.ID, nil); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	// The account went away after the update: the value is gone from the store.
+	if err := e.store.SetInstanceConfig(inst.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.Rollback(ctx, inst.ID, nil); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	ov, _ := os.ReadFile(filepath.Join(e.m.instanceDir(inst.ID), "compose.override.yml"))
+	if strings.Contains(string(ov), "old-key") {
+		t.Fatalf("the rollback brought back a removed value:\n%s", ov)
+	}
+}
+
+func mustManifest(t *testing.T, e *testEnv, id string) *manifest.Manifest {
+	t.Helper()
+	m, err := e.m.loadInstanceManifest(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// TestPruneKeepsTheSnapshotOfAnUnfinishedRollback: past the 7 days, an app
+// with update.json keeps its snapshot too, so a Start can still finish.
+func TestPruneKeepsTheSnapshotOfAnUnfinishedRollback(t *testing.T) {
+	e := newTestEnv(t)
+	inst := updateTo2(t, e)
+	if err := e.m.writeUpdateRecord(inst.ID, updateRecord{From: "1.0", To: "2.0", Rollback: true}); err != nil {
+		t.Fatal(err)
+	}
+	e.m.PruneSnapshots(time.Now().Add(SnapshotKeep + time.Minute))
+	if !slices.Contains(snapshotFiles(t, e, inst.ID), "pre-update-1.0.json") {
+		t.Fatal("the prune removed the snapshot an unfinished rollback needs")
+	}
+}
+
+// TestAPersonsUpdateResolvesItsNotifications: Allow & update or Update, not
+// only the window, ends the wait for a yes of the version it installed.
+func TestAPersonsUpdateResolvesItsNotifications(t *testing.T) {
+	e := newTestEnv(t)
+	fn := &fakeUpdateNotifier{}
+	e.m.SetUpdateNotifier(fn)
+	inst := updateTo2(t, e)
+	if !slices.Equal(fn.done, []string{inst.ID + "@2.0"}) {
+		t.Fatalf("done %v", fn.done)
 	}
 }
