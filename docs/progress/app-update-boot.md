@@ -37,7 +37,7 @@ Closes #630, the parent of six child issues that all merged: [pre-update-snapsho
 - **The night's failure notification is not in the boot.** Phase B's failure is a person's Update, which is not told (`UPDATES.md` # As built (#634)). The nightly loop's own failure path is covered by the lifecycle tests.
 - **The dashboard is not in the boot.** The approval modal, Go back, the banner and the toast are only type-checked and built. Testing them in a browser is still to do.
 - **A new catalog version comes from a brain restart**, not a catalog sync. The lane has no catalog service, and the brain reads the staged file only at startup. The update check runs at startup too, so the classification is the same code a sync runs.
-- **The boot waits about six minutes for its window**, so it is the longest boot of the lane.
+- **The boot waits about six minutes for its window**, so it is the longest boot of the lane: about 18 minutes in the first CI run, the reboot to slot B included.
 - **The PR rule runs `app-update` for any change to `cloud-assertions.sh` or `run-cloud-tests.sh`**, also when the change is for another boot. That costs a parallel job, not wall time, and it means a change to this boot is always run.
 - **Results:** see the PR. The first CI run with only this boot is [run 42387076736](https://github.com/onmoose/os/actions/runs/42387076736).
 
