@@ -60,6 +60,10 @@ Closes #634, step 5 of the app-update work in #630. [update-approval.md](update-
 - **The toast and the banner count on the window's mark**, which is written right after the update ends. A brain that stops between the two leaves the update unmarked: no toast, and the banner says no "last night".
 - **The "what's new" snippets** in the toast and the changelog link are not built (no `changelog_url`).
 - **The hold on Settings → System** ([nightly-app-updates.md](nightly-app-updates.md) listed it for this issue) is not built: the issue does not ask for it.
+- **Review findings dismissed** (the fresh review agent):
+  - A missing `compose.override.yml.prev` breaking `keepOlder`: install and every update always write the override and `.env`, and `keepPrevious` already needs all four files, so a previous generation always has them.
+  - `recoverRollback` marking an app running when `compose up` fails: the row is `running` after `FinishInstanceRollback`, and the startup pass then runs `compose up -d` for every `running` row with no containers, as it does after `recoverUpdates`.
+  - The job's audit using the request context: `audit.Record` only reads values from it (actor, client IP), which outlive a cancel, the same as `runUpdateJob`.
 - **One generation only.** After a rollback by hand there is nothing more to go back to, as the spec says.
 
 ## What's next
