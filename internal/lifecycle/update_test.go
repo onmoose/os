@@ -405,15 +405,26 @@ func TestUpdateRefusals(t *testing.T) {
 		"managed service major and wider": {
 			v1: upDatabase,
 			v2: strings.Replace(v2(strings.Replace(upDatabase, `"16"`, `"17"`, 1)), "internet: false", "internet: true", 1),
-			// The major move wins, and the list still says what it asks for
-			// (#635 needs it).
-			status: store.UpdateServiceMajor, reason: "postgres 17",
+			// The move is made during the update (#635), so the wider
+			// access is what waits.
+			status: store.UpdateNeedsApproval, reason: "waits until an admin allows it",
 			wants: []store.AccessWant{{Kind: store.WantInternet}},
 		},
-		"managed service major": {
+		"managed service older major": {
 			v1:     upDatabase,
-			v2:     v2(strings.Replace(upDatabase, `"16"`, `"17"`, 1)),
-			status: store.UpdateServiceMajor, reason: "postgres 17",
+			v2:     v2(strings.Replace(upDatabase, `"16"`, `"15"`, 1)),
+			status: store.UpdateBlocked, reason: "needs an older Postgres (15) than the app has (16)",
+		},
+		"managed service older major and wider": {
+			v1:     upDatabase,
+			v2:     strings.Replace(v2(strings.Replace(upDatabase, `"16"`, `"15"`, 1)), "internet: false", "internet: true", 1),
+			status: store.UpdateBlocked, reason: "cannot move the data to an older version",
+			wants: []store.AccessWant{{Kind: store.WantInternet}},
+		},
+		"managed service engine change": {
+			v1:     "services:\n  database:\n    type: mysql\n    version: \"8.4\"\n",
+			v2:     v2("services:\n  database:\n    type: mariadb\n    version: \"11.4\"\n"),
+			status: store.UpdateBlocked, reason: "keeps its data in MariaDB, and the app has it in MySQL",
 		},
 		"new required setting": {
 			v2:     v2("config:\n  - app_env: API_TOKEN\n    title: API token\n    description: x\n    required: true\n"),

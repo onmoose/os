@@ -267,6 +267,14 @@ type Manager struct {
 	// parkedSeen is, per instance, the version this brain run already found
 	// it cannot read. Only the running check touches it.
 	parkedSeen map[string]string
+
+	// moveMu guards moveNames: the database and role names a database move
+	// holds on its new major, by "<kind>/<version>/<name>", with the instance
+	// that holds them (#635). The store holds them only once the grant
+	// points there, so this keeps two updates that run at once from taking,
+	// dropping or filling the same names. Released when the update ends.
+	moveMu    sync.Mutex
+	moveNames map[string]string
 }
 
 // maxHeavyOps is how many installs and updates may run at once
@@ -1141,6 +1149,15 @@ func (m *Manager) Uninstall(ctx context.Context, id string) error {
 	grants, err := m.store.GetServiceGrants(id)
 	if err != nil {
 		slog.Warn("uninstall: read service grants for drop", "instance_id", id, "err", err)
+	}
+	// And the old databases an update moved off, kept for the rollback by
+	// hand (#635).
+	retired, err := m.store.GetRetiredServiceGrants(id)
+	if err != nil {
+		slog.Warn("uninstall: read retired service grants for drop", "instance_id", id, "err", err)
+	}
+	for _, r := range retired {
+		grants = append(grants, r.ServiceGrant)
 	}
 	_ = m.store.SetState(id, "uninstalling")
 	m.emitState(inst, inst.State)

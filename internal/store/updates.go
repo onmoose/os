@@ -23,8 +23,10 @@ const (
 	// UpdateNeedsApproval widens permissions or public paths; the owner must
 	// approve it first (#633). An approved update is UpdateAvailable.
 	UpdateNeedsApproval = "needs_approval"
-	// UpdateServiceMajor moves a managed service to a new major version,
-	// which needs a database migration the box does not do yet (#635).
+	// UpdateServiceMajor was the class of an update that moves a managed
+	// database to a new major version, before the box could move the data
+	// (#635). No brain writes it now. A row that still holds it is classified
+	// again by the next check.
 	UpdateServiceMajor = "service_major"
 	// UpdateNeedsNewerMoose is a manifest_version this brain cannot read.
 	UpdateNeedsNewerMoose = "needs_newer_moose"
@@ -404,4 +406,112 @@ func (s *Store) GetInstancePrevImages(instanceID string) ([]InstanceImage, error
 		out = append(out, i)
 	}
 	return out, rows.Err()
+}
+
+// RetiredServiceGrant is a per-app database an update moved off to a new
+// major version (#635, SERVICE_PROVISIONING.md # At app update, different
+// major version). It stays on the old major for the 7 days of the rollback by
+// hand: a rollback points the app at it again. Then the prune drops it.
+type RetiredServiceGrant struct {
+	ServiceGrant
+	RetiredAt time.Time
+}
+
+// MoveServiceGrant points an instance's grant at another version of its
+// service, and keeps the grant as it was as a retired grant, in one
+// transaction. The names and the password do not change: the database on the
+// new version was made with them. ErrNotFound when there is no such grant.
+func (s *Store) MoveServiceGrant(instanceID, logicalName, toVersion string, at time.Time) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var g ServiceGrant
+	err = tx.QueryRow(`SELECT kind, version, db_name, role_name, password FROM service_grants
+		WHERE instance_id=? AND logical_name=?`, instanceID, logicalName).
+		Scan(&g.Kind, &g.Version, &g.DBName, &g.RoleName, &g.Password)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if g.Version == toVersion {
+		return tx.Commit()
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO service_grants_retired
+		(instance_id, logical_name, kind, version, db_name, role_name, password, retired_at)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		instanceID, logicalName, g.Kind, g.Version, g.DBName, g.RoleName, g.Password, at.Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE service_grants SET version=? WHERE instance_id=? AND logical_name=?`,
+		toVersion, instanceID, logicalName); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// MoveServiceGrantBack points an instance's grant at fromVersion again, and
+// removes the retired grant of that version, in one transaction. It can run
+// again: a grant already on fromVersion stays there.
+func (s *Store) MoveServiceGrantBack(instanceID, logicalName, fromVersion string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE service_grants SET version=? WHERE instance_id=? AND logical_name=?`,
+		fromVersion, instanceID, logicalName); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM service_grants_retired WHERE instance_id=? AND logical_name=? AND version=?`,
+		instanceID, logicalName, fromVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// GetRetiredServiceGrants returns an instance's retired grants, by logical
+// name and version.
+func (s *Store) GetRetiredServiceGrants(instanceID string) ([]RetiredServiceGrant, error) {
+	rows, err := s.db.Query(`SELECT logical_name, kind, version, db_name, role_name, password, retired_at
+		FROM service_grants_retired WHERE instance_id=? ORDER BY logical_name, version`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RetiredServiceGrant
+	for rows.Next() {
+		var g RetiredServiceGrant
+		var at int64
+		if err := rows.Scan(&g.LogicalName, &g.Kind, &g.Version, &g.DBName, &g.RoleName, &g.Password, &at); err != nil {
+			return nil, err
+		}
+		g.RetiredAt = time.Unix(at, 0)
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// DeleteRetiredServiceGrant removes one retired grant, once its database is
+// dropped.
+func (s *Store) DeleteRetiredServiceGrant(instanceID, logicalName, version string) error {
+	_, err := s.db.Exec(`DELETE FROM service_grants_retired WHERE instance_id=? AND logical_name=? AND version=?`,
+		instanceID, logicalName, version)
+	return err
+}
+
+// ServiceNamesTaken reports whether any grant, current or retired, of any
+// instance holds dbName or roleName on that kind and version of a service. A
+// database move keeps its names, and must never drop or reuse a database
+// another grant holds (#635).
+func (s *Store) ServiceNamesTaken(kind, version, dbName, roleName string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM service_grants WHERE kind=? AND version=? AND (db_name=? OR role_name=?)) +
+		(SELECT COUNT(*) FROM service_grants_retired WHERE kind=? AND version=? AND (db_name=? OR role_name=?))`,
+		kind, version, dbName, roleName, kind, version, dbName, roleName).Scan(&n)
+	return n > 0, err
 }

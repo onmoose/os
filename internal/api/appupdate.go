@@ -37,9 +37,11 @@ type AppUpdateDTO struct {
 	// installed one. Empty when no update is known.
 	AvailableVersion string `json:"available_version,omitempty"`
 	// Status is the class of the update: available (the box can apply it),
-	// needs_approval (it asks for more access, #633), service_major (it moves
-	// a managed database to a new major version, #635), needs_newer_moose (a
+	// needs_approval (it asks for more access, #633), needs_newer_moose (a
 	// manifest this moose cannot read) or blocked (Reason says why).
+	// service_major is no longer written: a brain from before #635 used it for
+	// a move of a managed database to a new major, which the update now makes.
+	// A row that still holds it is classified again by the next check.
 	Status string `json:"status,omitempty" enum:"available,needs_approval,service_major,needs_newer_moose,blocked"`
 	// Reason is a plain sentence for any status but available.
 	Reason string `json:"reason,omitempty"`

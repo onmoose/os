@@ -111,6 +111,10 @@ type updateRecord struct {
 	// rollback drops them.
 	AddedServices []string `json:"added_services,omitempty"`
 	AddedSecrets  []string `json:"added_secrets,omitempty"`
+	// MovedServices are the managed databases the new version moved to
+	// another major version (#635, servicemove.go). A rollback drops the
+	// database on the new major and points the app back at the old one.
+	MovedServices []movedService `json:"moved_services,omitempty"`
 	// AddedConfig is the config fields the new version adds that got their
 	// default, by app_env.
 	AddedConfig []string `json:"added_config,omitempty"`
@@ -165,6 +169,9 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 		return err
 	}
 	defer release()
+	// The names a database move holds go when the update has ended,
+	// rollback included (#635).
+	defer m.releaseMoveNames(id)
 
 	inst, err := m.store.Get(id)
 	if err != nil {
@@ -351,8 +358,13 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 
 	// 5. Write the new generation and start it.
 	step("writing_instance_dir")
-	if err := m.writeNewGeneration(ctx, inst, newMan, newCompose, pins, iso, base, &rec, step); err != nil {
-		return m.rollbackUpdate(ctx, inst, oldMan, rec, store.UpdateFailedStart, "moose could not set up the new version", err)
+	if err := m.writeNewGeneration(ctx, inst, newMan, newCompose, pins, iso, base, snap, &rec, step); err != nil {
+		msg := "moose could not set up the new version"
+		var me *serviceMoveError
+		if errors.As(err, &me) {
+			msg = me.plain
+		}
+		return m.rollbackUpdate(ctx, inst, oldMan, rec, store.UpdateFailedStart, msg, err)
 	}
 	step("compose_up")
 	budget := m.updateHealthBudget(newMan)
@@ -609,10 +621,11 @@ func mountsFromOverride(override []byte, oldMan, man *manifest.Manifest, scope, 
 // writeNewGeneration writes everything the new version runs from: manifest
 // and compose, the image pins, the defaults of the config fields it adds, the
 // secrets it adds, the managed services it adds, the bind dirs, the override
-// and the .env. rec is saved before a
-// service is provisioned or a secret stored, so a rollback knows what to
-// drop.
-func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, man *manifest.Manifest, composeBytes []byte, pins []servicePin, iso isolation, base int, rec *updateRecord, step func(string)) error {
+// and the .env. A managed database the new version wants on a newer major is
+// moved there first, from the snapshot's dump (#635). rec is saved before a
+// database is moved, a service is provisioned or a secret stored, so a
+// rollback knows what to undo.
+func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, man *manifest.Manifest, composeBytes []byte, pins []servicePin, iso isolation, base int, snap Snapshot, rec *updateRecord, step func(string)) error {
 	id := inst.ID
 	if err := m.writeInstanceDir(id, man, composeBytes); err != nil {
 		return fmt.Errorf("instance dir: %w", err)
@@ -678,12 +691,28 @@ func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, m
 		}
 	}
 
-	// A managed service the old version did not have is provisioned, as at
-	// install. classifyUpdate refused a move of an existing one.
+	// A managed database the new version wants on a newer major is moved
+	// there (#635). classifyUpdate refused another engine and an older major.
 	grants, err := m.store.GetServiceGrants(id)
 	if err != nil {
 		return fmt.Errorf("load service grants: %w", err)
 	}
+	moves, err := serviceMoves(grants, man)
+	if err != nil {
+		return err
+	}
+	if len(moves) > 0 {
+		step("moving_databases")
+		if err := m.moveServices(ctx, id, moves, snap, base, rec); err != nil {
+			return err
+		}
+		if grants, err = m.store.GetServiceGrants(id); err != nil {
+			return fmt.Errorf("load service grants: %w", err)
+		}
+	}
+
+	// A managed service the old version did not have is provisioned, as at
+	// install.
 	granted := map[string]bool{}
 	for _, g := range grants {
 		granted[g.LogicalName] = true
@@ -1085,6 +1114,11 @@ func (m *Manager) undoUpdate(ctx context.Context, id string, rec updateRecord) e
 		if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {
 			slog.Warn("update rollback: compose stop", "instance_id", id, "err", err, "output", out)
 		}
+	}
+	// A moved database goes back first: the snapshot's dump is of the old
+	// major's database, and the restore checks that the grant names it.
+	if err := m.moveServicesBack(ctx, id, rec.MovedServices); err != nil {
+		return err
 	}
 	if rec.SnapshotTaken {
 		if err := m.RestoreSnapshot(ctx, id, rec.From); err != nil {
