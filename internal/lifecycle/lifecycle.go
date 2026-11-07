@@ -236,6 +236,10 @@ type Manager struct {
 	// is caddy.Client.WaitReady.
 	caddyAdminWait func(ctx context.Context, addr string) error
 
+	// notifier tells people about app update outcomes (#634). nil means no
+	// notifications (a Manager built by hand in a test).
+	notifier UpdateNotifier
+
 	// heavy is the global limit on installs and updates running at once
 	// (APP_LIFECYCLE.md # concurrency): each takes a slot for its whole run.
 	// nil means no limit (a Manager built by hand in a test).
@@ -1250,6 +1254,11 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 		if err := m.finishRollback(ctx, inst); err != nil {
 			return err
 		}
+		// A rollback by hand changes the version and the name (#634).
+		if inst, err = m.store.Get(id); err != nil {
+			return err
+		}
+		inst.State = "update_failed"
 	}
 	if inst.AutoRestarts > 0 || !inst.LastAutoRestart.IsZero() {
 		if err := m.store.ResetInstanceAutoRestarts(id, true); err != nil {

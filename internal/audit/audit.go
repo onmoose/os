@@ -94,6 +94,13 @@ const (
 	// failure. The update it starts is then audited as app.update.
 	ActionAppUpdateApprove = "app.update_approve"
 
+	// A rollback by hand to the version an app ran before its last update
+	// (UPDATES.md # 4, #634). It changes what code the app runs and puts its
+	// data back to before the update, so it is elevation-class like an
+	// update: it audits success, every failure of the job and every refusal
+	// (403, 409).
+	ActionAppUpdateRollback = "app.update_rollback"
+
 	// Device access (AUTH.md # Device access). Enabling SSH on an account changes
 	// who can get a shell on the box, so it is elevation-class and audits failure
 	// as well as success — the Activity view has to be able to answer "did someone

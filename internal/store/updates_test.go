@@ -97,7 +97,7 @@ func TestUpdateColumnsRoundTrip(t *testing.T) {
 	if row.UpdateFailure.Version != "1.9" || row.UpdateFailure.Kind != UpdateFailedHealth || !row.UpdateFailure.At.Equal(at) {
 		t.Fatalf("failure = %+v", row.UpdateFailure)
 	}
-	if err := s.FinishInstanceUpdate("a", "2.0", "Whoami 2"); err != nil {
+	if err := s.FinishInstanceUpdate("a", "2.0", "Whoami 2", LastUpdate{}); err != nil {
 		t.Fatal(err)
 	}
 	row, _ = s.Get("a")
@@ -245,7 +245,7 @@ func TestUpdateFailCount(t *testing.T) {
 	if err := s.RecordInstanceUpdateTry("a", "2.1", "2026-11-07"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishInstanceUpdate("a", "2.1", "Alpha"); err != nil {
+	if err := s.FinishInstanceUpdate("a", "2.1", "Alpha", LastUpdate{}); err != nil {
 		t.Fatal(err)
 	}
 	row, _ := s.Get("a")
@@ -298,7 +298,7 @@ func TestUpdateApprovalColumnsRoundTrip(t *testing.T) {
 	if err := s.DeclineInstanceUpdate("a", "2.0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishInstanceUpdate("a", "2.0", "Alpha"); err != nil {
+	if err := s.FinishInstanceUpdate("a", "2.0", "Alpha", LastUpdate{}); err != nil {
 		t.Fatal(err)
 	}
 	row, _ = s.Get("a")
@@ -395,5 +395,144 @@ func TestDismissUpdatePromptIsPerSession(t *testing.T) {
 	}
 	if err := s.DismissUpdatePrompt("gone"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing session: %v, want ErrNotFound", err)
+	}
+}
+
+// TestLastUpdateAndRollbackColumns writes a good update with what a person
+// can roll back to, marks it as the window's, then a rollback by hand, and
+// checks what each write keeps and clears (#634).
+func TestLastUpdateAndRollbackColumns(t *testing.T) {
+	s := open(t)
+	if err := s.Create(sample("a", "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(1_800_000_000, 0)
+	if err := s.FinishInstanceUpdate("a", "2.0", "Alpha 2", LastUpdate{From: "1.0", At: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkInstanceUpdateByWindow("a", false); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := s.Get("a")
+	if row.LastUpdate != (LastUpdate{From: "1.0", At: at, ByWindow: true}) {
+		t.Fatalf("last update %+v", row.LastUpdate)
+	}
+	if err := s.SetInstanceUpdateCheck("a", UpdateCheck{Version: "2.0", Status: UpdateNeedsApproval}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishInstanceRollback("a", "1.0", "Alpha", "2.0"); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = s.Get("a")
+	switch {
+	case row.Version != "1.0" || row.Name != "Alpha" || row.State != "running":
+		t.Fatalf("after the rollback: %s %s %s", row.Version, row.Name, row.State)
+	case row.LastUpdate != (LastUpdate{}):
+		t.Fatalf("after the rollback there is still a last update: %+v", row.LastUpdate)
+	case !row.AutoUpdateOff:
+		t.Fatal("after the rollback the automatic update is on")
+	case row.UpdateDeclined != "2.0" || !row.Update.IsZero():
+		t.Fatalf("after the rollback: declined %q check %+v", row.UpdateDeclined, row.Update)
+	}
+	if err := s.FinishInstanceUpdate("a", "2.0", "Alpha 2", LastUpdate{From: "1.0", At: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClearInstanceLastUpdate("a"); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Get("a"); row.LastUpdate != (LastUpdate{}) {
+		t.Fatalf("after the clear: %+v", row.LastUpdate)
+	}
+	// With no last update, marking it as the window's changes nothing.
+	if err := s.MarkInstanceUpdateByWindow("a", false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("mark with no last update: %v, want ErrNotFound", err)
+	}
+}
+
+// TestFailureByWindowAndAck marks a failure as the window's, closes its
+// banner, and checks that the next failure opens it again (#634).
+func TestFailureByWindowAndAck(t *testing.T) {
+	s := open(t)
+	if err := s.Create(sample("a", "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordInstanceUpdateFailure("a", UpdateFailure{Version: "2.0", Kind: UpdateFailedHealth, Message: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkInstanceUpdateByWindow("a", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AckInstanceUpdateFailure("a"); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := s.Get("a")
+	if !row.UpdateFailure.ByWindow || !row.UpdateFailure.Acked {
+		t.Fatalf("by window %v acked %v, want both", row.UpdateFailure.ByWindow, row.UpdateFailure.Acked)
+	}
+	if err := s.RecordInstanceUpdateFailure("a", UpdateFailure{Version: "2.0", Kind: UpdateFailedHealth, Message: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Get("a"); row.UpdateFailure.ByWindow || row.UpdateFailure.Acked {
+		t.Fatalf("a new failure kept by window %v acked %v", row.UpdateFailure.ByWindow, row.UpdateFailure.Acked)
+	}
+}
+
+// TestUpdatesSeen stores when a person saw the overnight toast (#634).
+func TestUpdatesSeen(t *testing.T) {
+	s := open(t)
+	addUser(t, s, "u_1", RoleMember, 1)
+	if at, err := s.UpdatesSeen("u_1"); err != nil || !at.IsZero() {
+		t.Fatalf("new user: %v %v, want zero", at, err)
+	}
+	at := time.Unix(1_800_000_000, 0)
+	if err := s.SetUpdatesSeen("u_1", at); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.UpdatesSeen("u_1"); err != nil || !got.Equal(at) {
+		t.Fatalf("seen %v %v, want %v", got, err, at)
+	}
+	if _, err := s.UpdatesSeen("nobody"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing user: %v, want ErrNotFound", err)
+	}
+}
+
+// TestLastUpdateColumnsMigrateOnAnOlderDatabase opens a database from before
+// the #634 columns: nothing to roll back, no failure from the window, and no
+// toast seen.
+func TestLastUpdateColumnsMigrateOnAnOlderDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "moose.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`
+		CREATE TABLE instances (
+			id TEXT PRIMARY KEY, manifest_id TEXT NOT NULL, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE,
+			version TEXT NOT NULL, state TEXT NOT NULL, mdns_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
+		CREATE TABLE users (
+			id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
+			recovery_hash TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
+		INSERT INTO instances (id, manifest_id, name, slug, version, state, created_at) VALUES ('i_1','w','W','w','1','running',1);
+		INSERT INTO users (id, username, role, created_at) VALUES ('u_1','alex','member',1);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	row, err := s.Get("i_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.LastUpdate != (LastUpdate{}) || row.UpdateFailure.ByWindow || row.UpdateFailure.Acked {
+		t.Fatalf("migrated row: %+v %+v", row.LastUpdate, row.UpdateFailure)
+	}
+	if at, err := s.UpdatesSeen("u_1"); err != nil || !at.IsZero() {
+		t.Fatalf("migrated user: %v %v", at, err)
 	}
 }

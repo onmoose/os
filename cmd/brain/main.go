@@ -323,6 +323,10 @@ func main() {
 	authMgr := auth.NewManager(st)
 	auditor := audit.New(st)
 	notifier := notify.New(st, bus)
+	// App update outcomes go to the notification center: the window's
+	// applied, failed and paused updates, and an update that waits for a yes
+	// (#634, NOTIFICATIONS.md # Updates).
+	life.SetUpdateNotifier(notifier)
 	healthMgr := health.NewManager(st)
 
 	// Restore persisted health issues before serving requests. Non-fatal:

@@ -803,7 +803,7 @@ func TestCheckUpdatesSkipsAMovedRow(t *testing.T) {
 
 	// An update to 2.0 finishes while the check loads 2.0's manifest.
 	e.m.catalogLoad = func(ctx context.Context, id string) (*manifest.Manifest, []byte, error) {
-		if err := e.store.FinishInstanceUpdate(inst.ID, "2.0", inst.Name); err != nil {
+		if err := e.store.FinishInstanceUpdate(inst.ID, "2.0", inst.Name, store.LastUpdate{}); err != nil {
 			t.Fatal(err)
 		}
 		return e.cat.Load(ctx, id)

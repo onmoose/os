@@ -2,6 +2,8 @@ package notify
 
 import (
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -434,5 +436,65 @@ func TestOSUpdateOutcome(t *testing.T) {
 	}
 	if rev.Severity != SeverityWarning || rev.SourceKind != SourceUpdate {
 		t.Fatalf("reverted: %+v", rev)
+	}
+}
+
+// TestAppUpdateRouting checks who hears about an app update (#634,
+// NOTIFICATIONS.md # Updates): the owner of a personal app, the admins for a
+// household app, and nobody for a personal app with no owner.
+func TestAppUpdateRouting(t *testing.T) {
+	fs := &fakeStore{}
+	pub := &fakePublisher{}
+	n := New(fs, pub)
+	personal := AppUpdate{InstanceID: "i_1", Name: "Photos", OwnerUserID: "u_1", From: "1.4", To: "2.0"}
+	n.AppUpdateApplied(personal)
+	n.AppUpdateFailed(AppUpdate{InstanceID: "i_2", Name: "Notes", OwnerUserID: "u_1", Household: true, From: "1", To: "2"})
+	n.AppUpdateNeedsApproval(AppUpdate{InstanceID: "i_3", Name: "Lost", From: "1", To: "2"})
+	if len(fs.raised) != 2 {
+		t.Fatalf("raised %d, want 2 (the ownerless one is dropped)", len(fs.raised))
+	}
+	if got := fs.raised[0]; got.Audience != AudienceUser || got.UserID != "u_1" || got.Severity != SeverityInfo ||
+		got.Category != CategoryUpdates || got.DedupKey != "app-update:i_1:applied:2.0" || got.ActionRoute != "/settings/updates" {
+		t.Fatalf("applied: %+v", got)
+	}
+	if got := fs.raised[1]; got.Audience != AudienceAdmins || got.UserID != "" || got.Severity != SeverityError {
+		t.Fatalf("household failure: %+v", got)
+	}
+	// A good update resolves the failures and the wait for a yes of that version.
+	want := []string{"app-update:i_1:failed:2.0", "app-update:i_1:paused:2.0", "app-update:i_1:approval:2.0"}
+	if !slices.Equal(fs.resolved, want) {
+		t.Fatalf("resolved %v, want %v", fs.resolved, want)
+	}
+	if len(pub.events) != 2 {
+		t.Fatalf("published %d, want 2", len(pub.events))
+	}
+}
+
+// TestAppUpdateFailedWording checks the three failure texts: rolled back,
+// paused, and the old version not started again.
+func TestAppUpdateFailedWording(t *testing.T) {
+	fs := &fakeStore{}
+	n := New(fs, nil)
+	u := AppUpdate{InstanceID: "i_1", Name: "Photos", OwnerUserID: "u_1", From: "1.4", To: "2.0"}
+	n.AppUpdateFailed(u)
+	p := u
+	p.Paused = true
+	n.AppUpdateFailed(p)
+	d := u
+	d.StillDown = true
+	n.AppUpdateFailed(d)
+	if !strings.Contains(fs.raised[0].Body, "went back to 1.4") || fs.raised[0].DedupKey != "app-update:i_1:failed:2.0" {
+		t.Fatalf("rolled back: %+v", fs.raised[0])
+	}
+	if fs.raised[1].Summary != "Photos update is paused" || fs.raised[1].DedupKey != "app-update:i_1:paused:2.0" {
+		t.Fatalf("paused: %+v", fs.raised[1])
+	}
+	if !strings.Contains(fs.raised[2].Body, "did not start again") {
+		t.Fatalf("still down: %+v", fs.raised[2])
+	}
+	for _, r := range fs.raised {
+		if strings.Contains(r.Summary+r.Body, "\u2014") {
+			t.Fatalf("em dash in %q", r.Summary+r.Body)
+		}
 	}
 }

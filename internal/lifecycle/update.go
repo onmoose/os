@@ -85,6 +85,16 @@ var updateFiles = []string{"manifest.yml", "compose.yml", "compose.override.yml"
 
 const updateRecordFile = "update.json"
 
+// prevRecordFile is the record of the last good update, kept with the
+// previous generation: what the update added, so a rollback by hand can drop
+// it again (#634, rollback.go). olderSuffix marks the copy of an older
+// previous generation that an update keeps while it runs, and puts back when
+// it does not go through.
+const (
+	prevRecordFile = "update.prev.json"
+	olderSuffix    = ".old"
+)
+
 // updateRecord is how far an update got, in update.json. It is written before
 // each step that changes something a rollback must undo.
 type updateRecord struct {
@@ -113,6 +123,14 @@ type updateRecord struct {
 	// when nothing uses them any more.
 	NewImages     []store.InstanceImage `json:"new_images,omitempty"`
 	DroppedImages []store.InstanceImage `json:"dropped_images,omitempty"`
+	// OlderKept: the previous generation from before this update is kept as
+	// <name>.prev.old, and DroppedImages are its pins. An update that does
+	// not go through puts it back, so the rollback by hand to it still works
+	// (#634).
+	OlderKept bool `json:"older_kept,omitempty"`
+	// Rollback: this record is a rollback by hand to From, not an update
+	// (#634). A brain that stops in the middle finishes it at the next start.
+	Rollback bool `json:"rollback,omitempty"`
 }
 
 // updateHealthBudget is how long an update waits for the new version: its
@@ -273,6 +291,23 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 		m.endBeforeStop(inst, rec, store.UpdateFailedStart, "moose could not keep a copy of the old version", err)
 		return errors.New("moose could not keep a copy of the old version")
 	}
+	if len(rec.DroppedImages) > 0 {
+		// The generation before this one is what a person can roll back to.
+		// Keep it until this update succeeds, so a failed update does not
+		// take the way back away (#634).
+		kept, err := m.keepOlder(id)
+		if err != nil {
+			m.endBeforeStop(inst, rec, store.UpdateFailedStart, "moose could not keep a copy of the old version", err)
+			return errors.New("moose could not keep a copy of the old version")
+		}
+		if kept {
+			rec.OlderKept = true
+			if err := m.writeUpdateRecord(id, rec); err != nil {
+				m.endBeforeStop(inst, rec, store.UpdateFailedStart, "moose could not keep a copy of the old version", err)
+				return errors.New("moose could not keep a copy of the old version")
+			}
+		}
+	}
 	if err := m.keepPrevious(id, oldPins); err != nil {
 		m.endBeforeStop(inst, rec, store.UpdateFailedStart, "moose could not keep a copy of the old version", err)
 		return errors.New("moose could not keep a copy of the old version")
@@ -294,7 +329,8 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 			"moose could not stop the old version, so it did not update the app", fmt.Errorf("compose stop: %w\n%s", err, out))
 	}
 	step("taking_snapshot")
-	if _, err := m.TakeSnapshot(ctx, id); err != nil {
+	snap, err := m.TakeSnapshot(ctx, id)
+	if err != nil {
 		msg := "moose could not keep a copy of the app's data, so it did not update the app"
 		if errors.Is(err, ErrSnapshotNoSpace) {
 			msg = "There is not enough free space on the drive to keep a copy of the app's data, so moose did not update the app. Free up some space and try again"
@@ -335,12 +371,15 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 	if err := m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, newMan, host, upstream)); err != nil {
 		slog.Warn("update: caddy upstream flip failed (continuing)", "instance_id", id, "host", host, "upstream", upstream, "err", err)
 	}
-	if err := m.store.FinishInstanceUpdate(id, newMan.Version, newMan.Name); err != nil {
+	// The 7 days of the rollback by hand start when the copy of the data was
+	// taken, so the button and the snapshot go at the same time (#634).
+	last := store.LastUpdate{From: rec.From, At: snap.CreatedAt}
+	if err := m.store.FinishInstanceUpdate(id, newMan.Version, newMan.Name, last); err != nil {
 		// The row cannot say the new version runs, so the brain would not
 		// know what it runs. Put the old version back, as on any failure.
 		return m.rollbackUpdate(ctx, inst, oldMan, rec, store.UpdateFailedStart, "moose could not record the update", err)
 	}
-	m.removeUpdateRecord(id)
+	m.keepGoodRecord(id, rec)
 	m.reclaimImages(ctx, id, rec.DroppedImages)
 	prev := inst.State
 	inst.State, inst.Version, inst.Name = "running", newMan.Version, newMan.Name
@@ -796,18 +835,123 @@ func (m *Manager) putPreviousBack(id string) error {
 	return m.store.SetInstanceImages(id, prev)
 }
 
-// dropPrevious removes the previous generation: after a rollback it is the
-// same as the current one.
+// dropPrevious removes the previous generation, with its record and any
+// older copy: after a rollback it is the same as the current one, and after
+// its 7 days nothing can roll back to it. The row then has nothing to roll
+// back to either.
 func (m *Manager) dropPrevious(id string) {
 	dir := m.instanceDir(id)
+	names := []string{prevRecordFile, prevRecordFile + olderSuffix}
 	for _, name := range updateFiles {
-		if err := os.Remove(filepath.Join(dir, name+".prev")); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			slog.Warn("update: remove a previous-generation file", "instance_id", id, "src", name+".prev", "err", err)
+		names = append(names, name+".prev", name+".prev"+olderSuffix)
+	}
+	for _, name := range names {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("update: remove a previous-generation file", "instance_id", id, "src", name, "err", err)
 		}
 	}
 	if err := m.store.SetInstancePrevImages(id, nil); err != nil {
 		slog.Warn("update: clear the previous image pins", "instance_id", id, "err", err)
 	}
+	if err := m.store.ClearInstanceLastUpdate(id); err != nil && !errors.Is(err, store.ErrNotFound) {
+		slog.Warn("update: clear the last update", "instance_id", id, "err", err)
+	}
+}
+
+// keepOlder copies the previous generation's files, and its record when there
+// is one, to <name>.old before an update replaces them. It reports false when
+// there are no previous files to keep.
+func (m *Manager) keepOlder(id string) (bool, error) {
+	dir := m.instanceDir(id)
+	if _, err := os.Stat(filepath.Join(dir, "manifest.yml.prev")); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	for _, name := range updateFiles {
+		if err := copyFileAtomic(filepath.Join(dir, name+".prev"), filepath.Join(dir, name+".prev"+olderSuffix)); err != nil {
+			return false, err
+		}
+	}
+	err := copyFileAtomic(filepath.Join(dir, prevRecordFile), filepath.Join(dir, prevRecordFile+olderSuffix))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	return true, nil
+}
+
+// putOlderBack makes the older copy the previous generation again, with pins
+// as its image pins, after an update that did not go through. It can run
+// again after a failure.
+func (m *Manager) putOlderBack(id string, pins []store.InstanceImage) error {
+	dir := m.instanceDir(id)
+	for _, name := range updateFiles {
+		if err := copyFileAtomic(filepath.Join(dir, name+".prev"+olderSuffix), filepath.Join(dir, name+".prev")); err != nil {
+			return err
+		}
+	}
+	err := copyFileAtomic(filepath.Join(dir, prevRecordFile+olderSuffix), filepath.Join(dir, prevRecordFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		err = os.Remove(filepath.Join(dir, prevRecordFile))
+		if errors.Is(err, fs.ErrNotExist) {
+			err = nil
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if err := m.store.SetInstancePrevImages(id, pins); err != nil {
+		return err
+	}
+	m.removeOlder(id)
+	return nil
+}
+
+// removeOlder removes the older copy keepOlder made.
+func (m *Manager) removeOlder(id string) {
+	dir := m.instanceDir(id)
+	names := []string{prevRecordFile + olderSuffix}
+	for _, name := range updateFiles {
+		names = append(names, name+".prev"+olderSuffix)
+	}
+	for _, name := range names {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("update: remove an older-generation file", "instance_id", id, "src", name, "err", err)
+		}
+	}
+}
+
+// endPrevious ends the previous generation of an update that did not go
+// through. With an older copy, it is put back, so the rollback by hand to it
+// still works, and only the new version's images can go. Without one, or when
+// it cannot be put back, the previous generation is dropped, and the images of
+// both the new version and the replaced generation go when nothing uses them.
+func (m *Manager) endPrevious(id string, rec updateRecord) {
+	if rec.OlderKept {
+		err := m.putOlderBack(id, rec.DroppedImages)
+		if err == nil {
+			m.reclaimImages(context.Background(), id, rec.NewImages)
+			return
+		}
+		slog.Warn("update: could not put the older version back; it can no longer be rolled back to", "instance_id", id, "err", err)
+	}
+	if rec.PrevKept || rec.OlderKept {
+		m.dropPrevious(id)
+	}
+	m.reclaimImages(context.Background(), id, append(rec.NewImages, rec.DroppedImages...))
+}
+
+// keepGoodRecord ends a good update: its record is kept with the previous
+// generation as update.prev.json, so a rollback by hand knows what the update
+// added, and the older copy goes. The row is already written.
+func (m *Manager) keepGoodRecord(id string, rec updateRecord) {
+	rec.OlderKept, rec.DroppedImages = false, nil
+	if err := m.writeRecordFile(id, prevRecordFile, rec); err != nil {
+		slog.Warn("update: keep the update record; the update cannot be rolled back by hand", "instance_id", id, "err", err)
+		if err := m.store.ClearInstanceLastUpdate(id); err != nil {
+			slog.Warn("update: clear the last update", "instance_id", id, "err", err)
+		}
+	}
+	m.removeOlder(id)
+	m.removeUpdateRecord(id)
 }
 
 func copyFileAtomic(src, dst string) error {
@@ -829,11 +973,15 @@ func copyFileAtomic(src, dst string) error {
 // --- the progress record -----------------------------------------------------
 
 func (m *Manager) writeUpdateRecord(id string, rec updateRecord) error {
+	return m.writeRecordFile(id, updateRecordFile, rec)
+}
+
+func (m *Manager) writeRecordFile(id, name string, rec updateRecord) error {
 	b, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
 	}
-	p := filepath.Join(m.instanceDir(id), updateRecordFile)
+	p := filepath.Join(m.instanceDir(id), name)
 	if err := writeFileSynced(p+".tmp", func(w io.Writer) error { _, err := w.Write(b); return err }); err != nil {
 		return err
 	}
@@ -842,7 +990,11 @@ func (m *Manager) writeUpdateRecord(id string, rec updateRecord) error {
 
 // readUpdateRecord reads update.json. ok is false when there is none.
 func (m *Manager) readUpdateRecord(id string) (rec updateRecord, ok bool, err error) {
-	b, err := os.ReadFile(filepath.Join(m.instanceDir(id), updateRecordFile))
+	return m.readRecordFile(id, updateRecordFile)
+}
+
+func (m *Manager) readRecordFile(id, name string) (rec updateRecord, ok bool, err error) {
+	b, err := os.ReadFile(filepath.Join(m.instanceDir(id), name))
 	if errors.Is(err, fs.ErrNotExist) {
 		return rec, false, nil
 	}
@@ -868,9 +1020,7 @@ func (m *Manager) removeUpdateRecord(id string) {
 // failure is recorded.
 func (m *Manager) endBeforeStop(inst store.Instance, rec updateRecord, kind, msg string, cause error) {
 	slog.Warn("app update failed; the old version still runs", "instance_id", inst.ID, "version", rec.From, "new_version", rec.To, "step", kind, "err", cause)
-	if rec.PrevKept {
-		m.dropPrevious(inst.ID)
-	}
+	m.endPrevious(inst.ID, rec)
 	m.removeUpdateRecord(inst.ID)
 	if err := m.store.SetState(inst.ID, "running"); err != nil {
 		slog.Warn("update: set state running", "instance_id", inst.ID, "err", err)
@@ -878,7 +1028,6 @@ func (m *Manager) endBeforeStop(inst store.Instance, rec updateRecord, kind, msg
 	inst.State = "running"
 	m.emitState(inst, "updating")
 	m.recordUpdateFailure(inst, rec.To, kind, msg)
-	m.reclaimImages(context.Background(), inst.ID, append(rec.NewImages, rec.DroppedImages...))
 }
 
 // restartAfterStop ends an update that failed after the old version stopped
@@ -1012,15 +1161,12 @@ func (m *Manager) undoUpdate(ctx context.Context, id string, rec updateRecord) e
 	return nil
 }
 
-// finishRecord ends a rollback whose undo is done: the record and the
-// previous generation (now the current one) go, and the new version's images
-// go when nothing uses them.
+// finishRecord ends a rollback whose undo is done: the previous generation
+// (now the current one) goes, or the older one comes back in its place, then
+// the record, and the new version's images go when nothing uses them.
 func (m *Manager) finishRecord(id string, rec updateRecord) {
-	if rec.PrevKept {
-		m.dropPrevious(id)
-	}
+	m.endPrevious(id, rec)
 	m.removeUpdateRecord(id)
-	m.reclaimImages(context.Background(), id, append(rec.NewImages, rec.DroppedImages...))
 }
 
 // startOld starts the old version after a failed update, the way Start does:
@@ -1091,6 +1237,11 @@ func (m *Manager) finishRollback(ctx context.Context, inst store.Instance) error
 		slog.Error("update rollback failed again", "instance_id", inst.ID, "version", rec.From, "err", err)
 		return errors.New("moose still cannot put the old version of the app back. See the app's logs")
 	}
+	if rec.Rollback {
+		if err := m.recordRollback(inst.ID, rec); err != nil {
+			return errors.New("moose could not record the rollback. Try again")
+		}
+	}
 	m.finishRecord(inst.ID, rec)
 	slog.Info("update rollback finished", "instance_id", inst.ID, "version", rec.From)
 	return nil
@@ -1122,6 +1273,10 @@ func (m *Manager) recoverUpdates(ctx context.Context) {
 			// No record: the update stopped before it changed anything.
 			slog.Info("reconcile: interrupted update changed nothing", "instance_id", inst.ID)
 			m.endRolledBack(inst, updateRecord{To: inst.Update.Version}, store.UpdateFailedInterrupted, msg)
+			continue
+		}
+		if rec.Rollback {
+			m.recoverRollback(ctx, inst, rec)
 			continue
 		}
 		if err := m.undoUpdate(ctx, inst.ID, rec); err != nil {
@@ -1165,6 +1320,12 @@ func (m *Manager) setUpdateCheck(inst store.Instance, check store.UpdateCheck) {
 		return
 	}
 	m.publishUpdateChanged(inst.ID)
+	// A version that newly waits for a yes is told to whoever may give it
+	// (#634). The same version found again is not told again.
+	if check.Status == store.UpdateNeedsApproval &&
+		(inst.Update.Version != check.Version || inst.Update.Status != store.UpdateNeedsApproval) {
+		m.notify(func(u UpdateNotifier) { u.AppUpdateNeedsApproval(updateNote(inst, inst.Version, check.Version)) })
+	}
 }
 
 func (m *Manager) recordUpdateFailure(inst store.Instance, version, kind, msg string) {
