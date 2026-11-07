@@ -69,6 +69,8 @@ web-ui/
     ├── installSteps.ts     # the install flow as pages: plan -> pages, AI needs,
     │                       #   the key picked in advance, the session-storage
     │                       #   draft, and the page that owns a 422
+    ├── updates.ts          # the words for app update outcomes (#634): the failed
+    │                       #   step, the tile banner, which apps the toast counts
     │
     ├── views/              # one component per route (lazy-loaded)
     │   ├── HomeView.vue        # installed-app grid
@@ -119,6 +121,9 @@ web-ui/
         ├── ToastHost.vue
         ├── UpdatePrompt.vue    # the update prompt (#633): mounted in AppShell, opens once per
         │                       #   session for updates that ask for more access
+        ├── UpdatesToast.vue    # "3 apps updated overnight" (#634): mounted in AppShell, once per person
+        ├── RollbackButton.vue  # Go back to <version> with its confirm dialog (#634): the app's
+        │                       #   settings page, under Updates
         ├── PermissionList.vue  # one line per permission, write access in red; used by the
         │                       #   install info box, the update prompt, the app's settings, Users
         ├── ui/                 # owned base parts: Button, Heading, ConfirmDialog

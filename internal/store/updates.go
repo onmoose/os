@@ -7,7 +7,9 @@ package store
 // rollback puts back.
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -131,12 +133,18 @@ const (
 // another version starts it again at 1, a good update sets it to 0, and so
 // does a person's Update before it runs. At UpdatePauseAfter the nightly
 // window stops trying that version (Instance.UpdatePaused).
+//
+// ByWindow is true when the nightly window made the update that failed, so
+// the tile can say "last night" (#634). Acked is true once a person closed the
+// tile's banner about it. A new failure sets both back.
 type UpdateFailure struct {
-	Version string
-	Kind    string
-	Message string
-	At      time.Time
-	Count   int
+	Version  string
+	Kind     string
+	Message  string
+	At       time.Time
+	Count    int
+	ByWindow bool
+	Acked    bool
 }
 
 // UpdatePauseAfter is how many failures in a row on one version pause the
@@ -158,6 +166,17 @@ func (i Instance) UpdatePaused() bool {
 type UpdateTry struct {
 	Version string
 	Night   string
+}
+
+// LastUpdate is the last good update of an instance, while a person can roll
+// it back (#634, UPDATES.md # 4): the version the instance ran before it, when
+// the copy of its data was taken (the start of the 7 days), and whether the
+// nightly window made it. The version it moved to is the instance's Version.
+// The zero value means there is nothing to roll back to.
+type LastUpdate struct {
+	From     string
+	At       time.Time
+	ByWindow bool
 }
 
 // RecordInstanceUpdateTry stores the nightly window's try of version on night.
@@ -245,20 +264,93 @@ func (s *Store) RecordInstanceUpdateFailure(id string, f UpdateFailure) error {
 	// SQLite reads every column in SET from the row as it was, so the CASE
 	// compares with the version of the last failure, not the new one.
 	return s.updateOne(`UPDATE instances SET update_failed_version=?, update_failed_kind=?, update_failed_message=?, update_failed_at=?,
-		update_failed_count = CASE WHEN update_failed_version=? THEN update_failed_count+1 ELSE 1 END WHERE id=?`,
+		update_failed_count = CASE WHEN update_failed_version=? THEN update_failed_count+1 ELSE 1 END,
+		update_failed_auto=0, update_failed_acked=0 WHERE id=?`,
 		f.Version, f.Kind, f.Message, at, f.Version, id)
 }
 
 // FinishInstanceUpdate records a good update in one write: the new version
 // and name, the state running, no known update and no failure, so no
 // failure in a row either. The owner's approval and decline go too: they were
-// about the installed version's access, which has just changed (#633).
-func (s *Store) FinishInstanceUpdate(id, version, name string) error {
+// about the installed version's access, which has just changed (#633). last
+// is what a person can roll back to (#634).
+func (s *Store) FinishInstanceUpdate(id, version, name string, last LastUpdate) error {
 	return s.updateOne(`UPDATE instances SET version=?, name=?, state='running',
 		update_version='', update_status='', update_reason='', update_wants='',
 		update_failed_version='', update_failed_kind='', update_failed_message='', update_failed_at=0, update_failed_count=0,
-		update_approved_version='', update_approved_access='', update_approved_by='', update_approved_at=0, update_declined_version=''
-		WHERE id=?`, version, name, id)
+		update_failed_auto=0, update_failed_acked=0,
+		update_approved_version='', update_approved_access='', update_approved_by='', update_approved_at=0, update_declined_version='',
+		update_last_from=?, update_last_at=?, update_last_auto=?
+		WHERE id=?`, version, name, last.From, unixOrZero(last.At), boolInt(last.ByWindow), id)
+}
+
+// FinishInstanceRollback records a rollback by hand in one write (#634): the
+// version and name the instance runs again, nothing left to roll back to,
+// and its automatic update off, so the nightly window does not apply the
+// version again. The version it left is stored as declined, so the update
+// prompt does not ask about it again. The update check is cleared; the next
+// check finds the catalog's version again.
+func (s *Store) FinishInstanceRollback(id, version, name, left string) error {
+	return s.updateOne(`UPDATE instances SET version=?, name=?, state='running', auto_update_off=1,
+		update_version='', update_status='', update_reason='', update_wants='',
+		update_approved_version='', update_approved_access='', update_approved_by='', update_approved_at=0, update_declined_version=?,
+		update_last_from='', update_last_at=0, update_last_auto=0
+		WHERE id=?`, version, name, left, id)
+}
+
+// ClearInstanceLastUpdate forgets the last good update: its 7 days are over,
+// or what a rollback needs is gone (#634).
+func (s *Store) ClearInstanceLastUpdate(id string) error {
+	return s.updateOne(`UPDATE instances SET update_last_from='', update_last_at=0, update_last_auto=0 WHERE id=?`, id)
+}
+
+// MarkInstanceUpdateByWindow says the nightly window made the instance's last
+// update: the good one when failed is false, else the failure on the row
+// (#634). Called right after the window's update ends.
+func (s *Store) MarkInstanceUpdateByWindow(id string, failed bool) error {
+	if failed {
+		return s.updateOne(`UPDATE instances SET update_failed_auto=1 WHERE id=? AND update_failed_version!=''`, id)
+	}
+	return s.updateOne(`UPDATE instances SET update_last_auto=1 WHERE id=? AND update_last_from!=''`, id)
+}
+
+// AckInstanceUpdateFailure closes the tile's banner about the last failed
+// update (#634). The failure stays on the row and on the app's page.
+func (s *Store) AckInstanceUpdateFailure(id string) error {
+	return s.updateOne(`UPDATE instances SET update_failed_acked=1 WHERE id=?`, id)
+}
+
+// UpdatesSeen is when a person last saw the dashboard's toast about the apps
+// updated overnight (#634). Zero when they never did.
+func (s *Store) UpdatesSeen(userID string) (time.Time, error) {
+	var at int64
+	err := s.db.QueryRow(`SELECT updates_seen_at FROM users WHERE id=?`, userID).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	if err != nil || at == 0 {
+		return time.Time{}, err
+	}
+	return time.Unix(at, 0), nil
+}
+
+// SetUpdatesSeen stores when a person saw the toast, so it shows once.
+func (s *Store) SetUpdatesSeen(userID string, at time.Time) error {
+	return s.updateOne(`UPDATE users SET updates_seen_at=? WHERE id=?`, unixOrZero(at), userID)
+}
+
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (s *Store) updateOne(q string, args ...any) error {

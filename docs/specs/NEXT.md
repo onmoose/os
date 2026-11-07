@@ -130,7 +130,7 @@ The scope is wider than mail. It is the general answer for any credential an app
 
 Three committed surfaces need that answer, so the shape has to be decided before any of them is built:
 
-- **Settings → Updates** (`UPDATES.md` # 6) promises an aggregate view — what updated, what is waiting, what failed — with the rollback affordance on it.
+- **Settings → System** (`UPDATES.md` # 6, #488) shows what the last control-plane update did. (There is no Settings → Updates page; app updates are on each app's page, `DECISIONS.md` 2026-11-07.)
 - **The notification** (`UPDATES.md` # 8.2, `NOTIFICATIONS.md`) is the durable, read-stateful copy for an admin who was not watching; a notification whose detail is already gone is not much of a record.
 - **The hosted report back to the cloud** (`UPDATES.md` # 8.4 step 5) is "version now running, success or failure, and the failure mode if it rolled back" — a box that reboots mid-window must still be able to send it.
 

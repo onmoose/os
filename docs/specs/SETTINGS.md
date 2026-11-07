@@ -81,12 +81,12 @@ These are same-origin dashboard routes, not separate apps — the `moose_session
 
 ## Locked: Updates lives in Settings, not the Store
 
-The Store is a discovery / install surface; **Settings → Updates** is the maintenance surface. They answer different questions — "what can I add?" versus "what's stale on my box, and can I roll it back?" — and the decisive fact is that apps are only one part of what goes stale on a box. `UPDATES.md` # What this doc covers splits updates into **stream A (the box:** Debian base, kernel, firmware, host-agent**)** and **stream B (the containers:** brain + UI, apps, managed services**)**. The Store has nothing to say about stream A at all, and within stream B it can speak only for apps. Settings → Updates is the only place that can be the box-wide "everything stale" roll-up, and it is the home of the **rollback affordance** (the kept-for-7-days image + snapshot), which has no conceivable home in a catalog.
+The Store is a discovery / install surface; **Settings** is the maintenance surface (as built: Settings → System for the box, each app's settings page for its updates, `DECISIONS.md` 2026-11-07). They answer different questions — "what can I add?" versus "what's stale on my box, and can I roll it back?" — and the decisive fact is that apps are only one part of what goes stale on a box. `UPDATES.md` # What this doc covers splits updates into **stream A (the box:** Debian base, kernel, firmware, host-agent**)** and **stream B (the containers:** brain + UI, apps, managed services**)**. The Store has nothing to say about stream A at all, and within stream B it can speak only for apps. Settings → Updates is the only place that can be the box-wide "everything stale" roll-up, and it is the home of the **rollback affordance** (the kept-for-7-days image + snapshot), which has no conceivable home in a catalog.
 
 Even for apps alone, `UPDATES.md` # 6 locks three surfaces — none of which is the Store catalog:
 
-- **Per-app tile badge** on the dashboard — the contextual "this app moved" nudge, with a "what's new" panel.
-- **Settings → Updates** — the aggregate view ("X updated last night, Y waiting on you, Z failed") and the rollback affordance.
+- **Per-app tile banner** on the dashboard, only for an update that failed. A new version available is not shown on the tile (`DECISIONS.md` 2026-11-07).
+- **The app's settings page** (Settings → Installed apps → the app): the version, the update and why it is or is not applied, a failure, and the rollback affordance. There is no separate Settings → Updates page (`DECISIONS.md` 2026-11-07); the box's own updates are in Settings → System.
 - **Settings → Users → `<user>`** — per-user pending permission-accepts, read-only for admins (an admin cannot accept on another user's behalf; Tier-3 per-user instances are that user's to authorize).
 
 SETTINGS.md indexes all three and delegates the behavior to `UPDATES.md`. The permission-expansion modal (`UPDATES.md` # The permission-expansion prompt) is a login-time modal, not a Settings panel, and is out of scope here.

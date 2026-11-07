@@ -126,7 +126,7 @@ func (r *nightRig) newLoop() *Nightly {
 			}
 			return errors.New("the new version did not become healthy")
 		}
-		return r.e.store.FinishInstanceUpdate(id, "2.0", "App "+id)
+		return r.e.store.FinishInstanceUpdate(id, "2.0", "App "+id, store.LastUpdate{})
 	}
 	return n
 }

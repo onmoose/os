@@ -317,7 +317,8 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, id, version string) error
 
 // PruneSnapshots removes every snapshot older than SnapshotKeep, and any loose
 // snapshot file that old that no complete set names (a set a crash left half
-// written). It skips an instance whose lock is held, so it never removes a
+// written). It also removes the previous generation an update kept, and its
+// images, once it can no longer be rolled back to (pruneRollbackPoint). It skips an instance whose lock is held, so it never removes a
 // snapshot an update or a rollback is using; the next pass gets it. It returns
 // how many files it removed. Errors are logged, never returned: the next pass
 // tries again.
@@ -333,7 +334,16 @@ func (m *Manager) PruneSnapshots(now time.Time) int {
 		if !ok {
 			continue
 		}
+		// An update or a rollback that did not finish (update.json) still
+		// needs its snapshot: a Start finishes it from there (#634).
+		if _, ok, err := m.readUpdateRecord(inst.ID); ok || err != nil {
+			unlock()
+			continue
+		}
 		removed += pruneSnapshotDir(m.snapshotsDir(inst.ID), now)
+		// The previous generation and its images go with the snapshot, so
+		// the rollback button goes when what it needs goes (#634).
+		m.pruneRollbackPoint(inst, now)
 		unlock()
 	}
 	return removed

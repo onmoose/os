@@ -41,6 +41,7 @@ import (
 
 	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/notify"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/store"
 )
@@ -247,20 +248,36 @@ func (n *Nightly) Step(ctx context.Context) bool {
 	slog.Info("nightly update: updating an app", "instance_id", inst.ID, "name", inst.Name,
 		"version", inst.Version, "new_version", inst.Update.Version, "night", nt.key)
 	stop := n.keepHold(ctx, nt)
+	started := time.Now()
 	err = n.update(ctx, inst.ID)
 	stop()
-	n.report(inst, nt.key, err)
+	n.report(inst, nt.key, started, err)
 	return true
 }
 
-// report logs an update's outcome with what the store now says.
-func (n *Nightly) report(inst store.Instance, nightKey string, err error) {
+// report logs an update's outcome with what the store now says, marks the
+// outcome as the window's (the toast and the tile's "last night" read it),
+// and tells the owner (#634). started is when the update began: a failure
+// recorded before it is not this update's.
+func (n *Nightly) report(inst store.Instance, nightKey string, started time.Time, err error) {
+	row, gerr := n.m.store.Get(inst.ID)
 	if err == nil {
 		slog.Info("nightly update: app updated", "instance_id", inst.ID, "name", inst.Name,
 			"version", inst.Version, "new_version", inst.Update.Version, "night", nightKey)
+		if gerr != nil {
+			return
+		}
+		if err := n.m.store.MarkInstanceUpdateByWindow(inst.ID, false); err != nil && !errors.Is(err, store.ErrNotFound) {
+			slog.Warn("nightly update: mark the update as the window's", "instance_id", inst.ID, "err", err)
+		}
+		// The update's own event went before the mark: tell the dashboard
+		// again, so it does not keep a read without it.
+		n.m.publishUpdateChanged(inst.ID)
+		n.m.notify(func(u UpdateNotifier) {
+			u.AppUpdateApplied(updateNote(row, inst.Version, row.Version))
+		})
 		return
 	}
-	row, gerr := n.m.store.Get(inst.ID)
 	if gerr != nil {
 		slog.Warn("nightly update: app update failed", "instance_id", inst.ID, "name", inst.Name,
 			"version", inst.Version, "new_version", inst.Update.Version, "night", nightKey, "err", err)
@@ -272,6 +289,49 @@ func (n *Nightly) report(inst store.Instance, nightKey string, err error) {
 	if row.UpdatePaused() {
 		slog.Warn("nightly update: paused; the update failed too many times in a row", "instance_id", inst.ID, "name", inst.Name,
 			"new_version", inst.Update.Version, "count", row.UpdateFailure.Count)
+	}
+	// Only a failure this update recorded is told: one that is not on the
+	// row (the catalog could not be read) is in the log only.
+	f := row.UpdateFailure
+	if f.Version != inst.Update.Version || f.At.Before(started.Truncate(time.Second)) {
+		return
+	}
+	if err := n.m.store.MarkInstanceUpdateByWindow(inst.ID, true); err != nil && !errors.Is(err, store.ErrNotFound) {
+		slog.Warn("nightly update: mark the failure as the window's", "instance_id", inst.ID, "err", err)
+	}
+	n.m.publishUpdateChanged(inst.ID)
+	note := updateNote(row, row.Version, f.Version)
+	note.Paused, note.StillDown = row.UpdatePaused(), row.State == "update_failed"
+	n.m.notify(func(u UpdateNotifier) { u.AppUpdateFailed(note) })
+}
+
+// UpdateNotifier tells people what the box did with an app's update (#634,
+// NOTIFICATIONS.md # Updates). notify.Notifier implements it.
+type UpdateNotifier interface {
+	AppUpdateApplied(notify.AppUpdate)
+	AppUpdateFailed(notify.AppUpdate)
+	AppUpdateNeedsApproval(notify.AppUpdate)
+	// AppUpdateDone resolves the failures and the wait for a yes of a
+	// version once it is installed, by the window or by a person.
+	AppUpdateDone(instanceID, version string)
+}
+
+// SetUpdateNotifier sets who is told about app update outcomes. cmd/brain
+// sets the notification center.
+func (m *Manager) SetUpdateNotifier(n UpdateNotifier) { m.notifier = n }
+
+func (m *Manager) notify(f func(UpdateNotifier)) {
+	if m.notifier != nil {
+		f(m.notifier)
+	}
+}
+
+// updateNote is the notification of an update of inst from one version to
+// another.
+func updateNote(inst store.Instance, from, to string) notify.AppUpdate {
+	return notify.AppUpdate{
+		InstanceID: inst.ID, Name: inst.Name, OwnerUserID: inst.OwnerUserID,
+		Household: inst.Scope == store.ScopeHousehold, From: from, To: to,
 	}
 }
 

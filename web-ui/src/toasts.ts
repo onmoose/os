@@ -13,10 +13,18 @@ import { reactive } from "vue";
 
 export type ToastVariant = "error" | "success";
 
+// ToastLink is an optional link on a toast: the overnight-updates toast links
+// to the app's page, or the apps list (UPDATES.md # 6 Post-update toast, #634).
+export interface ToastLink {
+  label: string;
+  to: string;
+}
+
 export interface Toast {
   id: number;
   message: string;
   variant: ToastVariant;
+  link?: ToastLink;
 }
 
 // Live toasts, newest last. Reactive so <ToastHost> re-renders on push/dismiss.
@@ -28,9 +36,9 @@ const TOAST_TTL_MS = 6000;
 
 let seq = 0;
 
-function push(message: string, variant: ToastVariant) {
+function push(message: string, variant: ToastVariant, link?: ToastLink) {
   const id = ++seq;
-  toasts.push({ id, message, variant });
+  toasts.push({ id, message, variant, link });
   setTimeout(() => dismissToast(id), TOAST_TTL_MS);
 }
 
@@ -40,8 +48,8 @@ export function pushErrorToast(message: string) {
 
 // pushSuccessToast: a confirmation/recovery notice (a health issue cleared,
 // HEALTH.md # Clear). <ToastHost> styles it green and announces it politely.
-export function pushSuccessToast(message: string) {
-  push(message, "success");
+export function pushSuccessToast(message: string, link?: ToastLink) {
+  push(message, "success", link);
 }
 
 export function dismissToast(id: number) {

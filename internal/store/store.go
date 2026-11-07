@@ -92,7 +92,11 @@ type Instance struct {
 	// to (#633, updates.go). A good update clears both.
 	UpdateApproval UpdateApproval
 	UpdateDeclined string
-	CreatedAt      time.Time
+	// LastUpdate is the last good update, while it can be rolled back by
+	// hand (#634, updates.go). The zero value means there is nothing to roll
+	// back to.
+	LastUpdate LastUpdate
+	CreatedAt  time.Time
 }
 
 const (
@@ -227,6 +231,11 @@ func (s *Store) migrate() error {
 			update_approved_by TEXT NOT NULL DEFAULT '',
 			update_approved_at INTEGER NOT NULL DEFAULT 0,
 			update_declined_version TEXT NOT NULL DEFAULT '',
+			update_failed_auto INTEGER NOT NULL DEFAULT 0,
+			update_failed_acked INTEGER NOT NULL DEFAULT 0,
+			update_last_from TEXT NOT NULL DEFAULT '',
+			update_last_at INTEGER NOT NULL DEFAULT 0,
+			update_last_auto INTEGER NOT NULL DEFAULT 0,
 			created_at  INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS instance_images (
@@ -325,6 +334,7 @@ func (s *Store) migrate() error {
 			display_name  TEXT NOT NULL DEFAULT '',
 			role          TEXT NOT NULL CHECK (role IN ('admin','member')),
 			recovery_hash TEXT NOT NULL DEFAULT '',
+			updates_seen_at INTEGER NOT NULL DEFAULT 0,
 			created_at    INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS sessions (
@@ -550,6 +560,15 @@ func (s *Store) migrate() error {
 		{"instances", "update_approved_at", "ALTER TABLE instances ADD COLUMN update_approved_at INTEGER NOT NULL DEFAULT 0"},
 		{"instances", "update_declined_version", "ALTER TABLE instances ADD COLUMN update_declined_version TEXT NOT NULL DEFAULT ''"},
 		{"sessions", "update_prompt_dismissed", "ALTER TABLE sessions ADD COLUMN update_prompt_dismissed INTEGER NOT NULL DEFAULT 0"},
+		// No failure from the window, none acknowledged, no update to roll
+		// back and no update shown in the toast yet, for every row from
+		// before the columns (#634).
+		{"instances", "update_failed_auto", "ALTER TABLE instances ADD COLUMN update_failed_auto INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_failed_acked", "ALTER TABLE instances ADD COLUMN update_failed_acked INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_last_from", "ALTER TABLE instances ADD COLUMN update_last_from TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_last_at", "ALTER TABLE instances ADD COLUMN update_last_at INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_last_auto", "ALTER TABLE instances ADD COLUMN update_last_auto INTEGER NOT NULL DEFAULT 0"},
+		{"users", "updates_seen_at", "ALTER TABLE users ADD COLUMN updates_seen_at INTEGER NOT NULL DEFAULT 0"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
 		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
 		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
@@ -1177,7 +1196,7 @@ func (s *Store) Delete(id string) error {
 	return err
 }
 
-const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, auto_update_off, update_version, update_status, update_reason, update_failed_version, update_failed_kind, update_failed_message, update_failed_at, update_failed_count, update_tried_version, update_tried_night, update_wants, update_approved_version, update_approved_access, update_approved_by, update_approved_at, update_declined_version, created_at`
+const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, auto_update_off, update_version, update_status, update_reason, update_failed_version, update_failed_kind, update_failed_message, update_failed_at, update_failed_count, update_tried_version, update_tried_night, update_wants, update_approved_version, update_approved_access, update_approved_by, update_approved_at, update_declined_version, update_failed_auto, update_failed_acked, update_last_from, update_last_at, update_last_auto, created_at`
 
 func (s *Store) Get(id string) (Instance, error) {
 	return scan(s.db.QueryRow(
@@ -1838,12 +1857,14 @@ type scanner interface{ Scan(dest ...any) error }
 func scan(row scanner) (Instance, error) {
 	var i Instance
 	var created, pendingRecreate, autoRestartOff, lastAutoRestart, autoUpdateOff, failedAt, approvedAt int64
+	var failedAuto, failedAcked, lastAt, lastAuto int64
 	var wants string
 	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &autoRestartOff, &i.AutoRestarts, &lastAutoRestart,
 		&autoUpdateOff, &i.Update.Version, &i.Update.Status, &i.Update.Reason,
 		&i.UpdateFailure.Version, &i.UpdateFailure.Kind, &i.UpdateFailure.Message, &failedAt, &i.UpdateFailure.Count,
 		&i.UpdateTry.Version, &i.UpdateTry.Night,
-		&wants, &i.UpdateApproval.Version, &i.UpdateApproval.Access, &i.UpdateApproval.By, &approvedAt, &i.UpdateDeclined, &created)
+		&wants, &i.UpdateApproval.Version, &i.UpdateApproval.Access, &i.UpdateApproval.By, &approvedAt, &i.UpdateDeclined,
+		&failedAuto, &failedAcked, &i.LastUpdate.From, &lastAt, &lastAuto, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, ErrNotFound
 	}
@@ -1862,6 +1883,12 @@ func scan(row scanner) (Instance, error) {
 	if approvedAt != 0 {
 		i.UpdateApproval.At = time.Unix(approvedAt, 0)
 	}
+	i.UpdateFailure.ByWindow = failedAuto != 0
+	i.UpdateFailure.Acked = failedAcked != 0
+	if lastAt != 0 {
+		i.LastUpdate.At = time.Unix(lastAt, 0)
+	}
+	i.LastUpdate.ByWindow = lastAuto != 0
 	if i.Update.Wants, err = decodeWants(wants); err != nil {
 		return Instance{}, err
 	}

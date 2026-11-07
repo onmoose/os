@@ -19,17 +19,22 @@
 //               moving the app to a new version (#631).
 //   - update_failed: shown like failed. An update could not put the old
 //               version back, and retry is in the quick menu.
-//   - update badge (UPDATES.md # 6): a small arrow in the top-left corner when
-//               the catalog has a new version, amber when the last update did
-//               not go through. A controller gets a link to the app's page,
-//               where the Update button and the reason live.
+//   - no update badge: the tile does not say a new version is available
+//               (DECISIONS.md 2026-11-07). The app's settings page does.
+//   - update banner (UPDATES.md # 6 Failure signaling, #634): under the tile,
+//               until a controller closes it, "Photos couldn't update to 2.0
+//               last night. Rolled back to 1.4.", or the paused text, with a
+//               link to the app's page. Closing it is stored on the app, so it
+//               stays closed on every device.
 //
 // Icon rendering mirrors StoreAppCard: icon_url when present, AppGlyph fallback.
 import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { AlertTriangle, ArrowUpCircle, EllipsisVertical } from "lucide-vue-next";
-import type { Instance } from "../api";
+import { useMutation, useQueryClient } from "@tanstack/vue-query";
+import { AlertTriangle, EllipsisVertical, X } from "lucide-vue-next";
+import { api, type Instance } from "../api";
 import { useAuth, isHosted } from "../auth";
+import { failureBanner, showFailureBanner } from "../updates";
 import AppGlyph from "./AppGlyph.vue";
 import AppMenuDialog from "./AppMenuDialog.vue";
 
@@ -75,30 +80,13 @@ const brokenIcon = ref(false);
 // an update in progress.
 const showAlert = computed(() => !running.value && !stopped.value && !updating.value);
 
-// The update badge: a new version is known, or the last update failed. A
-// failed update that was rolled back leaves the app running, so the tile
-// says so until an update goes through.
-const update = computed(() => props.instance.update);
-const updateFailed = computed(() => !!update.value?.failed_version);
-const updateKnown = computed(() => !!update.value?.available_version);
-const showUpdate = computed(() => !failed.value && !updating.value && (updateFailed.value || updateKnown.value));
-// Paused (#632): the nightly window tried the same version 3 times and it
-// failed each time, so it stopped trying. The Update button still works.
-const updatePaused = computed(() => !!update.value?.paused);
-const updateLabel = computed(() =>
-  updatePaused.value
-    ? "Update is failing repeatedly. Paused."
-    : updateFailed.value
-      ? "Update failed"
-      : "Update available",
-);
-const updateTitle = computed(() =>
-  updatePaused.value
-    ? `${props.instance.name} could not update to ${update.value?.failed_version} several times in a row, so moose stopped trying. You can still update it from its settings.`
-    : updateFailed.value
-      ? `${props.instance.name} could not update to ${update.value?.failed_version}`
-      : `${props.instance.name} ${update.value?.available_version} is available`,
-);
+// The banner about a failed update, until a controller closes it (#634).
+const qc = useQueryClient();
+const banner = computed(() => showFailureBanner(props.instance));
+const ack = useMutation({
+  mutationFn: () => api.post(`/apps/${props.instance.id}/update/acknowledge`),
+  onSettled: () => qc.invalidateQueries({ queryKey: ["apps"] }),
+});
 // Needs setup is a softer warning than a failure, so it gets the amber mark
 // only when no failure mark is already there.
 const needsSetup = computed(() => !!props.instance.needs_setup);
@@ -135,15 +123,6 @@ const menuOpen = ref(false);
       ]"
       :title="running ? `Open ${instance.name}` : `${instance.name} is ${instance.state}`"
     >
-      <span
-        v-if="showUpdate"
-        class="absolute left-3 top-3 size-4"
-        :class="updateFailed ? 'text-amber-600' : 'text-accent'"
-        :title="updateTitle"
-      >
-        <ArrowUpCircle class="size-full" aria-hidden="true" />
-        <span class="sr-only">{{ updateLabel }}</span>
-      </span>
       <AlertTriangle
         v-if="showAlert"
         class="absolute right-3 top-3 size-4 text-destructive"
@@ -219,16 +198,23 @@ const menuOpen = ref(false);
       Needs setup
     </RouterLink>
 
-    <!-- An update is known or failed: the app's page has the Update button and
-         says why an update is not applied. -->
-    <RouterLink
-      v-if="showUpdate && canControl"
-      :to="`/settings/apps/${instance.id}`"
-      class="text-xs underline underline-offset-2 hover:text-foreground"
-      :class="updateFailed ? 'text-amber-700' : 'text-muted-foreground'"
+    <!-- A failed update: the banner, until a controller closes it (#634). -->
+    <div
+      v-if="banner && canControl"
+      class="flex w-full items-start gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-left text-xs text-amber-800"
+      role="status"
     >
-      {{ updateLabel }}
-    </RouterLink>
+      <RouterLink :to="`/settings/apps/${instance.id}`" class="min-w-0 flex-1 hover:underline">{{ failureBanner(instance) }}</RouterLink>
+      <button
+        type="button"
+        class="shrink-0 cursor-pointer rounded p-0.5 hover:bg-amber-100"
+        aria-label="Close"
+        :disabled="ack.isPending.value"
+        @click="ack.mutate()"
+      >
+        <X class="size-3" />
+      </button>
+    </div>
 
     <!-- Don't retry blind: a controller can open the app page for the failure
          reason / logs rather than looping on the tile (#154). -->
