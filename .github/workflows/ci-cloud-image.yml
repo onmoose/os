@@ -584,6 +584,17 @@ jobs:
       #     brain puts an app in the wrong tier, or gives the capabilities with the
       #     host userns, must never be published. The two boots add about a minute and a half.
       #
+      #   - app-update (#630): the ONLY proof of app updates on a booted box, with
+      #     the socket proxy, the remap and a real managed Postgres. An update by
+      #     hand runs the new version on the old data; a broken one is rolled back
+      #     from its snapshot; one that asks for more waits for the owner's yes;
+      #     Go back returns to the version before; and the nightly window updates
+      #     the app while the app's hold keeps the OS switch waiting, then the box
+      #     switches and the app is checked on slot B. An image that loses app data
+      #     on an update, applies more access without a yes, or reboots in the
+      #     middle of an app update must never be published. It is the longest
+      #     boot: it waits about six minutes for its window.
+      #
       # The frozen-identity boot stays out: it is orthogonal (it checks a re-delivered
       # seed is ignored on a later boot) and has shown a flaky false "re-ingested"
       # verdict whose root cause is still open, so it is left to the full local run

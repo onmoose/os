@@ -3341,7 +3341,9 @@ app-update)
         [ "$(date +%s)" -lt "$opens_at" ] || fail "app-update: the hold came only after the window opened, so this run does not prove the order"
         au_running 2.0
         echo "cloud-assertions: app-update: HOLD OK (the brain holds the OS switch before the window $opens-$ends opens; still on 2.0)"
-        printf 'session_cookie=%q\nAU_ID=%q\nAU_DB=%q\nos_mode=%q\n' "$session_cookie" "$AU_ID" "$AU_DB" "$os_mode" > "$OS_STATE_DIR/app-update"
+        mkdir -p "$OS_STATE_DIR" && chmod 700 "$OS_STATE_DIR"
+        printf 'session_cookie=%q\nAU_ID=%q\nAU_DB=%q\nos_mode=%q\n' "$session_cookie" "$AU_ID" "$AU_DB" "$os_mode" > "$OS_STATE_DIR/app-update" \
+            || fail "app-update: could not keep the session and the app for slot B in $OS_STATE_DIR"
         [ "$os_mode" = full ] && set_os_stage 2
         a=""
         for _i in $(seq 1 900); do
@@ -3367,6 +3369,7 @@ app-update)
     else
         # 2. SLOT B, after the switch the app's hold let go.
         [ "$stage" = 2 ] && [ "$BOOTED" = B ] || fail "app-update: stage $stage booted slot '$BOOTED', want stage 2 on slot B"
+        [ -s "$OS_STATE_DIR/app-update" ] || fail "app-update: slot A left no session and app for slot B in $OS_STATE_DIR/app-update"
         # shellcheck disable=SC1090
         . "$OS_STATE_DIR/app-update"
         for _i in $(seq 1 300); do grep -q "the new slot is healthy and marked good" <<<"$(ha_log)" && break; sleep 1; done
