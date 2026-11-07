@@ -33,6 +33,8 @@ import AppLogs from "@/components/AppLogs.vue";
 import Button from "@/components/ui/Button.vue";
 import PermissionList from "@/components/PermissionList.vue";
 import { wantLines } from "@/installSteps";
+import { failedStep } from "@/updates";
+import RollbackButton from "@/components/RollbackButton.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -106,7 +108,14 @@ const start = useMutation({
 const confirmingUninstall = ref(false);
 
 // Logs start collapsed. They're a drill-down, not the first thing on the page.
-const logsOpen = ref(false);
+// A link to #logs (View logs in Settings → Updates, #634) opens them.
+const logsOpen = ref(route.hash === "#logs");
+watch(
+  () => route.hash,
+  (h) => {
+    if (h === "#logs") logsOpen.value = true;
+  },
+);
 const uninstall = useMutation({
   mutationFn: async () => awaitJob(await api.del<Job>(`/apps/${id.value}`)),
   onSuccess: () => {
@@ -155,6 +164,16 @@ const updateSummary = computed(() => {
 });
 const failedAt = computed(() => {
   const at = appUpdate.value?.failed_at;
+  return at ? new Date(at).toLocaleString() : "";
+});
+// The last good update, while it can be rolled back by hand (#634): 7 days
+// after it, with the data from just before it.
+const updatedAt = computed(() => {
+  const at = appUpdate.value?.updated_at;
+  return at ? new Date(at).toLocaleString() : "";
+});
+const rollbackUntil = computed(() => {
+  const at = appUpdate.value?.rollback_until;
   return at ? new Date(at).toLocaleString() : "";
 });
 
@@ -775,12 +794,26 @@ const saveConfig = useMutation({
             <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
             <span>
               The update to {{ appUpdate.failed_version }} did not go through<template v-if="failedAt"> ({{ failedAt }})</template>.
+              {{ failedStep(appUpdate.failed_kind) }}
               {{ appUpdate.failed_message }}
               <template v-if="appUpdate.paused">
                 Update is failing repeatedly. Paused. moose no longer tries it at night, but you can still update the app here.
               </template>
             </span>
           </div>
+        </div>
+        <div
+          v-if="appUpdate?.updated_from && !updating"
+          class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
+        >
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">Updated from {{ appUpdate.updated_from }}</div>
+            <div class="text-xs text-muted-foreground">
+              {{ app.name }} moved from {{ appUpdate.updated_from }} to {{ app.version }}<template v-if="appUpdate.updated_overnight"> overnight</template>, {{ updatedAt }}.
+              If something does not work as before, you can go back to {{ appUpdate.updated_from }} until {{ rollbackUntil }}.
+            </div>
+          </div>
+          <RollbackButton v-if="appUpdate.can_rollback" :app="app" />
         </div>
         <p v-if="updateApp.isError.value" class="text-sm text-destructive">
           Couldn't update: {{ (updateApp.error.value as Error)?.message }}
@@ -1077,7 +1110,7 @@ const saveConfig = useMutation({
       <!-- Logs: collapsed by default; a full-width accordion row (styled like
            the Installed apps list rows) that expands the log panel on click. The
            chevron at the end rotates to signal expansion. -->
-      <section v-if="canControl" class="flex flex-col gap-2">
+      <section v-if="canControl" id="logs" class="flex flex-col gap-2">
         <button
           type="button"
           class="flex w-full shrink-0 cursor-pointer items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 text-sm hover:bg-muted"

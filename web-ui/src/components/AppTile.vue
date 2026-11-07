@@ -23,13 +23,19 @@
 //               the catalog has a new version, amber when the last update did
 //               not go through. A controller gets a link to the app's page,
 //               where the Update button and the reason live.
+//   - update banner (UPDATES.md # 6 Failure signaling, #634): under the tile,
+//               until a controller closes it, "Photos couldn't update to 2.0
+//               last night. Rolled back to 1.4.", or the paused text. Closing
+//               it is stored on the app, so it stays closed on every device.
 //
 // Icon rendering mirrors StoreAppCard: icon_url when present, AppGlyph fallback.
 import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { AlertTriangle, ArrowUpCircle, EllipsisVertical } from "lucide-vue-next";
-import type { Instance } from "../api";
+import { useMutation, useQueryClient } from "@tanstack/vue-query";
+import { AlertTriangle, ArrowUpCircle, EllipsisVertical, X } from "lucide-vue-next";
+import { api, type Instance } from "../api";
 import { useAuth, isHosted } from "../auth";
+import { failureBanner, showFailureBanner } from "../updates";
 import AppGlyph from "./AppGlyph.vue";
 import AppMenuDialog from "./AppMenuDialog.vue";
 
@@ -99,6 +105,14 @@ const updateTitle = computed(() =>
       ? `${props.instance.name} could not update to ${update.value?.failed_version}`
       : `${props.instance.name} ${update.value?.available_version} is available`,
 );
+// The banner about a failed update, until a controller closes it (#634). While
+// it shows, it stands in for the small update link.
+const qc = useQueryClient();
+const banner = computed(() => showFailureBanner(props.instance));
+const ack = useMutation({
+  mutationFn: () => api.post(`/apps/${props.instance.id}/update/acknowledge`),
+  onSettled: () => qc.invalidateQueries({ queryKey: ["apps"] }),
+});
 // Needs setup is a softer warning than a failure, so it gets the amber mark
 // only when no failure mark is already there.
 const needsSetup = computed(() => !!props.instance.needs_setup);
@@ -221,8 +235,24 @@ const menuOpen = ref(false);
 
     <!-- An update is known or failed: the app's page has the Update button and
          says why an update is not applied. -->
+    <div
+      v-if="banner && canControl"
+      class="flex w-full items-start gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-left text-xs text-amber-800"
+      role="status"
+    >
+      <RouterLink to="/settings/updates" class="min-w-0 flex-1 hover:underline">{{ failureBanner(instance) }}</RouterLink>
+      <button
+        type="button"
+        class="shrink-0 cursor-pointer rounded p-0.5 hover:bg-amber-100"
+        aria-label="Close"
+        :disabled="ack.isPending.value"
+        @click="ack.mutate()"
+      >
+        <X class="size-3" />
+      </button>
+    </div>
     <RouterLink
-      v-if="showUpdate && canControl"
+      v-else-if="showUpdate && canControl"
       :to="`/settings/apps/${instance.id}`"
       class="text-xs underline underline-offset-2 hover:text-foreground"
       :class="updateFailed ? 'text-amber-700' : 'text-muted-foreground'"

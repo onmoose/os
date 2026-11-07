@@ -219,6 +219,13 @@ export function markUpdatePromptDismissed() {
   if (currentUser.value) currentUser.value = { ...currentUser.value, update_prompt_dismissed: true };
 }
 
+// markUpdatesSeen notes that the person saw the overnight-updates toast
+// (#634). The brain keeps it on the person too (POST /me/updates-seen), so
+// the toast shows once on any device.
+export function markUpdatesSeen(at: number) {
+  if (currentUser.value) currentUser.value = { ...currentUser.value, updates_seen_at: at };
+}
+
 export function useAuth() {
   return {
     currentUser: computed(() => currentUser.value),

@@ -46,6 +46,9 @@ const routes: RouteRecordRaw[] = [
       { path: "notifications", name: "settings-notifications", component: () => import("@/views/settings/NotificationsSection.vue") },
       { path: "apps", name: "settings-apps", component: () => import("@/views/settings/InstalledAppsSection.vue") },
       { path: "apps/:id", name: "settings-app", component: () => import("@/views/settings/InstalledAppDetailSection.vue") },
+      // What the app updates did, what waits, what failed, and the rollback
+      // button (UPDATES.md # 6, #634).
+      { path: "updates", name: "settings-updates", component: () => import("@/views/settings/UpdatesSection.vue") },
       { path: "activity", name: "settings-activity", component: () => import("@/views/settings/ActivitySection.vue") },
       { path: "users", name: "settings-users", component: () => import("@/views/settings/UsersSection.vue") },
       // Integrations (INSTALL_SETUP.md, 2026-09-26): the user's own accounts

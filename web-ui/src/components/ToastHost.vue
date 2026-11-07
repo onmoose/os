@@ -4,6 +4,7 @@
 // renders it bottom-right, clear of the centered dock. Toasts carry a variant
 // (error / success) that colors the accent; the region stays assertive so
 // screen readers announce failures promptly.
+import { RouterLink } from "vue-router";
 import { useToasts, dismissToast } from "../toasts";
 
 const { toasts } = useToasts();
@@ -12,7 +13,10 @@ const { toasts } = useToasts();
 <template>
   <div class="toast-host" role="alert" aria-live="assertive">
     <div v-for="t in toasts" :key="t.id" class="toast" :data-variant="t.variant">
-      <span class="toast-msg">{{ t.message }}</span>
+      <span class="toast-msg">
+        {{ t.message }}
+        <RouterLink v-if="t.link" :to="t.link.to" class="toast-link" @click="dismissToast(t.id)">{{ t.link.label }}</RouterLink>
+      </span>
       <button class="toast-close" aria-label="Dismiss" @click="dismissToast(t.id)">×</button>
     </div>
   </div>
@@ -59,6 +63,11 @@ const { toasts } = useToasts();
   flex: 1;
   font-size: 0.82rem;
   line-height: 1.3;
+}
+.toast-link {
+  margin-left: 0.35rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .toast[data-variant="error"] .toast-msg { color: var(--color-destructive); }
 .toast[data-variant="success"] .toast-msg { color: var(--color-success); }
