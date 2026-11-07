@@ -1,0 +1,20 @@
+# Author's compose, held verbatim by moose. A test fixture, not a catalog app.
+# Version 3.1. Adds row-<version> to its database once, adds its version to
+# /data/starts.txt, then idles. It serves nothing on main_port: the boot reads
+# the database and the data dir itself. $$ is a literal $ for the shell.
+services:
+  upnote:
+    image: postgres:16
+    environment:
+      DSN: ${MOOSE_SERVICE_DATABASE_DSN}
+      UPNOTE_VERSION: "3.1"
+    volumes:
+      - ./data:/data
+    command:
+      - sh
+      - -c
+      - |
+        until psql "$$DSN" -qtAc "create table if not exists upnote_rows (v text); insert into upnote_rows select 'row-$$UPNOTE_VERSION' where not exists (select 1 from upnote_rows where v = 'row-$$UPNOTE_VERSION')"; do sleep 2; done
+        echo "$$UPNOTE_VERSION" >> /data/starts.txt
+        trap 'exit 0' TERM
+        while true; do sleep 1; done

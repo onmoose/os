@@ -1,0 +1,35 @@
+# Test-only catalog app for the hosted cloud app-update boot (#630). Version
+# 1.0: the version the app-update boot installs.
+#
+# Every version of upnote is a folderless app on the managed Postgres 16, on
+# the postgres:16 image (for its sh and psql). At start it adds the row
+# row-<version> to its database, once, and adds its version to
+# /data/starts.txt, so the boot can read which versions ran on which data. The
+# app-update boot loads the image from the test-only images dir, and offline
+# install trusts the promised digest (APP_LIFECYCLE.md # image digest pinning).
+id: upnote
+manifest_version: 1
+name: Upnote
+version: "1.0"
+description:
+  short: "Test fixture: an app with several versions, for the app update boot."
+icon_glyph: flask-conical
+compose_file: compose.yml
+main_service: upnote
+main_port: 8080
+preferred_slugs: [upnote]
+
+services:
+  database:
+    type: postgres
+    version: "16"
+
+permissions:
+  internet: false
+  lan: false
+
+images:
+  postgres:16:
+    digest: sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+    download_bytes: 157286400
+    disk_bytes: 451000000
