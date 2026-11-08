@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -71,6 +72,13 @@ type fakeDocker struct {
 	restartCounts  map[string]int     // returned by RestartCounts
 	managed        []ManagedContainer // returned by ManagedContainers
 
+	// running is what RunningContainers lists, by compose project, and
+	// runningErr makes it fail. StopContainer takes a container off the list.
+	// stopContainer, when set, does StopContainer's work in its place.
+	running       map[string][]string
+	runningErr    error
+	stopContainer func(container string) error
+
 	composeUpErr      error // simple "always fail compose up"
 	composeDownErr    error
 	composeStopErr    error
@@ -81,10 +89,11 @@ type fakeDocker struct {
 
 	// attached is the networks each container is on, by container name, as
 	// NetworkConnect/NetworkDisconnect leave them and ContainerNetworks reads
-	// them. networkConnectErr forces NetworkConnect to fail, and
-	// containerNetworksErr forces ContainerNetworks to fail.
+	// them. networkConnectErr, networkDisconnectErr and containerNetworksErr
+	// force those calls to fail. A failed disconnect leaves attached as it is.
 	attached             map[string]map[string]bool
 	networkConnectErr    error
+	networkDisconnectErr error
 	containerNetworksErr error
 
 	// networks is each network NetworkCreate made and its internal flag, as
@@ -318,6 +327,34 @@ func (f *fakeDocker) ComposeStop(_ context.Context, dir, project string) (string
 	return "", f.composeStopErr
 }
 
+func (f *fakeDocker) RunningContainers(_ context.Context, project string) ([]string, error) {
+	f.record("RunningContainers", project)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.runningErr != nil {
+		return nil, f.runningErr
+	}
+	return append([]string(nil), f.running[project]...), nil
+}
+
+func (f *fakeDocker) StopContainer(_ context.Context, container string) (string, error) {
+	f.record("StopContainer", container)
+	if f.stopContainer != nil {
+		return "", f.stopContainer(container)
+	}
+	f.removeRunning(container)
+	return "", nil
+}
+
+// removeRunning takes a container off the running list of every project.
+func (f *fakeDocker) removeRunning(container string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for project, ids := range f.running {
+		f.running[project] = slices.DeleteFunc(ids, func(id string) bool { return id == container })
+	}
+}
+
 func (f *fakeDocker) ComposeCreate(_ context.Context, dir, project string) (string, error) {
 	f.record("ComposeCreate", dir, project)
 	return "", f.composeCreateErr
@@ -396,6 +433,9 @@ func (f *fakeDocker) NetworkDisconnect(_ context.Context, network, container str
 	f.record("NetworkDisconnect", network, container)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.networkDisconnectErr != nil {
+		return f.networkDisconnectErr
+	}
 	delete(f.attached[container], network)
 	return nil
 }

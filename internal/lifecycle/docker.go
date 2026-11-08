@@ -29,6 +29,14 @@ type DockerDriver interface {
 	ComposeUp(ctx context.Context, dir, project string) (string, error)
 	ComposeDown(ctx context.Context, dir, project string) (string, error)
 	ComposeStop(ctx context.Context, dir, project string) (string, error)
+	// RunningContainers lists the ids of the running containers of a compose
+	// project, by its label, without reading any compose file. StopContainer
+	// stops one container by id, with the grace period it was created with. A
+	// rollback uses them when `compose stop` fails, because the files that
+	// broke the update can be the reason (UPDATES.md # As built (#631)). They
+	// need only the proxy's CONTAINERS + POST families, as `compose stop` does.
+	RunningContainers(ctx context.Context, project string) ([]string, error)
+	StopContainer(ctx context.Context, container string) (string, error)
 	// ComposeCreate makes the project's containers again from the files on
 	// disk without starting them (`docker compose create --force-recreate`).
 	// It keeps their anonymous volumes. An update runs it after it made the
@@ -96,7 +104,8 @@ type DockerDriver interface {
 	NetworkConnect(ctx context.Context, network, container string) error
 	NetworkDisconnect(ctx context.Context, network, container string) error
 	// ContainerNetworks lists the networks a container is attached to, by
-	// name. Read-only; needs only the proxy's CONTAINERS endpoint family.
+	// name, whether it runs or not. A missing container is errNoSuchContainer.
+	// Read-only; needs only the proxy's CONTAINERS endpoint family.
 	ContainerNetworks(ctx context.Context, container string) (map[string]bool, error)
 	PSManaged(ctx context.Context) (map[string]bool, error)
 	// RestartCounts reports each managed instance's cumulative container
@@ -258,6 +267,20 @@ func (cliDocker) ComposeDown(ctx context.Context, dir, project string) (string, 
 
 func (cliDocker) ComposeStop(ctx context.Context, dir, project string) (string, error) {
 	return composeRun(ctx, dir, project, "stop")
+}
+
+func (cliDocker) RunningContainers(ctx context.Context, project string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "ps", "-q",
+		"--filter", "label=com.docker.compose.project="+project).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w", err)
+	}
+	return strings.Fields(string(out)), nil
+}
+
+func (cliDocker) StopContainer(ctx context.Context, container string) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "stop", container).CombinedOutput()
+	return string(out), err
 }
 
 func (cliDocker) ComposeCreate(ctx context.Context, dir, project string) (string, error) {
@@ -434,9 +457,26 @@ func (cliDocker) ContainerNetworks(ctx context.Context, container string) (map[s
 	out, err := exec.CommandContext(ctx, "docker", "inspect", "--type", "container",
 		"--format", "{{json .NetworkSettings.Networks}}", container).Output()
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if noSuchContainer(string(exit.Stderr)) {
+				return nil, fmt.Errorf("inspect %s networks: %w", container, errNoSuchContainer)
+			}
+			return nil, fmt.Errorf("inspect %s networks: %w: %s", container, err, strings.TrimSpace(string(exit.Stderr)))
+		}
 		return nil, fmt.Errorf("inspect %s networks: %w", container, err)
 	}
 	return parseContainerNetworks(out)
+}
+
+// errNoSuchContainer says the container does not exist, so it is on no network.
+var errNoSuchContainer = errors.New("no such container")
+
+// noSuchContainer reports whether a `docker inspect` failure says the container
+// does not exist. Any other wording stays a failure, which is the safe side: a
+// caller then warns and tries again, and does not take it as clean.
+func noSuchContainer(out string) bool {
+	return strings.Contains(out, "No such container")
 }
 
 // parseContainerNetworks reads the `{{json .NetworkSettings.Networks}}` of

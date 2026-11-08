@@ -1111,8 +1111,8 @@ func (m *Manager) rollbackUpdate(ctx context.Context, inst store.Instance, oldMa
 // all can.
 func (m *Manager) undoUpdate(ctx context.Context, id string, rec updateRecord) error {
 	if rec.SnapshotTaken || rec.Writing {
-		if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {
-			slog.Warn("update rollback: compose stop", "instance_id", id, "err", err, "output", out)
+		if err := m.stopForUndo(ctx, id); err != nil {
+			return err
 		}
 	}
 	// A moved database goes back first: the snapshot's dump is of the old
@@ -1199,6 +1199,48 @@ func (m *Manager) undoUpdate(ctx context.Context, id string, rec updateRecord) e
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// errAppNotStopped says an undo did not start, because moose cannot be sure
+// that the app's containers have stopped.
+var errAppNotStopped = errors.New("the app's containers may still be running")
+
+// stopForUndo returns nil only when no container of the app runs, because the
+// undo replaces data the containers would write to. `compose stop` reads the
+// files on disk, and those can be the new version's broken files, so its
+// failure says nothing about the containers: they may have stopped before the
+// new files were written. So after a failure it asks Docker, and stops what
+// runs by id. When containers still run, or Docker does not answer, the undo
+// must not start.
+func (m *Manager) stopForUndo(ctx context.Context, id string) error {
+	project := "moose-" + id
+	out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), project)
+	if err == nil {
+		return nil
+	}
+	slog.Warn("update rollback: compose stop failed; asking Docker what runs", "instance_id", id, "err", err, "output", out)
+	running, err := m.docker.RunningContainers(ctx, project)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errAppNotStopped, err)
+	}
+	if len(running) == 0 {
+		return nil
+	}
+	for _, c := range running {
+		// A stop that fails is not the answer: the container may be gone
+		// already. The second question below decides.
+		if out, err := m.docker.StopContainer(ctx, c); err != nil {
+			slog.Warn("update rollback: stop a container", "instance_id", id, "err", err, "output", out)
+		}
+	}
+	running, err = m.docker.RunningContainers(ctx, project)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errAppNotStopped, err)
+	}
+	if len(running) > 0 {
+		return fmt.Errorf("%w: %s", errAppNotStopped, strings.Join(running, " "))
 	}
 	return nil
 }
@@ -1295,6 +1337,9 @@ func (m *Manager) finishRollback(ctx context.Context, inst store.Instance) error
 	}
 	if err := m.undoOnce(ctx, inst.ID, rec); err != nil {
 		slog.Error("update rollback failed again", "instance_id", inst.ID, "version", rec.From, "err", err)
+		if errors.Is(err, errAppNotStopped) {
+			return errors.New("moose could not stop the app, so it cannot put the old version back yet. Try again")
+		}
 		return errors.New("moose still cannot put the old version of the app back. See the app's logs")
 	}
 	if rec.Rollback {
