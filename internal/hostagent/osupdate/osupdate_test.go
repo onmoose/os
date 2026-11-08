@@ -304,13 +304,25 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("timed out")
 }
 
+// waitTrialPassed waits until a passed trial on slot is over: the outcome is
+// saved and the marker is gone. The trial saves first and removes the marker
+// after, in a goroutine, so waiting for Last alone can end between the two
+// (#647).
+func waitTrialPassed(t *testing.T, a *Applier, slot string) {
+	t.Helper()
+	waitFor(t, func() bool {
+		_, err := os.Stat(TrialMarker(a.dir(), slot))
+		return a.Last() != nil && errors.Is(err, os.ErrNotExist)
+	})
+}
+
 func TestTrialGood(t *testing.T) {
 	h := newHarness(t, "A")
 	h.a.Apply(h.rel, false, h.night)
 	h.a.Apply(h.rel, true, h.night)
 	b := h.reboot(t, "B", "0.15.1")
 	b.Boot(context.Background())
-	waitFor(t, func() bool { return b.Last() != nil })
+	waitTrialPassed(t, b, "B")
 	last := b.Last()
 	if last.Outcome != protocol.OSOutcomeGood || last.Version != "0.15.1" || last.From != "0.15.0" || last.ID == "" {
 		t.Fatalf("outcome %+v", last)
@@ -450,7 +462,7 @@ func TestOneSwitchPerNight(t *testing.T) {
 	h.a.Apply(h.rel, true, h.night)
 	b := h.reboot(t, "B", "0.15.1")
 	b.Boot(context.Background())
-	waitFor(t, func() bool { return b.Last() != nil })
+	waitTrialPassed(t, b, "B")
 	// The next step is installed into slot A the same night.
 	body := "0.16.0\n"
 	sum := sha256.Sum256([]byte(body))
@@ -582,8 +594,7 @@ func TestStaleMarkerOnAGoodSlot(t *testing.T) {
 	h.a.Apply(h.rel, true, h.night)
 	b := h.reboot(t, "B", "0.15.1")
 	b.Boot(context.Background())
-	waitFor(t, func() bool { return b.Last() != nil })
-	waitFor(t, func() bool { _, err := os.Stat(TrialMarker(b.dir(), "B")); return errors.Is(err, os.ErrNotExist) })
+	waitTrialPassed(t, b, "B")
 	if err := os.WriteFile(TrialMarker(b.dir(), "B"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -674,10 +685,7 @@ func TestTrialDeadlineCountsFromBoot(t *testing.T) {
 	}
 	b.Boot(context.Background())
 	<-done
-	waitFor(t, func() bool {
-		_, err := os.Stat(TrialMarker(b.dir(), "B"))
-		return b.Last() != nil && errors.Is(err, os.ErrNotExist)
-	})
+	waitTrialPassed(t, b, "B")
 	if left > minTrialWait+time.Second || left < minTrialWait-time.Second {
 		t.Fatalf("a trial 1 s before the end got %s, want about %s", left, minTrialWait)
 	}
