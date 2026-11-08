@@ -84,6 +84,55 @@ func TestLiveRollbackFiles(t *testing.T) {
 	t.Logf("1.0 runs again on its own data, on %s", strings.TrimSpace(string(out)))
 }
 
+// TestLiveRollbackBrokenComposeFiles: the compose files on disk cannot be read,
+// so `compose stop` fails while the app still runs. The rollback finds the
+// container by its project label, stops it by id, and then goes back to 1.0.
+func TestLiveRollbackBrokenComposeFiles(t *testing.T) {
+	ctx := context.Background()
+	e := newLiveUpdateEnv(t)
+	const id = "livestopfails"
+
+	e.publish(t, id, liveAppManifest(id, "1.0", ""), liveAppCompose("alpine:3.20", "echo v1 >> /data/starts", false, ""))
+	inst, err := e.m.Install(ctx, mustLoadApp(t, e.m, id), Owner{UserID: "u_admin", Username: "admin"}, store.ScopeHousehold, nil, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	t.Cleanup(func() { _ = e.m.Uninstall(context.Background(), inst.ID) })
+	dir := filepath.Join(e.stateDir, "instances", inst.ID)
+	data := filepath.Join(dir, "data")
+	mustWrite(t, filepath.Join(data, "notes.txt"), "written by the user on 1.0")
+
+	e.publish(t, id, liveAppManifest(id, "2.0", ""), liveAppCompose("alpine:3.21", "echo v2 >> /data/starts", false, ""))
+	if err := e.m.Update(ctx, inst.ID, nil); err != nil {
+		t.Fatalf("update to 2.0: %v", err)
+	}
+	mustWrite(t, filepath.Join(data, "notes.txt"), "written by the user on 2.0")
+
+	mustWrite(t, filepath.Join(dir, "compose.yml"), "services: [this is not a compose file")
+	project := "moose-" + inst.ID
+	if out, err := e.m.docker.ComposeStop(ctx, dir, project); err == nil {
+		t.Fatalf("compose stop worked on broken files: %s", out)
+	}
+	running, err := e.m.docker.RunningContainers(ctx, project)
+	if err != nil || len(running) != 1 {
+		t.Fatalf("running before the rollback = %v %v, want the app's one container", running, err)
+	}
+
+	if err := e.m.Rollback(ctx, inst.ID, nil); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	row, _ := e.st.Get(inst.ID)
+	if row.Version != "1.0" || row.State != "running" {
+		t.Fatalf("after the rollback: version %q state %q", row.Version, row.State)
+	}
+	if got := liveRead(t, filepath.Join(data, "notes.txt")); got != "written by the user on 1.0" {
+		t.Fatalf("data after the rollback = %q, want 1.0's", got)
+	}
+	if running, health, err := e.m.docker.Inspect(ctx, inst.ID, "app"); err != nil || !running || health == "unhealthy" {
+		t.Fatalf("1.0 is not running: running %v health %q err %v", running, health, err)
+	}
+}
+
 // TestLiveRollbackPostgres: rows changed on the new version are put back
 // from the snapshot's dump.
 func TestLiveRollbackPostgres(t *testing.T) {
