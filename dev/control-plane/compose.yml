@@ -5,11 +5,12 @@
 #
 # Two containers — the *services* the brain owns and reconciles:
 #   caddy        — LAN-facing reverse proxy. The brain drives it via the admin
-#                  API at moose-caddy:2019 over the moose network and publishes
-#                  the catch-all + dashboard + per-app routes there
-#                  (CONTROL_PLANE.md # Caddy). The bootstrap caddy.json only opens
-#                  the admin endpoint and the catch-all; everything else is added
-#                  live via the API.
+#                  API on a unix socket in ./caddy/ and publishes the catch-all +
+#                  dashboard + per-app routes there (CONTROL_PLANE.md # Caddy).
+#                  The bootstrap caddy.json only opens the admin endpoint and the
+#                  catch-all; everything else is added live via the API. The
+#                  brain also attaches Caddy to each app's own network, so no
+#                  app joins the moose network below (#608).
 #   moose-ui     — static SPA server; Caddy routes all non-/api traffic here
 #                  (WEB_UI.md # deploy model). Read-only, no ports, no secrets.
 #
@@ -45,6 +46,16 @@ services:
       # is therefore a fleet-wide cost from a per-box event. Named so the volume
       # is stable whatever the compose project is called, like the network below.
       - caddy_data:/data
+      # The admin API's unix socket (caddy.json "admin.listen", #608). Caddy
+      # joins every app's network, so a TCP admin listener would be reachable
+      # from each app, and Caddy's admin API has no auth. A socket in a host
+      # dir is reachable only by what mounts that dir: the brain, through its
+      # /var/lib/moose mount. host-agent creates ./caddy/ with mode 0700, owned
+      # by the uid Caddy's root maps to under the userns-remap, before the brain
+      # runs this compose (brainlaunch.EnsureCaddySocketDir). Without that,
+      # Docker would create it as host root, and Caddy, with every capability
+      # dropped, could not create its socket there.
+      - ./caddy:/run/moose-caddy
     # /config holds Caddy's autosave of the last admin-API config. Nothing ever
     # reads it back — the command loads /etc/caddy/caddy.json explicitly and we
     # never run `caddy run --resume` — so it must be writable but is worth
@@ -103,7 +114,8 @@ volumes:
 
 # The moose network is seeded by host-agent (brainlaunch.EnsureTransport) before
 # the brain starts; reference it as external so this compose attaches to it
-# rather than racing to create it.
+# rather than racing to create it. It is the control-plane network: the brain,
+# Caddy, moose-ui and the socket proxy. No app joins it (#608).
 networks:
   moose:
     name: moose-ingress

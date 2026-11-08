@@ -288,10 +288,9 @@ const dockerSockPath = "/var/run/docker.sock"
 // Binds:["/:/host"] passes straight through and, once started, is host root.
 // So granting CONTAINERS+POST is a container escape for anyone who can reach
 // :2375 — confirmed on a real box (#430). The only control on that is network
-// reachability: nothing but the brain may reach the proxy. That is not yet true
-// (the proxy shares moose-ingress with app main_service containers); #187 is the
-// fix that takes apps off that network. See CONTROL_PLANE.md # Locked: Docker
-// socket exposure and THREAT_MODEL.md B2.
+// reachability: nothing but the brain may reach the proxy. No app joins the
+// network the proxy is on (#608); Caddy reaches apps on their own networks.
+// See CONTROL_PLANE.md # Locked: Docker socket exposure and THREAT_MODEL.md B2.
 //
 // EXEC, by contrast, IS denied — it is a URL family this allowlist omits, not a
 // body field. That is why managed-DB provisioning runs the engine's client in a
@@ -506,6 +505,49 @@ func EnsureSharedTree(root string, ownerUID, sharedGID int) error {
 	return nil
 }
 
+// caddySocketDirMode keeps Caddy's admin socket dir to its owner. Only Caddy
+// writes there, and the brain, as real root, reaches it whatever the mode.
+const caddySocketDirMode = 0o700
+
+// EnsureCaddySocketDir makes sure the dir that holds Caddy's admin socket,
+// <controlPlaneDir>/caddy (protocol.CaddySocketDir), exists with mode 0700 and
+// is owned ownerID:ownerID, before the brain brings Caddy up (#608). The
+// control-plane compose binds it into Caddy at protocol.CaddySocketMount.
+//
+// The owner is the host id Caddy's root maps to: the remap base under Docker's
+// daemon-wide userns-remap, 0 without it. Caddy runs with every capability
+// dropped, so it can create its socket only in a dir it owns. Without this,
+// Docker would create the bind source as host root and Caddy's admin API would
+// not start, leaving the brain unable to set any route.
+//
+// It runs on every host-agent start and sets the owner and mode again each
+// time, so a box whose remap was turned on later is repaired on the next
+// start. Only the dir is touched: a socket left inside by an earlier Caddy is
+// replaced by Caddy itself. A file or a symlink at the path is an error, and
+// nothing is changed.
+func EnsureCaddySocketDir(controlPlaneDir string, ownerID int) error {
+	dir := filepath.Join(controlPlaneDir, protocol.CaddySocketDir)
+	fi, err := os.Lstat(dir)
+	switch {
+	case err == nil && !fi.IsDir():
+		return fmt.Errorf("caddy socket dir %q is not a real directory (a file or a symlink is in the way)", dir)
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.Mkdir(dir, caddySocketDirMode); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("create caddy socket dir %q: %w", dir, err)
+		}
+		slog.Info("caddy socket dir created", "dir", dir, "uid", ownerID)
+	case err != nil:
+		return fmt.Errorf("check caddy socket dir %q: %w", dir, err)
+	}
+	if err := os.Chown(dir, ownerID, ownerID); err != nil {
+		return fmt.Errorf("set owner of caddy socket dir %q: %w", dir, err)
+	}
+	if err := os.Chmod(dir, caddySocketDirMode); err != nil {
+		return fmt.Errorf("set mode of caddy socket dir %q: %w", dir, err)
+	}
+	return nil
+}
+
 // RunSpecFor exposes the brain's `docker run` invocation for cfg.
 //
 // The control-plane updater recreates the brain on a new image and must produce
@@ -523,8 +565,11 @@ func RunSpecFor(cfg Config) RunSpec { return runSpec(cfg) }
 // deliberately not given the Docker socket — the brain reaches Docker only
 // through the host-agent-seeded socket-proxy at tcp://docker-proxy:2375
 // (CONTROL_PLANE.md # Locked: control-plane container hardening). It joins the ingress network so
-// it can reach the proxy + Caddy admin by name, and carries the env that points
-// it at the proxy, Caddy, and the staged control-plane compose.
+// it can reach the proxy and Caddy by name, and carries the env that points
+// it at the proxy, Caddy, and the staged control-plane compose. On a box made
+// since #608 the brain dials Caddy's admin API on a unix socket it reads from
+// the staged caddy.json instead of MOOSE_CADDY_ADMIN (CONTROL_PLANE.md # Locked:
+// Caddy is moose substrate).
 //
 // Unlike the proxy, the brain gets no capability sandbox (#431). It chowns app
 // data directories to the uid it elects for an app (lifecycle, APP_ISOLATION.md
@@ -559,6 +604,9 @@ func runSpec(cfg Config) RunSpec {
 		{Key: "MOOSE_STATE_DIR", Value: cfg.StateDir},
 		{Key: "MOOSE_AGENT_SOCK", Value: cfg.SocketPath},
 		{Key: "DOCKER_HOST", Value: "tcp://" + proxyDialAlias + ":2375"},
+		// For a brain from before #608. A newer brain reads the admin address
+		// from the staged caddy.json, which on a box made since #608 is a
+		// unix socket, and uses this only when that read fails.
 		{Key: "MOOSE_CADDY_ADMIN", Value: "http://moose-caddy:2019"},
 		// The app-unresponsive probe dials Caddy by service name, not the
 		// container's own loopback (the natively-run dev default).

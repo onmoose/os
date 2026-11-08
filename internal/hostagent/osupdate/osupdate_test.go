@@ -304,13 +304,25 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("timed out")
 }
 
+// waitTrialPassed waits until a passed trial on slot is over: the outcome is
+// saved and the marker is gone. The trial saves first and removes the marker
+// after, in a goroutine, so waiting for Last alone can end between the two
+// (#647).
+func waitTrialPassed(t *testing.T, a *Applier, slot string) {
+	t.Helper()
+	waitFor(t, func() bool {
+		_, err := os.Stat(TrialMarker(a.dir(), slot))
+		return a.Last() != nil && errors.Is(err, os.ErrNotExist)
+	})
+}
+
 func TestTrialGood(t *testing.T) {
 	h := newHarness(t, "A")
 	h.a.Apply(h.rel, false, h.night)
 	h.a.Apply(h.rel, true, h.night)
 	b := h.reboot(t, "B", "0.15.1")
 	b.Boot(context.Background())
-	waitFor(t, func() bool { return b.Last() != nil })
+	waitTrialPassed(t, b, "B")
 	last := b.Last()
 	if last.Outcome != protocol.OSOutcomeGood || last.Version != "0.15.1" || last.From != "0.15.0" || last.ID == "" {
 		t.Fatalf("outcome %+v", last)
@@ -450,7 +462,7 @@ func TestOneSwitchPerNight(t *testing.T) {
 	h.a.Apply(h.rel, true, h.night)
 	b := h.reboot(t, "B", "0.15.1")
 	b.Boot(context.Background())
-	waitFor(t, func() bool { return b.Last() != nil })
+	waitTrialPassed(t, b, "B")
 	// The next step is installed into slot A the same night.
 	body := "0.16.0\n"
 	sum := sha256.Sum256([]byte(body))
@@ -582,8 +594,7 @@ func TestStaleMarkerOnAGoodSlot(t *testing.T) {
 	h.a.Apply(h.rel, true, h.night)
 	b := h.reboot(t, "B", "0.15.1")
 	b.Boot(context.Background())
-	waitFor(t, func() bool { return b.Last() != nil })
-	waitFor(t, func() bool { _, err := os.Stat(TrialMarker(b.dir(), "B")); return errors.Is(err, os.ErrNotExist) })
+	waitTrialPassed(t, b, "B")
 	if err := os.WriteFile(TrialMarker(b.dir(), "B"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -674,10 +685,7 @@ func TestTrialDeadlineCountsFromBoot(t *testing.T) {
 	}
 	b.Boot(context.Background())
 	<-done
-	waitFor(t, func() bool {
-		_, err := os.Stat(TrialMarker(b.dir(), "B"))
-		return b.Last() != nil && errors.Is(err, os.ErrNotExist)
-	})
+	waitTrialPassed(t, b, "B")
 	if left > minTrialWait+time.Second || left < minTrialWait-time.Second {
 		t.Fatalf("a trial 1 s before the end got %s, want about %s", left, minTrialWait)
 	}
@@ -722,5 +730,73 @@ func TestSwitchClearsOldNotes(t *testing.T) {
 		if _, err := os.Stat(n); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s survived the new switch", n)
 		}
+	}
+}
+
+// Update now switches an installed release at once, outside the window and
+// past both per-night guards, and reboots (#509).
+func TestSwitchNowSkipsTheNightGuards(t *testing.T) {
+	h := newHarness(t, "A")
+	if d := h.a.SwitchNow(h.rel, h.night); d.State != protocol.OSUpdateNone || h.reboots.Load() != 0 {
+		t.Fatalf("SwitchNow before the install = %+v (reboots %d), want none and no reboot", d, h.reboots.Load())
+	}
+	h.a.Apply(h.rel, false, h.night)
+	// A failed switch earlier tonight: the window would hold this release now.
+	r, _ := h.a.load()
+	r.Switch = &switched{Version: h.rel.Version, Night: h.night}
+	if err := h.a.save(r); err != nil {
+		t.Fatal(err)
+	}
+	if d := h.a.Apply(h.rel, true, h.night); d.State != protocol.OSUpdateHeld {
+		t.Fatalf("setup: the window must hold, got %+v", d)
+	}
+	d := h.a.SwitchNow(h.rel, h.night)
+	if d.State != protocol.OSUpdateRebooting || h.reboots.Load() != 1 || h.rauc.env["ORDER"] != "B A" {
+		t.Fatalf("SwitchNow = %+v, reboots %d, grubenv %v; want a switch to B and a reboot", d, h.reboots.Load(), h.rauc.env)
+	}
+}
+
+// Update now never moves the box while it is on trial, and waits for the job
+// lock like the window does.
+func TestSwitchNowKeepsTheSafetyGuards(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.jobs.busy = true
+	if d := h.a.SwitchNow(h.rel, h.night); d.State != protocol.OSUpdateWaiting {
+		t.Fatalf("SwitchNow with the lock held = %+v, want waiting", d)
+	}
+	h.jobs.busy = false
+	if err := os.WriteFile(TrialMarker(h.a.dir(), "A"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := h.a.SwitchNow(h.rel, h.night); d.State != protocol.OSUpdateWaiting || h.reboots.Load() != 0 {
+		t.Fatalf("SwitchNow on trial = %+v (reboots %d), want waiting and no reboot", d, h.reboots.Load())
+	}
+}
+
+// A switch the window already started is a busy box to Update now, never a
+// "rebooting" with no job to hand back (Greptile on #606).
+func TestSwitchNowWhileAJobRuns(t *testing.T) {
+	h := newHarness(t, "A")
+	h.a.Apply(h.rel, false, h.night)
+	h.a.mu.Lock()
+	h.a.running = protocol.JobKindOSSwitch
+	h.a.mu.Unlock()
+	if d := h.a.SwitchNow(h.rel, h.night); d.State != protocol.OSUpdateWaiting || d.JobID != "" {
+		t.Fatalf("SwitchNow during a running switch = %+v, want waiting", d)
+	}
+}
+
+// OnTrial follows the booted slot's trial marker.
+func TestOnTrial(t *testing.T) {
+	h := newHarness(t, "A")
+	if h.a.OnTrial() {
+		t.Fatal("a normal boot reads as on trial")
+	}
+	if err := os.WriteFile(TrialMarker(h.a.dir(), "A"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !h.a.OnTrial() {
+		t.Fatal("a boot with its trial marker does not read as on trial")
 	}
 }

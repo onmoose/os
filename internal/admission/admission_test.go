@@ -425,3 +425,67 @@ func TestCheckManifestCompose(t *testing.T) {
 		t.Errorf("named user without image_user refused: %v", err)
 	}
 }
+
+// storage.data_volumes and storage.cache_volumes (APP_MANIFEST.md # C): a cache
+// may sit inside a data folder; every other overlap, and every path that
+// leaves the app's folder or names the brain's own files, is refused with a
+// message that names the field and the entry.
+func TestStoragePaths(t *testing.T) {
+	cases := []struct {
+		name      string
+		data      []string
+		cache     []string
+		wantData  []string
+		wantCache []string
+		wantSub   []string // the refusal must contain these; nil means accepted
+	}{
+		{name: "none"},
+		{name: "data with a nested cache", data: []string{"./data"}, cache: []string{"./data/cache", "./data/thumbs/"},
+			wantData: []string{"data"}, wantCache: []string{"data/cache", "data/thumbs"}},
+		{name: "folders next to data", data: []string{"./data", "./config"}, wantData: []string{"data", "config"}},
+		{name: "cache with no data", cache: []string{"./data/nginx-cache"}, wantCache: []string{"data/nginx-cache"}},
+		{name: "explicit empty lists", data: []string{}, cache: []string{}},
+		{name: "absolute", data: []string{"/var/lib/x"}, wantSub: []string{"storage.data_volumes", "/var/lib/x", "absolute"}},
+		{name: "variable", data: []string{"${MOOSE_DATA_DIR}/x"}, wantSub: []string{"variable"}},
+		{name: "escapes", cache: []string{"./data/../../etc"}, wantSub: []string{"storage.cache_volumes", "leaves the app's folder"}},
+		{name: "whole folder", data: []string{"./"}, wantSub: []string{"whole app folder"}},
+		{name: "snapshots dir", data: []string{"./snapshots"}, wantSub: []string{"snapshots", "moose keeps"}},
+		{name: "env file", data: []string{"./.env"}, wantSub: []string{".env"}},
+		{name: "empty entry", data: []string{" "}, wantSub: []string{"is empty"}},
+		{name: "same data twice", data: []string{"./data", "data/"}, wantSub: []string{"twice"}},
+		{name: "data inside data", data: []string{"./data", "./data/db"}, wantSub: []string{"./data/db", "inside", "./data"}},
+		{name: "cache inside cache", cache: []string{"./data/cache", "./data/cache/a"}, wantSub: []string{"storage.cache_volumes", "inside"}},
+		{name: "same path in both", data: []string{"./data/x"}, cache: []string{"./data/x"}, wantSub: []string{"both"}},
+		{name: "data inside cache", data: []string{"./data/cache/keep"}, cache: []string{"./data/cache"}, wantSub: []string{"inside cache_volumes"}},
+		{name: "look-alike prefix is no overlap", data: []string{"./data"}, cache: []string{"./data2"},
+			wantData: []string{"data"}, wantCache: []string{"data2"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := manifest.Storage{DataVolumes: tc.data, CacheVolumes: tc.cache}
+			data, cache, err := StoragePaths(st)
+			if tc.wantSub != nil {
+				var ae *Error
+				if !errors.As(err, &ae) {
+					t.Fatalf("want an admission.Error, got %v", err)
+				}
+				for _, sub := range tc.wantSub {
+					if !strings.Contains(err.Error(), sub) {
+						t.Errorf("error %q must contain %q", err.Error(), sub)
+					}
+				}
+				// CheckManifest reports the same refusal.
+				if err := CheckManifest(&manifest.Manifest{Storage: st}); err == nil {
+					t.Error("CheckManifest accepted what StoragePaths refused")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("want accepted, got %v", err)
+			}
+			if strings.Join(data, ",") != strings.Join(tc.wantData, ",") || strings.Join(cache, ",") != strings.Join(tc.wantCache, ",") {
+				t.Errorf("got data %v cache %v, want %v %v", data, cache, tc.wantData, tc.wantCache)
+			}
+		})
+	}
+}

@@ -27,7 +27,7 @@ type Instance struct {
 	Name        string
 	Slug        string
 	Version     string
-	State       string // installing | running | stopped | failed | uninstalling
+	State       string // installing | running | stopped | failed | updating | update_failed | uninstalling
 	MDNSName    string
 	OwnerUserID string
 	Scope       string // ScopeHousehold | ScopePersonal
@@ -61,6 +61,41 @@ type Instance struct {
 	// host owners. That is also the value every row from before the column
 	// gets.
 	UsernsTier string
+	// AutoRestartOff turns off the automatic restart of an app that stays
+	// unresponsive (#598, HEALTH.md # Automatic restart). The zero value is on,
+	// so every instance, new or from before the column, is restarted by
+	// default; an owner turns it off while they debug the app by hand.
+	AutoRestartOff bool
+	// AutoRestarts is how many automatic restarts the brain made since the
+	// app last answered a real health check, or since a person last started
+	// it or flipped its automatic restart setting (#620). At the limit the
+	// brain has given up on the app. It is stored so a brain restart does not
+	// give the app a fresh hour. LastAutoRestart is when the last one began.
+	// A real health check keeps it; a person's action sets it back to zero,
+	// which tells the brain to forget the restarts it made before.
+	AutoRestarts    int
+	LastAutoRestart time.Time
+	// AutoUpdateOff turns off the automatic update of the app (UPDATES.md #
+	// Per-app auto-update toggle, #631). The zero value is on, so every
+	// instance, new or from before the column, is updated by default. Off
+	// means the box never updates the app on its own; a person can still
+	// update it by hand.
+	AutoUpdateOff bool
+	// Update is what the last update check found for this instance, and
+	// UpdateFailure the last update that did not go through (updates.go).
+	// UpdateTry is the last try of the nightly window (#632).
+	Update        UpdateCheck
+	UpdateFailure UpdateFailure
+	UpdateTry     UpdateTry
+	// UpdateApproval is the owner's yes to an update that asks for more
+	// access, and UpdateDeclined the version they said "Keep current version"
+	// to (#633, updates.go). A good update clears both.
+	UpdateApproval UpdateApproval
+	UpdateDeclined string
+	// LastUpdate is the last good update, while it can be rolled back by
+	// hand (#634, updates.go). The zero value means there is nothing to roll
+	// back to.
+	LastUpdate LastUpdate
 	CreatedAt  time.Time
 }
 
@@ -125,6 +160,10 @@ type Session struct {
 	LastSeenAt    time.Time
 	ExpiresAt     time.Time // absolute hard cap (90 days from issue)
 	ElevatedUntil time.Time // zero value means not elevated
+	// UpdatePromptDismissed is set when the person closed the update prompt
+	// in this session without choosing (#633). A new login is a new session,
+	// so the prompt comes back then.
+	UpdatePromptDismissed bool
 }
 
 // ErrConflict signals a uniqueness collision (duplicate username, second
@@ -172,6 +211,31 @@ func (s *Store) migrate() error {
 			pending_recreate INTEGER NOT NULL DEFAULT 0,
 			exposure    TEXT NOT NULL DEFAULT 'public' CHECK (exposure IN ('public','restricted')),
 			userns_tier TEXT NOT NULL DEFAULT 'host' CHECK (userns_tier IN ('default','caps','image','host')),
+			auto_restart_off INTEGER NOT NULL DEFAULT 0,
+			auto_restarts INTEGER NOT NULL DEFAULT 0,
+			auto_restart_last_at INTEGER NOT NULL DEFAULT 0,
+			auto_update_off INTEGER NOT NULL DEFAULT 0,
+			update_version TEXT NOT NULL DEFAULT '',
+			update_status TEXT NOT NULL DEFAULT '',
+			update_reason TEXT NOT NULL DEFAULT '',
+			update_failed_version TEXT NOT NULL DEFAULT '',
+			update_failed_kind TEXT NOT NULL DEFAULT '',
+			update_failed_message TEXT NOT NULL DEFAULT '',
+			update_failed_at INTEGER NOT NULL DEFAULT 0,
+			update_failed_count INTEGER NOT NULL DEFAULT 0,
+			update_tried_version TEXT NOT NULL DEFAULT '',
+			update_tried_night TEXT NOT NULL DEFAULT '',
+			update_wants TEXT NOT NULL DEFAULT '',
+			update_approved_version TEXT NOT NULL DEFAULT '',
+			update_approved_access TEXT NOT NULL DEFAULT '',
+			update_approved_by TEXT NOT NULL DEFAULT '',
+			update_approved_at INTEGER NOT NULL DEFAULT 0,
+			update_declined_version TEXT NOT NULL DEFAULT '',
+			update_failed_auto INTEGER NOT NULL DEFAULT 0,
+			update_failed_acked INTEGER NOT NULL DEFAULT 0,
+			update_last_from TEXT NOT NULL DEFAULT '',
+			update_last_at INTEGER NOT NULL DEFAULT 0,
+			update_last_auto INTEGER NOT NULL DEFAULT 0,
 			created_at  INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS instance_images (
@@ -179,6 +243,15 @@ func (s *Store) migrate() error {
 			service     TEXT NOT NULL,
 			image       TEXT NOT NULL,
 			digest      TEXT NOT NULL,
+			PRIMARY KEY (instance_id, service),
+			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
+		);
+		CREATE TABLE IF NOT EXISTS instance_images_prev (
+			instance_id TEXT NOT NULL,
+			service     TEXT NOT NULL,
+			image       TEXT NOT NULL,
+			digest      TEXT NOT NULL,
+			ref         TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (instance_id, service),
 			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
 		);
@@ -246,6 +319,22 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (instance_id, logical_name),
 			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
 		);
+		-- service_grants_retired: a per-app database an update moved off, to a
+		-- new major version (#635). The database stays on the old major for the
+		-- 7 days of the rollback by hand, then the prune drops it. The names and
+		-- the password are the grant's own: the move keeps them.
+		CREATE TABLE IF NOT EXISTS service_grants_retired (
+			instance_id  TEXT    NOT NULL,
+			logical_name TEXT    NOT NULL,
+			kind         TEXT    NOT NULL,
+			version      TEXT    NOT NULL,
+			db_name      TEXT    NOT NULL,
+			role_name    TEXT    NOT NULL,
+			password     TEXT    NOT NULL,
+			retired_at   INTEGER NOT NULL,
+			PRIMARY KEY (instance_id, logical_name, version),
+			FOREIGN KEY (instance_id) REFERENCES instances(id) ON DELETE CASCADE
+		);
 		-- instance_mail_bindings: which provider a mail-capable app sends
 		-- through — at most one per instance; an unbound instance gets no
 		-- MOOSE_MAIL_* vars at all. Cascades with the app instance, and with
@@ -261,6 +350,7 @@ func (s *Store) migrate() error {
 			display_name  TEXT NOT NULL DEFAULT '',
 			role          TEXT NOT NULL CHECK (role IN ('admin','member')),
 			recovery_hash TEXT NOT NULL DEFAULT '',
+			updates_seen_at INTEGER NOT NULL DEFAULT 0,
 			created_at    INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS sessions (
@@ -456,6 +546,45 @@ func (s *Store) migrate() error {
 		// it runs in the host user namespace and its data has real host owners:
 		// the host tier (APP_ISOLATION.md # User-namespace tiers).
 		{"instances", "userns_tier", "ALTER TABLE instances ADD COLUMN userns_tier TEXT NOT NULL DEFAULT 'host'"},
+		// Automatic restart is on for every app from before the column (#598).
+		{"instances", "auto_restart_off", "ALTER TABLE instances ADD COLUMN auto_restart_off INTEGER NOT NULL DEFAULT 0"},
+		// No automatic restart yet for every app from before the columns (#620).
+		{"instances", "auto_restarts", "ALTER TABLE instances ADD COLUMN auto_restarts INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "auto_restart_last_at", "ALTER TABLE instances ADD COLUMN auto_restart_last_at INTEGER NOT NULL DEFAULT 0"},
+		// Automatic update is on for every app from before the column, and no
+		// update was found or tried yet (#631).
+		{"instances", "auto_update_off", "ALTER TABLE instances ADD COLUMN auto_update_off INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_version", "ALTER TABLE instances ADD COLUMN update_version TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_status", "ALTER TABLE instances ADD COLUMN update_status TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_reason", "ALTER TABLE instances ADD COLUMN update_reason TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_failed_version", "ALTER TABLE instances ADD COLUMN update_failed_version TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_failed_kind", "ALTER TABLE instances ADD COLUMN update_failed_kind TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_failed_message", "ALTER TABLE instances ADD COLUMN update_failed_message TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_failed_at", "ALTER TABLE instances ADD COLUMN update_failed_at INTEGER NOT NULL DEFAULT 0"},
+		// No failure in a row and no try by the nightly window yet, for every
+		// app from before the columns (#632).
+		{"instances", "update_failed_count", "ALTER TABLE instances ADD COLUMN update_failed_count INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_tried_version", "ALTER TABLE instances ADD COLUMN update_tried_version TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_tried_night", "ALTER TABLE instances ADD COLUMN update_tried_night TEXT NOT NULL DEFAULT ''"},
+		// No access asked for, no approval and no decline yet, for every app
+		// from before the columns (#633). A session from before its column has
+		// not closed the update prompt.
+		{"instances", "update_wants", "ALTER TABLE instances ADD COLUMN update_wants TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_approved_version", "ALTER TABLE instances ADD COLUMN update_approved_version TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_approved_access", "ALTER TABLE instances ADD COLUMN update_approved_access TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_approved_by", "ALTER TABLE instances ADD COLUMN update_approved_by TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_approved_at", "ALTER TABLE instances ADD COLUMN update_approved_at INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_declined_version", "ALTER TABLE instances ADD COLUMN update_declined_version TEXT NOT NULL DEFAULT ''"},
+		{"sessions", "update_prompt_dismissed", "ALTER TABLE sessions ADD COLUMN update_prompt_dismissed INTEGER NOT NULL DEFAULT 0"},
+		// No failure from the window, none acknowledged, no update to roll
+		// back and no update shown in the toast yet, for every row from
+		// before the columns (#634).
+		{"instances", "update_failed_auto", "ALTER TABLE instances ADD COLUMN update_failed_auto INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_failed_acked", "ALTER TABLE instances ADD COLUMN update_failed_acked INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_last_from", "ALTER TABLE instances ADD COLUMN update_last_from TEXT NOT NULL DEFAULT ''"},
+		{"instances", "update_last_at", "ALTER TABLE instances ADD COLUMN update_last_at INTEGER NOT NULL DEFAULT 0"},
+		{"instances", "update_last_auto", "ALTER TABLE instances ADD COLUMN update_last_auto INTEGER NOT NULL DEFAULT 0"},
+		{"users", "updates_seen_at", "ALTER TABLE users ADD COLUMN updates_seen_at INTEGER NOT NULL DEFAULT 0"},
 		{"mail_providers", "provider_type", "ALTER TABLE mail_providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'custom'"},
 		{"users", "display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"},
 		// The app_env names a binding wrote (aiaccounts.go). '' on rows from
@@ -1020,12 +1149,70 @@ func (s *Store) SetInstanceExposure(id, exposure string) error {
 	return nil
 }
 
+// SetInstanceAutoRestart turns the automatic restart of an unresponsive app
+// on or off (#598). It is read by the app-unresponsive detector on every tick.
+// A change of the setting is a person's action on the app: it also resets the
+// app's automatic restarts (count and last time, as ResetInstanceAutoRestarts
+// with byPerson), so turning it off and on again ends the brain's giving up
+// (#620). Writing the value the app already has resets nothing.
+func (s *Store) SetInstanceAutoRestart(id string, on bool) error {
+	off := 1
+	if on {
+		off = 0
+	}
+	res, err := s.db.Exec(`UPDATE instances SET
+		auto_restarts=CASE WHEN auto_restart_off=? THEN auto_restarts ELSE 0 END,
+		auto_restart_last_at=CASE WHEN auto_restart_off=? THEN auto_restart_last_at ELSE 0 END,
+		auto_restart_off=? WHERE id=?`, off, off, off, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RecordInstanceAutoRestart counts one automatic restart of the app, begun
+// at at (#620). lifecycle.Manager.BeginRestart calls it under the app's lock,
+// before the restart runs.
+func (s *Store) RecordInstanceAutoRestart(id string, at time.Time) error {
+	res, err := s.db.Exec(`UPDATE instances SET auto_restarts=auto_restarts+1, auto_restart_last_at=? WHERE id=?`, at.Unix(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ResetInstanceAutoRestarts sets the app's automatic restart count back to 0
+// (#620). byPerson is false when the app answered a real health check: the
+// time of the last restart stays. It is true when a person started the app:
+// the time is cleared too, so the brain also forgets the restarts it holds
+// in memory and the app gets a fresh hour.
+func (s *Store) ResetInstanceAutoRestarts(id string, byPerson bool) error {
+	q := `UPDATE instances SET auto_restarts=0 WHERE id=?`
+	if byPerson {
+		q = `UPDATE instances SET auto_restarts=0, auto_restart_last_at=0 WHERE id=?`
+	}
+	res, err := s.db.Exec(q, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) Delete(id string) error {
 	_, err := s.db.Exec(`DELETE FROM instances WHERE id=?`, id)
 	return err
 }
 
-const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, created_at`
+const instanceColumns = `id, manifest_id, name, slug, version, state, mdns_name, owner_user_id, scope, service_uid, service_gid, pending_recreate, exposure, userns_tier, auto_restart_off, auto_restarts, auto_restart_last_at, auto_update_off, update_version, update_status, update_reason, update_failed_version, update_failed_kind, update_failed_message, update_failed_at, update_failed_count, update_tried_version, update_tried_night, update_wants, update_approved_version, update_approved_access, update_approved_by, update_approved_at, update_declined_version, update_failed_auto, update_failed_acked, update_last_from, update_last_at, update_last_auto, created_at`
 
 func (s *Store) Get(id string) (Instance, error) {
 	return scan(s.db.QueryRow(
@@ -1406,11 +1593,11 @@ func (s *Store) CreateSession(sess Session) error {
 // middleware maps that to 401.
 func (s *Store) GetSession(token string) (Session, error) {
 	var sess Session
-	var created, lastSeen, expiresAt, elevatedUntil int64
+	var created, lastSeen, expiresAt, elevatedUntil, dismissed int64
 	err := s.db.QueryRow(
-		`SELECT token, user_id, created_at, last_seen_at, expires_at, elevated_until
+		`SELECT token, user_id, created_at, last_seen_at, expires_at, elevated_until, update_prompt_dismissed
 		 FROM sessions WHERE token=?`, token,
-	).Scan(&sess.Token, &sess.UserID, &created, &lastSeen, &expiresAt, &elevatedUntil)
+	).Scan(&sess.Token, &sess.UserID, &created, &lastSeen, &expiresAt, &elevatedUntil, &dismissed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -1421,7 +1608,14 @@ func (s *Store) GetSession(token string) (Session, error) {
 	sess.LastSeenAt = time.Unix(lastSeen, 0)
 	sess.ExpiresAt = time.Unix(expiresAt, 0)
 	sess.ElevatedUntil = time.Unix(elevatedUntil, 0)
+	sess.UpdatePromptDismissed = dismissed != 0
 	return sess, nil
+}
+
+// DismissUpdatePrompt marks that the person closed the update prompt in this
+// session without choosing (#633). ErrNotFound when the session is gone.
+func (s *Store) DismissUpdatePrompt(token string) error {
+	return s.updateOne(`UPDATE sessions SET update_prompt_dismissed=1 WHERE token=?`, token)
 }
 
 // SetSessionForwardAuthToken stamps a session with its hosted forward-auth token
@@ -1678,8 +1872,15 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scan(row scanner) (Instance, error) {
 	var i Instance
-	var created, pendingRecreate int64
-	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &created)
+	var created, pendingRecreate, autoRestartOff, lastAutoRestart, autoUpdateOff, failedAt, approvedAt int64
+	var failedAuto, failedAcked, lastAt, lastAuto int64
+	var wants string
+	err := row.Scan(&i.ID, &i.ManifestID, &i.Name, &i.Slug, &i.Version, &i.State, &i.MDNSName, &i.OwnerUserID, &i.Scope, &i.ServiceUID, &i.ServiceGID, &pendingRecreate, &i.Exposure, &i.UsernsTier, &autoRestartOff, &i.AutoRestarts, &lastAutoRestart,
+		&autoUpdateOff, &i.Update.Version, &i.Update.Status, &i.Update.Reason,
+		&i.UpdateFailure.Version, &i.UpdateFailure.Kind, &i.UpdateFailure.Message, &failedAt, &i.UpdateFailure.Count,
+		&i.UpdateTry.Version, &i.UpdateTry.Night,
+		&wants, &i.UpdateApproval.Version, &i.UpdateApproval.Access, &i.UpdateApproval.By, &approvedAt, &i.UpdateDeclined,
+		&failedAuto, &failedAcked, &i.LastUpdate.From, &lastAt, &lastAuto, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, ErrNotFound
 	}
@@ -1687,6 +1888,26 @@ func scan(row scanner) (Instance, error) {
 		return Instance{}, fmt.Errorf("scan instance: %w", err)
 	}
 	i.PendingRecreate = pendingRecreate != 0
+	i.AutoRestartOff = autoRestartOff != 0
+	if lastAutoRestart != 0 {
+		i.LastAutoRestart = time.Unix(lastAutoRestart, 0)
+	}
+	i.AutoUpdateOff = autoUpdateOff != 0
+	if failedAt != 0 {
+		i.UpdateFailure.At = time.Unix(failedAt, 0)
+	}
+	if approvedAt != 0 {
+		i.UpdateApproval.At = time.Unix(approvedAt, 0)
+	}
+	i.UpdateFailure.ByWindow = failedAuto != 0
+	i.UpdateFailure.Acked = failedAcked != 0
+	if lastAt != 0 {
+		i.LastUpdate.At = time.Unix(lastAt, 0)
+	}
+	i.LastUpdate.ByWindow = lastAuto != 0
+	if i.Update.Wants, err = decodeWants(wants); err != nil {
+		return Instance{}, err
+	}
 	i.CreatedAt = time.Unix(created, 0)
 	return i, nil
 }

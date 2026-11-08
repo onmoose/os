@@ -245,6 +245,54 @@ func (c *Client) SystemUpdateTarget(ctx context.Context) (protocol.UpdateTarget,
 	return out, err
 }
 
+// SetUpdateHold sets or renews the brain's hold on the OS switch, until until
+// (PUT /v1/system/update-hold, #632, UPDATES.md # 7 Reboots). host-agent cuts
+// it to its lease and to the window's end minus its cap, and returns the end
+// it kept: the zero time when the hold is not live after the cuts. An older
+// host-agent with no such route answers an error, and then nothing holds
+// the switch.
+//
+// ErrHoldUnsupported means this host-agent cannot hold the switch at all: one
+// from before #632 (404 or 405), or one with no update loop (501
+// hold-unsupported), which has no switch to hold either. Any other error is a
+// hold that failed this time.
+func (c *Client) SetUpdateHold(ctx context.Context, until time.Time) (time.Time, error) {
+	resp, err := c.request(ctx, "PUT", protocol.UpdateHoldPath, protocol.UpdateHold{Until: until.UTC().Format(time.RFC3339)})
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound, resp.StatusCode == http.StatusMethodNotAllowed, resp.StatusCode == http.StatusNotImplemented:
+		return time.Time{}, fmt.Errorf("%w: %w", ErrHoldUnsupported, statusErr(protocol.UpdateHoldPath, resp))
+	case resp.StatusCode >= 300:
+		return time.Time{}, statusErr(protocol.UpdateHoldPath, resp)
+	}
+	var out protocol.UpdateHold
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return time.Time{}, fmt.Errorf("host-agent %s: read the answer: %w", protocol.UpdateHoldPath, err)
+	}
+	if out.Until == "" {
+		return time.Time{}, nil
+	}
+	end, err := time.Parse(time.RFC3339, out.Until)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("host-agent %s: read the kept end: %w", protocol.UpdateHoldPath, err)
+	}
+	return end, nil
+}
+
+// ErrHoldUnsupported is returned by SetUpdateHold when this host-agent cannot
+// hold the OS switch at all. The nightly loop then runs its app updates
+// without a hold, and waits on any other error (UPDATES.md # 7 Reboots).
+var ErrHoldUnsupported = errors.New("host-agent cannot hold the OS switch")
+
+// ClearUpdateHold ends the brain's hold on the OS switch at once (DELETE
+// /v1/system/update-hold, #632). It succeeds when there was no hold.
+func (c *Client) ClearUpdateHold(ctx context.Context) error {
+	return c.do(ctx, "DELETE", protocol.UpdateHoldPath, nil, nil)
+}
+
 // SystemHealth returns host-agent's locus-B findings report across categories
 // (HEALTH.md # Detector catalog, BRAIN_HOST_PROTOCOL.md). host-agent always
 // returns 200 with a parseable payload, so a transport error here is genuinely
@@ -324,6 +372,41 @@ func (c *Client) JournalFollow(ctx context.Context, container string) (<-chan pr
 // generic host error: "an update is already running" is a state the admin can
 // act on, and it is the one refusal that is not a bug.
 var ErrUpdateInProgress = errors.New("a control-plane update is already running")
+
+// ErrNothingToApply is returned by ApplyUpdateTarget when host-agent has no
+// checked target that differs from what the box runs (#488).
+var ErrNothingToApply = errors.New("there is no update to apply")
+
+// ApplyUpdateTarget asks host-agent to apply, now, the target its update loop
+// already fetched and checked (POST /v1/jobs/system-update-target, #488). It
+// sends no refs: the box applies only what its own source named. Returns the
+// started job, ErrUpdateInProgress when another job holds the lock, or
+// ErrNothingToApply.
+func (c *Client) ApplyUpdateTarget(ctx context.Context) (protocol.Job, error) {
+	resp, err := c.request(ctx, "POST", protocol.SystemUpdateTargetApplyPath, nil)
+	if err != nil {
+		return protocol.Job{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		var e protocol.Error
+		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+			return protocol.Job{}, fmt.Errorf("host-agent %s: read the 409: %w", protocol.SystemUpdateTargetApplyPath, err)
+		}
+		if e.Code == protocol.ErrCodeNothingToApply {
+			return protocol.Job{}, ErrNothingToApply
+		}
+		return protocol.Job{}, ErrUpdateInProgress
+	}
+	if resp.StatusCode >= 300 {
+		return protocol.Job{}, statusErr(protocol.SystemUpdateTargetApplyPath, resp)
+	}
+	var out protocol.Job
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return protocol.Job{}, err
+	}
+	return out, nil
+}
 
 // ErrJobNotFound is returned by Job when host-agent has never seen the id
 // (404) — including every id from before a host-agent restart, since job

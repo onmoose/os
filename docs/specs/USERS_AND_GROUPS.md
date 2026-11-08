@@ -27,6 +27,7 @@ Two dashboard roles, two Linux postures.
 |----------------|----------------------------------------|-------------|------------------|
 | **Member**     | own group, `moose-shared`              | No          | Unprivileged user. Reads own files, household shared, that's it. |
 | **Admin**      | own group, `moose-shared`, `sudo`      | Yes         | Can become root via `sudo`. Recovery path when the brain is broken. |
+| **Hosted owner** (an admin) | as Admin                  | Yes, with no password while their SSH is on | As Admin. `sudo` does not ask for a password, because this account has none it can use (# The hosted owner). |
 
 **Promote member → admin:** brain calls host-agent → `gpasswd -a <user> sudo`. Demote: `gpasswd -d <user> sudo`. Both operations are reflected in the dashboard's role state and in `/etc/group` atomically (host-agent treats this as one operation; if either side fails, both roll back).
 
@@ -37,6 +38,20 @@ Two dashboard roles, two Linux postures.
 The alternative — "no sudo for anyone, ever" — was rejected because it leaves no recovery path when the brain itself is broken (corrupt SQLite, failed migration, host-agent unreachable from the dashboard). With admins in `sudo`, the rescue path is just "SSH in and fix it." See `DECISIONS.md` 2026-05-15 # Admins get sudo.
 
 The cost is real: a compromised admin SSH session is root. We accept this because (a) the dashboard admin role can already mutate the host through host-agent, so the marginal blast radius is small; (b) SSH is off-by-account-by-default anyway (`AUTH.md` # Device access) — the admin must explicitly opt in.
+
+### The hosted owner
+
+On a hosted box, the owner is the account the portal sign-in created (`ENVIRONMENT.md` # Owner sign-in & seed ingestion; the brain records it as `box_meta` `sso_owner_user_id`). It is an admin, so it is in `sudo`. But its password is random and was thrown away when the account was made. Nobody knows it, so a `sudo` password prompt is one the owner can never answer.
+
+**So while the owner has SSH on, `sudo` does not ask them for a password** (#602, `DECISIONS.md` 2026-10-11). host-agent writes `/etc/sudoers.d/moose-owner`, root-owned, mode `0440`, holding `<owner> ALL=(ALL) NOPASSWD: ALL`. It writes it when the owner turns SSH on, and removes it when they turn SSH off or the account is deleted. At every start host-agent also removes it if the account it names does not have SSH on. SSH on hosted needs a public key (`AUTH.md` # Device access), so the key is what admits the owner, and a password they cannot know would add nothing.
+
+- **Only the owner, and only while they are an admin.** Every account the owner creates has a real password and keeps the prompt, admins included. The appliance has no owner in this sense and never writes the rule. The rule names the account, not the `sudo` group, so a role change pushes the owner's SSH again: if another admin demotes the owner, the rule goes with the group, and if that push fails the demotion is undone on both sides.
+- **Only while SSH is on.** SSH is off by default.
+- **The password is not touched.** `/etc/shadow`, the portal sign-in and the key requirement stay as they are. The rule only makes `sudo` skip its prompt.
+- **It covers every session of that account, not only SSH.** That is fine because an SSH key is the only way the owner can log in to the host. A future way in (a web terminal in the dashboard, `NEXT.md`) would get root with it, so it must protect itself: opening it as the owner needs the portal confirm, and it ends when that elevation window ends.
+- **Apps cannot use it.** Containers have no host `sudo`, and a folder app is meant to see only its granted use-case folders, never the home directory or a dotfile (`APP_ISOLATION.md` # Invariant: the owner's UID never runs app code outside a container). One known hole breaks that today: a symlink swapped into another app's folder source between two starts (#604).
+
+The cost is stated in `DECISIONS.md` 2026-10-11: a stolen owner SSH key, or a takeover of the owner's portal account, now means root. Showing the owner's `sudo` use in Activity is #601.
 
 ### Members are unprivileged, full stop
 
@@ -73,7 +88,7 @@ The 5-minute window was chosen over "always re-prompt" because admins doing batc
 If the dashboard is reachable, use it. If it isn't, an admin can:
 
 1. SSH to the box as themselves (assuming SSH is opted-in for that account — `AUTH.md` # Device access).
-2. `sudo -i` to become root.
+2. `sudo -i` to become root. It asks for the account's moose password. The hosted owner is not asked (# The hosted owner).
 3. Common rescue operations:
    - `systemctl status moose-host-agent` — is host-agent running?
    - `journalctl -u moose-host-agent -n 200` — recent errors.
@@ -96,6 +111,7 @@ These are tracked in `NEXT.md`; listed here so a reader of this doc isn't surpri
 ## Locked decisions
 
 - **Dashboard role maps to Linux group membership.** Member = unprivileged. Admin = in `sudo`. Promotion/demotion in the UI flips group membership via host-agent.
+- **The hosted owner's `sudo` asks for no password while their SSH is on.** One rule file, `/etc/sudoers.d/moose-owner`, written and removed by host-agent as the brain asks. Every other account keeps the prompt. See `DECISIONS.md` 2026-10-11.
 - **UI-first, SSH-as-rescue.** Every privileged operation has a UI path. SSH is for unbreaking a broken brain, not for routine admin.
 - **5-minute elevation window for destructive UI ops.** Sudo-in-UI pattern, scoped to the brain's session, password re-prompt on entry.
 - **Members cannot opt into sudo.** No UI toggle, no documented manual escape hatch. Tinkerers who want shell-root use an admin account or create an out-of-band Linux user.

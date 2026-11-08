@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "version": "2399740b383411ce99fa4c531c2c064b69d710c84376b9b64be0c4640e2b4d54",
+  "version": "3305cb27dff4ed3e5ac4728725f032e1b4a884db3a32e95868a2198caa66581e",
   "generated_at": "2026-08-17T09:00:00Z",
   "store_ref": "0000000000000000000000000000000000000000",
   "apps": [
@@ -51,7 +51,13 @@
       "manifest_url": "/catalog/apps/alpha-notes/manifest",
       "compose_url": "/catalog/apps/alpha-notes/compose",
       "root_setup": true,
-      "image_user": true
+      "image_user": true,
+      "resources": {
+        "recommended": {
+          "memory": "512M",
+          "cpu": 1.5
+        }
+      }
     },
     {
       "id": "beta-media",

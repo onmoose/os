@@ -19,6 +19,7 @@
 // box meets one anyway, the fields of that group or slot become plain fields
 // on the "needs these" page.
 import type {
+  AppAccessWant,
   AIAccount,
   AIProvider,
   InstallPlan,
@@ -27,6 +28,7 @@ import type {
   InstallPlanPermissions,
   RequiresGroup,
 } from "./api";
+import { TOO_BIG_TITLE, tooBigText } from "./fit";
 import {
   COMPATIBLE,
   OTHER,
@@ -175,10 +177,17 @@ export function defaultFieldValues(plan: InstallPlan): Record<string, string> {
 }
 
 // installWarnings says whether the plan has something to warn about before
-// an install: a copy the user can already see, or not enough space. Then the
-// install pages open, even for an app that asks nothing.
+// an install: a copy the user can already see, not enough space, or not
+// enough memory next to the apps that are running. Then the install pages
+// open, even for an app that asks nothing.
 export function installWarnings(plan: InstallPlan): boolean {
-  return (plan.existing ?? []).length > 0 || spaceTight(plan.footprint);
+  return (plan.existing ?? []).length > 0 || spaceTight(plan.footprint) || memoryTight(plan);
+}
+
+// memoryTight says the app may not fit next to the apps that are running
+// (#599). The install pages show why, and Install reads "Install anyway".
+export function memoryTight(plan: InstallPlan | null | undefined): boolean {
+  return plan?.fit?.state === "tight";
 }
 
 // unavailableText is the sentence for a plan this box cannot install at all,
@@ -190,6 +199,8 @@ export function unavailableText(plan: InstallPlan | null): string {
   switch (plan.unavailable) {
     case "needs-remap":
       return "This app can't be installed on this box, because it needs a safety feature that only boxes set up with a newer version of moose have.";
+    case "too-big":
+      return plan.fit ? tooBigText(plan.fit) : TOO_BIG_TITLE;
     default:
       return "This app can't be installed on this box.";
   }
@@ -504,7 +515,7 @@ export function spaceTight(fp: InstallPlanFootprint | undefined): boolean {
 // access to a folder, which is drawn in red (APP_ISOLATION.md # User content).
 export type PermissionLine = {
   key: string;
-  kind: "internet" | "lan" | "gpu" | "device" | "folder";
+  kind: "internet" | "lan" | "gpu" | "device" | "folder" | "public_path";
   text: string;
   danger: boolean;
 };
@@ -529,6 +540,51 @@ export function permissionLines(p: InstallPlanPermissions): PermissionLine[] {
       text: `The ${folderName(f.folder)} folder (can ${folderAccess(f.mode)})`,
       danger: write,
     });
+  }
+  return out;
+}
+
+// wantLines is what a new version of an app asks for that the installed one
+// does not have (UPDATES.md # 6 The permission-expansion prompt), in the same
+// words as the install screen: the update prompt, the app's settings page and
+// Settings → Users all draw it. A permission is worded by permissionLines
+// itself. A folder line names whose folder it is, because the box picks the
+// folder for the update and does not ask: the owner's own folder or the
+// household's shared one. Write access is red, as on the install screen.
+export function wantLines(wants: AppAccessWant[] | null | undefined): PermissionLine[] {
+  const none: InstallPlanPermissions = { internet: false, lan: false, gpu: false, devices: [], folders: [] };
+  const out: PermissionLine[] = [];
+  for (const w of wants ?? []) {
+    switch (w.kind) {
+      case "internet":
+      case "lan":
+      case "gpu":
+        out.push(...permissionLines({ ...none, [w.kind]: true }));
+        break;
+      case "device":
+        out.push(...permissionLines({ ...none, devices: [w.device ?? ""] }));
+        break;
+      case "folder": {
+        const name = folderName(w.folder ?? "");
+        const whose = w.source === "shared" ? `the household's shared ${name} folder` : `your ${name} folder`;
+        const what = w.change === "whole" ? `All of ${whose}` : whose.charAt(0).toUpperCase() + whose.slice(1);
+        out.push({
+          key: `folder-${w.folder}`,
+          kind: "folder",
+          text: `${what} (can ${folderAccess(w.mode ?? "read")})`,
+          danger: w.mode === "write",
+        });
+        break;
+      }
+      case "public_path":
+        out.push({
+          key: `path-${w.path}`,
+          kind: "public_path",
+          text: `Anyone with the link can open ${w.path}, with no sign-in`,
+          danger: false,
+        });
+        break;
+    }
   }
   return out;
 }

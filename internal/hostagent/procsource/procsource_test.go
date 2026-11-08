@@ -68,6 +68,9 @@ func TestSample_FullFixture(t *testing.T) {
 	if want := int64(16250 + 520); res.CPU.IdleJiffies != want {
 		t.Errorf("IdleJiffies = %d, want %d (idle + iowait)", res.CPU.IdleJiffies, want)
 	}
+	if res.CPU.Cores != 1 {
+		t.Errorf("Cores = %d, want 1 (one cpuN line)", res.CPU.Cores)
+	}
 
 	// mem: kB → bytes; used = total − available.
 	if want := int64(16336268) * 1024; res.Mem.TotalBytes != want {
@@ -166,6 +169,22 @@ func TestParseCPU_ShortLine(t *testing.T) {
 	}
 	if c.IdleJiffies != 825 {
 		t.Errorf("IdleJiffies = %d, want 825 (idle + iowait)", c.IdleJiffies)
+	}
+}
+
+// Cores counts every cpuN line, and the aggregate line is read even when it is
+// not first.
+func TestParseCPU_Cores(t *testing.T) {
+	stat := "cpu0 1 0 1 10 0\ncpu  4 0 4 40 0\ncpu1 1 0 1 10 0\ncpu2 1 0 1 10 0\ncpu3 1 0 1 10 0\nintr 0\n"
+	c, err := parseCPU(stat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cores != 4 {
+		t.Errorf("Cores = %d, want 4", c.Cores)
+	}
+	if c.TotalJiffies != 48 {
+		t.Errorf("TotalJiffies = %d, want 48 (the aggregate line only)", c.TotalJiffies)
 	}
 }
 

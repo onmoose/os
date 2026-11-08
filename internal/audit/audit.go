@@ -77,6 +77,30 @@ const (
 	// elevation-class and audits success and failure.
 	ActionAppExposureSet = "app.exposure.set"
 
+	// Automatic restart of an app that stayed unresponsive (#598, HEALTH.md #
+	// Automatic restart). The brain does it, so the actor is the system. One
+	// record per restart, written when it ends: success true when the app came
+	// back up, false when the restart failed.
+	ActionAppAutoRestart = "app.restart.auto"
+
+	// App update (UPDATES.md # 4, #631). An update changes what code the app
+	// runs, so it is elevation-class like install: it audits success, every
+	// failure of the job, and every refusal (403, 409).
+	ActionAppUpdate = "app.update"
+
+	// The owner's yes to an app update that asks for more access (UPDATES.md
+	// # 6, #633). It grants new access to someone's data, so it is
+	// elevation-class: it audits the yes, every refusal (403, 409) and every
+	// failure. The update it starts is then audited as app.update.
+	ActionAppUpdateApprove = "app.update_approve"
+
+	// A rollback by hand to the version an app ran before its last update
+	// (UPDATES.md # 4, #634). It changes what code the app runs and puts its
+	// data back to before the update, so it is elevation-class like an
+	// update: it audits success, every failure of the job and every refusal
+	// (403, 409).
+	ActionAppUpdateRollback = "app.update_rollback"
+
 	// Device access (AUTH.md # Device access). Enabling SSH on an account changes
 	// who can get a shell on the box, so it is elevation-class and audits failure
 	// as well as success — the Activity view has to be able to answer "did someone

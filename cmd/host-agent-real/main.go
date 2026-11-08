@@ -32,9 +32,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/onmoose/os/internal/hostagent"
@@ -42,6 +44,7 @@ import (
 	"github.com/onmoose/os/internal/hostagent/controlplane"
 	"github.com/onmoose/os/internal/hostagent/cpupdate"
 	"github.com/onmoose/os/internal/hostagent/sshaccess"
+	"github.com/onmoose/os/internal/hostagent/usermgr"
 	"github.com/onmoose/os/internal/profile"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/version"
@@ -81,6 +84,23 @@ func main() {
 	a, cleanup := buildAgent()
 	defer cleanup()
 
+	// The hosted owner's sudo rule exists only while that account has SSH on
+	// (sshaccess/sudoers.go). host-agent keeps no state of its own, so at every
+	// start the rule is checked against the sshd drop-in, which is the enabled
+	// set, and removed when it names an account that is not in it. That is what
+	// stops a crash or an older /etc from leaving root with no prompt behind.
+	// Both build profiles run it: on the appliance there is never a rule, so it
+	// finds nothing, and a file someone planted there goes too.
+	if sm, ok := a.SSH.(*sshaccess.Manager); ok {
+		removed, err := sm.ReconcileSudoAtStart()
+		if err != nil {
+			slog.Warn("could not fully check the owner's sudo rule against the SSH state", "service", "ssh", "err", err)
+		}
+		if removed {
+			slog.Info("removed a sudo rule for an account that does not have SSH on", "service", "ssh")
+		}
+	}
+
 	// After a Debian major the /etc tidy-up keeps the sshd drop-in but drops the
 	// unit's enable links (BUILD.md # 1b, rule 4), and leaves a marker. Only
 	// then is sshd turned back on for the accounts the drop-in names. On any
@@ -117,6 +137,9 @@ func main() {
 			SnapshotRoot:    filepath.Join(brainCfg.DataDir, "brain-snapshots"),
 		},
 	}
+	// Every control-plane update's outcome, kept beside the ledger so it
+	// outlives the brain the update replaced (#488).
+	a.LastUpdate = controlplane.LastUpdate{Dir: brainCfg.ControlPlaneDir}
 
 	mux := http.NewServeMux()
 	a.Mount(mux)
@@ -138,6 +161,11 @@ func main() {
 	if err := brainlaunch.EnsureTransport(brainCtx, brainlaunch.NewCLIDocker(), brainCfg); err != nil {
 		slog.Error("seed brain transport failed; host-agent continues serving", "err", err)
 	}
+	// The dir for Caddy's admin socket, before the brain runs the control-plane
+	// compose that binds it into Caddy (#608). Best-effort too: without it
+	// Caddy's admin API does not start, and the brain logs that it cannot reach
+	// Caddy, but the box stays diagnosable.
+	ensureCaddySocketDir(brainCtx, brainCfg.ControlPlaneDir)
 	if err := brainlaunch.Launch(brainCtx, brainlaunch.NewCLIDocker(), brainCfg); err != nil {
 		slog.Error("brain launch failed; host-agent continues serving", "err", err)
 	}
@@ -279,6 +307,32 @@ func ensureSharedTree() string {
 		return ""
 	}
 	return root
+}
+
+// ensureCaddySocketDir makes the dir for Caddy's admin socket, owned by the
+// host id Caddy's root maps to (brainlaunch.EnsureCaddySocketDir). That is the
+// moose-remap base when Docker really runs the userns-remap, and 0 when it does
+// not. Docker is asked, not daemon.json or /etc/subuid alone, because the
+// owner must match the daemon that runs Caddy now. A failure is logged and
+// not fatal.
+func ensureCaddySocketDir(ctx context.Context, controlPlaneDir string) {
+	owner := 0
+	out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{json .SecurityOptions}}").Output()
+	if err != nil {
+		slog.Error("caddy socket dir: docker info failed; the dir is not prepared", "err", err)
+		return
+	}
+	if strings.Contains(string(out), "name=userns") {
+		base, ok, err := usermgr.ReadRemapBase("", "")
+		if err != nil || !ok {
+			slog.Error("caddy socket dir: docker runs the userns-remap but the moose-remap range is unreadable; the dir is not prepared", "err", err)
+			return
+		}
+		owner = base
+	}
+	if err := brainlaunch.EnsureCaddySocketDir(controlPlaneDir, owner); err != nil {
+		slog.Error("caddy socket dir: could not prepare it; Caddy's admin API may not start", "err", err)
+	}
 }
 
 func env(key, def string) string {

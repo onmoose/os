@@ -34,7 +34,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ingressNetwork is the control-plane network: the brain, Caddy, moose-ui and
+// the Docker socket proxy. No app container joins it (#608).
 const ingressNetwork = "moose-ingress"
+
+// caddyContainer is the box Caddy's container name, the same in the
+// control-plane compose and the dev compose. Caddy reaches an app by joining
+// that app's own network, which the brain attaches it to (# connectCaddy), so
+// no app ever shares a network with the brain, the socket proxy or Caddy's
+// admin API (CONTROL_PLANE.md # Caddy is moose substrate).
+const caddyContainer = "moose-caddy"
 
 // controlPlaneProject is the fixed compose project name for the brain-owned
 // control-plane stack (Caddy + moose-ui). A constant, not configurable: there
@@ -79,6 +88,11 @@ type FolderMount struct {
 	// (DASHBOARD.md # Folder grants carry an explicit destination path). Empty for
 	// a store (Door-1) mount, which keeps the fixed `/moose/<folder>` convention.
 	Target string
+
+	// hostPath is the host path an app update read back from the old override
+	// (update.go # mountsFromOverride). When set it is the bind source as it
+	// is, so an update binds exactly what the install bound.
+	hostPath string
 }
 
 // isolation is the resolved per-instance identity + folder binds writeOverride
@@ -112,6 +126,9 @@ type isolation struct {
 // shared tree, /srv/moose/shared in production) for a shared source, narrowed by
 // Subfolder when present.
 func (it *isolation) hostSource(mt FolderMount) string {
+	if mt.hostPath != "" {
+		return mt.hostPath
+	}
 	base := filepath.Join(it.sharedBase, folderDir[mt.Folder])
 	if mt.Source == sourcePersonal {
 		base = filepath.Join(it.home, folderDir[mt.Folder])
@@ -166,6 +183,11 @@ type Manager struct {
 	// test cannot give a path to another uid.
 	chown func(path string, uid, gid int) error
 
+	// diskSpace reports the free and total bytes of the filesystem holding a
+	// path. statDiskSpace (statfs) in production; tests set a full disk to see
+	// the pre-update snapshot refuse (snapshot.go).
+	diskSpace func(path string) (free, total uint64, err error)
+
 	// healthWait is overridable in tests; production uses healthWaitTimeout.
 	healthWait time.Duration
 	// healthPoll is the inter-poll interval; production uses 2s.
@@ -203,20 +225,96 @@ type Manager struct {
 	// remap caches what RemapState last read, so the store lists do not call
 	// host-agent and docker info on every request (remapstate.go).
 	remap remapCache
+
+	// caddyOff holds the running apps whose network the last
+	// EnsureCaddyNetworks pass left Caddy off (CaddyOffNetwork).
+	caddyNetMu sync.Mutex
+	caddyOff   map[string]bool
+
+	// caddyAdminWait replaces the wait for Caddy's admin API on the socket in
+	// MigrateCaddyAdminSocket (caddysocket.go). nil in production, where it
+	// is caddy.Client.WaitReady.
+	caddyAdminWait func(ctx context.Context, addr string) error
+
+	// notifier tells people about app update outcomes (#634). nil means no
+	// notifications (a Manager built by hand in a test).
+	notifier UpdateNotifier
+
+	// heavy is the global limit on installs and updates running at once
+	// (APP_LIFECYCLE.md # concurrency): each takes a slot for its whole run.
+	// nil means no limit (a Manager built by hand in a test).
+	heavy chan struct{}
+
+	// updateMargin and defaultStartPeriod make the health budget of an
+	// update: the app's health_probe start_period (defaultStartPeriod when it
+	// declares none) plus updateMargin, and never less than healthWait
+	// (update.go # updateHealthBudget). Tests set both to 0 so the budget is
+	// healthWait.
+	updateMargin       time.Duration
+	defaultStartPeriod time.Duration
+
+	// catalogEntry and catalogLoad read the catalog for the update check and
+	// the update (updatecheck.go). The catalog's own Entry and Load in
+	// production; tests count the loads and script what they return.
+	catalogEntry func(id string) (catalog.Entry, error)
+	catalogLoad  func(ctx context.Context, id string) (*manifest.Manifest, []byte, error)
+
+	// checkMu guards checkRunning and checkAgain: one update check runs at a
+	// time, and a check asked for while one runs makes it run once more.
+	checkMu      sync.Mutex
+	checkRunning bool
+	checkAgain   bool
+	// parkedSeen is, per instance, the version this brain run already found
+	// it cannot read. Only the running check touches it.
+	parkedSeen map[string]string
+
+	// moveMu guards moveNames: the database and role names a database move
+	// holds on its new major, by "<kind>/<version>/<name>", with the instance
+	// that holds them (#635). The store holds them only once the grant
+	// points there, so this keeps two updates that run at once from taking,
+	// dropping or filling the same names. Released when the update ends.
+	moveMu    sync.Mutex
+	moveNames map[string]string
+}
+
+// maxHeavyOps is how many installs and updates may run at once
+// (APP_LIFECYCLE.md # concurrency), to bound the load on a small box.
+const maxHeavyOps = 3
+
+// acquireHeavy takes one of the maxHeavyOps slots, waiting for one to free
+// up. The returned func gives it back.
+func (m *Manager) acquireHeavy(ctx context.Context) (func(), error) {
+	if m.heavy == nil {
+		return func() {}, nil
+	}
+	select {
+	case m.heavy <- struct{}{}:
+		return func() { <-m.heavy }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func NewManager(st *store.Store, cat *catalog.Catalog, host HostDriver, cd CaddyDriver, docker DockerDriver, bus *events.Bus, stateDir string) *Manager {
-	return &Manager{
+	m := &Manager{
 		store: st, catalog: cat, host: host, caddy: cd, docker: docker,
 		admit: admission.Check, bus: bus, stateDir: stateDir,
 		sharedRoot: defaultSharedRoot,
 		chown:      os.Lchown,
+		diskSpace:  statDiskSpace,
 		healthWait: healthWaitTimeout, healthPoll: 2 * time.Second,
-		serviceReadyWait: serviceReadyTimeout,
-		instLocks:        map[string]*sync.Mutex{},
-		profile:          profile.Appliance,
-		brainUpstream:    defaultBrainUpstream,
+		serviceReadyWait:   serviceReadyTimeout,
+		instLocks:          map[string]*sync.Mutex{},
+		profile:            profile.Appliance,
+		brainUpstream:      defaultBrainUpstream,
+		heavy:              make(chan struct{}, maxHeavyOps),
+		updateMargin:       updateHealthMargin,
+		defaultStartPeriod: manifest.DefaultStartPeriod,
 	}
+	if cat != nil {
+		m.catalogEntry, m.catalogLoad = cat.Entry, cat.Load
+	}
+	return m
 }
 
 // defaultBrainUpstream is the compose service address the box Caddy dials for the
@@ -239,6 +337,11 @@ func (m *Manager) SetEnvironment(prof profile.Profile, boxID string) {
 	m.profile = prof
 	m.boxID = boxID
 }
+
+// SetCaddy replaces the Caddy client. cmd/brain calls it once, at startup,
+// when MigrateCaddyAdminSocket moved the box's admin API to the socket after
+// the manager was built, and before anything has used the old client.
+func (m *Manager) SetCaddy(cd CaddyDriver) { m.caddy = cd }
 
 // hosted reports whether per-app routing should use the public
 // "<slug>.<box-id>.onmoose.io" scheme: the hosted profile with a resolved
@@ -302,7 +405,7 @@ func (m *Manager) buildRouteConfig(inst store.Instance, man *manifest.Manifest, 
 			Upstream:    m.brainUpstream,
 			VerifyPath:  profile.ForwardAuthVerifyPath,
 			CopyHeaders: identityHeaders,
-			LoginURL:    "https://" + profile.HostedDashboardHost(m.boxID) + "/",
+			LoginURL:    profile.HostedLoginURL(m.boxID),
 		}
 		if man != nil {
 			cfg.PublicPaths = man.Access.PublicPaths
@@ -315,6 +418,22 @@ func (m *Manager) buildRouteConfig(inst store.Instance, man *manifest.Manifest, 
 // forward-auth request, and the same set scrubbed from every inbound request so
 // a caller can never forge them (ENVIRONMENT.md # Per-app owner-only access).
 var identityHeaders = []string{"X-Moose-User", "X-Moose-User-Id"}
+
+// tryLockInstance takes the per-instance lock only when it is free. ok is
+// false when another lifecycle path holds it; the caller skips the instance.
+func (m *Manager) tryLockInstance(id string) (unlock func(), ok bool) {
+	m.locksMu.Lock()
+	lk, found := m.instLocks[id]
+	if !found {
+		lk = &sync.Mutex{}
+		m.instLocks[id] = lk
+	}
+	m.locksMu.Unlock()
+	if !lk.TryLock() {
+		return nil, false
+	}
+	return lk.Unlock, true
+}
 
 // lockInstance acquires the per-instance lock (creating it on first use) and
 // returns the unlock func. Callers `defer unlock()`. See instLocks.
@@ -479,6 +598,70 @@ func customMounts(folders []manifest.Folder, scope string) []FolderMount {
 // install is the shared transaction both doors converge on (APP_MANIFEST.md #
 // one model, two doors): a manifest + verbatim compose pair, whether loaded
 // from the catalog or synthesized from a pasted compose.
+// prepareFolderSources makes each folder source in mounts ready before the
+// app binds it. Install calls it for every folder, and an update for each
+// folder bind that is new (#633). username is the owner's, for a personal
+// source.
+func (m *Manager) prepareFolderSources(ctx context.Context, id, username string, iso isolation, mounts []FolderMount) error {
+	// Prepare each elected PERSONAL folder source so the app can write user
+	// content into it. A docker-created bind source is root:root (the same
+	// daemon behavior as the private bind dirs of the app), so a folder that does not
+	// exist yet, such as ~/Documents on a new account or the pick-subfolder
+	// ~/Documents/Notebooks for Jupyter, would land root-owned, and the
+	// cap_drop:ALL container, running as the owner UID, could not write it.
+	//
+	// host-agent does this, not the brain (#519). The brain runs in a container
+	// that does not mount /home, so a MkdirAll + chown here made the folder in
+	// the container's own filesystem and never on the host. Mounting /home into
+	// the brain would give the LAN-facing brain every user's private files; a
+	// narrow named op keeps home access in host-agent, where
+	// BRAIN_HOST_PROTOCOL.md already puts it. host-agent creates each missing
+	// level owned by the owner, sets the owner of the last level, and never
+	// follows a symlink. Under the fake host-agent (make dev) it creates the
+	// folder in the operator's own home. SHARED sources are prepared below, by
+	// a different rule.
+	for _, mt := range mounts {
+		if mt.Source != sourcePersonal {
+			continue
+		}
+		rel := folderDir[mt.Folder]
+		if mt.Subfolder != "" {
+			rel += "/" + filepath.ToSlash(filepath.Clean(mt.Subfolder))
+		}
+		if err := m.host.PrepareUserFolder(ctx, username, rel); err != nil {
+			return fmt.Errorf("prepare folder source %q: %w", iso.hostSource(mt), err)
+		}
+	}
+
+	// Prepare each elected SHARED folder source (#156). Unlike a personal source,
+	// owned by the runtime UID so that MkdirAll + chown is enough, the household
+	// shared tree is root:moose-shared, mode 02770 setgid (STORAGE.md # user
+	// content): the brain creates the elected <Folder>[/<subfolder>] beneath the
+	// shared root, owning each NEW dir to the moose-shared group with the setgid
+	// bit, never chowning to a runtime UID and never re-owning a pre-existing
+	// parent. The moose-app container reaches it through its moose-shared
+	// group_add (writeOverride), with no per-UID ownership. Writing under the shared
+	// tree needs root, so this runs only under the production brain (euid 0); the
+	// unprivileged native dev brain can't create the shared tree, so household
+	// shared-folder apps are out of the inner loop: skip with a warning, leaving
+	// dev behavior unchanged (APP_ISOLATION.md # User content).
+	for _, mt := range mounts {
+		if mt.Source != sourceShared {
+			continue
+		}
+		src := iso.hostSource(mt)
+		if os.Geteuid() != 0 {
+			slog.Warn("shared folder source prep skipped under unprivileged brain (out-of-inner-loop, #156)",
+				"instance_id", id, "src", src)
+			continue
+		}
+		if err := prepareSharedSource(iso.sharedBase, src, iso.sharedGID); err != nil {
+			return fmt.Errorf("prepare shared source %q: %w", src, err)
+		}
+	}
+	return nil
+}
+
 // ErrNoGPU is the `gpu: true` install capacity refusal (APP_ISOLATION.md #
 // GPU): the manifest requires a GPU and the host reports none. Raised before
 // the instance row, any Docker work, or the override exist — nothing to roll
@@ -493,12 +676,25 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 			progress(s)
 		}
 	}
+	// At most maxHeavyOps installs and updates run at once.
+	release, err := m.acquireHeavy(ctx)
+	if err != nil {
+		return store.Instance{}, err
+	}
+	defer release()
 
 	// A mail-provider election is only meaningful for an app that declares
 	// mail support — the API validates this against the install plan, so this
 	// is the transaction owner's backstop, checked before any state is written.
 	if mailProviderID != "" && man.Mail == nil {
 		return store.Instance{}, fmt.Errorf("app %q does not declare mail support", man.ID)
+	}
+
+	// An app that recommends more memory or CPU cores than the box has is
+	// refused here, before any state is written (#599). It is the backstop for
+	// the store page and the install plan, which already say so.
+	if err := m.checkInstallFit(ctx, man); err != nil {
+		return store.Instance{}, err
 	}
 
 	// A config field may target a non-main compose service (APP_MANIFEST.md # D4);
@@ -773,89 +969,12 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// container runs as uid inside, and base for the caps tier, the
 	// container's own root. In the image tier each service's dirs go to base
 	// plus its image user's ids. The host tier keeps the real ids.
-	dirsBySvc, err := bindDirsByService(composeBytes)
-	if err != nil {
-		return rollback(fmt.Errorf("parse compose volumes: %w", err))
-	}
-	owners, err := iso.bindDirOwners(dirsBySvc)
-	if err != nil {
-		return rollback(fmt.Errorf("bind dir owner: %w", err))
-	}
-	relDirs := make([]string, 0, len(owners))
-	for rel := range owners {
-		relDirs = append(relDirs, rel)
-	}
-	sort.Strings(relDirs)
-	for _, rel := range relDirs {
-		ownUID, ownGID := owners[rel].uid, owners[rel].gid
-		dir := filepath.Join(m.instanceDir(id), filepath.FromSlash(rel))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return rollback(fmt.Errorf("create bind dir %q: %w", rel, err))
-		}
-		if err := m.chown(dir, ownUID, ownGID); err != nil {
-			if os.Geteuid() == 0 {
-				return rollback(fmt.Errorf("chown bind dir %q: %w", rel, err))
-			}
-			slog.Warn("bind dir chown skipped under unprivileged brain",
-				"instance_id", id, "dir", rel, "uid", ownUID, "gid", ownGID, "err", err)
-		}
+	if err := m.prepareBindDirs(id, composeBytes, iso); err != nil {
+		return rollback(err)
 	}
 
-	// Prepare each elected PERSONAL folder source so the app can write user
-	// content into it. A docker-created bind source is root:root (the same
-	// daemon behavior as the private bind dirs above), so a folder that does not
-	// exist yet, such as ~/Documents on a new account or the pick-subfolder
-	// ~/Documents/Notebooks for Jupyter, would land root-owned, and the
-	// cap_drop:ALL container, running as the owner UID, could not write it.
-	//
-	// host-agent does this, not the brain (#519). The brain runs in a container
-	// that does not mount /home, so a MkdirAll + chown here made the folder in
-	// the container's own filesystem and never on the host. Mounting /home into
-	// the brain would give the LAN-facing brain every user's private files; a
-	// narrow named op keeps home access in host-agent, where
-	// BRAIN_HOST_PROTOCOL.md already puts it. host-agent creates each missing
-	// level owned by the owner, sets the owner of the last level, and never
-	// follows a symlink. Under the fake host-agent (make dev) it creates the
-	// folder in the operator's own home. SHARED sources are prepared below, by
-	// a different rule.
-	for _, mt := range iso.mounts {
-		if mt.Source != sourcePersonal {
-			continue
-		}
-		rel := folderDir[mt.Folder]
-		if mt.Subfolder != "" {
-			rel += "/" + filepath.ToSlash(filepath.Clean(mt.Subfolder))
-		}
-		if err := m.host.PrepareUserFolder(ctx, owner.Username, rel); err != nil {
-			return rollback(fmt.Errorf("prepare folder source %q: %w", iso.hostSource(mt), err))
-		}
-	}
-
-	// Prepare each elected SHARED folder source (#156). Unlike a personal source
-	// — owned by the runtime UID, so MkdirAll + chown suffices — the household
-	// shared tree is root:moose-shared, mode 02770 setgid (STORAGE.md # user
-	// content): the brain creates the elected <Folder>[/<subfolder>] beneath the
-	// shared root, owning each NEW dir to the moose-shared group with the setgid
-	// bit, never chowning to a runtime UID and never re-owning a pre-existing
-	// parent. The moose-app container reaches it through its moose-shared
-	// group_add (writeOverride) — no per-UID ownership. Writing under the shared
-	// tree needs root, so this runs only under the production brain (euid 0); the
-	// unprivileged native dev brain can't create the shared tree, so household
-	// shared-folder apps are out of the inner loop — skip with a warning, leaving
-	// dev behavior unchanged (APP_ISOLATION.md # User content).
-	for _, mt := range iso.mounts {
-		if mt.Source != sourceShared {
-			continue
-		}
-		src := iso.hostSource(mt)
-		if os.Geteuid() != 0 {
-			slog.Warn("shared folder source prep skipped under unprivileged brain (out-of-inner-loop, #156)",
-				"instance_id", id, "src", src)
-			continue
-		}
-		if err := prepareSharedSource(iso.sharedBase, src, iso.sharedGID); err != nil {
-			return rollback(fmt.Errorf("prepare shared source %q: %w", src, err))
-		}
+	if err := m.prepareFolderSources(ctx, id, owner.Username, iso, iso.mounts); err != nil {
+		return rollback(err)
 	}
 
 	// 7. Generate override (with pins + isolation + any resource policy) + .env.
@@ -877,6 +996,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	if err := m.docker.NetworkCreate(ctx, appNet, !man.Permissions.Internet); err != nil {
 		return rollback(fmt.Errorf("create network: %w", err))
 	}
+	m.connectCaddy(ctx, id)
 
 	// 9. Publish mDNS + register the Caddy route pointing at a splash page, so
 	// the hostname is reachable immediately (APP_LIFECYCLE.md # register early,
@@ -1016,6 +1136,12 @@ func (m *Manager) Uninstall(ctx context.Context, id string) error {
 	if err != nil {
 		slog.Warn("uninstall: read pinned images for reclaim", "instance_id", id, "err", err)
 	}
+	// The previous generation an update kept goes too (#631).
+	prevImages, err := m.store.GetInstancePrevImages(id)
+	if err != nil {
+		slog.Warn("uninstall: read previous image pins for reclaim", "instance_id", id, "err", err)
+	}
+	images = append(images, prevImages...)
 	// Same for managed-service grants: capture before the cascade so the per-app
 	// database+role can be dropped after the app's containers are down
 	// (SERVICE_PROVISIONING.md # At app uninstall). The shared service instance is
@@ -1023,6 +1149,15 @@ func (m *Manager) Uninstall(ctx context.Context, id string) error {
 	grants, err := m.store.GetServiceGrants(id)
 	if err != nil {
 		slog.Warn("uninstall: read service grants for drop", "instance_id", id, "err", err)
+	}
+	// And the old databases an update moved off, kept for the rollback by
+	// hand (#635).
+	retired, err := m.store.GetRetiredServiceGrants(id)
+	if err != nil {
+		slog.Warn("uninstall: read retired service grants for drop", "instance_id", id, "err", err)
+	}
+	for _, r := range retired {
+		grants = append(grants, r.ServiceGrant)
 	}
 	_ = m.store.SetState(id, "uninstalling")
 	m.emitState(inst, inst.State)
@@ -1118,16 +1253,44 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 // crash mid-start leaves a `running` row the reconcile pass finishes, the same
 // recovery path a reboot takes. The Caddy route flips to the "starting" splash,
 // then to the real upstream once main_service is healthy.
+//
+// A person's Start also gives the app a fresh hour of automatic restarts: the
+// count the brain gave up at is reset (#620, HEALTH.md # Automatic restart).
 func (m *Manager) Start(ctx context.Context, id string) error {
 	defer m.lockInstance(id)()
 	inst, err := m.store.Get(id)
 	if err != nil {
 		return err
 	}
-	if inst.State != "stopped" && inst.State != "failed" {
+	if inst.State != "stopped" && inst.State != "failed" && inst.State != "update_failed" {
 		return fmt.Errorf("%w (state=%s)", ErrNotStartable, inst.State)
 	}
-	prevState := inst.State
+	// An update whose rollback failed left its record: finish the rollback
+	// first, so the retry starts the old version on its old data (update.go).
+	if inst.State == "update_failed" {
+		if err := m.finishRollback(ctx, inst); err != nil {
+			return err
+		}
+		// A rollback by hand changes the version and the name (#634).
+		if inst, err = m.store.Get(id); err != nil {
+			return err
+		}
+		inst.State = "update_failed"
+	}
+	if inst.AutoRestarts > 0 || !inst.LastAutoRestart.IsZero() {
+		if err := m.store.ResetInstanceAutoRestarts(id, true); err != nil {
+			return fmt.Errorf("reset automatic restarts: %w", err)
+		}
+		inst.AutoRestarts = 0
+		inst.LastAutoRestart = time.Time{}
+	}
+	return m.startLocked(ctx, inst, inst.State)
+}
+
+// startLocked is Start's work, after the caller took the per-instance lock
+// and checked the state: Start, and Restart once it has stopped the app.
+func (m *Manager) startLocked(ctx context.Context, inst store.Instance, prevState string) error {
+	id := inst.ID
 	man, err := m.loadInstanceManifest(id)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
@@ -1147,10 +1310,14 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 
 	// Commit desired state first, then flip the route to the starting splash so
 	// the hostname stops serving the "stopped" page the moment the user acts.
-	if err := m.store.SetState(id, "running"); err != nil {
-		return fmt.Errorf("set state running: %w", err)
+	// An automatic restart's row already reads running: no write, so no write
+	// that can fail after its compose stop and leave the app down.
+	if inst.State != "running" {
+		if err := m.store.SetState(id, "running"); err != nil {
+			return fmt.Errorf("set state running: %w", err)
+		}
+		inst.State = "running"
 	}
-	inst.State = "running"
 	if err := m.caddy.AddSplashRoute(ctx, id, host, man.Name, "starting"); err != nil {
 		slog.Warn("start: caddy splash flip failed (continuing)",
 			"instance_id", id, "host", host, "err", err)
@@ -1172,6 +1339,9 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	// — clear the marker rather than leaving it for reconcile to redundantly
 	// retry against an already-converged container.
 	m.clearPendingRecreate(inst)
+	// Caddy keeps its app networks across a stop, but it may have been
+	// recreated since, which drops them.
+	m.connectCaddy(ctx, id)
 	if err := m.waitHealthy(ctx, id, man.MainService, m.healthWait); err != nil {
 		return m.startFailed(ctx, inst, host, man.Name, fmt.Errorf("%s did not become healthy: %w", man.Name, err))
 	}
@@ -1185,6 +1355,76 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	m.emitState(inst, prevState)
 	slog.Info("app started", "instance_id", id, "name", inst.Name, "upstream", upstream)
 	return nil
+}
+
+// ErrBusy is returned by BeginRestart when another lifecycle operation holds
+// the instance (an install's last steps, a stop, a start, an uninstall, a
+// config or mail edit). The automatic restart (#598) skips the app then: it
+// never runs into an operation the user started.
+var ErrBusy = errors.New("app has a lifecycle operation in flight")
+
+// ErrAutoRestartOff is returned by BeginRestart when the app's owner turned
+// the automatic restart off (#598). It is read under the app's lock from the
+// fresh row, so a switch flipped during a slow health tick still holds.
+var ErrAutoRestartOff = errors.New("automatic restart is off for this app")
+
+// BeginRestart starts an automatic restart of a running app (#598,
+// APP_LIFECYCLE.md # Automatic restart). It takes the per-instance lock only
+// if it is free (ErrBusy otherwise) and checks the app is running
+// (ErrNotRunning otherwise), both before it returns, so the caller knows at
+// once whether a restart will happen. The returned run does the work and
+// releases the lock; the caller must call it exactly once, usually on its own
+// goroutine, since it can take as long as a start.
+//
+// The work is a manual Stop then Start, under one lock: `compose stop`, then
+// the same steps Start runs (mDNS re-publish, the starting splash, `compose up
+// -d`, Caddy's networks, the health wait, the flip to the real upstream), so
+// the route, limits and env are applied the same way. The one difference is
+// that the row stays `running` the whole time, so a brain that dies halfway
+// leaves an app the reconcile pass brings back up, never one it keeps stopped.
+// A start that does not come healthy lands in `failed`, as with Start.
+//
+// Once the checks pass, the restart is counted in the app's row, begun at at,
+// before the work runs (#620): the count is what makes the brain give up, so
+// it must survive a brain that dies halfway. A failed write refuses the
+// restart. It also returns the row as it read it under the lock, before the
+// count: a person may have reset the count since the caller read it.
+func (m *Manager) BeginRestart(id string, at time.Time) (run func(context.Context) error, row store.Instance, err error) {
+	unlock, ok := m.tryLockInstance(id)
+	if !ok {
+		return nil, store.Instance{}, ErrBusy
+	}
+	inst, err := m.store.Get(id)
+	if err != nil {
+		unlock()
+		return nil, store.Instance{}, err
+	}
+	if inst.State != "running" {
+		unlock()
+		return nil, store.Instance{}, fmt.Errorf("%w (state=%s)", ErrNotRunning, inst.State)
+	}
+	if inst.AutoRestartOff {
+		unlock()
+		return nil, store.Instance{}, ErrAutoRestartOff
+	}
+	if err := m.store.RecordInstanceAutoRestart(id, at); err != nil {
+		unlock()
+		return nil, store.Instance{}, fmt.Errorf("count the automatic restart: %w", err)
+	}
+	return func(ctx context.Context) error {
+		defer unlock()
+		// The start needs the manifest. Read it before the stop, so a
+		// failure here leaves the app running, not stopped with nothing to
+		// start it.
+		if _, err := m.loadInstanceManifest(id); err != nil {
+			return fmt.Errorf("load manifest: %w", err)
+		}
+		if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {
+			return fmt.Errorf("compose stop: %w\n%s", err, out)
+		}
+		slog.Info("app stopped for an automatic restart", "instance_id", id, "name", inst.Name)
+		return m.startLocked(ctx, inst, "running")
+	}, inst, nil
 }
 
 // SetExposure flips an app between public and owner-only (restricted) access and
@@ -1299,6 +1539,40 @@ func (m *Manager) publishHost(ctx context.Context, inst store.Instance) (string,
 	return host, avahiOK
 }
 
+// prepareBindDirs creates every private bind dir of the compose and gives it
+// the owner the instance's isolation calls for (install step 6, and the
+// update). See the comment at its call in install for why.
+func (m *Manager) prepareBindDirs(id string, composeBytes []byte, iso isolation) error {
+	dirsBySvc, err := bindDirsByService(composeBytes)
+	if err != nil {
+		return fmt.Errorf("parse compose volumes: %w", err)
+	}
+	owners, err := iso.bindDirOwners(dirsBySvc)
+	if err != nil {
+		return fmt.Errorf("bind dir owner: %w", err)
+	}
+	relDirs := make([]string, 0, len(owners))
+	for rel := range owners {
+		relDirs = append(relDirs, rel)
+	}
+	sort.Strings(relDirs)
+	for _, rel := range relDirs {
+		ownUID, ownGID := owners[rel].uid, owners[rel].gid
+		dir := filepath.Join(m.instanceDir(id), filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create bind dir %q: %w", rel, err)
+		}
+		if err := m.chown(dir, ownUID, ownGID); err != nil {
+			if os.Geteuid() == 0 {
+				return fmt.Errorf("chown bind dir %q: %w", rel, err)
+			}
+			slog.Warn("bind dir chown skipped under unprivileged brain",
+				"instance_id", id, "dir", rel, "uid", ownUID, "gid", ownGID, "err", err)
+		}
+	}
+	return nil
+}
+
 // releaseServiceIdentity returns an allocated app-service identity to the
 // host's band. Best-effort like dropServiceGrants: a failed release leaks one
 // band slot (the host-side moose-svc account stays for manual cleanup) and is
@@ -1343,7 +1617,8 @@ func (m *Manager) reclaimImages(ctx context.Context, instanceID string, images [
 }
 
 // inUseImageRefs is the set of pinned `repo@sha256:…` references held by all
-// currently-installed instances — the "don't remove" guard for reclaimImages.
+// currently-installed instances, current and previous generation: the "don't
+// remove" guard for reclaimImages.
 func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 	insts, err := m.store.List()
 	if err != nil {
@@ -1355,7 +1630,13 @@ func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, img := range imgs {
+		// The previous generation an update keeps is still in use: a rollback
+		// puts it back (APP_LIFECYCLE.md # update + rollback).
+		prev, err := m.store.GetInstancePrevImages(inst.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, img := range append(imgs, prev...) {
 			refs[storedRef(img)] = true
 		}
 	}
@@ -1365,6 +1646,10 @@ func (m *Manager) inUseImageRefs() (map[string]bool, error) {
 // teardown reverses the resources install creates. Each step is best-effort so
 // a partial install can always be cleaned up.
 func (m *Manager) teardown(ctx context.Context, inst store.Instance, removeDir bool) error {
+	// Caddy leaves the app network first. Docker does not remove a network a
+	// container is still on, and Caddy is the one container compose down does
+	// not take off it.
+	m.disconnectCaddy(ctx, inst.ID)
 	if _, err := os.Stat(m.composeFile(inst.ID)); err == nil {
 		if out, err := m.docker.ComposeDown(ctx, m.instanceDir(inst.ID), "moose-"+inst.ID); err != nil {
 			slog.Warn("teardown: compose down",
@@ -1450,13 +1735,19 @@ func (m *Manager) WaitDocker(ctx context.Context, poll time.Duration) error {
 // is what fixes "brain restart drops routes" (EnsureServer resets the route
 // list at startup, then this re-adds them). Idempotent: safe to run repeatedly.
 //
-// Skeleton scope: handles running/stopped. Interrupted installing/uninstalling
-// states (crash mid-transaction) are left for the install-transaction rollback
-// and a future dangerous-op-aware pass.
+// An interrupted update (an `updating` row) is put back to the old version
+// first (recoverUpdates), and an update_failed row gets its "failed" splash.
+// Interrupted installing/uninstalling states (crash mid-transaction) are left
+// for the install-transaction rollback and a future dangerous-op-aware pass.
 func (m *Manager) Reconcile(ctx context.Context) error {
 	// Re-assert the shared managed-service instances first, so an app drifted to
 	// "no containers" comes back up against a live database.
 	m.reconcileServices(ctx)
+
+	// An update the brain did not finish (it stopped in the middle) is put
+	// back to the old version first, so the passes below see a running or an
+	// update_failed row, never an updating one (update.go).
+	m.recoverUpdates(ctx)
 
 	desired, err := m.store.List()
 	if err != nil {
@@ -1472,6 +1763,14 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	var splashes []store.Instance // stopped and failed, written after the loop
 	for _, inst := range desired {
 		seen[inst.ID] = true
+		// An app installed before #608 is still on moose-ingress. Move it off
+		// before anything below runs compose up on its override.
+		if inst.State == "running" || inst.State == "stopped" || inst.State == "failed" || inst.State == "update_failed" {
+			if _, err := m.migrateOffIngress(ctx, inst.ID); err != nil {
+				slog.Warn("reconcile: move app off the control-plane network",
+					"instance_id", inst.ID, "err", err)
+			}
+		}
 		switch inst.State {
 		case "running":
 			if !actual[inst.ID] {
@@ -1562,7 +1861,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				}
 			}
 			splashes = append(splashes, inst)
-		case "failed":
+		case "failed", "update_failed":
 			splashes = append(splashes, inst)
 		}
 	}
@@ -1590,7 +1889,200 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			m.teardownOrphan(ctx, id)
 		}
 	}
+	// The control-plane compose up just before this pass may have recreated
+	// Caddy, which drops every app network it was on.
+	m.EnsureCaddyNetworks(ctx)
 	return nil
+}
+
+// connectCaddy attaches Caddy to an app's own network, where the route
+// upstream (the main service's moose-<id>-<service> alias) lives. A failure is
+// logged and not returned: the route still serves its splash, and
+// EnsureCaddyNetworks tries again on the next health-poll tick.
+func (m *Manager) connectCaddy(ctx context.Context, id string) {
+	if err := m.docker.NetworkConnect(ctx, "moose-app-"+id, caddyContainer); err != nil {
+		slog.Warn("connect caddy to the app network (retried on the next health tick)",
+			"instance_id", id, "err", err)
+	}
+}
+
+// disconnectCaddy takes Caddy off an app's own network before the network is
+// removed. Best-effort, like the rest of teardown.
+func (m *Manager) disconnectCaddy(ctx context.Context, id string) {
+	if err := m.docker.NetworkDisconnect(ctx, "moose-app-"+id, caddyContainer); err != nil {
+		slog.Warn("teardown: disconnect caddy from the app network", "instance_id", id, "err", err)
+	}
+}
+
+// EnsureCaddyNetworks puts Caddy back on the network of every running app it
+// is not on. A Caddy restart keeps its networks, but a recreate drops them, and
+// every app then answers 502. host-agent can recreate Caddy during a
+// control-plane update while the brain keeps running (UPDATES.md # 8). So this
+// runs after the startup reconcile and on every health-poll tick (#608).
+//
+// It reads Caddy's networks with one docker inspect and connects only what is
+// missing. It never runs compose: the brain touches the control-plane project
+// once, at startup (# EnsureControlPlane). An instance whose lock is held is
+// skipped, because the install, start or uninstall holding it handles Caddy's
+// network itself, and connecting during an uninstall would stop the network
+// from being removed.
+func (m *Manager) EnsureCaddyNetworks(ctx context.Context) {
+	insts, err := m.store.List()
+	if err != nil {
+		slog.Warn("caddy networks: list instances", "err", err)
+		return
+	}
+	var running []string
+	for _, inst := range insts {
+		if inst.State == "running" {
+			running = append(running, inst.ID)
+		}
+	}
+	off := map[string]bool{}
+	defer func() {
+		m.caddyNetMu.Lock()
+		m.caddyOff = off
+		m.caddyNetMu.Unlock()
+	}()
+	if len(running) == 0 {
+		return
+	}
+	have, err := m.docker.ContainerNetworks(ctx, caddyContainer)
+	if err != nil {
+		slog.Warn("caddy networks: read the networks caddy is on", "err", err)
+		// Unknown: keep what the last pass found.
+		m.caddyNetMu.Lock()
+		off = m.caddyOff
+		m.caddyNetMu.Unlock()
+		return
+	}
+	for _, id := range running {
+		if have["moose-app-"+id] {
+			continue
+		}
+		unlock, ok := m.tryLockInstance(id)
+		if !ok {
+			// The operation holding the app handles Caddy's network itself.
+			// Until a pass sees Caddy on it, the app counts as off.
+			off[id] = true
+			continue
+		}
+		// Read the state again under the lock: the app may have been stopped
+		// or uninstalled since the list above.
+		if inst, err := m.store.Get(id); err == nil && inst.State == "running" {
+			slog.Info("caddy networks: reconnecting caddy to an app network", "instance_id", id)
+			if err := m.docker.NetworkConnect(ctx, "moose-app-"+id, caddyContainer); err != nil {
+				slog.Warn("connect caddy to the app network (retried on the next health tick)",
+					"instance_id", id, "err", err)
+				off[id] = true
+			}
+		}
+		unlock()
+	}
+}
+
+// CaddyOffNetwork reports whether the last EnsureCaddyNetworks pass left
+// Caddy off this running app's network: the connect failed, or the app was
+// held by an operation. Caddy then cannot reach the app, so its route answers
+// 502 whatever the app does, and the app-unresponsive probe must not read
+// that as the app failing (#613): a route written again after a Caddy
+// recreate would otherwise make a healthy app look down, and in time restart
+// it (#598).
+func (m *Manager) CaddyOffNetwork(id string) bool {
+	m.caddyNetMu.Lock()
+	defer m.caddyNetMu.Unlock()
+	return m.caddyOff[id]
+}
+
+// RestoreRoutes writes the Caddy route of each app again, after Caddy lost
+// its config while the brain runs (#613): a recreate starts Caddy from the
+// staged caddy.json, with no app route. It writes what the startup pass
+// writes: the app route of a running app and the splash of a stopped or
+// failed one. Each write also writes the app's copy in the probe server.
+// Unlike the startup pass it does not publish mDNS (Caddy losing its config
+// does not touch Avahi) and runs no compose.
+//
+// only names the apps to write; nil means every app. It returns the apps it
+// could not write, for the caller to pass back on the next health tick:
+//   - an app whose lock is held. The install, start, stop, restart or edit
+//     holding it may have written its route before the recreate and not
+//     write it again, so the route is written once the lock is free;
+//   - an app being installed or uninstalled. The install writes its own route
+//     at its end, but may have done so before the recreate; once the row is
+//     running or failed the route is written here. An app that is gone drops
+//     out;
+//   - an app whose route write failed.
+//
+// The lock is held for the write, so it never races the operation that
+// writes the same route. err is set only when the app list could not be read.
+func (m *Manager) RestoreRoutes(ctx context.Context, only map[string]bool) (owed map[string]bool, err error) {
+	insts, err := m.store.List()
+	if err != nil {
+		return nil, fmt.Errorf("restore routes: list instances: %w", err)
+	}
+	owed = map[string]bool{}
+	written := 0
+	for _, inst := range insts {
+		if only != nil && !only[inst.ID] {
+			continue
+		}
+		if m.restoreRoute(ctx, inst.ID) {
+			written++
+		} else {
+			owed[inst.ID] = true
+		}
+	}
+	if written > 0 || only == nil {
+		slog.Info("caddy: app routes written again", "count", written, "owed", len(owed))
+	}
+	return owed, nil
+}
+
+// restoreRoute is one app's part of RestoreRoutes. It reports whether the app
+// needs nothing more: its route was written, or it has no route to write.
+func (m *Manager) restoreRoute(ctx context.Context, id string) bool {
+	unlock, ok := m.tryLockInstance(id)
+	if !ok {
+		return false
+	}
+	defer unlock()
+	inst, err := m.store.Get(id)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		slog.Warn("caddy restore: read the app", "instance_id", id, "err", err)
+		return false
+	}
+	switch inst.State {
+	case "running":
+		man, err := m.loadInstanceManifest(id)
+		if err != nil {
+			// Trying again on every tick would not help. The startup pass
+			// skips such an app the same way.
+			slog.Warn("caddy restore: load manifest, skipping the route", "instance_id", id, "err", err)
+			return true
+		}
+		host := m.routeHost(inst)
+		upstream := fmt.Sprintf("moose-%s-%s:%d", inst.ID, man.MainService, man.MainPort)
+		if err := m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, man, host, upstream)); err != nil {
+			slog.Warn("caddy restore: app route", "instance_id", id, "host", host, "upstream", upstream, "err", err)
+			return false
+		}
+	case "stopped", "failed", "update_failed":
+		host := m.routeHost(inst)
+		appName := inst.Name
+		if man, err := m.loadInstanceManifest(id); err == nil {
+			appName = man.Name
+		}
+		if err := m.caddy.AddSplashRoute(ctx, id, host, appName, splashState(inst.State)); err != nil {
+			slog.Warn("caddy restore: splash route", "instance_id", id, "host", host, "err", err)
+			return false
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 // reassertRouting re-publishes mDNS and re-registers the Caddy route for a
@@ -1630,13 +2122,23 @@ func (m *Manager) reassertSplash(ctx context.Context, inst store.Instance) {
 	if man, err := m.loadInstanceManifest(inst.ID); err == nil {
 		appName = man.Name
 	}
-	if err := m.caddy.AddSplashRoute(ctx, inst.ID, host, appName, inst.State); err != nil {
+	if err := m.caddy.AddSplashRoute(ctx, inst.ID, host, appName, splashState(inst.State)); err != nil {
 		slog.Warn("reconcile: caddy splash route",
 			"instance_id", inst.ID, "host", host, "err", err)
 	}
 }
 
+// splashState is the splash a stopped or failed row's route shows. An update
+// whose rollback failed shows the "failed" page, as a failed install does.
+func splashState(state string) string {
+	if state == "update_failed" {
+		return "failed"
+	}
+	return state
+}
+
 func (m *Manager) teardownOrphan(ctx context.Context, id string) {
+	m.disconnectCaddy(ctx, id)
 	// Prefer compose if the instance dir survived; otherwise remove containers
 	// by label and drop the per-app network directly.
 	if _, err := os.Stat(m.composeFile(id)); err == nil {
@@ -1783,8 +2285,9 @@ func (m *Manager) writeInstanceDir(id string, man *manifest.Manifest, composeByt
 // writeOverride generates compose.override.yml per APP_LIFECYCLE.md "override
 // file contents": cap_drop ALL, no-new-privileges, forced restart, network
 // attachment, plus the `image: name@sha256:…` pin per service (digest pinning
-// — APP_LIFECYCLE.md). main_service additionally joins the ingress network
-// with a per-instance alias so Caddy can reach exactly this instance.
+// — APP_LIFECYCLE.md). main_service additionally gets a per-instance alias on
+// the app's own network, which Caddy joins to reach exactly this instance. No
+// service joins moose-ingress, the control-plane network (#608).
 func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes []byte, pins []servicePin, iso isolation, lim store.ResourceLimits) error {
 	svcs, err := parseComposeServices(composeBytes)
 	if err != nil {
@@ -1827,7 +2330,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 			nets[sn] = nil
 		}
 		if svc == man.MainService {
-			nets[ingressNetwork] = map[string]any{
+			nets[appNet] = map[string]any{
 				"aliases": []string{fmt.Sprintf("moose-%s-%s", id, man.MainService)},
 			}
 		}
@@ -1845,7 +2348,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 			},
 		}
 		// Pin the main service's *running* container name to the same
-		// moose-<id>-<service> stem as the ingress alias above — without the
+		// moose-<id>-<service> stem as the app-network alias above — without the
 		// pin compose appends a replica suffix ("-1"), and Docker's journald
 		// driver tags log lines with that suffixed name, so the per-app Logs
 		// tail's exact CONTAINER_NAME match (MainContainerName → journalsource)
@@ -1946,8 +2449,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		services[svc] = entry
 	}
 	networks := map[string]any{
-		appNet:         map[string]any{"external": true},
-		ingressNetwork: map[string]any{"external": true},
+		appNet: map[string]any{"external": true},
 	}
 	for _, sn := range svcNets {
 		networks[sn] = map[string]any{"external": true}

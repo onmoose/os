@@ -28,7 +28,9 @@ const running = computed(() => props.instance.state === "running");
 const stopped = computed(() => props.instance.state === "stopped");
 // `failed` shares the Start control as a click-to-retry (#154): the brain runs
 // the identical Start transaction from `stopped` or `failed`.
-const failed = computed(() => props.instance.state === "failed");
+// An update whose rollback did not bring the old version back (update_failed,
+// #631) is retried the same way.
+const failed = computed(() => props.instance.state === "failed" || props.instance.state === "update_failed");
 
 // Catalog lookup for the short description. Best-effort: no retry (a Door-2 app
 // legitimately 404s) and any failure just leaves the logo + name with no blurb.

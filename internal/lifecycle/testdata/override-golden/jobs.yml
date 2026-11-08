@@ -1,8 +1,6 @@
 networks:
     moose-app-INSTANCE:
         external: true
-    moose-ingress:
-        external: true
 services:
     migrate:
         cap_drop:
@@ -42,8 +40,7 @@ services:
             moose.managed: "true"
             moose.manifest_id: MANIFEST
         networks:
-            moose-app-INSTANCE: null
-            moose-ingress:
+            moose-app-INSTANCE:
                 aliases:
                     - moose-INSTANCE-web
         pull_policy: never

@@ -1,0 +1,110 @@
+# moose control-plane compose — the stack the brain brings up after host-agent
+# launches the brain (CONTROL_PLANE.md # host-agent launches the brain
+# container; # the dashboard UI is a brain-launched container). Authored in M0
+# (#163); the brain consumes it in M1b via lifecycle.EnsureControlPlane.
+#
+# Two containers — the *services* the brain owns and reconciles:
+#   caddy        — LAN-facing reverse proxy. The brain drives it via the admin
+#                  API at moose-caddy:2019 over the moose network and publishes
+#                  the catch-all + dashboard + per-app routes there
+#                  (CONTROL_PLANE.md # Caddy). The bootstrap caddy.json only opens
+#                  the admin endpoint and the catch-all; everything else is added
+#                  live via the API.
+#   moose-ui     — static SPA server; Caddy routes all non-/api traffic here
+#                  (WEB_UI.md # deploy model). Read-only, no ports, no secrets.
+#
+# The docker-socket-proxy is deliberately NOT in this compose: it is the brain's
+# sole Docker *transport*, and a process cannot bring up its own only path to
+# Docker. host-agent (which holds the raw socket) seeds the network + proxy
+# before launching the brain (internal/hostagent/brainlaunch.EnsureTransport);
+# the brain reaches Docker through it at tcp://docker-proxy:2375. The proxy image
+# still ships in the offline bundle so host-agent can docker-load it. See
+# socket-proxy-compose-validation.md.
+services:
+  caddy:
+    # Appliance rides stock caddy:2-alpine (it does no ACME — plain-HTTP .local).
+    # The hosted profile sets MOOSE_CADDY_IMAGE (in the brain's environment, which
+    # `docker compose` inherits) to a custom build with the caddy-dns/acmedns
+    # module compiled in, needed for the "*.<box-id>.onmoose.io" wildcard cert
+    # via ACME DNS-01 (ENVIRONMENT.md # Networking & discovery; os #207 / C3b).
+    # The recipe is ./caddy-acmedns/Dockerfile; one env var selects the image so
+    # the future appliance secure-URLs toggle can reuse the same build.
+    image: ${MOOSE_CADDY_IMAGE:-caddy:2-alpine}
+    container_name: moose-caddy
+    restart: unless-stopped
+    command: ["caddy", "run", "--config", "/etc/caddy/caddy.json"]
+    volumes:
+      - ./caddy.json:/etc/caddy/caddy.json:ro
+      # Caddy's certificate store. On hosted this holds the ACME account key and
+      # the issued "*.<box-id>.onmoose.io" wildcard; without a volume it lives
+      # in the container's writable layer and a recreate throws it away, so the
+      # box has to place a fresh Let's Encrypt order (#433). That order is not a
+      # renewal, so it gets no ARI rate-limit exemption, and every hosted box is
+      # a subdomain of ONE registered domain (onmoose.io) whose "50 new
+      # certificates per 7 days" budget the whole fleet shares. Losing the store
+      # is therefore a fleet-wide cost from a per-box event. Named so the volume
+      # is stable whatever the compose project is called, like the network below.
+      - caddy_data:/data
+    # /config holds Caddy's autosave of the last admin-API config. Nothing ever
+    # reads it back — the command loads /etc/caddy/caddy.json explicitly and we
+    # never run `caddy run --resume` — so it must be writable but is worth
+    # nothing across a recreate. tmpfs, not a volume: same call as moose-ui below.
+    tmpfs:
+      - /config
+    # The same sandbox every app container gets (APP_ISOLATION.md # Capabilities
+    # & privilege), which Caddy itself did without until #431. It binds :80 and
+    # :443, so CAP_NET_BIND_SERVICE is kept and every other capability dropped —
+    # it needs none of them to proxy. read_only is affordable because both write
+    # paths now land somewhere real: /data is the volume above and /config the
+    # tmpfs (#433). A read-only root also means a Caddy bug cannot leave anything
+    # behind in the image layer, so a recreate is a clean container.
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - "no-new-privileges:true"
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - moose
+
+  moose-ui:
+    image: moose-ui:dev
+    container_name: moose-ui
+    restart: unless-stopped
+    read_only: true
+    # caddy writes its storage/autosave under /data and /config on startup; with
+    # a read-only root those writes error out (harmless for HTTP-only static
+    # serving, but noisy). tmpfs gives it scratch space without a persistent
+    # mount — the bundle is baked at /srv/ui, nothing here needs to persist.
+    tmpfs:
+      - /data
+      - /config
+    # Same sandbox as caddy above (#431). The bundle is served by a Caddy that
+    # listens on :80 inside the container, so this one also keeps
+    # CAP_NET_BIND_SERVICE and nothing else.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - moose
+
+# Caddy's certificate store, kept across container recreates (# caddy, #433).
+# moose-ui needs no equivalent: its /data is scratch for a static file server.
+volumes:
+  caddy_data:
+    name: moose-caddy-data
+
+# The moose network is seeded by host-agent (brainlaunch.EnsureTransport) before
+# the brain starts; reference it as external so this compose attaches to it
+# rather than racing to create it.
+networks:
+  moose:
+    name: moose-ingress
+    external: true

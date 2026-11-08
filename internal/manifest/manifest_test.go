@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -26,6 +27,46 @@ main_port: 80
 	}
 	if m.ID != "whoami" || m.MainPort != 80 {
 		t.Fatalf("parse: %+v", m)
+	}
+}
+
+func TestParseResources(t *testing.T) {
+	base := `
+id: whoami
+manifest_version: 1
+name: Whoami
+version: "1.10"
+compose_file: compose.yml
+main_service: whoami
+main_port: 80
+`
+	m, err := Parse([]byte(base + "resources:\n  recommended: { memory: 2560M, cpu: 1.5 }\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got, err := m.Resources.Recommended.MemoryBytes(); err != nil || got != 2560<<20 {
+		t.Errorf("MemoryBytes = %d, %v; want %d", got, err, 2560<<20)
+	}
+	if m.Resources.Recommended.CPU != 1.5 {
+		t.Errorf("CPU = %v, want 1.5", m.Resources.Recommended.CPU)
+	}
+
+	m, err = Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("parse without resources: %v", err)
+	}
+	if got, err := m.Resources.Recommended.MemoryBytes(); err != nil || got != 0 {
+		t.Errorf("absent memory = %d, %v; want 0, nil", got, err)
+	}
+
+	for _, bad := range []string{
+		"resources:\n  recommended: { memory: lots }\n",
+		"resources:\n  recommended: { memory: 2X }\n",
+		"resources:\n  recommended: { cpu: -1 }\n",
+	} {
+		if _, err := Parse([]byte(base + bad)); err == nil {
+			t.Errorf("Parse accepted %q", bad)
+		}
 	}
 }
 
@@ -593,6 +634,25 @@ main_port: 80
 	_, err := Parse(src)
 	if err == nil || !strings.Contains(err.Error(), "manifest_version") {
 		t.Fatalf("want manifest_version error, got %v", err)
+	}
+}
+
+// A manifest_version 2 document whose other fields changed shape (a field
+// renamed, one turned into a map) is still known as a newer manifest, not a
+// broken one, so the update path can park it for a newer moose.
+func TestParseNewerManifestWithAnotherShape(t *testing.T) {
+	src := []byte(`
+id: x
+manifest_version: 2
+name: X
+version: "2"
+compose: c.yml
+main: {service: x, port: 80}
+permissions: [internet]
+`)
+	_, err := Parse(src)
+	if !errors.Is(err, ErrUnsupportedManifestVersion) {
+		t.Fatalf("Parse = %v, want ErrUnsupportedManifestVersion", err)
 	}
 }
 
@@ -1271,5 +1331,77 @@ func TestParseRejectsOverlongPublicPath(t *testing.T) {
 	long := "/" + strings.Repeat("a", maxPublicPathLen) + "/*"
 	if _, err := Parse(accessManifest(`["` + long + `"]`)); err == nil {
 		t.Fatalf("Parse accepted a %d-character public path, want an error", len(long))
+	}
+}
+
+// storage.data_volumes and storage.cache_volumes are parsed in both YAML list
+// shapes, kept as written, and survive the round trip the brain makes when it
+// writes the manifest into the instance dir.
+func TestParseStorageVolumes(t *testing.T) {
+	src := []byte(`
+id: whoami
+manifest_version: 1
+name: Whoami
+version: "1.10"
+compose_file: compose.yml
+main_service: whoami
+main_port: 80
+storage:
+  data_volumes: [./data, ./config]
+  cache_volumes:
+    - ./data/cache
+  estimated_size: 10MB
+`)
+	m, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !reflect.DeepEqual(m.Storage.DataVolumes, []string{"./data", "./config"}) || !reflect.DeepEqual(m.Storage.CacheVolumes, []string{"./data/cache"}) {
+		t.Fatalf("storage = %+v", m.Storage)
+	}
+	out, err := yaml.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Parse(out)
+	if err != nil {
+		t.Fatalf("parse round trip: %v", err)
+	}
+	if !reflect.DeepEqual(back.Storage, m.Storage) {
+		t.Fatalf("round trip storage = %+v, want %+v", back.Storage, m.Storage)
+	}
+}
+
+func TestCleanStoragePath(t *testing.T) {
+	for _, tc := range []struct{ in, want, errSub string }{
+		{in: "./data", want: "data"},
+		{in: "data/index/", want: "data/index"},
+		{in: "./data/./a/../b", want: "data/b"},
+		{in: "./config", want: "config"},
+		{in: "./compose.yml.bak", want: "compose.yml.bak"},
+		{in: "", errSub: "empty"},
+		{in: "/srv", errSub: "absolute"},
+		{in: "./$X", errSub: "variable"},
+		{in: `.\data`, errSub: "backslash"},
+		{in: ".", errSub: "whole app folder"},
+		{in: "../x", errSub: "leaves"},
+		{in: "./data/../..", errSub: "leaves"},
+		{in: "./snapshots/x", errSub: "snapshots"},
+		{in: "./compose.override.yml", errSub: "compose.override.yml"},
+		{in: "./manifest.yml", errSub: "manifest.yml"},
+	} {
+		got, err := CleanStoragePath(tc.in)
+		if tc.errSub != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+				t.Errorf("CleanStoragePath(%q) err = %v, want %q", tc.in, err, tc.errSub)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("CleanStoragePath(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+	}
+	if !PathWithin("data/cache", "data") || !PathWithin("data", "data") || PathWithin("data2", "data") {
+		t.Error("PathWithin is wrong")
 	}
 }

@@ -44,6 +44,51 @@ func (s *Server) registerSystemUpdate(api huma.API) {
 		OperationID: "get-system-update-target", Method: "GET", Path: "/api/v1/system/update-target",
 		Summary: "What this box could be running, and why it is not (admin only)",
 	}, s.getSystemUpdateTarget)
+	huma.Register(api, huma.Operation{
+		OperationID: "apply-system-update-target", Method: "POST", Path: "/api/v1/system/update-target/apply",
+		Summary:       "Apply the updates this box already found (control plane, and an installed OS release, which restarts the box), now instead of in the window (admin only)",
+		DefaultStatus: 202,
+	}, s.applySystemUpdateTarget)
+}
+
+// applySystemUpdateTarget is the dashboard's Update now (#488, #509). It takes
+// **no body**: host-agent applies the target its own loop fetched and checked
+// (digest-pinned, from the expected repositories), the same one the window
+// would apply. That covers both streams in the window's order: the control
+// plane, then an OS release already installed in the other slot, whose switch
+// restarts the box. The job returned is the first one started. POST /api/v1/system/update takes refs from the caller, which is
+// the wrong trust boundary for a button in a browser.
+//
+// Elevation-class, so it audits success and every refusal that says who tried
+// what: the 403, both 409s, and a host failure (CLAUDE.md # Go code
+// discipline). success=true means the update started, as for
+// startSystemUpdate: the brain that started it is replaced by it, so the
+// outcome lives on host-agent (UpdateTargetDTO.Last).
+func (s *Server) applySystemUpdateTarget(ctx context.Context, _ *struct{}) (*struct{ Body SystemUpdateJobDTO }, error) {
+	tgt := audit.Target{Kind: "system", ID: "control-plane"}
+	meta := map[string]any{"trigger": "update_now"}
+	fail := func() { s.auditor.Record(ctx, audit.ActionSystemUpdate, tgt, meta, false) }
+
+	if err := requireAdmin(ctx); err != nil {
+		fail()
+		return nil, err
+	}
+	job, err := s.host.ApplyUpdateTarget(ctx)
+	if err != nil {
+		fail()
+		switch {
+		case errors.Is(err, hostclient.ErrUpdateInProgress):
+			return nil, huma.Error409Conflict("the box is already updating")
+		case errors.Is(err, hostclient.ErrNothingToApply):
+			return nil, huma.Error409Conflict("there is no update to apply")
+		}
+		slog.Error("system-update: host refused to apply the update target", "err", err)
+		return nil, huma.Error502BadGateway("could not start the update")
+	}
+	meta["job_id"] = job.ID
+	s.auditor.Record(ctx, audit.ActionSystemUpdate, tgt, meta, true)
+	slog.Info("system-update started from the update target", "job_id", job.ID, "step", "accepted")
+	return &struct{ Body SystemUpdateJobDTO }{Body: toSystemUpdateJobDTO(job)}, nil
 }
 
 // UpdateTargetOfferDTO is a target the box's source named: the version for
@@ -111,9 +156,20 @@ type UpdateTargetDTO struct {
 	WindowFrom string                `json:"window_from,omitempty"`
 	AutoApply  bool                  `json:"auto_apply"`
 	Profile    string                `json:"profile,omitempty"`
+	// Zone is the IANA time zone the window is read in, the box's own (#488).
+	// Absent when host-agent cannot name it.
+	Zone string `json:"zone,omitempty"`
+	// Last is what the last control-plane update did (#488), kept by
+	// host-agent so it outlives the brain the update replaced. Absent before
+	// the first update. Stream A's record is OS.Last.
+	Last *ControlPlaneOutcomeDTO `json:"last,omitempty"`
 	// OS is stream A's last decision, beside stream B's above (UPDATES.md #
 	// 1, #563). Absent when host-agent reports nothing about the OS.
 	OS *OSUpdateDTO `json:"os,omitempty"`
+	// HoldUntil is when the brain's own hold on the OS switch ends, RFC3339,
+	// while one is live (#632): the box is updating apps, and the OS switch
+	// and its restart wait. Absent when there is no hold.
+	HoldUntil string `json:"hold_until,omitempty"`
 }
 
 // OSUpdateDTO is stream A on the update-target read: the OS this box runs,
@@ -127,6 +183,9 @@ type OSUpdateDTO struct {
 	Target  *OSReleaseDTO `json:"target,omitempty"`
 	Detail  string        `json:"detail,omitempty"`
 	Last    *OSOutcomeDTO `json:"last,omitempty"`
+	// Trial is true while the booted slot is on trial (#509): it may still be
+	// given up, so a dashboard waiting for an OS update keeps waiting.
+	Trial bool `json:"trial,omitempty"`
 }
 
 // OSReleaseDTO is one OS release: the version and its bundle, pinned by
@@ -147,12 +206,44 @@ type OSOutcomeDTO struct {
 	At      string `json:"at"`
 }
 
+// ControlPlaneOutcomeDTO is the outcome of the last control-plane update:
+// "good", or "failed" with the step that broke. Reverted says the box had been
+// changed and was put back; a failure without it never changed the box (a
+// failed download). ID is the update's job id, so a dashboard that started a
+// job knows when its outcome has landed. RevertError is a diagnostic, not UI
+// copy.
+type ControlPlaneOutcomeDTO struct {
+	ID           string `json:"id"`
+	Outcome      string `json:"outcome" enum:"good,failed"`
+	Version      string `json:"version,omitempty"`
+	From         string `json:"from,omitempty"`
+	At           string `json:"at"`
+	StartedAt    string `json:"started_at,omitempty"`
+	BrainChanged bool   `json:"brain_changed"`
+	UIChanged    bool   `json:"ui_changed"`
+	FailureMode  string `json:"failure_mode,omitempty"`
+	Reverted     bool   `json:"reverted,omitempty"`
+	RevertError  string `json:"revert_error,omitempty"`
+}
+
+// controlPlaneOutcomeDTO converts host-agent's stream B record.
+func controlPlaneOutcomeDTO(o *protocol.ControlPlaneOutcome) *ControlPlaneOutcomeDTO {
+	if o == nil {
+		return nil
+	}
+	return &ControlPlaneOutcomeDTO{
+		ID: o.ID, Outcome: o.Outcome, Version: o.Version, From: o.From, At: o.At, StartedAt: o.StartedAt,
+		BrainChanged: o.BrainChanged, UIChanged: o.UIChanged, FailureMode: o.FailureMode,
+		Reverted: o.Reverted, RevertError: o.RevertError,
+	}
+}
+
 // osUpdateDTO converts host-agent's stream A report.
 func osUpdateDTO(o *protocol.OSUpdate) *OSUpdateDTO {
 	if o == nil {
 		return nil
 	}
-	out := &OSUpdateDTO{State: o.State, Running: o.Running, Slot: o.Slot, Detail: o.Detail}
+	out := &OSUpdateDTO{State: o.State, Running: o.Running, Slot: o.Slot, Detail: o.Detail, Trial: o.Trial}
 	if o.Target != nil {
 		out.Target = &OSReleaseDTO{Version: o.Target.Version, BundleURL: o.Target.BundleURL, BundleSHA256: o.Target.BundleSHA256}
 	}
@@ -192,7 +283,10 @@ func (s *Server) getSystemUpdateTarget(ctx context.Context, _ *struct{}) (*struc
 		WindowFrom: t.WindowFrom,
 		AutoApply:  t.AutoApply,
 		Profile:    t.Profile,
+		Zone:       t.Zone,
+		Last:       controlPlaneOutcomeDTO(t.Last),
 		OS:         osUpdateDTO(t.OS),
+		HoldUntil:  t.HoldUntil,
 	}
 	if t.Target != nil {
 		out.Target = &UpdateTargetOfferDTO{

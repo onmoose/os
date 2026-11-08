@@ -15,13 +15,26 @@
 //               the app has no LLM provider, often after its account was
 //               deleted. The corner mark shows in amber, and a controller gets
 //               a "Needs setup" link to the app's settings screen.
+//   - updating: grayed with an "Updating" caption, no alert mark: the box is
+//               moving the app to a new version (#631).
+//   - update_failed: shown like failed. An update could not put the old
+//               version back, and retry is in the quick menu.
+//   - no update badge: the tile does not say a new version is available
+//               (DECISIONS.md 2026-11-07). The app's settings page does.
+//   - update banner (UPDATES.md # 6 Failure signaling, #634): under the tile,
+//               until a controller closes it, "Photos couldn't update to 2.0
+//               last night. Rolled back to 1.4.", or the paused text, with a
+//               link to the app's page. Closing it is stored on the app, so it
+//               stays closed on every device.
 //
 // Icon rendering mirrors StoreAppCard: icon_url when present, AppGlyph fallback.
 import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { AlertTriangle, EllipsisVertical } from "lucide-vue-next";
-import type { Instance } from "../api";
+import { useMutation, useQueryClient } from "@tanstack/vue-query";
+import { AlertTriangle, EllipsisVertical, X } from "lucide-vue-next";
+import { api, type Instance } from "../api";
 import { useAuth, isHosted } from "../auth";
+import { failureBanner, showFailureBanner } from "../updates";
 import AppGlyph from "./AppGlyph.vue";
 import AppMenuDialog from "./AppMenuDialog.vue";
 
@@ -30,7 +43,8 @@ const { singleUserMode, currentUser } = useAuth();
 
 const running = computed(() => props.instance.state === "running");
 const stopped = computed(() => props.instance.state === "stopped");
-const failed = computed(() => props.instance.state === "failed");
+const failed = computed(() => props.instance.state === "failed" || props.instance.state === "update_failed");
+const updating = computed(() => props.instance.state === "updating");
 const label = computed(() => (props.instance.scope === "household" ? "Shared" : "Personal"));
 
 // Mirrors the brain's control gate: admins anything, members only their own
@@ -62,8 +76,17 @@ const accessTitle = computed(() =>
 
 const brokenIcon = ref(false);
 
-// The corner alert is for trouble (failed/crashed), not a deliberate stop.
-const showAlert = computed(() => !running.value && !stopped.value);
+// The corner alert is for trouble (failed/crashed), not a deliberate stop or
+// an update in progress.
+const showAlert = computed(() => !running.value && !stopped.value && !updating.value);
+
+// The banner about a failed update, until a controller closes it (#634).
+const qc = useQueryClient();
+const banner = computed(() => showFailureBanner(props.instance));
+const ack = useMutation({
+  mutationFn: () => api.post(`/apps/${props.instance.id}/update/acknowledge`),
+  onSettled: () => qc.invalidateQueries({ queryKey: ["apps"] }),
+});
 // Needs setup is a softer warning than a failure, so it gets the amber mark
 // only when no failure mark is already there.
 const needsSetup = computed(() => !!props.instance.needs_setup);
@@ -162,6 +185,7 @@ const menuOpen = ref(false);
       >
         Service stopped
       </div>
+      <div v-else-if="updating" class="text-xs text-muted-foreground">Updating…</div>
       <div v-else-if="!singleUserMode" class="text-xs uppercase tracking-wide text-muted-foreground">{{ label }}</div>
     </div>
 
@@ -173,6 +197,24 @@ const menuOpen = ref(false);
     >
       Needs setup
     </RouterLink>
+
+    <!-- A failed update: the banner, until a controller closes it (#634). -->
+    <div
+      v-if="banner && canControl"
+      class="flex w-full items-start gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-left text-xs text-amber-800"
+      role="status"
+    >
+      <RouterLink :to="`/settings/apps/${instance.id}`" class="min-w-0 flex-1 hover:underline">{{ failureBanner(instance) }}</RouterLink>
+      <button
+        type="button"
+        class="shrink-0 cursor-pointer rounded p-0.5 hover:bg-amber-100"
+        aria-label="Close"
+        :disabled="ack.isPending.value"
+        @click="ack.mutate()"
+      >
+        <X class="size-3" />
+      </button>
+    </div>
 
     <!-- Don't retry blind: a controller can open the app page for the failure
          reason / logs rather than looping on the tile (#154). -->

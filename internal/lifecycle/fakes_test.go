@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -69,6 +72,13 @@ type fakeDocker struct {
 	restartCounts  map[string]int     // returned by RestartCounts
 	managed        []ManagedContainer // returned by ManagedContainers
 
+	// running is what RunningContainers lists, by compose project, and
+	// runningErr makes it fail. StopContainer takes a container off the list.
+	// stopContainer, when set, does StopContainer's work in its place.
+	running       map[string][]string
+	runningErr    error
+	stopContainer func(container string) error
+
 	composeUpErr      error // simple "always fail compose up"
 	composeDownErr    error
 	composeStopErr    error
@@ -76,6 +86,21 @@ type fakeDocker struct {
 	serviceUpErr      error
 	controlPlaneUpErr error
 	networkCreateErr  error // forces NetworkCreate to return this error
+
+	// attached is the networks each container is on, by container name, as
+	// NetworkConnect/NetworkDisconnect leave them and ContainerNetworks reads
+	// them. networkConnectErr, networkDisconnectErr and containerNetworksErr
+	// force those calls to fail. A failed disconnect leaves attached as it is.
+	attached             map[string]map[string]bool
+	networkConnectErr    error
+	networkDisconnectErr error
+	containerNetworksErr error
+
+	// networks is each network NetworkCreate made and its internal flag, as
+	// NetworkInspect reads it (#633). Like Docker, a create of a network that
+	// exists keeps the old flag. composeCreateErr forces ComposeCreate to fail.
+	networks         map[string]bool
+	composeCreateErr error
 
 	// runOneOff drives RunOneOff: it returns scripted output/error per invocation
 	// (matched on args). Default (nil) returns ("", nil) — provisioning only cares
@@ -87,6 +112,12 @@ type fakeDocker struct {
 	// fails). When both are set the error wins.
 	containerHealth    string
 	containerHealthErr error
+
+	// runStream drives RunOneOffStream. Default (nil) writes "dump:<last arg>"
+	// to stdout and drains stdin into streamed, so a snapshot test can check
+	// that a restore fed back the bytes the dump wrote.
+	runStream func(image, network, envFile string, args []string, stdin io.Reader, stdout io.Writer) (string, error)
+	streamed  []string
 
 	// usernsRemap is what UsernsRemap reports: whether the daemon runs with
 	// userns-remap. The zero value is no remap, like the dev loop's Docker.
@@ -113,6 +144,8 @@ func newFakeDocker() *fakeDocker {
 		present:   map[string]bool{},
 		pullErr:   map[string]error{},
 		psManaged: map[string]bool{},
+		attached:  map[string]map[string]bool{},
+		networks:  map[string]bool{},
 	}
 }
 
@@ -231,10 +264,44 @@ func (f *fakeDocker) ControlPlaneUp(_ context.Context, dir, project string) (str
 	return "", nil
 }
 
+func (f *fakeDocker) ControlPlaneRecreate(_ context.Context, dir, project, service string) (string, error) {
+	f.record("ControlPlaneRecreate", dir, project, service)
+	if f.controlPlaneUpErr != nil {
+		return "boom", f.controlPlaneUpErr
+	}
+	return "", nil
+}
+
 func (f *fakeDocker) RunOneOff(_ context.Context, image, network, envFile string, args []string) (string, error) {
 	f.record("RunOneOff", image, network, envFile, strings.Join(args, " "))
 	if f.runOneOff != nil {
 		return f.runOneOff(image, network, envFile, args)
+	}
+	// The snapshot's size query (dumpEstimate) reads a number back.
+	if q := strings.Join(args, " "); strings.Contains(q, "pg_database_size") || strings.Contains(q, "information_schema.tables") {
+		return "0", nil
+	}
+	return "", nil
+}
+
+func (f *fakeDocker) RunOneOffStream(_ context.Context, image, network, envFile string, args []string, stdin io.Reader, stdout io.Writer) (string, error) {
+	f.record("RunOneOffStream", image, network, envFile, strings.Join(args, " "))
+	if f.runStream != nil {
+		return f.runStream(image, network, envFile, args, stdin, stdout)
+	}
+	if stdin != nil {
+		b, err := io.ReadAll(stdin)
+		if err != nil {
+			return "", err
+		}
+		f.mu.Lock()
+		f.streamed = append(f.streamed, string(b))
+		f.mu.Unlock()
+	}
+	if stdout != nil && len(args) > 0 {
+		if _, err := io.WriteString(stdout, "dump:"+args[len(args)-1]); err != nil {
+			return "", err
+		}
 	}
 	return "", nil
 }
@@ -260,6 +327,39 @@ func (f *fakeDocker) ComposeStop(_ context.Context, dir, project string) (string
 	return "", f.composeStopErr
 }
 
+func (f *fakeDocker) RunningContainers(_ context.Context, project string) ([]string, error) {
+	f.record("RunningContainers", project)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.runningErr != nil {
+		return nil, f.runningErr
+	}
+	return append([]string(nil), f.running[project]...), nil
+}
+
+func (f *fakeDocker) StopContainer(_ context.Context, container string) (string, error) {
+	f.record("StopContainer", container)
+	if f.stopContainer != nil {
+		return "", f.stopContainer(container)
+	}
+	f.removeRunning(container)
+	return "", nil
+}
+
+// removeRunning takes a container off the running list of every project.
+func (f *fakeDocker) removeRunning(container string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for project, ids := range f.running {
+		f.running[project] = slices.DeleteFunc(ids, func(id string) bool { return id == container })
+	}
+}
+
+func (f *fakeDocker) ComposeCreate(_ context.Context, dir, project string) (string, error) {
+	f.record("ComposeCreate", dir, project)
+	return "", f.composeCreateErr
+}
+
 func (f *fakeDocker) Inspect(_ context.Context, id, main string) (bool, string, error) {
 	f.record("Inspect", id, main)
 	if f.inspect != nil {
@@ -270,12 +370,88 @@ func (f *fakeDocker) Inspect(_ context.Context, id, main string) (bool, string, 
 
 func (f *fakeDocker) NetworkCreate(_ context.Context, name string, internal bool) error {
 	f.record("NetworkCreate", name, internal)
-	return f.networkCreateErr
+	if f.networkCreateErr != nil {
+		return f.networkCreateErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.networks[name]; !ok {
+		f.networks[name] = internal
+	}
+	return nil
 }
 
 func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 	f.record("NetworkRemove", name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.networks, name)
 	return nil
+}
+
+func (f *fakeDocker) NetworkInspect(_ context.Context, name string) (NetworkInfo, error) {
+	f.record("NetworkInspect", name)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	internal, ok := f.networks[name]
+	if !ok {
+		return NetworkInfo{}, nil
+	}
+	info := NetworkInfo{Exists: true, Internal: internal}
+	for c, nets := range f.attached {
+		if nets[name] {
+			info.Containers = append(info.Containers, c)
+		}
+	}
+	sort.Strings(info.Containers)
+	return info, nil
+}
+
+// networkInternal is a network's flag; ok is false when it does not exist.
+func (f *fakeDocker) networkInternal(name string) (internal, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	internal, ok = f.networks[name]
+	return internal, ok
+}
+
+func (f *fakeDocker) NetworkConnect(_ context.Context, network, container string) error {
+	f.record("NetworkConnect", network, container)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkConnectErr != nil {
+		return f.networkConnectErr
+	}
+	if f.attached[container] == nil {
+		f.attached[container] = map[string]bool{}
+	}
+	f.attached[container][network] = true
+	return nil
+}
+
+func (f *fakeDocker) NetworkDisconnect(_ context.Context, network, container string) error {
+	f.record("NetworkDisconnect", network, container)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkDisconnectErr != nil {
+		return f.networkDisconnectErr
+	}
+	delete(f.attached[container], network)
+	return nil
+}
+
+func (f *fakeDocker) ContainerNetworks(_ context.Context, container string) (map[string]bool, error) {
+	f.record("ContainerNetworks", container)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.containerNetworksErr != nil {
+		return nil, f.containerNetworksErr
+	}
+	out := map[string]bool{}
+	for n := range f.attached[container] {
+		out[n] = true
+	}
+	return out, nil
 }
 
 func (f *fakeDocker) PSManaged(_ context.Context) (map[string]bool, error) {
@@ -354,6 +530,9 @@ type fakeCaddy struct {
 	routes  map[string]string            // instanceID → "splash:<state>" | "upstream:<addr>"
 	configs map[string]caddy.RouteConfig // instanceID → last AddRoute policy (#306)
 	calls   []call
+	// writeErr, when set, fails every AddRoute and AddSplashRoute, which then
+	// change nothing.
+	writeErr error
 }
 
 func newFakeCaddy() *fakeCaddy {
@@ -374,9 +553,12 @@ func (c *fakeCaddy) EnsureServer(context.Context) error {
 func (c *fakeCaddy) AddRoute(_ context.Context, cfg caddy.RouteConfig) error {
 	c.record("AddRoute", cfg.InstanceID, cfg.Host, cfg.Upstream)
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.writeErr != nil {
+		return c.writeErr
+	}
 	c.routes[cfg.InstanceID] = "upstream:" + cfg.Upstream
 	c.configs[cfg.InstanceID] = cfg
-	c.mu.Unlock()
 	return nil
 }
 
@@ -387,8 +569,11 @@ func (c *fakeCaddy) AddSplashRoute(ctx context.Context, id, host, name, state st
 		return err
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.writeErr != nil {
+		return c.writeErr
+	}
 	c.routes[id] = "splash:" + state
-	c.mu.Unlock()
 	return nil
 }
 
@@ -446,6 +631,12 @@ type fakeHost struct {
 	// (FreeBytes must degrade to 0).
 	systemStatus protocol.SystemStatus
 	statusErr    error
+	// resources is returned by SystemResources, for the fit check (#599). The
+	// zero value reports no memory, which reads as "fit unknown", so a test
+	// that does not set it installs as before. resourcesErr forces the
+	// host-error path.
+	resources    protocol.SystemResources
+	resourcesErr error
 
 	// gpu is returned by SystemGPU; the zero value reports no usable GPU, so
 	// the capacity-refusal test needs no setup and stanza tests set Present +
@@ -536,6 +727,16 @@ func (h *fakeHost) SystemStatus(_ context.Context) (protocol.SystemStatus, error
 		return protocol.SystemStatus{}, h.statusErr
 	}
 	return h.systemStatus, nil
+}
+
+func (h *fakeHost) SystemResources(_ context.Context) (protocol.SystemResources, error) {
+	h.mu.Lock()
+	h.calls = append(h.calls, call{method: "SystemResources"})
+	h.mu.Unlock()
+	if h.resourcesErr != nil {
+		return protocol.SystemResources{}, h.resourcesErr
+	}
+	return h.resources, nil
 }
 
 func (h *fakeHost) SystemGPU(_ context.Context) (protocol.SystemGPU, error) {

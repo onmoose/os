@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/onmoose/os/internal/hostagent"
 	"github.com/onmoose/os/internal/hostagent/updatetarget"
 	"github.com/onmoose/os/internal/protocol"
 )
@@ -291,7 +294,10 @@ func TestReport_RefusedTargetIsNotApplicable(t *testing.T) {
 // stubOS is stream A's facts for the report.
 type stubOS struct {
 	peekState string
+	trial     bool
 }
+
+func (s stubOS) OnTrial() bool { return s.trial }
 
 func (s stubOS) Running() (string, string) { return "0.15.0", "A" }
 func (s stubOS) Last() *protocol.OSOutcome {
@@ -308,6 +314,10 @@ func (stubOSApplier) Floor() string             { return "" }
 func (a stubOSApplier) Apply(updatetarget.OSRelease, bool, time.Time) updatetarget.OSDecision {
 	return updatetarget.OSDecision{State: a.state}
 }
+func (a stubOSApplier) SwitchNow(updatetarget.OSRelease, time.Time) updatetarget.OSDecision {
+	return updatetarget.OSDecision{State: a.state}
+}
+func (stubOSApplier) Peek(updatetarget.OSRelease) (string, string, bool) { return "", "", false }
 
 func TestReportOS(t *testing.T) {
 	// No applier: stream A is reported, as unsupported.
@@ -328,6 +338,15 @@ func TestReportOS(t *testing.T) {
 	if got.State != protocol.OSUpdateInstalled || got.Running != "0.15.0" || got.Slot != "A" || got.Target == nil || got.Target.Version != "0.15.1" || got.Last == nil {
 		t.Fatalf("report: %+v", got)
 	}
+	// Under the brain's hold (#632) the installed release says it waits for
+	// the apps, even though Peek knows nothing of the hold.
+	noon := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	l.Now = func() time.Time { return noon }
+	l.SetHold(noon.Add(time.Minute))
+	if got := r.Read().OS; got.State != protocol.OSUpdateInstalled || got.Detail != updatetarget.SwitchWaitsForApps {
+		t.Fatalf("under a hold: %+v, want installed and waiting for the apps", got)
+	}
+	l.ClearHold()
 	// Peek with nothing newer leaves the loop's word.
 	r.os = stubOS{}
 	if got := r.Read().OS; got.State != protocol.OSUpdateInstalling {
@@ -337,5 +356,98 @@ func TestReportOS(t *testing.T) {
 	r = updateTargetReport{disabledErr: "bad seed", os: stubOS{}}
 	if got := r.Read().OS; got.State != protocol.OSUpdateNone || got.Running != "0.15.0" || got.Detail == "" {
 		t.Fatalf("disabled: %+v", got)
+	}
+}
+
+// os.trial comes from the applier's trial marker, whatever the loop decided
+// (#509): a dashboard waiting for an OS update relies on it.
+func TestReportOSTrial(t *testing.T) {
+	l := tickedLoop(t, stubSource{target: goodOffer()}, stubRunning{brain: runningBrain, ui: runningUI})
+	r := updateTargetReport{loop: l, running: stubRunning{brain: runningBrain, ui: runningUI}, os: stubOS{trial: true}}
+	if got := r.Read().OS; got == nil || !got.Trial {
+		t.Fatalf("on trial: %+v, want trial true", got)
+	}
+	r.os = stubOS{}
+	if got := r.Read().OS; got.Trial {
+		t.Fatalf("not on trial: %+v, want trial false", got)
+	}
+}
+
+// The read carries the brain's hold and whether stream B is done tonight
+// (#632). control_plane_done_night is always sent, "" included, so the brain
+// can tell this host-agent from an older one.
+func TestReport_HoldAndControlPlaneDone(t *testing.T) {
+	now := time.Date(2026, 11, 7, 3, 10, 0, 0, time.UTC)
+	l := &updatetarget.Loop{
+		Source: stubSource{target: goodOffer()}, Current: stubRunning{brain: targetBrain, ui: targetUI},
+		Now: func() time.Time { return now },
+	}
+	r := updateTargetReport{loop: l, running: stubRunning{brain: targetBrain, ui: targetUI}}
+	got := r.Read()
+	if got.ControlPlaneDoneNight == nil || *got.ControlPlaneDoneNight != "" {
+		t.Fatalf("before a tick: control_plane_done_night = %v, want present and empty", got.ControlPlaneDoneNight)
+	}
+	if got.HoldUntil != "" {
+		t.Fatalf("hold_until = %q with no hold", got.HoldUntil)
+	}
+
+	l.Tick(context.Background())
+	l.SetHold(now.Add(protocol.UpdateHoldLease))
+	got = r.Read()
+	if got.ControlPlaneDoneNight == nil || *got.ControlPlaneDoneNight != "2026-11-07" {
+		t.Fatalf("current, checked in the window: control_plane_done_night = %v, want 2026-11-07", got.ControlPlaneDoneNight)
+	}
+	if got.HoldUntil != "2026-11-07T03:20:00Z" {
+		t.Fatalf("hold_until = %q, want 2026-11-07T03:20:00Z", got.HoldUntil)
+	}
+}
+
+// A box with no loop has no stream B to wait for: the night is done as soon
+// as its window is open.
+func TestReport_NoLoopIsDoneInTheWindow(t *testing.T) {
+	now := time.Now().UTC()
+	tod := time.Duration(now.Hour())*time.Hour + time.Duration(now.Minute())*time.Minute
+	open := updatetarget.Window{Start: (tod + 23*time.Hour) % (24 * time.Hour), End: (tod + 2*time.Hour) % (24 * time.Hour)}
+	r := updateTargetReport{
+		disabledErr: "bad seed",
+		window:      open,
+		zone:        func() (*time.Location, string) { return time.UTC, "UTC" },
+	}
+	got := r.Read()
+	if got.ControlPlaneDoneNight == nil || *got.ControlPlaneDoneNight == "" {
+		t.Fatalf("open window, no loop: control_plane_done_night = %v, want tonight", got.ControlPlaneDoneNight)
+	}
+	shut := updatetarget.Window{Start: (tod + 3*time.Hour) % (24 * time.Hour), End: (tod + 4*time.Hour) % (24 * time.Hour)}
+	r.window = shut
+	if got := r.Read(); got.ControlPlaneDoneNight == nil || *got.ControlPlaneDoneNight != "" {
+		t.Fatalf("shut window, no loop: control_plane_done_night = %v, want empty", got.ControlPlaneDoneNight)
+	}
+}
+
+// The loop is what host-agent-real wires as the hold: PUT and DELETE on the
+// socket reach it, with its own cuts.
+func TestHoldRoutesReachTheLoop(t *testing.T) {
+	now := time.Date(2026, 11, 7, 3, 50, 0, 0, time.UTC)
+	l := &updatetarget.Loop{Source: stubSource{err: updatetarget.ErrNoTarget}, Now: func() time.Time { return now }}
+	a := hostagent.New(nil, hostagent.NewFakePublisher(".local"))
+	a.UpdateHold = l
+	mux := http.NewServeMux()
+	a.Mount(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, protocol.UpdateHoldPath, strings.NewReader(`{"until":"2026-11-07T04:30:00Z"}`)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"until":"2026-11-07T03:55:00Z"`) {
+		t.Fatalf("PUT: %d %s, want 200 cut to 03:55", rec.Code, rec.Body)
+	}
+	if _, ok := l.Hold(); !ok {
+		t.Fatal("the loop holds nothing after the PUT")
+	}
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, protocol.UpdateHoldPath, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE: %d, want 204", rec.Code)
+	}
+	if _, ok := l.Hold(); ok {
+		t.Fatal("the loop still holds after the DELETE")
 	}
 }

@@ -46,6 +46,10 @@ const routes: RouteRecordRaw[] = [
       { path: "notifications", name: "settings-notifications", component: () => import("@/views/settings/NotificationsSection.vue") },
       { path: "apps", name: "settings-apps", component: () => import("@/views/settings/InstalledAppsSection.vue") },
       { path: "apps/:id", name: "settings-app", component: () => import("@/views/settings/InstalledAppDetailSection.vue") },
+      // There is no Updates page: each app's page shows its update, its
+      // failure and the rollback button (DECISIONS.md 2026-11-07). An old
+      // link lands on the apps list.
+      { path: "updates", redirect: "/settings/apps" },
       { path: "activity", name: "settings-activity", component: () => import("@/views/settings/ActivitySection.vue") },
       { path: "users", name: "settings-users", component: () => import("@/views/settings/UsersSection.vue") },
       // Integrations (INSTALL_SETUP.md, 2026-09-26): the user's own accounts
@@ -64,6 +68,7 @@ const routes: RouteRecordRaw[] = [
       { path: "mail", redirect: "/settings/email" },
       { path: "mail/add", redirect: "/settings/email/add" },
       { path: "mail/add/:preset", redirect: (to) => `/settings/email/add/${String(to.params.preset)}` },
+      { path: "system", name: "settings-system", component: () => import("@/views/settings/SystemSection.vue") },
       { path: "about", name: "settings-about", component: () => import("@/views/settings/AboutSection.vue") },
     ],
   },

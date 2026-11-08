@@ -33,6 +33,8 @@ type fakeDocker struct {
 	failOn map[string]error
 	ips    map[string]string
 	labels map[string]string
+	// versions answers the image version label, keyed by ref.
+	versions map[string]string
 	// onRun lets a test simulate what a started container does to the box —
 	// notably a new brain migrating the SQLite database on boot, which is the
 	// case image rollback alone cannot undo.
@@ -68,7 +70,10 @@ func (f *fakeDocker) RemoveContainer(ctx context.Context, name string) error {
 // ImageLabel answers with the protocol major this host-agent speaks unless a
 // test overrides it, so the lockstep guard is satisfied by default and can be
 // made to fail on demand.
-func (f *fakeDocker) ImageLabel(ctx context.Context, ref, _ string) (string, error) {
+func (f *fakeDocker) ImageLabel(ctx context.Context, ref, label string) (string, error) {
+	if label == protocol.ImageVersionLabel {
+		return f.versions[ref], ctx.Err()
+	}
 	if err := f.record(ctx, "label:"+ref); err != nil {
 		return "", err
 	}
@@ -708,5 +713,49 @@ func TestRevertBringsComposeUpBeforeStartingTheOldBrain(t *testing.T) {
 	brain := d.indexOf(t, "run:"+oldBrain) // only the revert starts the old brain
 	if compose > brain {
 		t.Errorf("the revert started the old brain before putting the compose stack back (compose at %d, run at %d); calls were %v", compose, brain, d.calls)
+	}
+}
+
+// The record the dashboard shows says which versions an update moved between,
+// read from the images' version label (#488): the running brain before the
+// pull, the target after it.
+func TestApplyReadsTheVersionsFromTheImages(t *testing.T) {
+	o := setup(t)
+	o.BrainRef, o.UIRef = newBrain, newUI
+	d := newFakeDocker()
+	d.versions = map[string]string{oldBrain: "0.17.0", newBrain: "0.18.0"}
+
+	res, err := Apply(context.Background(), d, &fakeProber{failURLs: map[string]error{}}, o)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if res.FromVersion != "0.17.0" || res.ToVersion != "0.18.0" {
+		t.Fatalf("versions = %q -> %q, want 0.17.0 -> 0.18.0", res.FromVersion, res.ToVersion)
+	}
+}
+
+// A UI-only update reads the versions off the UI images, and a target that
+// was never pulled has no version to read.
+func TestApplyVersionsUIOnlyAndPullFailure(t *testing.T) {
+	o := setup(t)
+	o.UIRef = newUI
+	d := newFakeDocker()
+	d.versions = map[string]string{oldUI: "0.17.0", newUI: "0.17.1"}
+	res, err := Apply(context.Background(), d, &fakeProber{failURLs: map[string]error{}}, o)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if res.FromVersion != "0.17.0" || res.ToVersion != "0.17.1" {
+		t.Fatalf("UI-only versions = %q -> %q, want 0.17.0 -> 0.17.1", res.FromVersion, res.ToVersion)
+	}
+
+	o = setup(t)
+	o.BrainRef = newBrain
+	d = newFakeDocker()
+	d.versions = map[string]string{oldBrain: "0.17.0", newBrain: "0.18.0"}
+	d.failOn["pull:"+newBrain] = errors.New("no route to host")
+	res, _ = Apply(context.Background(), d, &fakeProber{failURLs: map[string]error{}}, o)
+	if res.FromVersion != "0.17.0" || res.ToVersion != "" {
+		t.Fatalf("pull failure versions = %q -> %q, want 0.17.0 -> empty", res.FromVersion, res.ToVersion)
 	}
 }

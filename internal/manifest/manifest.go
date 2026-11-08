@@ -5,7 +5,9 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -69,10 +71,18 @@ type Manifest struct {
 	// (Door-2 always, Door-1 until the catalog publishes a digest).
 	Images map[string]ImageRef `yaml:"images,omitempty"`
 
-	// Storage holds the author's on-disk hints (APP_MANIFEST.md # Storage). v1
-	// reads only estimated_size — hoisted verbatim into Footprint; any other
-	// keys (e.g. data_volumes) live in the compose, not parsed here.
+	// Storage holds the author's on-disk hints (APP_MANIFEST.md # Storage):
+	// estimated_size, hoisted verbatim into Footprint, and the data_volumes and
+	// cache_volumes lists the pre-update snapshot reads (UPDATES.md #
+	// Pre-update snapshot). admission.CheckManifest checks the two lists.
 	Storage Storage `yaml:"storage,omitempty"`
+
+	// Resources is the memory and CPU the author recommends (APP_MANIFEST.md #
+	// B2). Never a cgroup limit. The brain compares it with the box's memory and
+	// cores to say whether the app fits, and refuses an install the box cannot
+	// hold at all (Fit, APP_ISOLATION.md # Resource limits). Absent ⇒ the app
+	// always fits.
+	Resources Resources `yaml:"resources,omitempty"`
 
 	// HealthProbe is the optional "up but not responding" probe config
 	// (APP_MANIFEST.md # B). nil ⇒ the app is never probed and the
@@ -314,11 +324,106 @@ func (r *ImageRef) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// Storage is the author's on-disk hint block (APP_MANIFEST.md # Storage). v1
-// parses only estimated_size — a human-readable size string ("10GB") hoisted
-// verbatim into the catalog footprint; the brain does no unit math on it there.
+// Storage is the author's on-disk hint block (APP_MANIFEST.md # Storage).
+// EstimatedSize is a human-readable size string ("10GB") hoisted verbatim into
+// the catalog footprint; the brain does no unit math on it there.
+//
+// DataVolumes and CacheVolumes are paths relative to the instance dir, written
+// the way the compose writes its binds (./data/index). The pre-update snapshot
+// keeps the data volumes minus the cache volumes nested in them (UPDATES.md #
+// Pre-update snapshot). Parse keeps them as written; admission.CheckManifest
+// checks their shape and that they do not overlap, and CleanStoragePath is the
+// one place their form is read. tier and app_managed_user_content are not
+// modelled yet.
 type Storage struct {
-	EstimatedSize string `yaml:"estimated_size,omitempty" json:"estimated_size,omitempty"`
+	EstimatedSize string   `yaml:"estimated_size,omitempty" json:"estimated_size,omitempty"`
+	DataVolumes   []string `yaml:"data_volumes,omitempty" json:"-"`
+	CacheVolumes  []string `yaml:"cache_volumes,omitempty" json:"-"`
+}
+
+// reservedInstancePaths are the names the brain keeps for itself in the
+// instance dir (APP_LIFECYCLE.md # on-disk layout per instance). A storage
+// path may not be one of them or sit under one: a snapshot of them would hold
+// the brain's own files, and a restore would write over them.
+var reservedInstancePaths = []string{
+	"manifest.yml", "compose.yml", "compose.override.yml", ".env", "snapshots",
+	// The previous generation an app update keeps, and its progress record
+	// (APP_LIFECYCLE.md # update + rollback).
+	"manifest.yml.prev", "compose.yml.prev", "compose.override.yml.prev", ".env.prev", "update.json",
+}
+
+// CleanStoragePath reads one data_volumes or cache_volumes entry and returns
+// it as a clean, slash-separated path relative to the instance dir ("./data/x/"
+// becomes "data/x"). The error says, in plain words, why the path cannot be
+// used: it is empty, absolute, uses a variable, leaves the instance dir, is the
+// instance dir itself, or names a file the brain keeps there.
+func CleanStoragePath(raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	switch {
+	case p == "":
+		return "", fmt.Errorf("is empty")
+	case strings.HasPrefix(p, "/"):
+		return "", fmt.Errorf("is an absolute path; write it relative to the app's folder, like ./data/index")
+	case strings.Contains(p, "$"):
+		return "", fmt.Errorf("uses a variable; write it relative to the app's folder, like ./data/index")
+	case strings.Contains(p, `\`):
+		return "", fmt.Errorf("contains a backslash; use / between folders")
+	}
+	clean := path.Clean(p)
+	if clean == "." {
+		return "", fmt.Errorf("is the whole app folder; name the folders inside it, like ./data")
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("leaves the app's folder")
+	}
+	first, _, _ := strings.Cut(clean, "/")
+	if slices.Contains(reservedInstancePaths, first) {
+		return "", fmt.Errorf("names %s, which moose keeps for itself in the app's folder", first)
+	}
+	return clean, nil
+}
+
+// PathWithin reports whether path p is dir or sits under it. Both are clean,
+// slash-separated paths as CleanStoragePath returns them.
+func PathWithin(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, dir+"/")
+}
+
+// Resources is the manifest's resources block. Only recommended exists: there
+// is deliberately no limit field (APP_MANIFEST.md # B2). The json tags are the
+// published catalog's, which carries this block on each detail record so the
+// store can show the fit before it fetches the manifest.
+type Resources struct {
+	Recommended Recommended `yaml:"recommended,omitempty" json:"recommended"`
+}
+
+// Recommended is the memory and CPU an app recommends. Memory is the authored
+// size string ("512M", "2G"), in the binary units of storage.estimated_size;
+// read it through MemoryBytes. CPU is a number of cores. Either may be absent.
+type Recommended struct {
+	Memory string  `yaml:"memory,omitempty" json:"memory,omitempty"`
+	CPU    float64 `yaml:"cpu,omitempty" json:"cpu,omitempty"`
+}
+
+// MemoryBytes parses the recommended memory into bytes. Unset is 0 with no
+// error. Parse has already refused a malformed value in a manifest, but the
+// catalog's copy of the block is read without Parse, so the error stays.
+func (r Recommended) MemoryBytes() (int64, error) {
+	raw := strings.TrimSpace(r.Memory)
+	if raw == "" {
+		return 0, nil
+	}
+	return parseBinarySize("resources.recommended.memory", raw)
+}
+
+func (m *Manifest) validateResources() error {
+	if _, err := m.Resources.Recommended.MemoryBytes(); err != nil {
+		return err
+	}
+	if m.Resources.Recommended.CPU < 0 {
+		return fmt.Errorf("resources.recommended.cpu %v must not be negative", m.Resources.Recommended.CPU)
+	}
+	return nil
 }
 
 // EstimatedSizeBytes parses storage.estimated_size into a byte count for the
@@ -339,7 +444,7 @@ func (s Storage) EstimatedSizeBytes() (int64, bool, error) {
 	if raw == "" {
 		return 0, false, nil
 	}
-	n, err := parseBinarySize(raw)
+	n, err := parseBinarySize("estimated_size", raw)
 	if err != nil {
 		return 0, false, err
 	}
@@ -364,19 +469,19 @@ var sizeRe = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]*)$`)
 
 // parseBinarySize parses a human size like "10GB" or "1.5 GiB" into bytes using
 // the binary multipliers in sizeUnits. The caller passes a non-empty, trimmed
-// string.
-func parseBinarySize(s string) (int64, error) {
+// string, and the field name the error messages use.
+func parseBinarySize(field, s string) (int64, error) {
 	m := sizeRe.FindStringSubmatch(s)
 	if m == nil {
-		return 0, fmt.Errorf("estimated_size %q is not a valid size (e.g. 10GB, 512MB)", s)
+		return 0, fmt.Errorf("%s %q is not a valid size (e.g. 10GB, 512MB)", field, s)
 	}
 	mult, ok := sizeUnits[strings.ToLower(m[2])]
 	if !ok {
-		return 0, fmt.Errorf("estimated_size %q has an unknown unit %q", s, m[2])
+		return 0, fmt.Errorf("%s %q has an unknown unit %q", field, s, m[2])
 	}
 	mant, err := strconv.ParseFloat(m[1], 64)
 	if err != nil {
-		return 0, fmt.Errorf("estimated_size %q: %w", s, err)
+		return 0, fmt.Errorf("%s %q: %w", field, s, err)
 	}
 	return int64(mant * float64(mult)), nil
 }
@@ -669,7 +774,27 @@ var folderTaxonomy = map[string]bool{
 // when a manifest explicitly sets `listed: false` (APP_MANIFEST.md # A).
 func (m *Manifest) IsListed() bool { return m.Listed == nil || *m.Listed }
 
+// SupportedManifestVersion is the one manifest_version this brain reads.
+const SupportedManifestVersion = 1
+
+// ErrUnsupportedManifestVersion is the Parse error for a manifest whose
+// manifest_version this brain does not read. The app update path tells it
+// apart from other load errors: such an update is parked with "moose needs to
+// update first" until a newer brain arrives (UPDATES.md # 7 Compatibility
+// matrix). Every other Parse error is a broken manifest.
+var ErrUnsupportedManifestVersion = errors.New("unsupported manifest_version")
+
 func Parse(data []byte) (*Manifest, error) {
+	// Read manifest_version first, on its own. A newer manifest_version may
+	// change the shape of other fields, so a full parse could fail with a
+	// type error or a missing field before the version is ever checked, and
+	// the update path would see a broken manifest, not one for a newer moose.
+	var head struct {
+		ManifestVersion int `yaml:"manifest_version"`
+	}
+	if err := yaml.Unmarshal(data, &head); err == nil && head.ManifestVersion != 0 && head.ManifestVersion != SupportedManifestVersion {
+		return nil, fmt.Errorf("%w: manifest_version %d (this build supports %d)", ErrUnsupportedManifestVersion, head.ManifestVersion, SupportedManifestVersion)
+	}
 	var m Manifest
 	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
@@ -700,8 +825,8 @@ func (m *Manifest) validate() error {
 	case m.MainPort == 0:
 		return missing("main_port")
 	}
-	if m.ManifestVersion != 1 {
-		return fmt.Errorf("unsupported manifest_version %d (this build supports 1)", m.ManifestVersion)
+	if m.ManifestVersion != SupportedManifestVersion {
+		return fmt.Errorf("%w: manifest_version %d (this build supports %d)", ErrUnsupportedManifestVersion, m.ManifestVersion, SupportedManifestVersion)
 	}
 	// Slugs must be strict kebab-case so they stay parseable inside the
 	// `<slug>--<user>` personal-instance scheme (DASHBOARD.md # instance
@@ -721,6 +846,9 @@ func (m *Manifest) validate() error {
 		return fmt.Errorf("icon_glyph %q must be a lucide icon name in kebab-case", m.IconGlyph)
 	}
 	if err := m.validateHealthProbe(); err != nil {
+		return err
+	}
+	if err := m.validateResources(); err != nil {
 		return err
 	}
 	if err := m.validateSecrets(); err != nil {

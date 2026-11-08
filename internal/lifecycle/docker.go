@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,20 @@ type DockerDriver interface {
 	ComposeUp(ctx context.Context, dir, project string) (string, error)
 	ComposeDown(ctx context.Context, dir, project string) (string, error)
 	ComposeStop(ctx context.Context, dir, project string) (string, error)
+	// RunningContainers lists the ids of the running containers of a compose
+	// project, by its label, without reading any compose file. StopContainer
+	// stops one container by id, with the grace period it was created with. A
+	// rollback uses them when `compose stop` fails, because the files that
+	// broke the update can be the reason (UPDATES.md # As built (#631)). They
+	// need only the proxy's CONTAINERS + POST families, as `compose stop` does.
+	RunningContainers(ctx context.Context, project string) ([]string, error)
+	StopContainer(ctx context.Context, container string) (string, error)
+	// ComposeCreate makes the project's containers again from the files on
+	// disk without starting them (`docker compose create --force-recreate`).
+	// It keeps their anonymous volumes. An update runs it after it made the
+	// app's network again, because a container on a removed network cannot
+	// start and compose does not see the change (#633).
+	ComposeCreate(ctx context.Context, dir, project string) (string, error)
 	// ServiceUp brings up a managed-service compose project
 	// (SERVICE_PROVISIONING.md # Tier 1). Unlike ComposeUp it uses only the
 	// generated compose.yml + .env (no per-app override): a service instance is a
@@ -41,6 +56,12 @@ type DockerDriver interface {
 	// of this project: it is host-agent-seeded transport (the brain cannot bring
 	// up its own sole Docker path), launched separately before the brain.
 	ControlPlaneUp(ctx context.Context, dir, project string) (string, error)
+	// ControlPlaneRecreate force-recreates one service of the control-plane
+	// project (`docker compose up -d --force-recreate --no-deps <service>`).
+	// Only MigrateCaddyAdminSocket uses it, at brain startup: Caddy reads
+	// caddy.json only when it starts, and a plain up does not recreate a
+	// container whose compose did not change.
+	ControlPlaneRecreate(ctx context.Context, dir, project, service string) (string, error)
 	// RunOneOff runs an ephemeral client container against a managed service
 	// (`docker run --rm --network <network> --env-file <envFile> <image> <args…>`)
 	// and returns combined output. The brain uses it to provision per-app
@@ -52,6 +73,15 @@ type DockerDriver interface {
 	// DECISIONS.md 2026-06-14). --env-file carries the service superuser password
 	// out of host argv; --rm removes the container on exit.
 	RunOneOff(ctx context.Context, image, network, envFile string, args []string) (string, error)
+	// RunOneOffStream is RunOneOff with the client's stdout written to stdout
+	// and, when stdin is not nil, stdin fed to the client (`docker run --rm -i`).
+	// The pre-update snapshot uses it to stream a database dump out of the
+	// one-shot client and back into it on restore, so the dump never sits in
+	// the brain's memory and never needs a bind mount the client's remapped
+	// user could not write (UPDATES.md # Pre-update snapshot). The client's
+	// stderr comes back as the string, for the error message. Like RunOneOff it
+	// needs only the proxy's CONTAINERS + POST families (create, start, attach).
+	RunOneOffStream(ctx context.Context, image, network, envFile string, args []string, stdin io.Reader, stdout io.Writer) (string, error)
 	// ContainerHealth reads a container's healthcheck status by name
 	// (`docker inspect -f {{.State.Health.Status}}`): "healthy", "starting",
 	// "unhealthy", or "none" when the container declares no healthcheck. Used to
@@ -60,7 +90,23 @@ type DockerDriver interface {
 	ContainerHealth(ctx context.Context, container string) (string, error)
 	Inspect(ctx context.Context, instanceID, mainService string) (running bool, health string, err error)
 	NetworkCreate(ctx context.Context, name string, internal bool) error
+	// NetworkInspect reads whether a network exists, whether it is internal
+	// (no route out), and the containers on it now, by name. An update reads
+	// it to make the app's network follow the internet permission (#633).
+	// Needs only the proxy's NETWORKS family.
+	NetworkInspect(ctx context.Context, name string) (NetworkInfo, error)
 	NetworkRemove(ctx context.Context, name string) error
+	// NetworkConnect attaches an existing container to a network, and
+	// NetworkDisconnect detaches it. The brain uses them to put Caddy on each
+	// app's own network, so no app has to join the control-plane network
+	// (CONTROL_PLANE.md # Caddy is moose substrate, #608). Already attached and
+	// already gone both count as success. Needs the proxy's NETWORKS + POST.
+	NetworkConnect(ctx context.Context, network, container string) error
+	NetworkDisconnect(ctx context.Context, network, container string) error
+	// ContainerNetworks lists the networks a container is attached to, by
+	// name, whether it runs or not. A missing container is errNoSuchContainer.
+	// Read-only; needs only the proxy's CONTAINERS endpoint family.
+	ContainerNetworks(ctx context.Context, container string) (map[string]bool, error)
 	PSManaged(ctx context.Context) (map[string]bool, error)
 	// RestartCounts reports each managed instance's cumulative container
 	// RestartCount (max across the instance's containers), keyed by
@@ -102,15 +148,26 @@ type DockerDriver interface {
 	ImageUserFiles(ctx context.Context, instanceID, ref string) (passwd, group []byte, err error)
 }
 
+// NetworkInfo is what NetworkInspect reads. Containers are the names of the
+// containers attached now; a stopped container is not attached.
+type NetworkInfo struct {
+	Exists     bool
+	Internal   bool
+	Containers []string
+}
+
 // ManagedContainer is one managed container's identity and liveness, as read
 // from `docker inspect`. Service is the compose service name
 // (com.docker.compose.service label); StartedAt is zero for a never-started
-// container.
+// container. Health is Docker's own healthcheck verdict (State.Health.Status):
+// "starting", "healthy" or "unhealthy", and empty when the image declares no
+// HEALTHCHECK.
 type ManagedContainer struct {
 	InstanceID string
 	Service    string
 	Running    bool
 	StartedAt  time.Time
+	Health     string
 }
 
 // RepoDigests is the `RepoDigests` field of `docker image inspect`: a list of
@@ -163,6 +220,10 @@ type HostDriver interface {
 	// RenderGID feeds the override's /dev/dri group_add (APP_ISOLATION.md #
 	// GPU). Queried only when the manifest declares gpu: true.
 	SystemGPU(ctx context.Context) (protocol.SystemGPU, error)
+	// SystemResources is the host's /proc sample. The fit check reads its
+	// memory figures and core count (FitBox, #599). Read-only; a failure means
+	// no fit is shown and no install is refused for it.
+	SystemResources(ctx context.Context) (protocol.SystemResources, error)
 }
 
 // Admitter validates a verbatim compose. Default impl is admission.Check; tests
@@ -208,6 +269,24 @@ func (cliDocker) ComposeStop(ctx context.Context, dir, project string) (string, 
 	return composeRun(ctx, dir, project, "stop")
 }
 
+func (cliDocker) RunningContainers(ctx context.Context, project string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "ps", "-q",
+		"--filter", "label=com.docker.compose.project="+project).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w", err)
+	}
+	return strings.Fields(string(out)), nil
+}
+
+func (cliDocker) StopContainer(ctx context.Context, container string) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "stop", container).CombinedOutput()
+	return string(out), err
+}
+
+func (cliDocker) ComposeCreate(ctx context.Context, dir, project string) (string, error) {
+	return composeRun(ctx, dir, project, "create", "--force-recreate")
+}
+
 func composeRun(ctx context.Context, dir, project string, args ...string) (string, error) {
 	base := []string{
 		"compose",
@@ -240,10 +319,32 @@ func (cliDocker) ControlPlaneUp(ctx context.Context, dir, project string) (strin
 	return string(out), err
 }
 
+func (cliDocker) ControlPlaneRecreate(ctx context.Context, dir, project, service string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", "compose.yml", "-p", project, "up", "-d", "--force-recreate", "--no-deps", service)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 func (cliDocker) RunOneOff(ctx context.Context, image, network, envFile string, args []string) (string, error) {
 	full := append([]string{"run", "--rm", "--network", network, "--env-file", envFile, image}, args...)
 	out, err := exec.CommandContext(ctx, "docker", full...).CombinedOutput()
 	return string(out), err
+}
+
+func (cliDocker) RunOneOffStream(ctx context.Context, image, network, envFile string, args []string, stdin io.Reader, stdout io.Writer) (string, error) {
+	full := []string{"run", "--rm"}
+	if stdin != nil {
+		full = append(full, "-i")
+	}
+	full = append(append(full, "--network", network, "--env-file", envFile, image), args...)
+	cmd := exec.CommandContext(ctx, "docker", full...)
+	var stderr bytes.Buffer
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
 }
 
 func (cliDocker) ContainerHealth(ctx context.Context, container string) (string, error) {
@@ -292,8 +393,118 @@ func (cliDocker) NetworkCreate(ctx context.Context, name string, internal bool) 
 	return nil
 }
 
+func (cliDocker) NetworkInspect(ctx context.Context, name string) (NetworkInfo, error) {
+	out, err := exec.CommandContext(ctx, "docker", "network", "inspect", name).CombinedOutput()
+	if err != nil {
+		if strings.Contains(strings.ToLower(string(out)), "not found") {
+			return NetworkInfo{}, nil
+		}
+		return NetworkInfo{}, fmt.Errorf("inspect network %s: %w: %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return parseNetworkInspect(out)
+}
+
+// parseNetworkInspect reads `docker network inspect <name>`: an array of one
+// network, with its Internal flag and its attached containers by id.
+func parseNetworkInspect(out []byte) (NetworkInfo, error) {
+	var nets []struct {
+		Internal   bool `json:"Internal"`
+		Containers map[string]struct {
+			Name string `json:"Name"`
+		} `json:"Containers"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &nets); err != nil {
+		return NetworkInfo{}, fmt.Errorf("parse network inspect: %w", err)
+	}
+	if len(nets) == 0 {
+		return NetworkInfo{}, nil
+	}
+	info := NetworkInfo{Exists: true, Internal: nets[0].Internal}
+	for _, c := range nets[0].Containers {
+		info.Containers = append(info.Containers, c.Name)
+	}
+	sort.Strings(info.Containers)
+	return info, nil
+}
+
 func (cliDocker) NetworkRemove(ctx context.Context, name string) error {
 	return exec.CommandContext(ctx, "docker", "network", "rm", name).Run()
+}
+
+func (cliDocker) NetworkConnect(ctx context.Context, network, container string) error {
+	out, err := exec.CommandContext(ctx, "docker", "network", "connect", network, container).CombinedOutput()
+	if err != nil && alreadyAttached(string(out)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (cliDocker) NetworkDisconnect(ctx context.Context, network, container string) error {
+	out, err := exec.CommandContext(ctx, "docker", "network", "disconnect", network, container).CombinedOutput()
+	if err != nil && notAttached(string(out)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (cliDocker) ContainerNetworks(ctx context.Context, container string) (map[string]bool, error) {
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--type", "container",
+		"--format", "{{json .NetworkSettings.Networks}}", container).Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if noSuchContainer(string(exit.Stderr)) {
+				return nil, fmt.Errorf("inspect %s networks: %w", container, errNoSuchContainer)
+			}
+			return nil, fmt.Errorf("inspect %s networks: %w: %s", container, err, strings.TrimSpace(string(exit.Stderr)))
+		}
+		return nil, fmt.Errorf("inspect %s networks: %w", container, err)
+	}
+	return parseContainerNetworks(out)
+}
+
+// errNoSuchContainer says the container does not exist, so it is on no network.
+var errNoSuchContainer = errors.New("no such container")
+
+// noSuchContainer reports whether a `docker inspect` failure says the container
+// does not exist. Any other wording stays a failure, which is the safe side: a
+// caller then warns and tries again, and does not take it as clean.
+func noSuchContainer(out string) bool {
+	return strings.Contains(out, "No such container")
+}
+
+// parseContainerNetworks reads the `{{json .NetworkSettings.Networks}}` of
+// `docker inspect`: an object keyed by network name.
+func parseContainerNetworks(out []byte) (map[string]bool, error) {
+	var nets map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(out), &nets); err != nil {
+		return nil, fmt.Errorf("parse container networks: %w", err)
+	}
+	names := make(map[string]bool, len(nets))
+	for name := range nets {
+		names[name] = true
+	}
+	return names, nil
+}
+
+// alreadyAttached reports whether a `docker network connect` failure says the
+// container is on the network already. Docker has worded it two ways.
+func alreadyAttached(out string) bool {
+	return strings.Contains(out, "already exists in network") || strings.Contains(out, "already attached")
+}
+
+// notAttached reports whether a `docker network disconnect` failure says there
+// is nothing to disconnect: the container is not on the network, or the
+// network or the container is gone.
+func notAttached(out string) bool {
+	return strings.Contains(out, "is not connected") || strings.Contains(out, "No such network") ||
+		strings.Contains(out, "No such container") || strings.Contains(out, "not found")
 }
 
 func (cliDocker) RemoveContainersByInstance(ctx context.Context, instanceID string) error {
@@ -546,9 +757,10 @@ func (cliDocker) ManagedContainers(ctx context.Context) ([]ManagedContainer, err
 		return nil, nil
 	}
 	// One `docker inspect` over all managed containers: instance_id, compose
-	// service, running flag, and StartedAt (RFC3339) per line.
+	// service, running flag, StartedAt (RFC3339) and health status per line.
+	// A container with no healthcheck has no State.Health, so it prints "none".
 	args := append([]string{"inspect", "--format",
-		`{{index .Config.Labels "moose.instance_id"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.StartedAt}}`}, idList...)
+		`{{index .Config.Labels "moose.instance_id"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.StartedAt}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}`}, idList...)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -560,23 +772,35 @@ func (cliDocker) ManagedContainers(ctx context.Context) ([]ManagedContainer, err
 	// TOCTOU: a container removed between the `docker ps` above and this inspect
 	// causes Docker to exit non-zero but still outputs the containers it inspected.
 	// Parse partial output — the missing containers simply won't appear.
+	return parseManagedContainers(stdout.String()), nil
+}
+
+// parseManagedContainers parses the ManagedContainers inspect output, one
+// container per line: instance_id, service, running, StartedAt, health. A
+// malformed line is skipped.
+func parseManagedContainers(out string) []ManagedContainer {
 	var res []ManagedContainer
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		parts := strings.Fields(line)
-		if len(parts) != 4 {
+		if len(parts) != 5 {
 			continue
 		}
 		// Zero time on a parse failure (never-started container) — the caller's
 		// start-period gate treats it as not-yet-eligible, which is correct.
 		started, _ := time.Parse(time.RFC3339Nano, parts[3])
+		health := parts[4]
+		if health == "none" {
+			health = ""
+		}
 		res = append(res, ManagedContainer{
 			InstanceID: parts[0],
 			Service:    parts[1],
 			Running:    parts[2] == "true",
 			StartedAt:  started,
+			Health:     health,
 		})
 	}
-	return res, nil
+	return res
 }
 
 func (cliDocker) PSManaged(ctx context.Context) (map[string]bool, error) {

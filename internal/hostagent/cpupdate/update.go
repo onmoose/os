@@ -145,6 +145,11 @@ type Result struct {
 	// RevertErr is set when the revert itself failed — the box is then in a
 	// state no automatic path can fix, and this is what tells the operator so.
 	RevertErr error
+	// FromVersion and ToVersion are the control-plane versions the update
+	// moved between, read from the images' version label (versionOf). Empty
+	// when the box could not tell, for example a target that was never pulled.
+	FromVersion string
+	ToVersion   string
 }
 
 // ErrNothingToDo is returned when the target pair is already what the box is
@@ -182,6 +187,9 @@ func Apply(ctx context.Context, d Docker, p Prober, o Options) (Result, error) {
 	if !res.BrainChanged && !res.UIChanged {
 		return res, ErrNothingToDo
 	}
+	// The running image is on the box, so its version can be read now. The
+	// target's can only be read once it is pulled.
+	res.FromVersion = versionOf(ctx, d, versionRef(before.Current, res))
 
 	// 1. Pull first: until an image is on the box, nothing else can start, and
 	// failing here costs nothing because nothing has been touched.
@@ -190,6 +198,7 @@ func Apply(ctx context.Context, d Docker, p Prober, o Options) (Result, error) {
 			return failed(res, "pull"), fmt.Errorf("pull %s: %w", ref, err)
 		}
 	}
+	res.ToVersion = versionOf(ctx, d, versionRef(target, res))
 
 	// 2. The brain has to stop before its database is copied — a snapshot taken
 	// under a live writer restores into a corrupt database (snapshot.go).
@@ -232,6 +241,27 @@ func Apply(ctx context.Context, d Docker, p Prober, o Options) (Result, error) {
 	slog.Info("control plane updated", "image", target.Brain, "step", "committed")
 	gc(ctx, d, o, before, now())
 	return res, nil
+}
+
+// versionRef is the image of a pair to read the control-plane version from:
+// the brain when it moves, else the UI. Both carry the same version label.
+func versionRef(p controlplane.Pair, res Result) string {
+	if res.BrainChanged {
+		return p.Brain
+	}
+	return p.UI
+}
+
+// versionOf reads the control-plane version off an image's label, or "" when
+// it cannot. The version is only for the record the dashboard shows (#488),
+// so a failure here never stops an update.
+func versionOf(ctx context.Context, d Docker, ref string) string {
+	v, err := d.ImageLabel(ctx, ref, protocol.ImageVersionLabel)
+	if err != nil {
+		slog.Warn("control-plane update: could not read the image version", "image", ref, "err", err)
+		return ""
+	}
+	return v
 }
 
 // currentPair reads what the box is running now. The ledger is authoritative

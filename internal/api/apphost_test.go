@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"testing"
 
 	"github.com/onmoose/os/internal/catalog"
@@ -49,7 +50,7 @@ func TestToDTO_URLByProfile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &Server{profile: tt.profile, boxID: tt.boxID}
-			got := s.toDTO(tt.inst, "", nil)
+			got := s.toDTO(context.Background(), tt.inst, "", nil)
 			if got.URL != tt.wantURL {
 				t.Errorf("URL = %q, want %q", got.URL, tt.wantURL)
 			}
@@ -65,7 +66,7 @@ func TestToDTO_ShortDescriptionFromCatalogEntry(t *testing.T) {
 	s := &Server{profile: profile.Appliance}
 	inst := store.Instance{ID: "1", Slug: "photos"}
 
-	withEntry := s.toDTO(inst, "", &catalog.Entry{
+	withEntry := s.toDTO(context.Background(), inst, "", &catalog.Entry{
 		IconURL:          "/api/v1/catalog/photos/icon",
 		IconGlyph:        "camera",
 		ShortDescription: "Self-hosted photo backup",
@@ -74,7 +75,7 @@ func TestToDTO_ShortDescriptionFromCatalogEntry(t *testing.T) {
 		t.Errorf("ShortDescription = %q, want catalog tagline", withEntry.ShortDescription)
 	}
 
-	withoutEntry := s.toDTO(inst, "", nil)
+	withoutEntry := s.toDTO(context.Background(), inst, "", nil)
 	if withoutEntry.ShortDescription != "" {
 		t.Errorf("ShortDescription = %q, want empty for custom app with no catalog entry", withoutEntry.ShortDescription)
 	}

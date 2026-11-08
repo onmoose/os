@@ -82,6 +82,10 @@ export type AuthState = Schemas["Auth-stateResponse"];
 export type SetupResult = Schemas["SetupResponse"];
 export type CatalogEntry = Schemas["Entry"];
 export type CatalogDetail = Schemas["Detail"];
+// AppFit is whether an app fits this box's memory and CPU (#599). The brain
+// computes it once and sends the same figures on the store card, the detail
+// page and the install plan.
+export type AppFit = Schemas["AppFit"];
 export type CatalogHome = Schemas["Home"];
 // HomeGroupView is one rendered category row of the landing page (a spotlight
 // app plus ordered groups, authored in store's home.yml). Exported on its own
@@ -106,6 +110,12 @@ export type Instance = Schemas["InstanceDTO"];
 // the brain DOES declare this one as an enum, so the generated schema carries the
 // literal union — derive from it rather than re-typing the values here.
 export type Exposure = Instance["exposure"];
+// AppUpdate is what the box knows about a new version of an installed app and
+// the last update that did not go through (UPDATES.md # 6, #631).
+export type AppUpdate = Instance["update"];
+// One piece of access a new version of an app asks for (#633). The words for
+// it are wantLines in installSteps.ts.
+export type AppAccessWant = Schemas["AppAccessWant"];
 export type Notification = Schemas["NotificationDTO"];
 export type AuditEvent = Schemas["AuditEventDTO"];
 // HealthIssue mirrors health.Issue (HEALTH.md # Issue shape) — the degraded-mode
@@ -160,6 +170,14 @@ export type RequiresGroup = Schemas["RequiresGroupDTO"];
 export type MailPresetRegionOption = Schemas["MailPresetRegionOptionDTO"];
 export type SystemStorage = Schemas["SystemStorageDTO"];
 export type SystemVersion = Schemas["SystemVersionDTO"];
+// UpdateTarget is what the box's update loop last decided (GET
+// /system/update-target, admin only): the state, the window and its zone, and
+// last, the outcome of the last control-plane update.
+export type UpdateTarget = Schemas["UpdateTargetDTO"];
+export type ControlPlaneOutcome = Schemas["ControlPlaneOutcomeDTO"];
+// SystemUpdateJob is a host-agent update job, as Update now returns it and as
+// GET /system/update/{job_id} reads it.
+export type SystemUpdateJob = Schemas["SystemUpdateJobDTO"];
 export type DiskSpace = Schemas["DiskSpaceDTO"];
 export type AppSecrets = Schemas["AppSecretsDTO"];
 export type AppSecret = Schemas["AppSecretDTO"];
@@ -171,6 +189,9 @@ export type AppSecret = Schemas["AppSecretDTO"];
 // rule lives only in the brain (AUTH.md # Device access).
 export type SSHAccess = Schemas["SSHAccessDTO"];
 export type SSHKey = Schemas["SSHKeyDTO"];
+// SSHKeyCheck is the brain's answer to "is this a public key?": the key as Save
+// would store it, and its fingerprint. Asked at "Add key" (POST /me/ssh/check-key).
+export type SSHKeyCheck = Schemas["Check-my-ssh-keyResponse"];
 
 // Scope is a UI-side literal union, intentionally NOT generated. The brain
 // serves scope (like severity / status / state) as a free string — the huma

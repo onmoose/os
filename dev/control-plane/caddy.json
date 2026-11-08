@@ -1,5 +1,5 @@
 {
-  "admin": { "listen": "0.0.0.0:2019" },
+  "admin": { "listen": "unix//run/moose-caddy/admin.sock" },
   "apps": {
     "http": {
       "servers": {

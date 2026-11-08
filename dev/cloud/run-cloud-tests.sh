@@ -99,6 +99,9 @@ BOX_ID_REMAP=moss-lynx
 # that disk.
 BOX_ID_OS_UPDATE=fern-stoat
 BOX_ID_OS_REVERT=wren-maple
+# The app-update boot (#630) provisions its OWN box on a fresh overlay too: it
+# updates and rolls back an app, then switches the box to slot B.
+BOX_ID_APP_UPDATE=lark-cedar
 
 # Which boots to run, space-separated (unseeded seeded frozen access update ssh remap).
 # Default: all.
@@ -138,7 +141,8 @@ BOX_ID_OS_REVERT=wren-maple
 # All of these are in the gate: see ci-cloud-image.yml.
 #   - `os-update` and `os-revert` (#563) prove the A/B OS update on the booted
 #     image. `os-update`: a wrong digest is refused, the bundle installs into
-#     slot B ahead of the window, the box switches in the window, boots slot B
+#     slot B ahead of the window, a hold like the brain's keeps Update now from
+#     switching until it is cleared (#632), the box switches, boots slot B
 #     and marks it good, with the owner, an app, the SSH host keys and the data
 #     intact. `os-revert`: the same bundle, but host-agent cannot start on
 #     slot B, so the image's safety-net timer reboots the box and it comes back
@@ -147,7 +151,12 @@ BOX_ID_OS_REVERT=wren-maple
 #     box inside one QEMU run, so
 #     neither passes -no-reboot. Both need the test bundle from
 #     dev/cloud/test/build-os-test-bundle.sh (MOOSE_CLOUD_OS_BUNDLE_DIR).
-BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen access update ssh remap os-update os-revert}"
+#   - `app-update` (#630) proves app updates on the booted image: an update by
+#     hand on the old data, a broken update rolled back from its snapshot, an
+#     update that waits for the owner's yes, Go back, and a nightly update that
+#     the OS switch waits for (the app's hold), then the box on slot B. It
+#     takes the OS test bundle like os-update, and reboots inside one QEMU run.
+BOOTS="${MOOSE_CLOUD_BOOTS:-unseeded seeded frozen access update ssh remap os-update os-revert app-update}"
 # Which firmwares run the boots (#561): by default every boot runs under UEFI and
 # again under legacy BIOS. `bios` used to be a boot of its own (one un-seeded
 # boot under SeaBIOS); it is a firmware now.
@@ -163,9 +172,9 @@ boot_count=0
 for b in $BOOTS; do
     boot_count=$((boot_count + 1))
     case "$b" in
-        unseeded|seeded|frozen|access|update|ssh|remap|os-update|os-revert) ;;
+        unseeded|seeded|frozen|access|update|ssh|remap|os-update|os-revert|app-update) ;;
         bios) echo "'bios' is no longer a boot: every boot runs under both firmwares (MOOSE_CLOUD_FIRMWARES, default 'uefi bios')" >&2; exit 1 ;;
-        *) echo "unknown boot '$b' in MOOSE_CLOUD_BOOTS='$BOOTS' (known: unseeded seeded frozen access update ssh remap os-update os-revert)" >&2; exit 1 ;;
+        *) echo "unknown boot '$b' in MOOSE_CLOUD_BOOTS='$BOOTS' (known: unseeded seeded frozen access update ssh remap os-update os-revert app-update)" >&2; exit 1 ;;
     esac
 done
 [ "$boot_count" -gt 0 ] || { echo "MOOSE_CLOUD_BOOTS='$BOOTS' names no boot" >&2; exit 1; }
@@ -551,8 +560,20 @@ if should_run access; then
     # Wider outer ceiling: the access scenario's in-guest work (SSO + app install +
     # exposure toggle) adds ~180s of worst-case internal poll time over the shared
     # prechecks, which alone can approach the 480s default under CI's TCG-only QEMU.
-    # The two folder-app installs (#519) add up to ~240s more.
-    VERDICT_TIMEOUT=960
+    # The two folder-app installs (#519) add up to ~240s more. The #608 network
+    # checks (a Caddy recreate, up to one health tick, a brain restart and an
+    # uninstall) add up to ~330s more. The #612 admin-socket move (a Caddy
+    # recreate on the pre-#608 files and two brain restarts, one with a failed
+    # move) adds up to ~300s more. The #610 probe socket proof (one more app
+    # install, a 70s healthy wait, up to two health ticks to raise and one to
+    # clear, and a route write after the recreate) adds up to ~600s more. The
+    # #598 automatic restart proof (one more install of up to 240s, up to 200s to raise,
+    # up to 480s for the 5-minute window and the restart, up to 180s to
+    # clear, up to 90s for the second copy to clear) adds up to ~1200s more.
+    # The #613 restore proof (a stop of up to 60s, up to 120s for the restore
+    # after the recreate, and one more health tick to read the issues) adds up
+    # to ~200s more.
+    VERDICT_TIMEOUT=3390
     if ! run_boot "${FIRMWARE}-access" "access" \
         -smbios "type=11,value=$(seed_cred_keyed "$BOX_ID_ACCESS" "$ACCESS_KEY")" \
         -smbios "type=11,value=io.systemd.credential.binary:moose.sso_token=$(printf '%s' "$ACCESS_TOKEN" | base64 -w0)" \
@@ -561,7 +582,7 @@ if should_run access; then
         echo "cloud gate proof: ${VERDICT}" >&2
         exit 1
     fi
-    echo "boot access OK — per-app forward-auth access modes verified end-to-end (restricted gate + owner proxy-through, public, Cookie strip), household and personal folder apps wrote to the host, and the hosted confirm step opened the elevation window, box_id=${BOX_ID_ACCESS}"
+    echo "boot access OK — per-app forward-auth access modes verified end-to-end (restricted gate + owner proxy-through, public, Cookie strip), household and personal folder apps wrote to the host, the hosted confirm step opened the elevation window, apps are off the control-plane network (#608), and the health probe reaches an owner-only app through the probe socket (#610), box_id=${BOX_ID_ACCESS}"
 fi
 
 # --- 9. update boot: the control-plane updater, for real (#382). Its OWN fresh
@@ -725,7 +746,7 @@ fi
 # a run that publishes the OS, the boot-proof image trusts only the release
 # root, so the throwaway-signed test bundle must be refused (the maintainer's
 # call for #563).
-os_boot() { # NAME BOX_ID
+os_boot() { # NAME BOX_ID [VERDICT_TIMEOUT]
     local name="$1" box="$2" dir="${MOOSE_CLOUD_OS_BUNDLE_DIR:-}" mint key token disk sum ver mode
     # A local run that built the image here makes the bundle from it too, once.
     if [ -z "$dir" ] && [ -f "$IMAGE_OUT" ]; then
@@ -751,7 +772,7 @@ os_boot() { # NAME BOX_ID
 
     OVERLAY="${RUN_DIR}/overlay-${FIRMWARE}-${name}.qcow2"
     new_overlay "$OVERLAY"
-    VERDICT_TIMEOUT=1500
+    VERDICT_TIMEOUT="${3:-1500}"
     KEEP_REBOOTS=1
     if ! run_boot "${FIRMWARE}-${name}" "$name" \
         -drive "file=${disk},if=virtio,format=raw,readonly=on" \
@@ -775,6 +796,14 @@ if should_run os-revert; then
     grep -aq 'moose-test: slot B panics before userspace' "$QEMU_SERIAL" && grep -aq 'Kernel panic' "$QEMU_SERIAL" \
         || { echo "cloud os-revert proof: no kernel panic of slot B on the serial console" >&2; exit 1; }
     echo "boot os-revert OK: slot B never came up, the safety net rebooted the box and it went back to slot A on its own; then slot B panicked before userspace and GRUB skipped it (box_id=${BOX_ID_OS_REVERT})"
+fi
+# The app-update boot (#630) uses the same bundle disk and in-guest source. Its
+# first stage runs an install and four updates, then waits for the window and
+# for host-agent's first tick in it (up to about 17 minutes), so it gets 55
+# minutes, inside the boot job's 75.
+if should_run app-update; then
+    os_boot app-update "$BOX_ID_APP_UPDATE" 3300
+    echo "boot app-update OK: upnote updated by hand, rolled back from a broken update, approved, gone back, then updated by the nightly window before the OS switch, and on slot B on its data (box_id=${BOX_ID_APP_UPDATE})"
 fi
 
 echo "firmware ${FIRMWARE}: every boot OK (${BOOTS})"

@@ -11,8 +11,10 @@
 //     APP_LIFECYCLE.md) in one pass — the "would this actually install?" gate.
 //     It also runs the manifest-side rules the brain applies at install
 //     (admission.CheckManifest: service_user, root_setup and image_user against
-//     the grants they cannot sit with; admission.CheckManifestCompose: no
-//     user: in the compose of an image_user app).
+//     the grants they cannot sit with, and storage.data_volumes and
+//     cache_volumes that leave the app's folder or overlap;
+//     admission.CheckManifestCompose: no user: in the compose of an image_user
+//     app).
 //     A single green `check` proves both the schema and the structural compose
 //     rules, so authors never hand-eyeball the admission rules.
 //   - `resolve` fills the manifest's `images` block with registry-resolved

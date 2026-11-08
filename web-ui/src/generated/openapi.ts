@@ -161,6 +161,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{id}/auto-restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Turn the automatic restart of an unresponsive app on or off (owner or admin) */
+        put: operations["set-app-auto-restart"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{id}/auto-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Turn the automatic update of an app on or off (owner or admin) */
+        put: operations["set-app-auto-update"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/{id}/config": {
         parameters: {
             query?: never;
@@ -213,6 +247,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Put an app back on the version it ran before its last update, with the data it had then, for 7 days after the update (job; owner or admin) */
+        post: operations["rollback-app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/{id}/secrets": {
         parameters: {
             query?: never;
@@ -258,6 +309,74 @@ export interface paths {
         put?: never;
         /** Stop a running app instance (job) */
         post: operations["stop-app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Update an app to the catalog's new version (job; owner or admin) */
+        post: operations["update-app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{id}/update/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close the tile's banner about the app's last failed update (owner or admin) */
+        post: operations["acknowledge-app-update-failure"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{id}/update/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Allow an update that asks for more access, and run it at once (job; the owner, or an admin for a household app) */
+        post: operations["approve-app-update"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{id}/update/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Keep the current version: the update prompt stops asking about this version (the owner, or an admin for a household app) */
+        post: operations["decline-app-update"];
         delete?: never;
         options?: never;
         head?: never;
@@ -692,6 +811,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/ssh/check-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check one public key the way Save will, without storing it (auth required) */
+        post: operations["check-my-ssh-key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/update-prompt/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close the update prompt for this session; it comes back at the next sign-in */
+        post: operations["dismiss-update-prompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/updates-seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record that the person saw the toast about the apps updated overnight, so it shows once */
+        post: operations["mark-updates-seen"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications": {
         parameters: {
             query?: never;
@@ -948,6 +1118,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/update-target/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply the updates this box already found (control plane, and an installed OS release, which restarts the box), now instead of in the window (admin only) */
+        post: operations["apply-system-update-target"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/update/{job_id}": {
         parameters: {
             query?: never;
@@ -1171,6 +1358,19 @@ export interface components {
             provider_id: string;
             slot: string;
         };
+        AppAccessWant: {
+            /** @enum {string} */
+            change?: "new" | "write" | "whole";
+            device?: string;
+            folder?: string;
+            /** @enum {string} */
+            kind: "internet" | "lan" | "gpu" | "device" | "folder" | "public_path";
+            /** @enum {string} */
+            mode?: "read" | "write";
+            path?: string;
+            /** @enum {string} */
+            source?: "personal" | "shared";
+        };
         AppConfigDTO: {
             /**
              * Format: uri
@@ -1210,6 +1410,25 @@ export interface components {
                 [key: string]: string;
             };
         };
+        AppFit: {
+            /** Format: int64 */
+            box_cores?: number;
+            /** Format: int64 */
+            box_memory_bytes: number;
+            /** Format: int64 */
+            free_memory_bytes: number;
+            /** Format: int64 */
+            other_running?: number;
+            /** Format: double */
+            recommended_cpu?: number;
+            /** Format: int64 */
+            recommended_memory_bytes?: number;
+            running?: components["schemas"]["RunningApp"][] | null;
+            /** @enum {string} */
+            state: "fits" | "tight" | "too-big";
+            too_big_cpu?: boolean;
+            too_big_memory?: boolean;
+        };
         AppSecretDTO: {
             name: string;
             value: string;
@@ -1222,6 +1441,33 @@ export interface components {
              */
             readonly $schema?: string;
             secrets: components["schemas"]["AppSecretDTO"][] | null;
+        };
+        AppUpdateDTO: {
+            available_version?: string;
+            can_apply: boolean;
+            can_approve: boolean;
+            can_rollback: boolean;
+            declined: boolean;
+            failed_acked: boolean;
+            /** Format: date-time */
+            failed_at?: string;
+            /** Format: int64 */
+            failed_count?: number;
+            failed_kind?: string;
+            failed_message?: string;
+            failed_overnight: boolean;
+            failed_version?: string;
+            paused: boolean;
+            reason?: string;
+            /** Format: date-time */
+            rollback_until?: string;
+            /** @enum {string} */
+            status?: "available" | "needs_approval" | "service_major" | "needs_newer_moose" | "blocked";
+            /** Format: date-time */
+            updated_at?: string;
+            updated_from?: string;
+            updated_overnight: boolean;
+            wants: components["schemas"]["AppAccessWant"][] | null;
         };
         AppUseDTO: {
             instance_id: string;
@@ -1291,6 +1537,25 @@ export interface components {
             current_password: string;
             new_password: string;
         };
+        "Check-my-ssh-keyRequest": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Check-my-ssh-keyRequest.json
+             */
+            readonly $schema?: string;
+            public_key: string;
+        };
+        "Check-my-ssh-keyResponse": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Check-my-ssh-keyResponse.json
+             */
+            readonly $schema?: string;
+            fingerprint: string;
+            public_key: string;
+        };
         "Complete-first-runResponse": {
             /**
              * Format: uri
@@ -1307,6 +1572,20 @@ export interface components {
             };
             folders?: components["schemas"]["FolderElection"][] | null;
             mail_provider_id?: string;
+        };
+        ControlPlaneOutcomeDTO: {
+            at: string;
+            brain_changed: boolean;
+            failure_mode?: string;
+            from?: string;
+            id: string;
+            /** @enum {string} */
+            outcome: "good" | "failed";
+            revert_error?: string;
+            reverted?: boolean;
+            started_at?: string;
+            ui_changed: boolean;
+            version?: string;
         };
         ControlPlanePairDTO: {
             brain?: string;
@@ -1353,6 +1632,7 @@ export interface components {
             categories?: string[] | null;
             changelog_url?: string;
             external_costs?: components["schemas"]["ExternalCost"][] | null;
+            fit?: components["schemas"]["AppFit"];
             footprint: components["schemas"]["Footprint"];
             icon_glyph?: string;
             icon_url?: string;
@@ -1588,6 +1868,7 @@ export interface components {
             readonly $schema?: string;
             config?: components["schemas"]["InstallPlanConfigField"][] | null;
             existing: components["schemas"]["InstallPlanExisting"][] | null;
+            fit?: components["schemas"]["AppFit"];
             footprint: components["schemas"]["InstallPlanFootprint"];
             mail?: components["schemas"]["InstallPlanMail"];
             manifest_id: string;
@@ -1597,7 +1878,7 @@ export interface components {
             scope_default: string;
             scope_options: string[] | null;
             /** @enum {string} */
-            unavailable?: "needs-remap";
+            unavailable?: "needs-remap" | "too-big";
             version: string;
         };
         InstallPlanExisting: {
@@ -1641,6 +1922,8 @@ export interface components {
              * @example https://example.com/schemas/InstanceDTO.json
              */
             readonly $schema?: string;
+            auto_restart: boolean;
+            auto_update: boolean;
             /** @enum {string} */
             exposure: "restricted" | "public";
             icon_glyph?: string;
@@ -1658,6 +1941,7 @@ export interface components {
             short_description?: string;
             slug: string;
             state: string;
+            update: components["schemas"]["AppUpdateDTO"];
             url: string;
             version: string;
         };
@@ -1958,6 +2242,7 @@ export interface components {
             /** @enum {string} */
             state: "unsupported" | "none" | "refused" | "current" | "installing" | "installed" | "waiting" | "rebooting" | "held" | "failed";
             target?: components["schemas"]["OSReleaseDTO"];
+            trial?: boolean;
         };
         Pack: {
             /**
@@ -2050,6 +2335,12 @@ export interface components {
             readonly $schema?: string;
             password: string;
         };
+        RunningApp: {
+            instance_id: string;
+            name: string;
+            /** Format: int64 */
+            recommended_memory_bytes: number;
+        };
         SSHAccessDTO: {
             /**
              * Format: uri
@@ -2085,6 +2376,24 @@ export interface components {
             readonly $schema?: string;
             apps: components["schemas"]["Entry"][] | null;
             packs: components["schemas"]["Pack"][] | null;
+        };
+        "Set-app-auto-restartRequest": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Set-app-auto-restartRequest.json
+             */
+            readonly $schema?: string;
+            enabled: boolean;
+        };
+        "Set-app-auto-updateRequest": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Set-app-auto-updateRequest.json
+             */
+            readonly $schema?: string;
+            enabled: boolean;
         };
         "Set-app-exposureRequest": {
             /**
@@ -2282,6 +2591,8 @@ export interface components {
             checked_at?: string;
             detail?: string;
             from?: string;
+            hold_until?: string;
+            last?: components["schemas"]["ControlPlaneOutcomeDTO"];
             os?: components["schemas"]["OSUpdateDTO"];
             profile?: string;
             running: components["schemas"]["ControlPlanePairDTO"];
@@ -2290,12 +2601,22 @@ export interface components {
             target?: components["schemas"]["UpdateTargetOfferDTO"];
             window?: string;
             window_from?: string;
+            zone?: string;
         };
         UpdateTargetOfferDTO: {
             brain_image: string;
             published_at?: string;
             ui_image: string;
             version?: string;
+        };
+        UpdateVersionBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/UpdateVersionBody.json
+             */
+            readonly $schema?: string;
+            version: string;
         };
         UserDTO: {
             /**
@@ -2312,6 +2633,9 @@ export interface components {
             owner?: boolean;
             role: string;
             single_user_mode?: boolean;
+            update_prompt_dismissed?: boolean;
+            /** Format: int64 */
+            updates_seen_at?: number;
             username: string;
         };
     };
@@ -2779,6 +3103,76 @@ export interface operations {
             };
         };
     };
+    "set-app-auto-restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Set-app-auto-restartRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstanceDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "set-app-auto-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Set-app-auto-updateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstanceDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "get-app-config": {
         parameters: {
             query?: never;
@@ -2915,6 +3309,37 @@ export interface operations {
             };
         };
     };
+    "rollback-app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "get-app-secrets": {
         parameters: {
             query?: never;
@@ -2996,6 +3421,134 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Job"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "update-app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "acknowledge-app-update-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "approve-app-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateVersionBody"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "decline-app-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateVersionBody"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
@@ -3910,6 +4463,93 @@ export interface operations {
             };
         };
     };
+    "check-my-ssh-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Check-my-ssh-keyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Check-my-ssh-keyResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "dismiss-update-prompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mark-updates-seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "list-notifications": {
         parameters: {
             query?: {
@@ -4383,6 +5023,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpdateTargetDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "apply-system-update-target": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemUpdateJobDTO"];
                 };
             };
             /** @description Error */

@@ -45,8 +45,9 @@ func check(ctx context.Context, admit composeChecker, manifestPath string, opts 
 		return warnings, err
 	}
 	// The manifest-side admission rules (service_user, root_setup and
-	// image_user against the grants they cannot sit with). The brain runs the same function at
-	// install, so a manifest that passes here is not refused there for these.
+	// image_user against the grants they cannot sit with, and the storage
+	// lists). The brain runs the same function at install, so a manifest that
+	// passes here is not refused there for these.
 	if err := admission.CheckManifest(man); err != nil {
 		return warnings, err
 	}

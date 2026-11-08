@@ -960,3 +960,80 @@ func TestApplianceWithoutAKeyStillRequiresThePassword(t *testing.T) {
 		t.Errorf("host call = %+v; want require_password with no keys", last)
 	}
 }
+
+// The check route runs the same parse Save runs, so the screen can refuse a bad
+// paste at "Add key". It stores nothing and never touches the host.
+func TestCheckKeyValidatesWithoutStoring(t *testing.T) {
+	h := hostedSSHHarness(t)
+
+	resp := h.do("POST", "/api/v1/me/ssh/check-key", map[string]any{"public_key": testKeyA})
+	raw := readAll(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("valid key = %d; want 200: %s", resp.StatusCode, raw)
+	}
+	var got struct {
+		PublicKey   string `json:"public_key"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.HasPrefix(got.Fingerprint, "SHA256:") || got.PublicKey != testKeyA {
+		t.Fatalf("check answer = %+v", got)
+	}
+
+	for _, bad := range []string{
+		"",
+		"not a key",
+		"ssh-ed25519 AAAAnotbase64!!",
+		"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----",
+	} {
+		resp := h.do("POST", "/api/v1/me/ssh/check-key", map[string]any{"public_key": bad})
+		resp.Body.Close()
+		if resp.StatusCode != 422 {
+			t.Fatalf("check %q = %d; want 422", bad, resp.StatusCode)
+		}
+	}
+
+	keys, err := h.st.ListSSHKeys("u_alex")
+	if err != nil {
+		t.Fatalf("list keys: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("check stored %d keys; want none", len(keys))
+	}
+	if calls := h.sshCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("check reached the host: %+v", calls)
+	}
+}
+
+// The answer is the key as Save would store it, so authorized_keys options in a
+// paste are dropped here too.
+func TestCheckKeyDropsOptions(t *testing.T) {
+	h := hostedSSHHarness(t)
+	resp := h.do("POST", "/api/v1/me/ssh/check-key", map[string]any{
+		"public_key": `command="/bin/evil",no-pty ` + testKeyA,
+	})
+	raw := readAll(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("key with options = %d; want 200: %s", resp.StatusCode, raw)
+	}
+	if strings.Contains(string(raw), "command=") || strings.Contains(string(raw), "no-pty") {
+		t.Fatalf("options survived the check: %s", raw)
+	}
+}
+
+func TestCheckKeyNeedsASession(t *testing.T) {
+	h := hostedSSHHarness(t)
+	resp, err := http.Post(h.srv.URL+"/api/v1/me/ssh/check-key", "application/json",
+		strings.NewReader(`{"public_key":"`+testKeyA+`"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("check without a session = %d; want 401", resp.StatusCode)
+	}
+}

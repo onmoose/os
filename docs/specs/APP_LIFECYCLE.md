@@ -23,7 +23,7 @@ The Docker HTTP API (via the socket proxy) is used directly only for things the 
 - `/events` stream for crash detection and health changes.
 - Log streaming to the UI WebSocket.
 - Image GC.
-- Network creation (`moose-ingress` at brain startup, per-app `moose-app-<id>` on install).
+- Network creation (`moose-ingress` at brain startup, per-app `moose-app-<id>` on install, with Caddy attached to it).
 
 **Why CLI for v1:** fastest path to a working system. Compose semantics stay upstream's problem; we don't reimplement them. The dev-loop and behavior match what app authors run locally with `docker compose up`. We can swap in the SDK later for hot paths if profiling demands it.
 
@@ -35,10 +35,17 @@ The Docker HTTP API (via the socket proxy) is used directly only for things the 
 ├── compose.yml               # author's, verbatim
 ├── compose.override.yml      # moose-generated, regenerated on update
 ├── .env                      # moose-injected variables
+├── manifest.yml.prev         # the previous generation an update keeps (# update + rollback):
+├── compose.yml.prev          #   copies of the four files above as they were before the
+├── compose.override.yml.prev #   last update; its image pins are in SQLite,
+├── .env.prev                 #   instance_images_prev
+├── update.json               # only while an update runs, or after a rollback that failed
 ├── data/                     # bind-mount root for all app data
 │   └── ...                   # subdirs per the compose's bind mounts
-└── snapshots/                # pre-update tar(s) of data_volumes + managed-service DB dumps
-    └── pre-update-<old-version>.tar  # see UPDATES.md # Pre-update snapshot
+└── snapshots/                # pre-update snapshot sets, kept 7 days (UPDATES.md # Pre-update snapshot)
+    ├── pre-update-<old-version>.tar               # data_volumes minus cache_volumes
+    ├── pre-update-<old-version>.<service>.pgdump  # a Postgres dump (.sql for MySQL/MariaDB)
+    └── pre-update-<old-version>.json              # what the set holds; written last
 ```
 
 The brain's install command is literally:
@@ -61,7 +68,8 @@ On brain startup, a reconciliation pass walks SQLite, lists containers with `moo
 - `state=running` but no containers: `docker compose up -d`.
 - `state=running` with containers up but the instance is flagged *pending-recreate* (a config/mail edit committed the override/.env, then its `compose up` failed): `docker compose up -d` to apply the committed env, then clear the flag (#268). The brain sets the flag at the failed edit (brain-commits-first), so a container left running on stale env converges on the next startup pass instead of waiting for the user to retry.
 - `state=stopped` but containers running: `docker compose stop`.
-- Every instance gets its Caddy route written again, because the brain clears Caddy's route list on startup. A `running` instance gets its real upstream (and its mDNS name re-published). A `stopped` or `failed` instance gets its splash, keyed on the stored host, with no mDNS re-publish, as in Stop. The splashes are written after every running instance's work, so a slow Caddy cannot spend the startup deadline on them first. They have their own short budget, so they still get a try if that work used the deadline up. This is also what repairs a route that a failed admin call left stale (#520).
+- `state=updating`: the brain stopped in the middle of an update. Before anything else, the pass puts the old version back (# update + rollback # Crash recovery): the row becomes `running` with the failure recorded, or `update_failed` when the old version cannot be put back. No row is left `updating`.
+- Every instance gets its Caddy route written again, because the brain clears Caddy's route list on startup. A `running` instance gets its real upstream (and its mDNS name re-published). A `stopped`, `failed` or `update_failed` instance gets its splash (`update_failed` shows the "failed" one), keyed on the stored host, with no mDNS re-publish, as in Stop. The splashes are written after every running instance's work, so a slow Caddy cannot spend the startup deadline on them first. They have their own short budget, so they still get a try if that work used the deadline up. This is also what repairs a route that a failed admin call left stale (#520).
 - Orphan containers (labeled but no SQLite row, e.g. crash mid-install): tear them down.
 
 The pass runs once, so it first waits for Docker to answer, for up to 15 seconds. The brain reaches Docker only through the socket proxy, and after a reboot Docker starts the proxy and the brain together, so the brain can be up a few seconds before the proxy answers. Without the wait the pass failed at its first `docker ps`, and every app answered 404 until someone stopped and started it (#540).
@@ -100,21 +108,23 @@ How brain distinguishes: every state-changing op records "I am about to apply th
 
 ```
 absent → installing → running ⇄ stopped
-              ↓          ↓
-            failed     updating → running
-                          ↓
-                       update_failed
-                          ↓
-                          → running (after rollback)
+              ↓        ↓    ↑
+            failed   updating ─→ running   (new version healthy, or rolled back
+                        ↓                    to the old version on its old data)
+                   update_failed            (the rollback could not bring the old
+                        ↓                    version back)
+                     running               (Start: finish the rollback, then start)
 ```
 
-`failed` and `update_failed` are user-visible recoverable states with a "retry" / "view logs" / "uninstall" action — not dead ends. **`failed → running` is a retry**: the same Start op (# stop, start, uninstall), reachable straight from the dashboard tile (`DASHBOARD.md` # Tile, issue #154), with no uninstall/reinstall or SQLite surgery; `update_failed` recovers via the rollback path below. The state is written to SQLite *before* the corresponding Docker op begins, so a crash mid-op leaves a known-recoverable state.
+`failed` and `update_failed` are user-visible recoverable states with a "retry" / "view logs" / "uninstall" action, not dead ends. **`failed → running` is a retry**: the same Start op (# stop, start, uninstall), reachable straight from the dashboard tile (`DASHBOARD.md` # Tile, issue #154), with no uninstall/reinstall or SQLite surgery. The state is written to SQLite *before* the corresponding Docker op begins, so a crash mid-op leaves a known-recoverable state.
+
+**After an update the row is `running` both when the new version is healthy and when the update was rolled back** and the old version runs again on its old data (#631, `DECISIONS.md` 2026-11-06). Many paths read `running` as "the containers are up": the startup pass brings a `running` app back after a reboot, Stop is legal only from `running`, the health and automatic-restart loops watch `running` apps, and the dashboard opens them. A rolled-back app is up, so it must stay in that set. The failure is kept apart from the state, in the instance's update-failure columns: the version that failed, the step (`pull`, `snapshot`, `start`, `health`, `refused`, `snapshot_restore`, `interrupted`), a short message and the time. A later good update to any version clears it. **`update_failed` means the old version is not running**: the rollback could not restore the data or the files, or the old version did not start again. It is treated like `failed`: the "failed" splash, and Start is the retry. A Start from `update_failed` first finishes a rollback that did not finish (it reads `update.json`), then runs as usual; a retry that still does not come healthy lands in `failed`, as any Start does.
 
 ## Locked: override file contents
 
 The brain-generated `compose.override.yml` applies isolation and appliance behavior. **Locked contents, for every service in the compose:**
 
-- Networks: attach to `moose-app-<instance-id>` (per-app bridge). `main_service` additionally attaches to `moose-ingress` so Caddy can reach it.
+- Networks: attach to `moose-app-<instance-id>` (per-app bridge), where `main_service` also gets the `moose-<instance-id>-<service>` alias the route upstream dials. No service joins `moose-ingress`, the control-plane network. The brain attaches Caddy to the per-app network instead (`CONTROL_PLANE.md` # Locked: Caddy is moose substrate, #608).
 - `container_name: moose-<instance-id>-<main-service>` pinned on `main_service` **only**. Without the pin compose names the running container with a replica suffix (`…-1`), and Docker's journald driver tags log lines with that suffixed name — breaking the per-app Logs tail's exact `CONTAINER_NAME` match (`LOGGING.md` # Per-app logs) while the network alias kept Caddy working. The pin makes the running container's name the same `moose-<id>-<service>` stem the brain already computes for the Caddy upstream and ingress alias. An explicit `container_name` makes the service unscalable; the main service is single-replica by design, and sidecars stay unpinned so the constraint never lands on an author's scalable workers. Same pattern as the managed services' fixed exec handle.
 - `cap_drop: [ALL]`. No `cap_add` from an author, ever. The one `cap_add` the override carries is the brain's own fixed set for a `root_setup` app, on a remapped daemon only (`CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`), and such a service also gets no `user:` pin (`APP_ISOLATION.md` # User-namespace tiers).
 - `user:` pinned on every service, with two exceptions, both on a remapped daemon only: a `root_setup` app (above) and an `image_user` app. An `image_user` service gets no `user:` pin and no `cap_add`, so the image's own `USER` applies, remapped (`APP_ISOLATION.md` # User-namespace tiers).
@@ -214,28 +224,70 @@ Failure handling:
 
 ## Locked: update + rollback
 
+Built in #631 (`internal/lifecycle/update.go`), in this order:
+
 ```
-1. Fetch new package (new manifest + compose)
-2. Re-run admission on new compose
-3. Save current override → compose.override.yml.prev; current digest → SQLite
-4. Snapshot data_volumes + managed-service DB → snapshots/pre-update-<old-version>.tar
-   (see UPDATES.md # Pre-update snapshot)
-5. Generate new override
-6. docker compose pull
-7. docker compose up -d                       (recreates changed services)
-8. Wait healthy
-9. Mark state: running
+1.  Fetch the new package (manifest + compose), classify it      (no state; UPDATES.md # 4 As built)
+2.  Re-run admission on the new manifest + compose                (no state)
+3.  Write the row: updating; write update.json                    (state: updating)
+4.  Pull the new images, resolve digests                          (the old version still runs)
+4b. Image tier only: read the new images' users, refuse a change  (APP_ISOLATION.md # User-namespace tiers)
+5.  Keep the previous generation: manifest.yml, compose.yml,
+    compose.override.yml, .env → <name>.prev; current pins → instance_images_prev
+6.  "updating" splash; docker compose stop                        (the old version stops here)
+7.  Snapshot data_volumes + managed-service DBs → snapshots/pre-update-<old-version>.*
+    (UPDATES.md # Pre-update snapshot)
+8.  Write the new manifest, compose and pins; new secrets; provision a new
+    managed service; bind dirs; make a new folder source ready; new
+    override + .env; make the app network again when its internal flag
+    does not match the new internet permission (then compose create
+    --force-recreate)
+9.  docker compose up -d                                          (bounded by the health budget)
+10. Wait healthy                                                  (the health budget)
+11. Flip Caddy to the real upstream; one row write: version, name, running,
+    no known update, no failure
 ```
 
-If step 7 or 8 fails: stop new container, **restore the snapshot from step 4** (untar data_volumes; restore managed-service DB from dump), swap `.prev` override back, `up -d` again with the pinned previous digest, mark `update_failed`. One generation of rollback history — sufficient for the one-step-back UX, no n-deep history in v1. Snapshot + previous image are GC'd after 7 days.
+The order is set by the snapshot (#347, `UPDATES.md` # Pre-update snapshot # As built): it needs the app stopped, and it reads the manifest **on disk** to find the data volumes. So the old version stops at step 6, after the pull (the downtime is only the switch, not the download), the snapshot comes next, and nothing new is written before it.
+
+**The folder binds of step 8** (#633) keep the host path the old override binds for every folder both versions declare, so an update binds exactly the source the installer elected. Only an update the owner allowed (`UPDATES.md` # Who gets prompted # As built (#633)) can change them: a folder the new version adds is bound with the install default (the owner's own folder for a personal app, the household's shared folder for a household app, the manifest's `default` subfolder for `pick-subfolder`) and made ready the way install does it (`prepareFolderSources`), and a `pick-subfolder` folder that becomes `whole` binds the whole folder from the same source.
+
+**The network of step 8** (#633). Docker cannot change the `--internal` flag of a network that exists, so when the flag of `moose-app-<id>` does not match the new version's `internet` permission (in either direction), the brain takes the containers on it now off it (Caddy), removes it, creates it with the new flag, puts them back, and makes the app's stopped containers again from the files on disk with `docker compose create --force-recreate`. That is needed because a container on a removed network cannot start, and compose does not see the change; `create` keeps their anonymous volumes and starts nothing. `update.json` records it first (`network_remade`), and a rollback, after it puts the previous files back, makes the network and the containers again for the old version's flag.
+
+**The health budget** of steps 9 and 10 is `max(120s, health_probe.start_period + 60s)`, with the 60s default `start_period` when the manifest declares no `health_probe` (`APP_MANIFEST.md` # B). With the defaults it is 120s, as for install. A slow app is not rolled back for being slow.
+
+**What a failure does depends on how far the update got:**
+
+- **Steps 1 and 2** (a class the box does not apply, admission): nothing changes; the reason is stored for the tile (`UPDATES.md` # 4 As built).
+- **Steps 3 to 5** (the pull, the image-user check, keeping the previous generation): the old version never stopped. The row goes back to `running` and the failure is recorded. The new images are removed when nothing uses them.
+- **Steps 6 and 7** (the stop, the snapshot): nothing new was written. The old version is started again on its own files and data, and the failure is recorded. This is "no snapshot, no update": `ErrSnapshotNoSpace` gets its own message, so the user knows to free space.
+- **Steps 8 to 11**: the rollback. Stop the new containers (nothing below runs until Docker says none is left, `UPDATES.md` # As built (#631)), **restore the snapshot from step 7** (untar the data volumes, restore each managed-service DB from its dump), put the `.prev` files and the previous pins back, drop a managed service and the secrets the new version added, then `up -d` the old version with its pinned digests and wait for it healthy. The row is `running` with the failure recorded (# per-instance state machine). If the restore or the old version's start fails, the row is `update_failed`.
+
+One generation of rollback history: step 5 replaces any older previous generation, and its images are removed when nothing uses them. After a rollback the previous generation is dropped, since it is the current one again. The previous generation of a good update stays for the rollback button, with the update's record as `update.prev.json` (what it added). An update that does not go through keeps the generation before it: it copies the `.prev` files and `update.prev.json` to `<name>.old` first, and puts them back with the previous pins when it fails, so the way back to the version before is not lost (#634). A **rollback by hand** (`UPDATES.md` # 4 As built (#634)) is steps 8 to 11's rollback run later from that record: stop, restore the snapshot, put the previous generation back, drop what the update added, start the old version, with `update.json` marked `rollback` so the startup pass and Start finish it. Snapshots are removed after 7 days (`PruneSnapshots`), and the same pass removes the previous generation and its images (#634). Uninstall removes the previous generation's images with the current ones (`reclaimImages` counts `instance_images_prev` as in use while the instance exists).
+
+**The previous generation and the record live in the instance dir** (# on-disk layout per instance). `update.json` says how far the update got: the two versions, whether the previous generation is complete, whether the snapshot is complete, whether new files may be on disk, what the new version added (managed services, secrets), and the image pins to remove later. It is written before each step a rollback must undo, and removed when the update or its rollback ends. It stays only after a rollback that failed, so a Start can finish it.
+
+**Crash recovery.** The startup pass (# reconciliation) looks for `updating` rows before anything else. With no `update.json` the update had changed nothing: the row is `running` again. With one, the pass stops the containers, restores the snapshot if it was complete, puts the previous generation back if new files may have been written, drops what the new version added, brings the old version up, and records the failure as `interrupted`. If that cannot be done, the row is `update_failed`. A restore can run again, so a brain that stops during the recovery is safe too.
+
+**Isolation is the install's.** The tier and the runtime identity are fixed for the life of the instance (`APP_ISOLATION.md` # User-namespace tiers), so an update writes its override with the instance's stored tier, its allocated service identity, its owner's home, and the folder sources the installer elected, read back from the old override. An update that would change any of them is refused at step 1 (or 4b for the image tier's users).
 
 ## Locked: stop, start, uninstall
 
 - **Stop:** `docker compose -p moose-<id> stop` (never `down` — containers, per-app network, Caddy route, and mDNS name all stay in place; only the running processes halt, freeing CPU/RAM). The Caddy route flips to the moose-styled "this app is stopped" splash. State: `stopped`. Legal only from `running`; any other state is a 409. Note this frees the *app's* footprint only — a shared Tier-1 managed service (Postgres/MySQL) the app uses stays running, since it's brain-owned and shared (`SERVICE_PROVISIONING.md`).
-- **Start:** `docker compose -p moose-<id> up -d`, **not** `compose start` (`DECISIONS.md` 2026-06-10). `start` only restarts the existing stopped containers — it re-runs already-completed one-shot jobs and ignores `depends_on` ordering; `up -d` is the same op the reconcile pass uses, so dependency ordering and completion-gate jobs (# override file contents) behave exactly as on install, and it's idempotent. State is written `running` **before** the docker op (brain-commits-first), so a crash mid-start leaves a `running` row the reconcile pass finishes — the same recovery path a reboot takes. Start also **re-asserts the mDNS name, not just the Caddy route** (the same idempotent `host.Publish` install and the reconcile pass use), so an app recovered via Start after its `<slug>.local` went dark — a mid-life host-agent restart that dropped the process-local Avahi entry group, or a prior install that failed before publishing — resolves by name again without waiting for a brain reboot; the published name keys the starting splash, the real upstream, and the failed splash alike. Stop, by contrast, never re-publishes — the stopped splash keeps resolving on the install-time announcement, which is intended. The route flips to the "starting" splash, then to the real upstream once `main_service` is healthy; a start that comes up but never goes healthy lands in `failed` with the "failed" splash, exactly like an install health-timeout. Legal from `stopped` (start) **or `failed`** (the click-to-retry recovery, `DASHBOARD.md` # Tile, issue #154); any other state is a 409. Retrying a failed app is *exactly* a Start — same `compose up -d`, health-wait, splash→upstream flip, and mDNS re-publish — so it lands in `running` on success or back in `failed` (via the same failed-splash path) if it still won't come healthy, giving a `failed` instance a UI recovery path that needs neither uninstall/reinstall nor hand-editing SQLite.
+- **Start:** `docker compose -p moose-<id> up -d`, **not** `compose start` (`DECISIONS.md` 2026-06-10). `start` only restarts the existing stopped containers: it re-runs already-completed one-shot jobs and ignores `depends_on` ordering; `up -d` is the same op the reconcile pass uses, so dependency ordering and completion-gate jobs (# override file contents) behave exactly as on install, and it's idempotent. State is written `running` **before** the docker op (brain-commits-first), so a crash mid-start leaves a `running` row the reconcile pass finishes, the same recovery path a reboot takes. Start also **re-asserts the mDNS name, not just the Caddy route** (the same idempotent `host.Publish` install and the reconcile pass use), so an app recovered via Start after its `<slug>.local` went dark (a mid-life host-agent restart that dropped the process-local Avahi entry group, or a prior install that failed before publishing) resolves by name again without waiting for a brain reboot; the published name keys the starting splash, the real upstream, and the failed splash alike. Stop, by contrast, never re-publishes: the stopped splash keeps resolving on the install-time announcement, which is intended. The route flips to the "starting" splash, then to the real upstream once `main_service` is healthy; a start that comes up but never goes healthy lands in `failed` with the "failed" splash, exactly like an install health-timeout. Legal from `stopped` (start), **`failed`** (the click-to-retry recovery, `DASHBOARD.md` # Tile, issue #154) **or `update_failed`** (an update whose rollback did not bring the old version back, # update + rollback, #631); any other state is a 409. Retrying a failed app is *exactly* a Start (same `compose up -d`, health-wait, splash→upstream flip, and mDNS re-publish), so it lands in `running` on success or back in `failed` (via the same failed-splash path) if it still won't come healthy, giving a `failed` instance a UI recovery path that needs neither uninstall/reinstall nor hand-editing SQLite.
 - **Uninstall:** confirm dialog with a "keep data" checkbox (default: delete).
   - **Delete:** `compose down -v`, remove route + mDNS, `rm -rf` instance dir, then **reclaim images** — `docker rmi` each `repo@sha256:…` the instance ran, skipping any image another installed instance still references (cross-checked against the `instance_images` table *after* the SQLite row is deleted, so "still referenced" is just every remaining row). Best-effort: an image docker refuses to drop (held by another tag or a stopped container) is logged, never fatal — images stay pinned-and-tagged, so a plain `docker image prune` would not reclaim them, which is why the targeted `rmi`-by-digest is needed. Scope is the *uninstall* case only; a recurring sweep for **update**-orphaned images (the previous image kept 7 days under # update + rollback, `UPDATES.md`) needs a scheduler seam the brain lacks and stays deferred (`NEXT.md` # Container image cleanup).
   - **Keep:** same, but move instance dir to `/var/lib/moose/archive/<id>-<timestamp>/` first. SQLite retains a tombstone row. Re-import path is a follow-up.
+
+## Locked: automatic restart of an unresponsive app
+
+When an app's `app-unresponsive` health issue stays raised long enough, the brain restarts it by itself (`HEALTH.md` # Automatic restart, #598). The wait, the limits and the opt-out live there. The mechanism lives here:
+
+- **It is a Stop then a Start, under one lock.** `compose stop`, then the same steps Start runs: the mDNS re-publish, the "starting" splash, `compose up -d`, Caddy's app networks, the health wait and the flip to the real upstream. So the route, the limits and the env are applied exactly as when a person stops and starts the app.
+- **The row stays `running`.** Unlike a manual Stop, the restart never writes `stopped`. A brain that dies halfway leaves a `running` row, so the reconcile pass brings the app back up instead of keeping it stopped. A restart that does not come healthy lands in `failed` with the "failed" splash, like a Start.
+- **It never waits for another operation.** It takes the per-instance lock only when it is free (# concurrency). If an install, a stop, a start, an uninstall or a config or mail edit holds it, the restart is skipped for that tick. It also refuses any app that is not `running`, and any app whose per-app setting is off, read from the row under the lock so a switch flipped during a slow health tick still holds. These checks happen before the brain counts the restart. The restart reads the manifest before it stops anything, and writes no state, so it cannot fail between the stop and the start on a store or file error and leave the app down.
+- **It is counted before it runs.** Once the checks pass, the restart is counted in the app's row (`auto_restarts`, with the time it began), still under the lock and before any work. That count is how the brain gives up after 3 restarts that did not help (`HEALTH.md` # Automatic restart, #620), and it must survive a brain that dies halfway. A failed write refuses the restart. A person's Start sets the count back to 0, so the app gets a fresh hour.
+- **It runs off the health tick.** The restart can take as long as a start, so it runs on its own goroutine, and the health poll keeps its pace.
 
 ## Locked: crash detection
 
@@ -289,8 +341,8 @@ If the box is enrolled with onmoose.io, the brain registers **two hostnames** pe
 
 ## Locked: concurrency
 
-- **Per-instance mutex:** one lifecycle operation at a time per instance.
-- **Global semaphore:** at most 3 concurrent installs or updates, to bound system load on small boxes.
+- **Per-instance mutex:** one lifecycle operation at a time per instance. An update holds it for its whole run, rollback included.
+- **Global semaphore:** at most 3 concurrent installs or updates, to bound system load on small boxes. Built in #631: one limit of 3 (`Manager.heavy`) that an install and an update each take for their whole run. A fourth waits for a slot. The nightly window runs app updates one at a time anyway (`UPDATES.md` # 4 Update window, #632); the limit is for installs and updates people start.
 - **Image pulls:** deduplicated by the Docker daemon itself; the brain doesn't coordinate.
 
 ## Deferred: lifecycle hooks

@@ -434,3 +434,119 @@ func (n *Notifier) OSUpdateOutcome(outcomeID, outcome, version, from string) boo
 	})
 	return true
 }
+
+// AppUpdate is one app update outcome to tell people about (#634,
+// NOTIFICATIONS.md # Updates): which app, who it goes to, and the two
+// versions. A personal app's notification goes to its owner, and a household
+// app's to the admins (UPDATES.md # 6 Notification center). It never goes to
+// every user.
+type AppUpdate struct {
+	InstanceID  string
+	Name        string // the app's name, as the tile shows it
+	OwnerUserID string
+	Household   bool
+	From        string // the version the app ran before
+	To          string // the version the update moved it to, or tried to
+	// StillDown is true when the old version did not start again after a
+	// failed update (the state update_failed).
+	StillDown bool
+	// Paused is true when the window stopped trying the version: it failed 3
+	// nights in a row (UPDATES.md # 6 Failure signaling).
+	Paused bool
+}
+
+// AppUpdateDedupKey is the coalescing key of one outcome of one version of
+// one app: kind is applied, failed, paused or approval. A second failure of
+// the same version refreshes the row, so it shows unread again and does not
+// pile up.
+func AppUpdateDedupKey(instanceID, kind, version string) string {
+	return "app-update:" + instanceID + ":" + kind + ":" + version
+}
+
+// appRoute is where an update notification links: the app's settings page,
+// which shows the update, the failure and the rollback button (#634).
+func appRoute(instanceID string) string { return "/settings/apps/" + instanceID }
+
+// AppUpdateApplied tells the owner that the nightly window updated their app.
+func (n *Notifier) AppUpdateApplied(u AppUpdate) {
+	n.raiseAppUpdate(u, "applied", SeverityInfo,
+		u.Name+" updated to "+u.To,
+		u.Name+" updated to version "+u.To+" overnight. See the details on the app's settings page.")
+	n.AppUpdateDone(u.InstanceID, u.To)
+}
+
+// AppUpdateDone resolves the failures and the wait for a yes of a version
+// that is now installed, whoever installed it: the nightly window, Update,
+// or Allow & update. It tells nobody anything new.
+func (n *Notifier) AppUpdateDone(instanceID, version string) {
+	resolved := false
+	for _, kind := range []string{"failed", "paused", "approval"} {
+		if err := n.store.ResolveNotification(AppUpdateDedupKey(instanceID, kind, version), n.now()); err != nil {
+			slog.Error("notify: resolve failed", "instance_id", instanceID, "err", err)
+			continue
+		}
+		resolved = true
+	}
+	if resolved {
+		n.publish(events.NotificationUpdated, map[string]any{"dedup_key": AppUpdateDedupKey(instanceID, "approval", version)})
+	}
+}
+
+// AppUpdateFailed tells the owner that the nightly window could not update
+// their app, and what it runs now. A third failure in a row says the window
+// stopped trying.
+func (n *Notifier) AppUpdateFailed(u AppUpdate) {
+	kind, summary := "failed", u.Name+" could not update to "+u.To
+	body := u.Name + " could not update to version " + u.To + " overnight, so it went back to " + u.From + ". See the details on the app's settings page."
+	if u.Paused {
+		kind, summary = "paused", u.Name+" update is paused"
+		body = u.Name + " could not update to version " + u.To + " three nights in a row, so moose stopped trying. See the details on the app's settings page."
+	}
+	if u.StillDown {
+		body = u.Name + " could not update to version " + u.To + " overnight and did not start again. See the details on the app's settings page."
+	}
+	n.raiseAppUpdate(u, kind, SeverityError, summary, body)
+}
+
+// AppUpdateNeedsApproval tells the owner that an update of their app asks
+// for more access and waits for their yes (UPDATES.md # 6). It mirrors the
+// prompt at sign-in, so the request is not lost when the prompt is closed.
+func (n *Notifier) AppUpdateNeedsApproval(u AppUpdate) {
+	n.raiseAppUpdate(u, "approval", SeverityWarning,
+		u.Name+" "+u.To+" wants new access",
+		u.Name+" "+u.To+" needs your approval before it can update. See the details on the app's settings page.")
+}
+
+func (n *Notifier) raiseAppUpdate(u AppUpdate, kind string, sev Severity, summary, body string) {
+	note := Notification{
+		TS:          n.now().UnixMilli(),
+		Category:    CategoryUpdates,
+		Severity:    sev,
+		SourceKind:  SourceUpdate,
+		SourceID:    u.InstanceID,
+		DedupKey:    AppUpdateDedupKey(u.InstanceID, kind, u.To),
+		Audience:    AudienceUser,
+		UserID:      u.OwnerUserID,
+		Variant:     VariantActionable,
+		Summary:     summary,
+		Body:        body,
+		ActionLabel: "Go to app settings",
+		ActionRoute: appRoute(u.InstanceID),
+	}
+	if u.Household {
+		note.Audience, note.UserID = AudienceAdmins, ""
+	}
+	if note.Audience == AudienceUser && note.UserID == "" {
+		slog.Warn("notify: an app update has no owner to tell", "instance_id", u.InstanceID)
+		return
+	}
+	if err := n.store.RaiseNotification(note); err != nil {
+		slog.Error("notify: raise failed", "instance_id", u.InstanceID, "err", err)
+		return
+	}
+	n.publish(events.NotificationCreated, map[string]any{
+		"dedup_key": note.DedupKey,
+		"category":  string(note.Category),
+		"severity":  string(note.Severity),
+	})
+}

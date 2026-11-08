@@ -26,6 +26,7 @@ import (
 	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/health"
 	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/lifecycle"
@@ -246,6 +247,8 @@ func (s *Server) registerAll(api huma.API) {
 	s.registerAppSecrets(api)
 	s.registerAppConfig(api)
 	s.registerAppExposure(api)
+	s.registerAppAutoRestart(api)
+	s.registerAppUpdate(api)
 }
 
 // OpenAPIDocument builds the brain's full REST surface against a throwaway mux
@@ -408,9 +411,22 @@ type InstanceDTO struct {
 	// the AI account the app used was deleted. The home tile and the
 	// installed-apps list show it. GET /apps/{id}/config says what is missing.
 	NeedsSetup bool `json:"needs_setup"`
+	// AutoRestart reports whether the brain restarts this app on its own when
+	// it stays unresponsive (#598, HEALTH.md # Automatic restart). On unless
+	// the owner turned it off.
+	AutoRestart bool `json:"auto_restart"`
+	// AutoUpdate reports whether the box updates this app on its own
+	// (UPDATES.md # Per-app auto-update toggle, #631). On unless the owner
+	// turned it off.
+	AutoUpdate bool `json:"auto_update"`
+	// Update is what the box knows about a new version of the app, and the
+	// last update that did not go through (UPDATES.md # 6).
+	Update AppUpdateDTO `json:"update"`
 }
 
-func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
+// toDTO builds an app's DTO for the caller in ctx: the update's can_approve
+// depends on who asks.
+func (s *Server) toDTO(ctx context.Context, i store.Instance, ownerUsername string, e *catalog.Entry) InstanceDTO {
 	// On hosted, the app's sole URL is public HTTPS at
 	// "<slug>.<box-id>.onmoose.io" (ENVIRONMENT.md # Networking & discovery) —
 	// no mDNS, no ".local" fallback. On appliance, prefer the name actually
@@ -427,11 +443,13 @@ func (s *Server) toDTO(i store.Instance, ownerUsername string, e *catalog.Entry)
 	case i.Slug != "":
 		url = "http://" + i.Slug + protocol.AppHostSuffix
 	}
+	actor, _ := auth.FromContext(ctx)
 	dto := InstanceDTO{
 		ID: i.ID, ManifestID: i.ManifestID, Name: i.Name, Slug: i.Slug,
 		Version: i.Version, State: i.State, URL: url,
 		OwnerUserID: i.OwnerUserID, OwnerUsername: ownerUsername, Scope: i.Scope,
-		Exposure: i.Exposure,
+		Exposure: i.Exposure, AutoRestart: !i.AutoRestartOff,
+		AutoUpdate: !i.AutoUpdateOff, Update: appUpdateDTO(actor, i),
 	}
 	if e != nil {
 		dto.IconURL = e.IconURL
@@ -470,6 +488,41 @@ func (s *Server) storeCatalog(ctx context.Context) *catalog.Catalog {
 	return s.catalog
 }
 
+// fitForCaller returns a filter that keeps in a fit's running list only the
+// instances the caller may see (canSee), and counts the rest in OtherRunning.
+// The headroom still counts every running app: the box's memory is shared,
+// but another user's personal app is not the caller's to know by name. An
+// unknown caller or an unreadable instance list names nothing.
+func (s *Server) fitForCaller(ctx context.Context) func(fit.AppFit) fit.AppFit {
+	visible := map[string]bool{}
+	if id, ok := auth.FromContext(ctx); ok {
+		if insts, err := s.store.List(); err != nil {
+			slog.Warn("app fit: list instances", "err", err)
+		} else {
+			for _, i := range insts {
+				if canSee(id, i) {
+					visible[i.ID] = true
+				}
+			}
+		}
+	}
+	return func(res fit.AppFit) fit.AppFit {
+		if len(res.Running) == 0 {
+			return res
+		}
+		kept := make([]fit.RunningApp, 0, len(res.Running))
+		for _, r := range res.Running {
+			if visible[r.InstanceID] {
+				kept = append(kept, r)
+			} else {
+				res.OtherRunning++
+			}
+		}
+		res.Running = kept
+		return res
+	}
+}
+
 // --- handlers ------------------------------------------------------------
 
 func (s *Server) listCatalog(ctx context.Context, _ *struct{}) (*struct {
@@ -499,6 +552,15 @@ func (s *Server) getCatalogApp(ctx context.Context, in *struct {
 	}
 	if err != nil {
 		return nil, huma.Error500InternalServerError("catalog read failed", err)
+	}
+	// The app's fit on this box (#599), the same figures the install plan
+	// carries. Absent when the box cannot read its own memory: the page then
+	// shows no fit rather than a guess.
+	if s.life != nil {
+		if box, ok := s.life.FitBox(ctx); ok {
+			res := s.fitForCaller(ctx)(lifecycle.CheckFit(box, d.ID, d.Recommended()))
+			d.Fit = &res
+		}
 	}
 	return &struct{ Body catalog.Detail }{Body: d}, nil
 }
@@ -644,7 +706,7 @@ func (s *Server) listApps(ctx context.Context, _ *struct{}) (*struct {
 		if e, err := s.catalog.Entry(i.ManifestID); err == nil {
 			ce = &e
 		}
-		dto := s.toDTO(i, names[i.OwnerUserID], ce)
+		dto := s.toDTO(ctx, i, names[i.OwnerUserID], ce)
 		// The tile badge is exposure + public paths together, the same pair the
 		// detail page's access label is built from — a list DTO carrying only the
 		// exposure would draw a fully closed app that is in fact partly open.
@@ -686,7 +748,7 @@ func (s *Server) getApp(ctx context.Context, in *struct {
 	if e, err := s.catalog.Entry(i.ManifestID); err == nil {
 		catEntry = &e
 	}
-	dto := s.toDTO(i, owner.Username, catEntry)
+	dto := s.toDTO(ctx, i, owner.Username, catEntry)
 	s.withPublicPaths(&dto)
 	dto.NeedsSetup = s.instanceNeedsSetup(i.ID)
 	// Mail enrichment for the rebind picker. The manifest comes from the
@@ -1114,9 +1176,11 @@ func (s *Server) startApp(ctx context.Context, in *struct {
 	if err != nil {
 		return nil, err
 	}
-	// Legal from `stopped` (start) and `failed` (click-to-retry, #154) — both run
-	// the identical Start transaction. Any other state is an illegal transition.
-	if inst.State != "stopped" && inst.State != "failed" {
+	// Legal from `stopped` (start), `failed` (click-to-retry, #154) and
+	// `update_failed` (an update whose rollback did not bring the old version
+	// back, #631). All three run the Start transaction. Any other state is an
+	// illegal transition.
+	if inst.State != "stopped" && inst.State != "failed" && inst.State != "update_failed" {
 		return nil, huma.Error409Conflict("app is not stopped or failed")
 	}
 	job := s.jobs.run("app-start", func(job *Job) (map[string]any, error) {

@@ -130,7 +130,7 @@ The scope is wider than mail. It is the general answer for any credential an app
 
 Three committed surfaces need that answer, so the shape has to be decided before any of them is built:
 
-- **Settings → Updates** (`UPDATES.md` # 6) promises an aggregate view — what updated, what is waiting, what failed — with the rollback affordance on it.
+- **Settings → System** (`UPDATES.md` # 6, #488) shows what the last control-plane update did. (There is no Settings → Updates page; app updates are on each app's page, `DECISIONS.md` 2026-11-07.)
 - **The notification** (`UPDATES.md` # 8.2, `NOTIFICATIONS.md`) is the durable, read-stateful copy for an admin who was not watching; a notification whose detail is already gone is not much of a record.
 - **The hosted report back to the cloud** (`UPDATES.md` # 8.4 step 5) is "version now running, success or failure, and the failure mode if it rolled back" — a box that reboots mid-window must still be able to send it.
 
@@ -154,15 +154,15 @@ The obvious fix is optional pinned-reference fields (`brain_image`, `ui_image`) 
 
 The shape is decided (`BUILD.md` # 1b, `UPDATES.md` # 1, `DECISIONS.md` 2026-10-01) and the engine was proved in QEMU (`../progress/ab-update-engine-spike.md`). These points are still open, and each one can change the build:
 
-1. **Secure Boot on the appliance.** shim plus Debian's signed GRUB limits which modules and files GRUB may load. The `grub.cfg` uses `regexp`, `loadenv`, `test`, `squash4` and `xzio`, and reads the kernel from a slot's squashfs (xz), which is how the hosted image boots since #561. Prove it, or find the shape that works.
-2. **dm-verity for the slots**, set up in the initrd for the booted slot, with the root hash carried where the signed boot chain can vouch for it.
+1. **Secure Boot on the appliance.** *Proved 2026-10-05 (#564, probe runs 37073675947 and 37074358073).* Debian's shim and signed GRUB boot with Secure Boot on. `regexp`, `loadenv`, `test`, `part_gpt`, `squash4` and `xzio` are built into `grubx64.efi`, `save_env` and the TRY flag work, and the signed kernel loads from a slot's squashfs. Signed GRUB's prefix is `/EFI/debian`, so `grub.cfg` and `grubenv` live there.
+2. **dm-verity for the slots.** *Mechanics proved 2026-10-05 (#564).* The hash tree is appended in the slot, at the squashfs size rounded up to 4 KiB. An initramfs local-top script runs `veritysetup --panic-on-corruption`, with the root hash GRUB passes from `grubenv` (`<slot>_ROOTHASH`). A corrupted block panics the box, and it comes back on the other slot. PCR 7 stays the same across slots. One part is still open: Secure Boot only vouches for the kernel, not the root hash. The plan is to take the root hash from the signed RAUC bundle. That gives integrity, not a verified boot chain (`THREAT_MODEL.md` B5).
 3. **A slot that hangs.** *Resolved for hosted 2026-10-05.* Hetzner Cloud VMs have a hardware watchdog (the ICH9 TCO timer of QEMU's `q35` machine), the image's generic kernel drives it, and a VM whose PID 1 froze reset itself after 118 s (`../progress/ab-hang-and-major.md`). Two gaps are written down in `BUILD.md` # 1b # As built: the reset comes after about twice `RuntimeWatchdogSec`, and a hang in GRUB or the initramfs is not covered. The appliance falls back to `softdog` where a machine has no hardware watchdog (#564).
-4. **A replaced OS drive (appliance).** The state partition now holds users, password hashes and host keys, and the OS drive was sold as replaceable (`STORAGE.md` # OS drive). Decide how they come back: from the off-box backup, or by rebuilding them from the brain's records.
+4. **A replaced OS drive (appliance).** *Resolved 2026-10-05 (#564).* The state partition holds users, password hashes and host keys, and the OS drive was sold as replaceable (`STORAGE.md` # OS drive). Users and roles are rebuilt from the brain and the off-box backup. The SSH host keys are new, and each user sets their password again.
 5. **A Debian major across the overlay.** *Resolved 2026-10-05 (`DECISIONS.md` 2026-10-05).* When the booted slot's Debian major differs from the one the state partition records, in either direction, the initramfs tidies the `/etc` upper layer: moose's known files are kept, the account files are merged, the pinned files are taken again from the slot when that keeps the box's remap, and everything else moves to an attic (`BUILD.md` # 1b, rule 4). It must ship in a Debian 13 release before the first Debian 14 release.
 6. **How OS patch releases are cut.** *Resolved 2026-10-01 (#560, `DECISIONS.md` 2026-10-01).* A lock-only release is cut from `main` on a `hotfix/X.Y.Z` branch: the bump is re-run against it, `VERSION` is bumped there, the PR goes into `main`, and `main` is then carried into `dev` as after every release. A bump that changes any package from `trixie-security` is released within 7 days; any other bump ships with the next normal release (`docs/dev/contributing.md` # OS patch releases from a lock bump).
 
 **Context:** `BUILD.md` # 1b, `UPDATES.md` # 1, `STORAGE.md` # OS drive, `RELEASE_MANIFEST.md`, #486.
-**Why Tier 2:** none of it blocks the hosted build, which has no Secure Boot, no verity and no replaceable drive. Points 1, 2 and 4 block the appliance build.
+**Why Tier 2:** none of it blocks the hosted build, which has no Secure Boot, no verity and no replaceable drive. The open part of point 2, the trust anchor for the root hash, is the one item left for the appliance build (#564, parked).
 
 ## Tier 3 — Defer-able, but pin the shape
 
@@ -286,8 +286,7 @@ Where do user docs and app-author docs live? In-product help drawer, `docs.moose
 
 Postgres provisioning shipped (`docs/progress/managed-services-postgres.md`, `DECISIONS.md` 2026-06-05), then the MySQL family (`DECISIONS.md` 2026-06-09) and Redis (`docs/progress/managed-services-redis.md`, `DECISIONS.md` 2026-06-13 — isolation model resolved: a per-app ACL user with full keyspace, the credential being the boundary, over the logical-DB-number split). Of the `SERVICE_PROVISIONING.md` # Tier 1 spec pieces **deliberately deferred** out of the Postgres slice, three remain, each its own follow-up:
 
-- **Grace-shutdown.** Lazy spinup is built; the symmetric "stop a service version 12h after its last consumer uninstalls" (`SERVICE_PROVISIONING.md` # At app uninstall, # Versioning) is not — services stay running. Needs a timer/GC and reconcile integration that checks remaining `service_grants` for the kind+version.
-- **Cross-version migration.** Auto-migrate on a major-version bump (`pg_dump` old → `pg_restore` new, pre-migration backup as rollback) is unbuilt; gated on the backup design below.
+- **Grace-shutdown.** Lazy spinup is built; the symmetric "stop a service version 12h after its last consumer uninstalls" (`SERVICE_PROVISIONING.md` # At app uninstall, # Versioning) is not — services stay running. Needs a timer/GC and reconcile integration that checks remaining `service_grants` (and `service_grants_retired`, the old databases an app update moved off and keeps for 7 days, #635) for the kind+version. Since #635 an app update can move an app's database to a newer major, so an old major can now run with no app on it at all.
 - **At-rest encryption of service credentials.** The superuser password (`service_instances`) and per-app passwords (`service_grants`) are plaintext in SQLite + the service `.env`, exactly the gap tracked for `MOOSE_SECRET_*` — folds into **App-secret injection hardening** above; the decision should cover both.
 
 **Context:** `SERVICE_PROVISIONING.md` # Tier 1, the App-secret injection hardening entry above, the Backup architecture entry below.
@@ -325,6 +324,7 @@ A managed queue + worker that apps can fire background work into (overnight re-e
 `SPEC.md` # Local access promises a "virtual terminal in the web UI" — a shell without leaving the browser. Needs design across:
 - Protocol: WebSocket over the brain↔host-agent UNIX socket via HTTP upgrade (already locked in `BRAIN_HOST_PROTOCOL.md` Pattern D as the future shape).
 - Auth: root PTY = root on the host. Default to dropping to the dashboard-user's Linux account; explicit "open a root shell" gesture gated by re-typing the dashboard password.
+- The hosted owner's account already has `sudo` with no password while their SSH is on (`USERS_AND_GROUPS.md` # The hosted owner, `DECISIONS.md` 2026-10-11), so a shell as that account is root. A terminal for the owner must need the portal confirm (#469) to open and must end when that elevation window ends.
 - UX: where it lives in the dashboard, history persistence, multi-session behavior.
 
 **Context:** `BRAIN_HOST_PROTOCOL.md`, `AUTH.md`, `SPEC.md`.
@@ -361,7 +361,7 @@ The architecture and the install/wizard/add-drive/eject mechanics are locked (`S
 
 ### Reboot scheduling UX
 
-**Narrowed 2026-10-01.** The OS update now reboots by itself in the window on both profiles, with no prompt (`DECISIONS.md` 2026-10-01). What is still open is only how it is shown: whether the dashboard says beforehand that tonight's window will restart the box, and whether an admin can push one night's reboot back.
+**Narrowed 2026-10-01.** The OS update now reboots by itself in the window on both profiles, with no prompt (`DECISIONS.md` 2026-10-01). **Narrowed again 2026-10-12 (#509):** on hosted, Settings → System says beforehand that tonight's window restarts the box, and an admin can restart it now with Update now (`DECISIONS.md` 2026-10-12). What is still open is whether an admin can push one night's restart back, and the same screen on the appliance (#564, #400).
 
 **Context:** `UPDATES.md`.
 

@@ -112,15 +112,21 @@ func pickTier(man *manifest.Manifest, base int) (string, error) {
 // checkTierKept is the refusal the app update path runs before it writes a new
 // override (APP_LIFECYCLE.md # Locked: update + rollback): the tier is fixed
 // for the life of an instance, because the owner of its data follows it. The
-// update path is not built yet; it must call this with the new manifest. For
-// the image tier the tier alone is not enough: the owner of each bind dir
-// follows the new image's user too, so the update path must also resolve the
-// new images' users (resolveImageUsers) and refuse a change.
+// update check and the update (classifyUpdate) run the same check through
+// tierKept, with the remap they already read. For the image tier the tier
+// alone is not enough: the owner of each bind dir follows the new image's
+// user too, so the update also resolves the new images' users after the pull
+// and refuses a change (checkImageUsersKept).
 func (m *Manager) checkTierKept(ctx context.Context, inst store.Instance, man *manifest.Manifest) error {
 	_, base, err := m.hostIdentity(ctx)
 	if err != nil {
 		return err
 	}
+	return tierKept(inst, man, base)
+}
+
+// tierKept is checkTierKept for a remap base the caller has read.
+func tierKept(inst store.Instance, man *manifest.Manifest, base int) error {
 	tier, err := pickTier(man, base)
 	if err != nil {
 		return err

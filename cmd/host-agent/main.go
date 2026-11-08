@@ -33,6 +33,25 @@
 //	                    plane to update, so the honest default is "nothing to
 //	                    offer"; the other values exist so the dashboard's update
 //	                    surfaces can be built against every state.
+//	MOOSE_FAKE_UPDATE_PROFILE — "hosted" makes that report a hosted box that
+//	                    applies its own target (auto_apply), so Settings →
+//	                    System shows its update section and Update now works:
+//	                    the fake "applies" an available target in a few
+//	                    seconds. Default "appliance", which shows none.
+//	MOOSE_FAKE_UPDATE_LAST — the last control-plane update outcome it reports:
+//	                    "good" or "failed" (a reverted health failure). Unset
+//	                    reports none, as on a box that never updated.
+//	MOOSE_FAKE_UPDATE_APPLY — "fail" makes Update now end in a reverted
+//	                    failure instead of a success.
+//	MOOSE_FAKE_OS_UPDATE — the OS part of that report (#563): "unsupported"
+//	                    (default) or any OS state. With "installed" and the
+//	                    hosted profile, Update now also plays the OS switch
+//	                    and its restart (#509).
+//	MOOSE_FAKE_UPDATE_WINDOW: the update window that report names, in
+//	                    HH:MM-HH:MM (default 03:00-04:00). The brain's nightly
+//	                    app updates read it (#632), so a wide window such as
+//	                    00:00-23:59 lets them run in dev. The zone is the dev
+//	                    machine's, or UTC when it cannot be named.
 package main
 
 import (
@@ -149,7 +168,13 @@ func main() {
 	// keeps GET /v1/discovery/state's interfaces field stable regardless of
 	// the dev box's real network.
 	a.Net = hostagent.NewFakeNetState(netstate.LANInterface{Name: "eth0", Index: 2, IPv4: "192.168.1.20"})
-	a.UpdateTarget = hostagent.NewFakeUpdateTargetReporter(fakeUpdateTarget())
+	updateReport := hostagent.NewFakeUpdateTargetReporter(fakeUpdateTarget())
+	// The brain's hold on the OS switch (#632). The fake has no switch, so
+	// the hold is only kept and reported, with the real cuts.
+	hold := newFakeHold(updateReport)
+	a.UpdateTarget = fakeReport{r: updateReport, hold: hold}
+	a.UpdateHold = hold
+	a.TargetApplier = fakeTargetApplier{a: a, r: updateReport}
 
 	mux := http.NewServeMux()
 	a.Mount(mux)

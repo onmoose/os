@@ -109,6 +109,15 @@ type UserDTO struct {
 	// (issue #469). False (and omitted) on appliance and for every other account,
 	// so appliance responses stay byte-unchanged.
 	Owner bool `json:"owner,omitempty"`
+	// UpdatePromptDismissed is true when the person closed the update
+	// prompt in this session without choosing (#633). Only GET /me sets it;
+	// a new session starts without it, so the prompt comes back at the next
+	// sign-in.
+	UpdatePromptDismissed bool `json:"update_prompt_dismissed,omitempty"`
+	// UpdatesSeenAt is when the person last saw the toast about the apps
+	// updated overnight, as unix seconds (#634). The dashboard shows the
+	// toast for the updates after it. Only GET /me sets it; 0 means never.
+	UpdatesSeenAt int64 `json:"updates_seen_at,omitempty"`
 }
 
 func userDTO(u store.User) UserDTO {
@@ -658,6 +667,14 @@ func (s *Server) me(ctx context.Context, _ *struct{}) (*struct{ Body UserDTO }, 
 	dto, err := s.fullUserDTO(id.User)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("user count")
+	}
+	dto.UpdatePromptDismissed = id.Session.UpdatePromptDismissed
+	seen, err := s.store.UpdatesSeen(id.User.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, huma.Error500InternalServerError("updates seen")
+	}
+	if !seen.IsZero() {
+		dto.UpdatesSeenAt = seen.Unix()
 	}
 	return &struct{ Body UserDTO }{Body: dto}, nil
 }

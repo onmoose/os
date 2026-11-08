@@ -3,6 +3,7 @@ package updatetarget
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"strings"
@@ -39,8 +40,13 @@ const pollJitter = 2 * time.Minute
 type Applier interface {
 	// StartUpdate begins an update to the given refs and returns the job id. The
 	// job runs in the background: a nil error means the transaction started, not
-	// that it succeeded.
-	StartUpdate(brainRef, uiRef string) (jobID string, err error)
+	// that it succeeded. version is the target's version, for the outcome
+	// record.
+	StartUpdate(brainRef, uiRef, version string) (jobID string, err error)
+	// JobRunning reports whether the job StartUpdate returned still runs. The
+	// update-target read uses it to say when stream B is done for the night
+	// (ControlPlaneDone).
+	JobRunning(jobID string) bool
 }
 
 // OSApplier is stream A's transaction (internal/hostagent/osupdate). Consumer-
@@ -56,6 +62,15 @@ type OSApplier interface {
 	// open is true. night names tonight's window, for the one attempt per
 	// target per night. It never blocks on the work: the work runs as a job.
 	Apply(rel OSRelease, open bool, night time.Time) OSDecision
+	// SwitchNow switches to rel and reboots now, for an admin's Update now
+	// (#509): the window's switch without its per-night guards. rel must
+	// already be installed in the other slot, and nothing moves while the
+	// booted slot is on trial. State waiting means the job lock is held.
+	SwitchNow(rel OSRelease, night time.Time) OSDecision
+	// Peek reports what the box is doing about rel right now, without
+	// starting anything. ok is false when it has nothing newer than the
+	// loop's last decision.
+	Peek(rel OSRelease) (state, detail string, ok bool)
 }
 
 // OSDecision is what the applier did or is doing. State is one of the
@@ -133,8 +148,14 @@ type Loop struct {
 	OSURLPrefix string
 	// Interval between polls; zero means PollInterval.
 	Interval time.Duration
+	// Zone is the box's time zone, read on every tick, so the window follows
+	// a zone change without a host-agent restart (#488). Go loads time.Local
+	// once at start, and set-timezone does not refresh it. Nil means
+	// time.Local. The name is what the update-target read reports.
+	Zone func() (loc *time.Location, name string)
 	// Now and After exist so a test can drive a week of polling in
-	// milliseconds. Both default to the real clock.
+	// milliseconds. Both default to the real clock. A test's Now is used as
+	// it is, in whatever location it carries.
 	Now   func() time.Time
 	After func(time.Duration) <-chan time.Time
 
@@ -166,10 +187,42 @@ type Loop struct {
 	// occurrence" and let the same version be retried twice in one night. The
 	// date is stable across such a shift; it only advances on a genuinely new
 	// night. See occurrenceNight.
+	//
+	// applyMu guards it, because it has two writers: the tick, and ApplyNow,
+	// which an admin's Update now calls from the host socket's HTTP handler.
+	// It is held across the check, the start and the mark, so the two can
+	// never both start the same update.
+	applyMu   sync.Mutex
 	attempted struct {
 		version string
 		night   time.Time
+		// jobID is the update job the attempt started, "" when the start
+		// was refused.
+		jobID string
 	}
+	// settled is the last night on which a tick inside the window started
+	// no stream B update, or on which ControlPlaneDone told the brain stream
+	// B was done (hold.go). While the brain holds the window for app
+	// updates, a target that shows up later that night waits for the next
+	// one: the control-plane update restarts the brain, which would cut an
+	// app update short. Guarded by applyMu.
+	settled time.Time
+	// holdUntil is the end of the brain's hold on the OS switch (hold.go).
+	// Guarded by holdMu: the writer is the host socket's handler, the
+	// readers are the tick and the read.
+	holdMu    sync.Mutex
+	holdUntil time.Time
+	// manualOS is an OS switch an admin asked for in the same Update now as a
+	// control-plane update (#509). Stream B goes first, as in the window, so
+	// the switch waits for its job to free the lock; Run retries it every
+	// ManualRetry until it starts or manualOSFor passes. Guarded by applyMu.
+	manualOS *manualSwitch
+	// ManualRetry is how often a waiting manual switch is tried; zero means
+	// defaultManualRetry.
+	ManualRetry time.Duration
+	// wake lets ApplyNow cut Run's 15-minute sleep short.
+	wakeOnce sync.Once
+	wake     chan struct{}
 
 	// snap is what the last tick decided, for a reader outside the loop
 	// (state.go). snapMu guards it: the writer is the tick, the reader is the
@@ -197,6 +250,11 @@ func occurrenceNight(w Window, t time.Time) time.Time {
 func (l *Loop) now() time.Time {
 	if l.Now != nil {
 		return l.Now()
+	}
+	if l.Zone != nil {
+		if loc, _ := l.Zone(); loc != nil {
+			return time.Now().In(loc)
+		}
 	}
 	return time.Now()
 }
@@ -311,6 +369,11 @@ func (l *Loop) quiet(level slog.Level, key, msg string, args ...any) {
 // this can go wrong is a reason for the box to do anything but keep running what
 // it runs.
 func (l *Loop) Tick(ctx context.Context) {
+	// Every tick that starts no stream B update inside the window settles
+	// tonight (hold.go). w is the window this tick resolves, set below.
+	w, cpBusy := l.window(), false
+	defer func() { l.settle(w, cpBusy) }()
+
 	t, err := l.Source.Target(ctx)
 	switch {
 	case errors.Is(err, ErrNoTarget):
@@ -341,7 +404,8 @@ func (l *Loop) Tick(ctx context.Context) {
 	// hour it would update in, and stream A uses the same window whatever
 	// stream B's part says. The log line is deduped, so resolving it every tick
 	// costs nothing.
-	w, windowFrom := l.windowFor(t)
+	var windowFrom string
+	w, windowFrom = l.windowFor(t)
 
 	// Untrusted input, validated before anything is pulled. A refusal is loud
 	// and repeated: an operator needs to see that a box has been declining its
@@ -383,7 +447,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		return
 	}
 	l.record(OutcomeOK, t, w, windowFrom, nil)
-	cpBusy := l.applyControlPlane(t, w, brain, ui)
+	cpBusy = l.applyControlPlane(t, w, brain, ui)
 	l.tickOS(t, w, cpBusy)
 }
 
@@ -410,21 +474,34 @@ func (l *Loop) applyControlPlane(t Target, w Window, brain, ui string) (busy boo
 	}
 
 	now := l.now()
+	l.applyMu.Lock()
+	defer l.applyMu.Unlock()
 	if !w.Contains(now) {
 		l.quiet(slog.LevelInfo, "holding:"+t.Version, "update target: holding a new version for the update window",
 			"brain", t.Version, "step", "waiting", "zone", now.Location().String())
 		return false
 	}
-	if night := occurrenceNight(w, now); l.attempted.version == t.Version && !night.After(l.attempted.night) {
+	night := occurrenceNight(w, now)
+	if l.attempted.version == t.Version && !night.After(l.attempted.night) {
 		// Already tried this version tonight. If it failed it has already put
 		// the box back, and the next window is soon enough to try again. It
 		// no longer holds the window, so stream A may go.
 		return false
 	}
+	if l.held(now) && (l.settled.Equal(night) || l.attempted.night.Equal(night)) {
+		// Stream B was already done tonight and the brain is updating apps.
+		// The control-plane update restarts the brain, which would cut an
+		// app update short, so a target that showed up since waits for the
+		// next night (UPDATES.md # 7).
+		l.quiet(slog.LevelInfo, "after-apps:"+t.Version, "update target: a new version came after tonight's control-plane step; the apps are updating, so it waits for the next window",
+			"brain", t.Version, "step", "waiting")
+		return false
+	}
 
-	l.attempted.version, l.attempted.night = t.Version, occurrenceNight(w, now)
+	l.attempted.version, l.attempted.night, l.attempted.jobID = t.Version, night, ""
 	l.lastQuiet = ""
-	jobID, err := l.Applier.StartUpdate(t.BrainImage, t.UIImage)
+	jobID, err := l.Applier.StartUpdate(t.BrainImage, t.UIImage, t.Version)
+	l.attempted.jobID = jobID
 	if err != nil {
 		// Includes the ordinary "a job is already running" refusal, which is why
 		// this is a Warn and not an Error.
@@ -434,6 +511,228 @@ func (l *Loop) applyControlPlane(t Target, w Window, brain, ui string) (busy boo
 	slog.Info("update target: applying", "brain", t.Version, "image", t.BrainImage,
 		"step", "accepted", "job_id", jobID)
 	return true
+}
+
+// manualSwitch is an OS switch waiting for stream B to finish.
+type manualSwitch struct {
+	rel   OSRelease
+	night time.Time
+	until time.Time
+}
+
+// defaultManualRetry is how often a waiting manual OS switch is tried.
+const defaultManualRetry = 10 * time.Second
+
+// manualOSFor bounds how long a manual OS switch waits for the lock: longer
+// than a control-plane update may run (30 min), so it never gives up on one
+// that is still going.
+const manualOSFor = time.Hour
+
+// ErrBusy is ApplyNow's refusal when the OS switch cannot start yet: another
+// job holds the lock, or the booted slot is still on trial.
+var ErrBusy = errors.New("updatetarget: the box is busy with another update")
+
+func (l *Loop) wakeC() chan struct{} {
+	l.wakeOnce.Do(func() { l.wake = make(chan struct{}, 1) })
+	return l.wake
+}
+
+// wakeUp cuts Run's sleep short. It never blocks: one pending wake is enough.
+func (l *Loop) wakeUp() {
+	select {
+	case l.wakeC() <- struct{}{}:
+	default:
+	}
+}
+
+func (l *Loop) manualRetry() time.Duration {
+	if l.ManualRetry > 0 {
+		return l.ManualRetry
+	}
+	return defaultManualRetry
+}
+
+// ErrNothingToApply is ApplyNow's refusal when the last tick left no target
+// that differs from what the box runs: the state is not "available".
+var ErrNothingToApply = errors.New("updatetarget: no update to apply")
+
+// ErrManualApplyUnsupported is ApplyNow's refusal on a box that does not
+// apply its own target (the appliance, UPDATES.md # 8.2). Its update is parked
+// (#400), so the dashboard shows no Update now there.
+var ErrManualApplyUnsupported = errors.New("updatetarget: this box does not apply its update target")
+
+// ApplyNow starts, now, the update the last tick found, without waiting for
+// the window (#488, #509, UPDATES.md # 8.4). It is what an admin's Update now
+// does, and it covers both streams in the window's order:
+//
+//   - **Stream B**, when the target differs from the running pair: the update
+//     job starts at once. It applies **only the target the loop already
+//     fetched and checked**: digest-pinned refs from the expected
+//     repositories. Nothing comes from the caller. The running pair is read
+//     fresh, so an update that landed since the tick is not applied twice.
+//   - **Stream A**, when the OS release the loop picked is installed in the
+//     other slot: the box switches to it and reboots. With stream B in the
+//     same request, the switch waits for stream B's job to free the lock (Run
+//     retries it), as the reboot goes last in the window (UPDATES.md # 7). An
+//     OS release that is still downloading is not waited for: Update now
+//     covers what is ready.
+//
+// Two rules about tonight's attempt, for both streams:
+//
+//   - **It bypasses the per-night guards.** An admin who presses Update now
+//     after a failed night is choosing to retry, and a failure puts the box
+//     back anyway (stream B reverts; a new OS slot that does not come up is
+//     given up by its trial).
+//   - **It counts as tonight's attempt.** Applying X at noon marks the coming
+//     window as tried for X, so a failed manual update is not repeated by the
+//     window a few hours later. The next night tries again.
+//
+// A live hold from the brain (hold.go) makes the switch wait too, the same
+// way: an admin's Update now still goes after the night's app updates.
+//
+// It returns the job id of the first job it started (stream B's when there is
+// one; "" when the only work is a switch that waits for the hold), or
+// ErrNothingToApply, ErrManualApplyUnsupported, ErrBusy, or the
+// applier's own refusal (another job holds the lock).
+func (l *Loop) ApplyNow() (jobID string, err error) {
+	if !l.AutoApply || l.Applier == nil {
+		return "", ErrManualApplyUnsupported
+	}
+	l.applyMu.Lock()
+	defer l.applyMu.Unlock()
+
+	s := l.Snapshot()
+	now := l.now()
+	night := nextNight(s.Window, now)
+	cp, err := l.controlPlanePending(s)
+	if err != nil {
+		return "", err
+	}
+	rel, osReady := l.osReady(s)
+	if !cp && !osReady {
+		return "", ErrNothingToApply
+	}
+
+	if cp {
+		t := s.Target
+		jobID, err = l.Applier.StartUpdate(t.BrainImage, t.UIImage, t.Version)
+		if err != nil {
+			slog.Warn("update target: could not start the update an admin asked for", "err", err, "brain", t.Version)
+			return "", err
+		}
+		l.attempted.version, l.attempted.night, l.attempted.jobID = t.Version, night, jobID
+		slog.Info("update target: applying now, as an admin asked", "brain", t.Version, "image", t.BrainImage,
+			"step", "accepted", "job_id", jobID)
+	}
+	if !osReady {
+		return jobID, nil
+	}
+	if cp || l.held(now) {
+		// The switch goes after stream B and after the night's app updates
+		// (UPDATES.md # 7), so it waits: Run retries it. With no stream B
+		// job, jobID is "" and the caller follows the read instead.
+		l.manualOS = &manualSwitch{rel: rel, night: night, until: now.Add(manualOSFor)}
+		detail := "the switch waits for the control-plane update to finish"
+		if !cp {
+			detail = SwitchWaitsForApps
+		}
+		l.recordOS(OSSnapshot{State: protocol.OSUpdateWaiting, Detail: detail, Target: &rel})
+		l.wakeUp()
+		slog.Info("os update: an admin asked to switch now; waiting first", "os", rel.Version, "step", "waiting")
+		return jobID, nil
+	}
+	d := l.OS.SwitchNow(rel, night)
+	switch d.State {
+	case protocol.OSUpdateRebooting:
+		l.recordOS(OSSnapshot{State: d.State, Detail: d.Detail, Target: &rel})
+		return d.JobID, nil
+	case protocol.OSUpdateWaiting, protocol.OSUpdateInstalling:
+		return "", fmt.Errorf("%w: %s", ErrBusy, d.Detail)
+	}
+	return "", fmt.Errorf("%w: %s", ErrNothingToApply, d.Detail)
+}
+
+// controlPlanePending reports whether the last tick left a stream B target
+// that differs from what the box runs, read fresh.
+func (l *Loop) controlPlanePending(s Snapshot) (bool, error) {
+	if s.Outcome != OutcomeOK {
+		return false, nil
+	}
+	brain, ui, err := l.Current.Running()
+	if err != nil {
+		return false, fmt.Errorf("updatetarget: cannot read what this box runs: %w", err)
+	}
+	return brain != s.Target.BrainImage || ui != s.Target.UIImage, nil
+}
+
+// osReady reports whether the OS release the loop picked is installed in the
+// other slot and waits for a switch. The job state is read fresh (Peek): the
+// tick may be up to 15 minutes old.
+func (l *Loop) osReady(s Snapshot) (OSRelease, bool) {
+	if l.OS == nil || s.OS.Target == nil {
+		return OSRelease{}, false
+	}
+	rel := *s.OS.Target
+	state := s.OS.State
+	if st, _, ok := l.OS.Peek(rel); ok {
+		state = st
+	}
+	return rel, state == protocol.OSUpdateInstalled
+}
+
+// manualPending reports whether a manual OS switch waits.
+func (l *Loop) manualPending() bool {
+	l.applyMu.Lock()
+	defer l.applyMu.Unlock()
+	return l.manualOS != nil
+}
+
+// manualStep tries the waiting manual OS switch once. It starts when stream
+// B's job has freed the lock, whether that update worked or not: the window
+// goes on to stream A after a failed stream B too.
+func (l *Loop) manualStep() {
+	l.applyMu.Lock()
+	defer l.applyMu.Unlock()
+	m := l.manualOS
+	if m == nil {
+		return
+	}
+	now := l.now()
+	if now.After(m.until) {
+		l.manualOS = nil
+		slog.Warn("os update: the switch an admin asked for never got the job lock; leaving it to the window", "os", m.rel.Version)
+		return
+	}
+	if l.held(now) {
+		// The brain still updates apps. ClearHold wakes Run, and a hold that
+		// ends on its own ends before the window does.
+		return
+	}
+	d := l.OS.SwitchNow(m.rel, m.night)
+	if d.State == protocol.OSUpdateWaiting || d.State == protocol.OSUpdateInstalling {
+		return
+	}
+	l.manualOS = nil
+	rel := m.rel
+	l.recordOS(OSSnapshot{State: d.State, Detail: d.Detail, Target: &rel})
+	slog.Info("os update: the switch an admin asked for: "+d.State, "os", rel.Version, "job_id", d.JobID)
+}
+
+// nextNight is the night of the window that is open at t, or of the next one
+// to open after t. A manual apply outside the window counts for that one.
+func nextNight(w Window, t time.Time) time.Time {
+	if w.Contains(t) {
+		return occurrenceNight(w, t)
+	}
+	// Built from the wall-clock hour and minute, not midnight plus a
+	// duration: on the night the clocks go back, midnight plus three hours is
+	// the second 02:00, not 03:00.
+	h, m := int(w.Start/time.Hour), int(w.Start%time.Hour/time.Minute)
+	start := time.Date(t.Year(), t.Month(), t.Day(), h, m, 0, 0, t.Location())
+	if !start.After(t) {
+		start = time.Date(t.Year(), t.Month(), t.Day()+1, h, m, 0, 0, t.Location())
+	}
+	return time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
 }
 
 // tickOS is stream A's half of a tick (UPDATES.md # 1): check the OS part,
@@ -479,8 +778,14 @@ func (l *Loop) tickOS(t Target, w Window, cpBusy bool) {
 		return
 	}
 	now := l.now()
-	open := w.Contains(now) && !cpBusy
+	// A live hold from the brain keeps the window shut for the switch, and
+	// only for the switch: Apply still downloads and installs (hold.go).
+	held := l.held(now)
+	open := w.Contains(now) && !cpBusy && !held
 	d := l.OS.Apply(rel, open, occurrenceNight(w, now))
+	if held && w.Contains(now) && d.State == protocol.OSUpdateInstalled {
+		d.Detail = SwitchWaitsForApps
+	}
 	l.recordOS(OSSnapshot{State: d.State, Detail: d.Detail, Target: &rel})
 	l.quietOS(slog.LevelInfo, "decision:"+rel.Version+":"+d.State+":"+d.Detail, "os update: "+d.State,
 		"os", rel.Version, "digest", rel.BundleSHA256, "slot", slot, "job_id", d.JobID)
@@ -501,14 +806,35 @@ func (l *Loop) quietOS(level slog.Level, key, msg string, args ...any) {
 // The first tick is immediate so a box that has been off for a week learns its
 // target as soon as it is up, but it still only **applies** inside the window,
 // so booting at noon does not restart the control plane at noon.
+//
+// While an admin's OS switch waits for stream B (ApplyNow), Run only retries
+// that switch, every ManualRetry, and goes back to ticking once it started or
+// gave up. ApplyNow wakes it, so the first retry does not wait for the
+// 15-minute sleep. ClearHold wakes it too, and while a hold is live it sleeps
+// no longer than until the hold ends or the window opens (hold.go).
 func (l *Loop) Run(ctx context.Context) {
 	slog.Info("update target: polling", "interval", l.interval().String(), "profile", l.Profile)
+	l.Tick(ctx)
 	for {
-		l.Tick(ctx)
+		d := l.nextDelay()
+		if l.manualPending() {
+			d = l.manualRetry()
+		}
+		if hd, ok := l.holdWake(l.now()); ok && hd < d {
+			// Tick when the hold ends on its own, and when the window opens
+			// under a hold, so neither stream waits a full interval.
+			d = hd
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-l.after(l.nextDelay()):
+		case <-l.after(d):
+		case <-l.wakeC():
 		}
+		if l.manualPending() {
+			l.manualStep()
+			continue
+		}
+		l.Tick(ctx)
 	}
 }

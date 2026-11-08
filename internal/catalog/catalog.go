@@ -24,6 +24,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/manifest"
 )
 
@@ -486,6 +487,19 @@ func (c *Catalog) StartRefresh(ctx context.Context) {
 	}
 }
 
+// OnSync sets fn to run after every sync of a remote catalog that reached the
+// catalog service, a 304 included, and never after a failed one. Running it on
+// a 304 too is what lets a check that failed last time try again. The brain uses it to look for app updates (UPDATES.md # 4, #631):
+// lifecycle reads the catalog, so the catalog cannot call into lifecycle, and
+// this callback is the seam between them. fn runs on the sync loop, so it
+// must return quickly. A disk-backed catalog never changes, so this is a
+// no-op there.
+func (c *Catalog) OnSync(fn func()) {
+	if r, ok := c.src.(*remoteSource); ok {
+		r.onSync.Store(&fn)
+	}
+}
+
 // Entry is the store-facing summary of one available app. It carries exactly what
 // the browse grid needs to render a card without a second fetch (APP_STORE.md #
 // Catalog schema): the identity, the one-liner, the categories, and an icon URL.
@@ -516,6 +530,11 @@ type Entry struct {
 	// figure (estimated_size) is the manifest's measured baseline at install, not
 	// a usage projection (APP_MANIFEST.md # Storage, DECISIONS.md 2026-06-09).
 	Footprint manifest.Footprint `json:"footprint"`
+
+	// recommended is the memory and CPU the app recommends, the input to
+	// Detail.Fit. It is not on the API by itself: Fit carries the figures.
+	// Read it through Detail.Recommended.
+	recommended manifest.Recommended
 
 	// needsRemap is true when the app sets root_setup or image_user, so it can
 	// only run on a Docker daemon with the userns-remap. It is not on the API:
@@ -552,7 +571,19 @@ type Detail struct {
 	// only, not Entry: it is a paragraph of reading, so it belongs on the page
 	// where someone decides to install, not on a grid card.
 	ExternalCosts []ExternalCost `json:"external_costs,omitempty"`
+
+	// Fit says whether the app fits this box's memory and CPU (#599): the
+	// state, the figures behind it, and, when tight, the running apps to stop.
+	// The catalog never sets it: the API fills it from the box (getCatalogApp),
+	// and leaves it absent when the box could not measure itself.
+	Fit *fit.AppFit `json:"fit,omitempty"`
 }
+
+// Recommended is the memory and CPU the app recommends, from the browse
+// record's resources block (or the manifest, for the disk source). Zero when
+// it recommends nothing. A method on Detail, not Entry: huma cannot build the
+// schema link of a struct that embeds a type with methods.
+func (d Detail) Recommended() manifest.Recommended { return d.recommended }
 
 // iconURL / screenshotURL are the brain-served asset routes the store loads
 // directly in <img> tags (APP_STORE.md # Catalog schema). Both catalog sources

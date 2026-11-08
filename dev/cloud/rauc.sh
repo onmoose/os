@@ -96,22 +96,31 @@ rauc_stage_keyring() {
 # version dev/os-lock/cloud-packages.lock names, from snapshot.debian.org at
 # the locked timestamp, and squashfs-tools. WORKDIR is mounted at /w.
 #
-# The snapshot is fetched over plain http: the slim image has no CA store, and
-# apt checks every index against Debian's archive key, which the image does
-# carry, so the transport needs no TLS for integrity.
+# The snapshot is fetched over https. apt's signature check is not enough on
+# its own: CVE-2026-109518 (apt before 3.0.4, DSA-6607-1) let anyone who could
+# change plain-http traffic make apt install a package it never verified, when
+# Acquire::Retries is set, as it is here. This container also holds the release
+# signer in the sign job (dev/release/sign-bundle.sh). The slim image has no CA
+# store, so the host's CA bundle is mounted read-only and apt is pointed at it
+# (Acquire::https::CaInfo; without it OpenSSL finds no trust store in the image).
 rauc_run() {
-    local work="$1" script="$2" img ts rv
+    local work="$1" script="$2" img ts rv ca="" c
     img="$(awk -F= '$1=="BRAIN_RUNTIME_IMAGE"{print $2}' "${REPO_ROOT}/dev/control-plane/images.lock")"
     ts="$(tr -d '[:space:]' < "${REPO_ROOT}/dev/os-lock/debian-snapshot")"
     rv="$(awk '$1=="rauc"{print $2}' "${REPO_ROOT}/dev/os-lock/cloud-packages.lock")"
     [ -n "$img" ] && [ -n "$ts" ] && [ -n "$rv" ] || { echo "rauc_run: could not read the base image, snapshot or rauc version from the locks" >&2; return 1; }
-    docker run --rm -v "$work:/w" -w /w -e TS="$ts" -e RV="$rv" "$img" bash -euo pipefail -c '
+    for c in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+        [ -s "$c" ] && { ca="$c"; break; }
+    done
+    [ -n "$ca" ] || { echo "rauc_run: no CA bundle on the host (looked for /etc/ssl/certs/ca-certificates.crt and /etc/pki/tls/certs/ca-bundle.crt)" >&2; return 1; }
+    docker run --rm -v "$work:/w" -v "$ca:/etc/ssl/certs/ca-certificates.crt:ro" -w /w -e TS="$ts" -e RV="$rv" "$img" bash -euo pipefail -c '
         rm -f /etc/apt/sources.list.d/*
         cat > /etc/apt/sources.list <<EOF
-deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${TS} trixie main
-deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${TS} trixie-updates main
-deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${TS} trixie-security main
+deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${TS} trixie main
+deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${TS} trixie-updates main
+deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${TS} trixie-security main
 EOF
+        echo "Acquire::https::CaInfo \"/etc/ssl/certs/ca-certificates.crt\";" > /etc/apt/apt.conf.d/80-moose-ca
         apt-get -o Acquire::Retries=5 update -qq
         DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y -qq --no-install-recommends "rauc=${RV}" squashfs-tools >/dev/null
         echo "in the container: $(rauc --version)"

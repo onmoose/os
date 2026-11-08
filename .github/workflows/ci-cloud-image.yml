@@ -128,6 +128,11 @@ on:
   #                                actor on the control-plane project (#390)
   #   - internal/api/system*.go    POST /api/v1/system/update, the trigger the
   #                                boot drives
+  #   - internal/lifecycle/{update,nightly,snapshot,rollback,servicemove,pinning}*.go
+  #     and internal/api/appupdate*.go
+  #                                the app update path, which the `app-update`
+  #                                boot proves (#630); a PR that touches it runs
+  #                                that boot as well as `update`
   #   - dev/cloud/**               the lane and its in-guest assertions
   #   - dev/control-plane/**, dev/release/ghcr-resolve.sh, Makefile
   #                                the control-plane bundle both images bake (#566)
@@ -152,6 +157,16 @@ on:
       - "internal/lifecycle/controlplane*.go"
       - "internal/lifecycle/lifecycle.go"
       - "internal/api/system*.go"
+      # The app update path the `app-update` boot proves (#630): the update,
+      # its snapshot, rollback and database move, the nightly window, and the
+      # routes that start them. The OS hold is under internal/hostagent/**.
+      - "internal/lifecycle/update*.go"
+      - "internal/lifecycle/nightly*.go"
+      - "internal/lifecycle/snapshot*.go"
+      - "internal/lifecycle/rollback*.go"
+      - "internal/lifecycle/servicemove*.go"
+      - "internal/lifecycle/pinning*.go"
+      - "internal/api/appupdate*.go"
       - "dev/cloud/**"
       - "dev/os-lock/**"
       # The control-plane bundle the images bake (#566): the pull, the record
@@ -569,6 +584,17 @@ jobs:
       #     brain puts an app in the wrong tier, or gives the capabilities with the
       #     host userns, must never be published. The two boots add about a minute and a half.
       #
+      #   - app-update (#630): the ONLY proof of app updates on a booted box, with
+      #     the socket proxy, the remap and a real managed Postgres. An update by
+      #     hand runs the new version on the old data; a broken one is rolled back
+      #     from its snapshot; one that asks for more waits for the owner's yes;
+      #     Go back returns to the version before; and the nightly window updates
+      #     the app while the app's hold keeps the OS switch waiting, then the box
+      #     switches and the app is checked on slot B. An image that loses app data
+      #     on an update, applies more access without a yes, or reboots in the
+      #     middle of an app update must never be published. It is the longest
+      #     boot: it waits for its window and for host-agent's first tick in it.
+      #
       # The frozen-identity boot stays out: it is orthogonal (it checks a re-delivered
       # seed is ignored on a later boot) and has shown a flaky false "re-ingested"
       # verdict whose root cause is still open, so it is left to the full local run
@@ -605,7 +631,11 @@ jobs:
           BOOTS_INPUT: ${{ inputs.boots }}
         run: |
           set -euo pipefail
-          full="unseeded seeded access update ssh remap os-update os-revert"
+          full="unseeded seeded access update ssh remap os-update os-revert app-update"
+          # The files whose change runs the app-update boot on a PR (#630):
+          # the app update path (as in the paths filter above), the test app
+          # and its catalogs, and the two lane scripts that hold the boot.
+          app_update_files='^(internal/lifecycle/(update|nightly|snapshot|rollback|servicemove|pinning)[^/]*\.go|internal/api/appupdate[^/]*\.go|internal/hostagent/updatetarget/|internal/hostagent/updatehold[^/]*\.go|dev/cloud/test/catalog/upnote/|dev/cloud/test/catalog-updates/|dev/cloud/cloud-assertions\.sh|dev/cloud/run-cloud-tests\.sh)'
           if [ "$EVENT" = "pull_request" ]; then
             # The compare API needs only `contents: read`, which this job has. The
             # PR files API would need `pull-requests: read`, and asking for it
@@ -613,6 +643,8 @@ jobs:
             files="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.files[].filename')"
             if printf '%s\n' "$files" | grep -q '^dev/os-lock/'; then
               list="$full"; why="this PR changes the OS package lock"
+            elif printf '%s\n' "$files" | grep -qE "$app_update_files"; then
+              list="update app-update"; why="this PR changes the app update path"
             else
               list="update"; why="control-plane update only"
             fi
@@ -632,23 +664,24 @@ jobs:
           for b in $list; do
             case "$b" in
               unseeded|seeded|frozen) case " $chain " in *" $b "*) ;; *) chain="${chain:+$chain }$b" ;; esac ;;
-              access|update|ssh|remap|os-update|os-revert) case " ${groups[*]-} " in *" $b "*) ;; *) groups+=("$b") ;; esac ;;
+              access|update|ssh|remap|os-update|os-revert|app-update) case " ${groups[*]-} " in *" $b "*) ;; *) groups+=("$b") ;; esac ;;
               bios) echo "::error::'bios' is no longer a boot: every boot runs under both firmwares"; exit 1 ;;
-              *) echo "::error::unknown boot '$b' (known: unseeded seeded frozen access update ssh remap os-update os-revert)"; exit 1 ;;
+              *) echo "::error::unknown boot '$b' (known: unseeded seeded frozen access update ssh remap os-update os-revert app-update)"; exit 1 ;;
             esac
           done
           # A run that publishes the OS bakes only the release root into the
           # boot-proof image, so the throwaway-signed test bundle cannot install
           # (#563). os-update then runs its refusal half only, and os-revert,
-          # which needs an install, is left out.
+          # which needs an install, is left out. app-update stays: it runs its
+          # night with no OS part (#630).
           if [ "$SHOULD_PUBLISH_OS" = true ]; then
             kept=(); for g in "${groups[@]}"; do [ "$g" = os-revert ] || kept+=("$g"); done; groups=("${kept[@]}")
             echo "an OS release run: os-update runs its refusal half only, os-revert is left out"
           fi
-          # The OS update boots need the test bundle; the build makes it only
-          # when one of them runs (about 1.5 min).
+          # The OS update boots and app-update need the test bundle; the
+          # build makes it only when one of them runs (about 1.5 min).
           os_test=false
-          case " ${groups[*]} " in *" os-update "*|*" os-revert "*) os_test=true ;; esac
+          case " ${groups[*]} " in *" os-update "*|*" os-revert "*|*" app-update "*) os_test=true ;; esac
           echo "os_test=${os_test}" >> "$GITHUB_OUTPUT"
           if [ -n "$chain" ]; then groups=("$chain" "${groups[@]}"); fi
           [ "${#groups[@]}" -gt 0 ] || { echo "::error::the boot list '${list}' names no boot"; exit 1; }
@@ -858,8 +891,9 @@ jobs:
       contents: read
     runs-on: ubuntu-24.04
     # The update and remap boots allow themselves up to 25 min of verdict
-    # wait each (run-cloud-tests.sh VERDICT_TIMEOUT); remap is two boots.
-    timeout-minutes: 60
+    # wait each (run-cloud-tests.sh VERDICT_TIMEOUT); remap is two boots. The
+    # access boot allows itself up to 53 min (#598's 5-minute restart window).
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
@@ -908,7 +942,7 @@ jobs:
           name: cloud-image-boot-qcow2
           path: .dev/cloud-boot
       - name: Download the OS test bundle
-        if: ${{ matrix.boots == 'os-update' || matrix.boots == 'os-revert' }}
+        if: ${{ matrix.boots == 'os-update' || matrix.boots == 'os-revert' || matrix.boots == 'app-update' }}
         uses: actions/download-artifact@v4
         with:
           name: cloud-image-os-test-bundle

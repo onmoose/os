@@ -84,6 +84,7 @@ import {
   missingModelTypes,
   saveDraft,
   spaceTight,
+  memoryTight,
   stepForError,
   stepList,
   tileOf,
@@ -100,6 +101,7 @@ import Heading from "../components/ui/Heading.vue";
 import ConfigFieldInput from "../components/install/ConfigFieldInput.vue";
 import FolderChoices from "../components/install/FolderChoices.vue";
 import InstallInfoBox from "../components/install/InstallInfoBox.vue";
+import FitNotice from "../components/FitNotice.vue";
 import MailAddForm from "../components/install/MailAddForm.vue";
 import MailProviderLogo from "../components/MailProviderLogo.vue";
 import MailServiceGrid from "../components/install/MailServiceGrid.vue";
@@ -901,6 +903,13 @@ watch(duplicateInfo, (dup) => {
 // no steps, the bare path shows only the warning.
 const existing = computed(() => plan.value?.existing ?? []);
 const tight = computed(() => spaceTight(plan.value?.footprint));
+// An app that may not fit next to the running apps needs an explicit
+// "Install anyway" (#599). The notice that says why is on the first step.
+const installLabel = computed(() => {
+  if (pending.value) return "Starting…";
+  if (existing.value.length > 0 && noSteps.value) return "Install my own copy";
+  return memoryTight(plan.value) ? "Install anyway" : "Install";
+});
 const duplicateLines = computed(() =>
   existing.value.map((c) => {
     if (c.scope === "household") return `${c.name} is already installed for everyone at home.`;
@@ -989,6 +998,7 @@ watch(
           :app-name="plan.name"
           :permissions="plan.permissions"
           :footprint="plan.footprint"
+          :fit="plan.fit"
         />
       </header>
 
@@ -1018,6 +1028,7 @@ watch(
         This might not fit. Only about {{ formatSize(plan.footprint.free_bytes) }} is free on your box. You can still
         install.
       </p>
+      <FitNotice v-if="noSteps" :fit="plan.fit" class="mx-4 sm:mx-0" />
 
       <Heading
         id="install-question"
@@ -1191,7 +1202,7 @@ watch(
           </Button>
           <HealthGated v-if="installsHere" blocks="apps">
             <Button :disabled="!canContinue || !!duplicateInfo" @click="noSteps ? install() : onContinue()">
-              {{ pending ? "Starting…" : existing.length > 0 && noSteps ? "Install my own copy" : "Install" }}
+              {{ installLabel }}
             </Button>
           </HealthGated>
           <Button v-else :disabled="!canContinue" @click="onContinue">Continue</Button>

@@ -2,6 +2,8 @@
 // host-agent (BRAIN_HOST_PROTOCOL.md). HTTP/JSON over a UNIX socket.
 package protocol
 
+import "time"
+
 // SocketPath is the production socket location. In dev the brain and the
 // fake host-agent agree on a path via MOOSE_AGENT_SOCK.
 const SocketPath = "/var/run/moose/agent.sock"
@@ -127,9 +129,15 @@ type SystemResources struct {
 // CPUCounters are cumulative jiffy counters from the aggregate /proc/stat line.
 // cpu_pct is derived by the brain as busy/total over the sample interval, where
 // busy = total - idle.
+//
+// Cores is the number of online CPUs, one per `cpuN` line of /proc/stat. The
+// brain compares it with an app's recommended CPU to say whether the app fits
+// (APP_ISOLATION.md # Resource limits). A host-agent older than the field sends
+// none, which reads as 0: the brain then skips the CPU check.
 type CPUCounters struct {
 	TotalJiffies int64 `json:"total_jiffies"`
 	IdleJiffies  int64 `json:"idle_jiffies"`
+	Cores        int   `json:"cores,omitempty"`
 }
 
 // MemCounters are instantaneous memory figures from /proc/meminfo, in bytes.
@@ -232,11 +240,20 @@ type SetRoleRequest struct {
 // the appliance (AUTH.md # Device access) — and the brain refuses a hosted enable
 // with no key before calling here. host-agent does not know the profile, the same
 // division of labour as set-timezone, where the brain validates the zone.
+//
+// PasswordlessSudo asks host-agent to let this account run sudo with no
+// password prompt, for as long as the account is enabled. The brain sets it only
+// for the hosted owner, whose password is random and unknown, so sudo would
+// otherwise be a dead end (DECISIONS.md 2026-10-11). host-agent does not check
+// who the owner is or which profile it runs on: it renders what it is told, the
+// same split as RequirePassword. With Enabled false the flag is ignored and any
+// rule for this account is removed. An older host-agent ignores the field.
 type SetSSHAccessRequest struct {
-	User            string   `json:"user"`
-	Enabled         bool     `json:"enabled"`
-	AuthorizedKeys  []string `json:"authorized_keys"`
-	RequirePassword bool     `json:"require_password"`
+	User             string   `json:"user"`
+	Enabled          bool     `json:"enabled"`
+	AuthorizedKeys   []string `json:"authorized_keys"`
+	RequirePassword  bool     `json:"require_password"`
+	PasswordlessSudo bool     `json:"passwordless_sudo,omitempty"`
 }
 
 // SSHState is GET /v1/ssh/state — actual host state for the reconciler, read on
@@ -538,7 +555,69 @@ type SystemUpdateResult struct {
 	// RevertError is set when the rollback itself failed. The box is then in a
 	// state no automatic path can fix, and this is the operator's signal.
 	RevertError string `json:"revert_error,omitempty"`
+	// FromVersion and ToVersion are the control-plane versions the update
+	// moved between, read from the images' org.opencontainers.image.version
+	// label. Empty when an image does not carry the label or was never pulled.
+	FromVersion string `json:"from_version,omitempty"`
+	ToVersion   string `json:"to_version,omitempty"`
 }
+
+// ImageVersionLabel is the OCI label the brain and UI images carry their
+// control-plane version in (cmd/brain/Dockerfile, web-ui/Dockerfile).
+const ImageVersionLabel = "org.opencontainers.image.version"
+
+// SystemUpdateTargetApplyPath is POST /v1/jobs/system-update-target: apply the
+// target the update-target loop already fetched and checked, now, without
+// waiting for the window (#488). It takes no body, on purpose: the refs come
+// from the loop, never from the caller. 202 + a Job, like system-update.
+const SystemUpdateTargetApplyPath = "/v1/jobs/system-update-target"
+
+// Error codes of POST /v1/jobs/system-update-target.
+const (
+	// ErrCodeJobRunning: another job holds the job lock (a control-plane
+	// update, or an OS install or switch). 409.
+	ErrCodeJobRunning = "job-running"
+	// ErrCodeNothingToApply: the loop has no target that differs from what
+	// the box runs (any state but available). 409.
+	ErrCodeNothingToApply = "nothing-to-apply"
+)
+
+// ControlPlaneOutcome is what the last control-plane update did (stream B),
+// kept on disk by host-agent so it outlives the brain it replaced. Scheduled
+// and manual updates write the same record. Its first five fields have the
+// shape of OSOutcome, stream A's record.
+type ControlPlaneOutcome struct {
+	// ID names this outcome once. It is the job id of the update, so a caller
+	// that started a job knows when its outcome has landed.
+	ID string `json:"id"`
+	// Outcome is "good" (the new pair came up healthy) or "failed" (it did
+	// not, or it never started; the box is on the pair it ran before, unless
+	// RevertError says the way back failed too).
+	Outcome string `json:"outcome"`
+	// Version is the control-plane version the update moved to; From the one
+	// it came from. Either is empty when the box could not tell.
+	Version string `json:"version,omitempty"`
+	From    string `json:"from,omitempty"`
+	// At is when the update finished, StartedAt when it began, RFC3339.
+	At        string `json:"at"`
+	StartedAt string `json:"started_at,omitempty"`
+	// BrainChanged and UIChanged say which containers the update replaced.
+	BrainChanged bool `json:"brain_changed"`
+	UIChanged    bool `json:"ui_changed"`
+	// FailureMode names the step that failed ("read", "pull", "snapshot",
+	// "declare", "recreate", "health"), or "timeout". Empty on success.
+	FailureMode string `json:"failure_mode,omitempty"`
+	// Reverted is true when the box had been changed and was put back.
+	Reverted bool `json:"reverted,omitempty"`
+	// RevertError is set when putting the box back failed. Not UI copy.
+	RevertError string `json:"revert_error,omitempty"`
+}
+
+// The ControlPlaneOutcome values.
+const (
+	ControlPlaneOutcomeGood   = "good"
+	ControlPlaneOutcomeFailed = "failed"
+)
 
 // Job is one host-agent job record. StartedAt/FinishedAt are RFC3339, matching
 // the other timestamps on this socket (SystemHealth.CheckedAt).
@@ -604,6 +683,14 @@ type UpdateTarget struct {
 	// a window can come from the source's answer, a URL never can.
 	Window     string `json:"window,omitempty"`
 	WindowFrom string `json:"window_from,omitempty"`
+	// Zone is the IANA time zone the window is read in: the box's zone, read
+	// the same way the loop reads it (#488). Empty when host-agent cannot
+	// name it.
+	Zone string `json:"zone,omitempty"`
+	// Last is what the last control-plane update did, read from disk, so it
+	// survives the brain restart the update causes (#488). Nil before the
+	// first update. Stream A's record is OS.Last.
+	Last *ControlPlaneOutcome `json:"last,omitempty"`
 	// AutoApply is the UPDATES.md # 8.2 difference between the profiles: a
 	// hosted box applies its target in the window on its own, an appliance
 	// waits for an admin. It is what decides whether the dashboard says "this
@@ -615,6 +702,50 @@ type UpdateTarget struct {
 	// OS is stream A's last decision, beside stream B's above (UPDATES.md # 1,
 	// #563). Nil when this host-agent reports nothing about the OS.
 	OS *OSUpdate `json:"os,omitempty"`
+	// ControlPlaneDoneNight says stream B is finished for tonight's window
+	// (#632): the night it is done for, as "YYYY-MM-DD", the date the window
+	// opened on. It is the date when the window is open, the loop checked its
+	// source inside this window, and stream B will do nothing more tonight:
+	// there was nothing to do (current, none, refused, unreachable, disabled,
+	// or the appliance, which never applies in the window), or tonight's one
+	// attempt is over and no update job runs. It is "" otherwise. The brain
+	// starts the night's app updates only when it names tonight
+	// (UPDATES.md # 7).
+	//
+	// A pointer, so the brain can tell a host-agent that knows the field (it
+	// always sends it, "" included) from an older one that does not send it,
+	// and then falls back to its own reading of state and checked_at.
+	ControlPlaneDoneNight *string `json:"control_plane_done_night,omitempty"`
+	// HoldUntil is when the brain's hold on the OS switch ends, RFC3339, while
+	// one is live (PUT /v1/system/update-hold, #632). Empty when there is no
+	// hold. While it is set, stream A installs but does not switch.
+	HoldUntil string `json:"hold_until,omitempty"`
+}
+
+// UpdateHoldPath is the brain's hold on the OS switch (#632, UPDATES.md # 7
+// Reboots). PUT with an UpdateHold sets or renews it; DELETE clears it. The
+// hold is a lease: host-agent keeps it in memory, cuts it to at most
+// HoldLease from now and to the window's end minus HoldCapBeforeEnd, and lets
+// it end on its own, so a brain that stops renewing it cannot block the OS
+// switch for the night.
+const UpdateHoldPath = "/v1/system/update-hold"
+
+// UpdateHoldLease is the longest one hold lasts. The brain renews its hold
+// about every minute, so a brain that dies lets it end within this time and
+// the OS switch still goes that night. host-agent enforces it too.
+const UpdateHoldLease = 10 * time.Minute
+
+// UpdateHoldCapBeforeEnd is how long before the window's end every hold ends,
+// whatever the brain asks for. It leaves the switch and its reboot time inside
+// the window, so a brain bug cannot push the OS update to the next night.
+// host-agent enforces it itself.
+const UpdateHoldCapBeforeEnd = 5 * time.Minute
+
+// UpdateHold is the body of PUT /v1/system/update-hold and its answer. Until
+// is RFC3339. In the answer it is the end host-agent kept after its cuts, or
+// "" when the hold is not live (an until in the past, or past the cap).
+type UpdateHold struct {
+	Until string `json:"until"`
 }
 
 // OSUpdate is stream A on GET /v1/system/update-target: the OS image this box
@@ -635,6 +766,10 @@ type OSUpdate struct {
 	Detail string `json:"detail,omitempty"`
 	// Last is the outcome of the last OS switch, kept across reboots.
 	Last *OSOutcome `json:"last,omitempty"`
+	// Trial is true while the booted slot is on trial: just switched to,
+	// and not yet marked good or given up (#509). Read from the slot's trial
+	// marker, so it does not depend on what the loop last decided.
+	Trial bool `json:"trial,omitempty"`
 }
 
 // OSRelease is one OS release an update target names: the version and the
@@ -758,3 +893,15 @@ const (
 	// for an admin.
 	UpdateTargetAvailable = "available"
 )
+
+// CaddySocketDir is the directory, inside the staged control-plane dir
+// (MOOSE_CONTROL_PLANE_DIR), that holds Caddy's admin socket (#608). The
+// control-plane compose binds it into Caddy at CaddySocketMount. host-agent
+// creates it, mode 0700 and owned by the uid Caddy's root maps to, before the
+// brain brings Caddy up. The brain dials the socket by its host path, which its
+// /var/lib/moose mount shows at the same path. No app mounts it. Kept general
+// (not "admin") so a later brain-only Caddy listener can sit beside it (#596).
+const CaddySocketDir = "caddy"
+
+// CaddySocketMount is where Caddy sees CaddySocketDir inside its container.
+const CaddySocketMount = "/run/moose-caddy"

@@ -2,106 +2,186 @@ package rampressure
 
 import (
 	"errors"
-	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// realIdlePSI is verbatim `/proc/pressure/memory` from a host with ample free
-// memory: every average is zero. The parser must read the `some` line's avg60
-// and ignore the `full` line and the trailing total counter.
-const realIdlePSI = `some avg10=0.00 avg60=0.00 avg300=0.00 total=0
-full avg10=0.00 avg60=0.00 avg300=0.00 total=0
-`
+// The fixtures in testdata are in the exact format the kernel prints.
+//
+//   - psi-stalled.txt: the averages are the ones read on a hosted box with
+//     3.8 GB of RAM that sat stalled on memory for 15 hours (#597). Only the
+//     total= counters are invented.
+//   - psi-recovered.txt: the same box after one app was stopped. The `some`
+//     averages are the ones read there; the `full` line is invented to match.
+//   - psi-spike.txt: a short spike, such as an image pull. avg10 is high, avg300
+//     is not.
+//   - psi-idle.txt: a box with ample memory. Every average is zero.
+//   - meminfo-healthy.txt / meminfo-low.txt: 3.8 GB of RAM with 1.6 GB and
+//     150 MB available.
 
-// realThrashingPSI is verbatim output from a host under sustained memory
-// pressure (swap thrashing): some avg60 well above the threshold, with full
-// (all tasks stalled) also elevated. Only `some avg60` (34.27) drives the
-// detector.
-const realThrashingPSI = `some avg10=41.55 avg60=34.27 avg300=22.18 total=128374651
-full avg10=29.10 avg60=23.84 avg300=15.02 total=98123400
-`
-
-func TestParseSomeAvg60_Idle(t *testing.T) {
-	v, ok := parseSomeAvg60(realIdlePSI)
-	if !ok {
-		t.Fatal("want ok=true for real idle PSI output")
+func fixture(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if v != 0.0 {
-		t.Errorf("avg60: got %v, want 0", v)
+	return string(b)
+}
+
+func reporter(psi, meminfo string) *Reporter {
+	return &Reporter{
+		readPSI:     func() (string, error) { return psi, nil },
+		readMeminfo: func() (string, error) { return meminfo, nil },
 	}
 }
 
-func TestParseSomeAvg60_Thrashing(t *testing.T) {
-	v, ok := parseSomeAvg60(realThrashingPSI)
-	if !ok {
-		t.Fatal("want ok=true for real thrashing PSI output")
+func TestParsePSI(t *testing.T) {
+	cases := []struct {
+		file       string
+		some, full float64
+	}{
+		{"psi-idle.txt", 0, 0},
+		{"psi-stalled.txt", 4.11, 3.66},
+		{"psi-recovered.txt", 1.52, 0.71},
+		{"psi-spike.txt", 1.95, 1.58},
 	}
-	// Must read the some line (34.27), never the full line (23.84).
-	if v < 34.2 || v > 34.3 {
-		t.Errorf("avg60: got %v, want ~34.27 (the `some` line, not `full`)", v)
-	}
-}
-
-func TestParseSomeAvg60_Garbage(t *testing.T) {
-	if _, ok := parseSomeAvg60("not a psi file at all\n"); ok {
-		t.Error("want ok=false for unparseable output")
-	}
-	// `full` present but `some` missing must also fail (we only trust some avg60).
-	if _, ok := parseSomeAvg60("full avg10=5.0 avg60=5.0 avg300=5.0 total=1\n"); ok {
-		t.Error("want ok=false when the some line is absent")
-	}
-}
-
-// psiOutput renders a minimal /proc/pressure/memory payload with the given
-// `some avg60`, formatted as the kernel prints it — so the Read tests round-trip
-// through the real parser.
-func psiOutput(someAvg60 float64) string {
-	return fmt.Sprintf(
-		"some avg10=%.2f avg60=%.2f avg300=%.2f total=12345\n"+
-			"full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
-		someAvg60, someAvg60, someAvg60)
-}
-
-func reporter(out string, readErr error) *Reporter {
-	return &Reporter{read: func() (string, error) { return out, readErr }}
-}
-
-func TestRead_HealthyReturnsNil(t *testing.T) {
-	if got := reporter(psiOutput(3.5), nil).Read(); got != nil {
-		t.Errorf("low pressure: want nil findings, got %v", got)
+	for _, c := range cases {
+		p, ok := parsePSI(fixture(t, c.file))
+		if !ok {
+			t.Errorf("%s: want ok", c.file)
+			continue
+		}
+		if p.someAvg300 != c.some || p.fullAvg300 != c.full {
+			t.Errorf("%s: got some=%v full=%v, want some=%v full=%v", c.file, p.someAvg300, p.fullAvg300, c.some, c.full)
+		}
 	}
 }
 
-func TestRead_RaisesOnSustainedPressure(t *testing.T) {
-	got := reporter(psiOutput(34.27), nil).Read()
-	if len(got) != 1 || got[0].ID != "ram-pressure" {
-		t.Fatalf("high pressure: want one ram-pressure finding, got %v", got)
-	}
-	if got[0].InstanceKey != "" {
-		t.Errorf("ram-pressure is box-wide; want empty instance_key, got %q", got[0].InstanceKey)
-	}
-}
-
-func TestRead_BoundaryIsHealthy(t *testing.T) {
-	// Exactly at the threshold must not raise (raise is strictly above).
-	if got := reporter(psiOutput(pressureThreshold), nil).Read(); got != nil {
-		t.Errorf("avg60 == threshold must not raise, got %v", got)
+func TestParsePSI_Rejects(t *testing.T) {
+	for name, in := range map[string]string{
+		"garbage":      "not a psi file at all\n",
+		"some only":    "some avg10=5.0 avg60=5.0 avg300=5.0 total=1\n",
+		"full only":    "full avg10=5.0 avg60=5.0 avg300=5.0 total=1\n",
+		"no avg300":    "some avg10=5.0 avg60=5.0 total=1\nfull avg10=5.0 avg60=5.0 total=1\n",
+		"bad avg300":   "some avg300=x total=1\nfull avg300=1.0 total=1\n",
+		"empty string": "",
+	} {
+		if _, ok := parsePSI(in); ok {
+			t.Errorf("%s: want ok=false", name)
+		}
 	}
 }
 
-// TestRead_FailOpenOnReadError verifies a missing/unreadable PSI file (e.g.
-// psi=1 absent from the kernel cmdline) never raises a ram-pressure issue and
-// never panics — it fails open.
-func TestRead_FailOpenOnReadError(t *testing.T) {
-	if got := reporter("", errors.New("open /proc/pressure/memory: no such file")).Read(); got != nil {
-		t.Errorf("read error must fail open (nil findings), got %v", got)
+func TestParseMeminfo(t *testing.T) {
+	m, ok := parseMeminfo(fixture(t, "meminfo-low.txt"))
+	if !ok || m.totalKB != 3984588 || m.availableKB != 153600 {
+		t.Fatalf("got %+v ok=%v", m, ok)
+	}
+	for name, in := range map[string]string{
+		"no available": "MemTotal: 100 kB\n",
+		"no total":     "MemAvailable: 100 kB\n",
+		"zero total":   "MemTotal: 0 kB\nMemAvailable: 0 kB\n",
+		"bad number":   "MemTotal: x kB\nMemAvailable: 100 kB\n",
+	} {
+		if _, ok := parseMeminfo(in); ok {
+			t.Errorf("%s: want ok=false", name)
+		}
 	}
 }
 
-// TestRead_FailOpenOnParseError verifies unparseable PSI content fails open
-// rather than raising.
-func TestRead_FailOpenOnParseError(t *testing.T) {
-	if got := reporter("garbage\n", nil).Read(); got != nil {
-		t.Errorf("parse error must fail open (nil findings), got %v", got)
+// TestRead_Thresholds is the "Done when" list of #597, plus the MemAvailable
+// signal and the clear condition.
+func TestRead_Thresholds(t *testing.T) {
+	cases := []struct {
+		name, psi, meminfo string
+		raise              bool
+	}{
+		{"stalled box from #597 raises", "psi-stalled.txt", "meminfo-healthy.txt", true},
+		{"full avg300 under 1% with normal memory stays clear", "psi-recovered.txt", "meminfo-healthy.txt", false},
+		{"short spike in avg10 only stays clear", "psi-spike.txt", "meminfo-healthy.txt", false},
+		{"idle box stays clear", "psi-idle.txt", "meminfo-healthy.txt", false},
+		{"low available memory raises without PSI stall", "psi-idle.txt", "meminfo-low.txt", true},
+		{"both signals bad raises", "psi-stalled.txt", "meminfo-low.txt", true},
+	}
+	for _, c := range cases {
+		got := reporter(fixture(t, c.psi), fixture(t, c.meminfo)).Read()
+		if c.raise {
+			if len(got) != 1 || got[0].ID != "ram-pressure" || got[0].InstanceKey != "" {
+				t.Errorf("%s: want one box-wide ram-pressure finding, got %v", c.name, got)
+			}
+		} else if got != nil {
+			t.Errorf("%s: want nil, got %v", c.name, got)
+		}
+	}
+}
+
+func TestRead_Boundaries(t *testing.T) {
+	healthy := fixture(t, "meminfo-healthy.txt")
+	idle := fixture(t, "psi-idle.txt")
+	atFull := "some avg10=0.00 avg60=0.00 avg300=2.50 total=1\nfull avg10=0.00 avg60=0.00 avg300=2.00 total=1\n"
+	if got := reporter(atFull, healthy).Read(); len(got) != 1 {
+		t.Errorf("full avg300 exactly at the threshold must raise, got %v", got)
+	}
+	underFull := "some avg10=0.00 avg60=0.00 avg300=2.50 total=1\nfull avg10=0.00 avg60=0.00 avg300=1.99 total=1\n"
+	if got := reporter(underFull, healthy).Read(); got != nil {
+		t.Errorf("full avg300 just under the threshold must not raise, got %v", got)
+	}
+	// 5% of 2000000 kB is 100000 kB: exactly at the floor is healthy.
+	if got := reporter(idle, "MemTotal: 2000000 kB\nMemAvailable: 100000 kB\n").Read(); got != nil {
+		t.Errorf("MemAvailable exactly at the floor must not raise, got %v", got)
+	}
+	if got := reporter(idle, "MemTotal: 2000000 kB\nMemAvailable: 99999 kB\n").Read(); len(got) != 1 {
+		t.Errorf("MemAvailable just under the floor must raise, got %v", got)
+	}
+}
+
+func TestRead_Details(t *testing.T) {
+	got := reporter(fixture(t, "psi-stalled.txt"), fixture(t, "meminfo-healthy.txt")).Read()
+	if len(got) != 1 {
+		t.Fatalf("want a finding, got %v", got)
+	}
+	want := "memory stall 3.7% over the last 5 minutes (all tasks), 4.1% (some tasks); 1.6 GB free of 3.8 GB"
+	if got[0].Details != want {
+		t.Errorf("details:\n got %q\nwant %q", got[0].Details, want)
+	}
+}
+
+// TestRead_FailOpen checks that each signal fails open on its own: a file that
+// cannot be read or parsed never raises, and never hides the other signal.
+func TestRead_FailOpen(t *testing.T) {
+	readErr := func() (string, error) { return "", errors.New("no such file") }
+	ok := func(s string) func() (string, error) { return func() (string, error) { return s, nil } }
+
+	stalled := fixture(t, "psi-stalled.txt")
+	low := fixture(t, "meminfo-low.txt")
+	healthy := fixture(t, "meminfo-healthy.txt")
+
+	cases := []struct {
+		name        string
+		psi, mem    func() (string, error)
+		raise       bool
+		wantDetails string // a substring the details must hold when raised
+	}{
+		{"both unreadable", readErr, readErr, false, ""},
+		{"both unparseable", ok("garbage"), ok("garbage"), false, ""},
+		{"PSI missing, memory healthy", readErr, ok(healthy), false, ""},
+		{"PSI missing, memory low", readErr, ok(low), true, "150 MB free"},
+		{"PSI garbage, memory low", ok("garbage"), ok(low), true, "150 MB free"},
+		{"meminfo missing, PSI stalled", ok(stalled), readErr, true, "memory stall 3.7%"},
+	}
+	for _, c := range cases {
+		r := &Reporter{readPSI: c.psi, readMeminfo: c.mem}
+		got := r.Read()
+		if !c.raise {
+			if got != nil {
+				t.Errorf("%s: want nil, got %v", c.name, got)
+			}
+			continue
+		}
+		if len(got) != 1 || !strings.Contains(got[0].Details, c.wantDetails) {
+			t.Errorf("%s: want one finding with %q in details, got %v", c.name, c.wantDetails, got)
+		}
 	}
 }

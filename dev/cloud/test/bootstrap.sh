@@ -33,7 +33,7 @@ WIRING="${CLOUD_DIR}/mkosi.extra.wiring" # shared production wiring (ExtraTree o
 PKGMNGR="${TEST_DIR}/mkosi.pkgmngr"
 CP_BUNDLE="${REPO_ROOT}/.dev/control-plane"
 CANARY="${WORK}/.cloud-boot-ready"
-CANARY_VERSION="v30"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
+CANARY_VERSION="v31"  # bump when staging/mkosi.conf/repart changes require a clean rebuild
 # A change to the OS package lock (#560) must rebuild too, so all three lock
 # files are part of the canary. The resolved list is in it as well: a re-run
 # after only the list changed must not exit early and skip os_lock_check below.
@@ -281,13 +281,25 @@ MKCATALOG_BIN="${WORK}/mkcatalog"
 stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
 "$MKCATALOG_BIN" \
     -pkg "${TEST_DIR}/catalog/whoami" \
+    -pkg "${TEST_DIR}/catalog/probewho" \
     -pkg "${TEST_DIR}/catalog/filedrop" \
     -pkg "${TEST_DIR}/catalog/imageuser" \
     -pkg "${TEST_DIR}/catalog/remapdrop" \
     -pkg "${TEST_DIR}/catalog/svcdrop" \
     -pkg "${TEST_DIR}/catalog/rootsetup" \
     -pkg "${TEST_DIR}/catalog/pgnote" \
+    -pkg "${TEST_DIR}/catalog/upnote" \
     -out "$EXTRA/var/lib/moose/catalog-seed.json"
+
+# The later catalogs of the app-update boot (#630). The seed above holds upnote
+# 1.0. Each file here is the catalog with upnote at one later version, and the
+# boot copies one over catalog-seed.json and restarts the brain, which reads the
+# file again at startup and checks for updates. Test-only, like the seed.
+mkdir -p "$EXTRA/var/lib/moose/test-catalogs"
+for upnote_pkg in "${TEST_DIR}"/catalog-updates/upnote-*; do
+    "$MKCATALOG_BIN" -pkg "$upnote_pkg" \
+        -out "$EXTRA/var/lib/moose/test-catalogs/$(basename "$upnote_pkg").json"
+done
 
 # Offline-install env, layered over the shared 10-cloud-brain.conf drop-in (20- sorts
 # after, so these win). host-agent-real forwards them into the brain container

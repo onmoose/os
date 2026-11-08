@@ -1,10 +1,13 @@
 package lifecycle
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/onmoose/os/internal/protocol"
 
 	"gopkg.in/yaml.v3"
 )
@@ -73,4 +76,66 @@ func ControlPlaneUIImage(dir string) (string, error) {
 		return "", fmt.Errorf("control-plane compose %s pins %q for %q, which this reader does not resolve", p, img, uiServiceName)
 	}
 	return img, nil
+}
+
+// controlPlaneCaddyConfig is the staged Caddy bootstrap config, next to the
+// control-plane compose.
+const controlPlaneCaddyConfig = "caddy.json"
+
+// caddyProbeSocketName is the probe server's socket, next to the admin socket
+// in the socket dir (#610).
+const caddyProbeSocketName = "probe.sock"
+
+// CaddyProbeListen is the listener of Caddy's moose-probe server, in Caddy's
+// address form, as Caddy sees the socket dir inside its container (#610).
+const CaddyProbeListen = "unix/" + protocol.CaddySocketMount + "/" + caddyProbeSocketName
+
+// CaddyProbeSocket is the host path of the probe server's socket, for the
+// control-plane dir dir: where the brain dials it. Caddy only makes it once
+// the brain has written the probe server, which the brain does only when it
+// reaches the admin API on the socket in the same dir.
+func CaddyProbeSocket(dir string) string {
+	return filepath.Join(dir, protocol.CaddySocketDir, caddyProbeSocketName)
+}
+
+// ControlPlaneCaddyAdmin reports the address the brain dials Caddy's admin API
+// on, read from the staged caddy.json in dir. It returns "unix://<host path>"
+// when that file puts the admin API on a unix socket under
+// protocol.CaddySocketMount, and "" when it uses TCP, so the caller keeps its
+// configured address.
+//
+// Why read the file rather than trust MOOSE_CADDY_ADMIN: the staged files are
+// copied to a box once, at first boot, and an OS update never replaces them
+// (BUILD.md # As built). A box made before #608 keeps a TCP admin API for its
+// whole life, and a box made after it has the socket, whatever brain or
+// host-agent it runs later. The file is the one thing that says which, so a
+// brain reading it is never pointed at a listener Caddy does not have.
+//
+// dir is empty in dev, and callers skip this then.
+func ControlPlaneCaddyAdmin(dir string) (string, error) {
+	p := filepath.Join(dir, controlPlaneCaddyConfig)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "", fmt.Errorf("read staged caddy config: %w", err)
+	}
+	var doc struct {
+		Admin struct {
+			Listen string `json:"listen"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return "", fmt.Errorf("parse staged caddy config %s: %w", p, err)
+	}
+	// Caddy writes a unix address as "unix/<path>", with an optional
+	// "|<mode>" for the socket's file mode.
+	sock, ok := strings.CutPrefix(doc.Admin.Listen, "unix/")
+	if !ok {
+		return "", nil
+	}
+	sock, _, _ = strings.Cut(sock, "|")
+	rel, ok := strings.CutPrefix(sock, protocol.CaddySocketMount+"/")
+	if !ok || rel == "" {
+		return "", fmt.Errorf("staged caddy config %s puts the admin socket at %q, outside %s, where the brain cannot reach it", p, sock, protocol.CaddySocketMount)
+	}
+	return "unix://" + filepath.Join(dir, protocol.CaddySocketDir, rel), nil
 }

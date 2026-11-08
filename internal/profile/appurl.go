@@ -33,6 +33,14 @@ func HostedDashboardHost(boxID string) string {
 	return boxID + "." + NetworkApex
 }
 
+// HostedLoginURL returns the box login URL on a hosted box: the dashboard root.
+// The forward-auth gate redirects a request with no valid session here, so the
+// route builder and the app health probe (which must tell that redirect apart
+// from the app's own answer) share this one string.
+func HostedLoginURL(boxID string) string {
+	return "https://" + HostedDashboardHost(boxID) + "/"
+}
+
 // CertSubjects returns the names the box's Let's Encrypt certs must cover: the
 // apex "<box-id>.onmoose.io" (the dashboard host) and the wildcard
 // "*.<box-id>.onmoose.io" (every per-app host). The apex is deliberately

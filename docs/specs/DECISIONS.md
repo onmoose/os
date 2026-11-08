@@ -21,6 +21,147 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-07 — After a database major move, the old database stays for 7 days (#635)
+
+**Previously:** `SERVICE_PROVISIONING.md` # At app update, different major version, step 5: the old database and role on the previous major are dropped as soon as the app runs on the new one.
+**Now:** the old database and role stay on the old major for 7 days, then the hourly prune drops them, with the snapshot and the previous generation. The move keeps the database's and the role's names and password, so pointing the app back is one store write.
+**Why:** the rollback by hand (#634) puts an app back on the version before its last good update for 7 days. That version needs its database on the old major. Dropped at once, the button would be there and would not work for any update that moved a database.
+**Affected docs:** `SERVICE_PROVISIONING.md` (# At app update, different major version, # Catalog), `UPDATES.md` (# 4 As built (#635), # 7 Rollback summary).
+
+## 2026-11-07 — No Settings → Updates page, and no "update available" on the tile (#634)
+
+**Previously:** `UPDATES.md` # 6 had three surfaces: a tile badge when a new version is available, a Settings → Updates page with the aggregate view and the rollback button, and the toast.
+**Now:** the tile shows nothing about a new version. It shows a banner only when an update failed. There is no Settings → Updates page: each app's settings page already has the version, the update, a failure with View logs, and the rollback button. The notifications and the toast link there. The toast stays.
+**Why:** the maintainer's call after trying the UI. The page repeated what the app's page already says, and a badge for every new version is noise on the home screen: most updates apply on their own at night.
+**Affected docs:** `UPDATES.md` (# 6, # Locked decisions), `SETTINGS.md`, `DASHBOARD.md`, `NOTIFICATIONS.md`, `NEXT.md`, `docs/architecture.md`.
+
+## 2026-11-07 — A rollback by hand turns the app's automatic update off (#634)
+
+**Previously:** no spec said what happens after a person rolls an app back by hand. The catalog still offers the version they left, so the nightly window would apply it again the next night.
+**Now:** a rollback by hand turns the app's automatic update off. The window then never updates the app on its own, until the person turns the switch back on. The Update button on the app's page still offers the catalog's version. The version they left is also stored as declined, so the update prompt does not ask about it again.
+**Why:** a person rolls back because the new version broke something. Applying it again a few hours later would undo their choice, and they would lose a second day of data to a second rollback. The maintainer chose this over skipping only the rolled-back version, because it is one rule that a person can see and change in one place (the app's "Update it automatically" switch).
+**Affected docs:** `UPDATES.md` (# 4 As built (#634), # Per-app auto-update toggle), `BRAIN_UI_PROTOCOL.md`.
+
+## 2026-11-06 — In the update prompt, "Keep current version" is a no for that version, and closing it is a dismissal until the next sign-in (#633)
+
+**Previously:** issue #633 said "Closing it counts as Keep" and that after "Keep current version" "the prompt comes back on the next login", so the two were one choice that came back at every sign-in.
+**Now:** they are two choices, as `UPDATES.md` # Who gets prompted already said ("A user who declines the prompt stays pinned to their current version ... The prompt re-surfaces if they dismiss without choosing; they can also accept later from the app's Settings page"). **Keep current version** stores a decline for that version on the instance: the prompt does not ask about that version again, the app's settings page still offers Allow & update, and a new version that still asks for more access asks again. **Closing the modal** (the X, Escape, a click outside) is a dismissal, stored on the session: the prompt comes back at the next sign-in, not at the next page load, and every tab of the session agrees.
+**Why:** the spec wins over the issue (`docs/dev/contributing.md`), and it keeps a real choice apart from "not now". If Keep came back at every sign-in, a person who chose to stay on a version would be asked the same question again and again, which teaches people to click through the one prompt the box has. Keeping the dismissal on the session, not in the browser, makes "next sign-in" mean the same thing on every device.
+**Affected docs:** `UPDATES.md` (# 4 Who gets prompted # As built (#633), # 6 The permission-expansion prompt), `BRAIN_UI_PROTOCOL.md`, `DASHBOARD.md`.
+
+---
+
+## 2026-11-06 — A rolled-back app update ends in `running`; `update_failed` means the old version is down (#631)
+
+**Previously:** the per-instance state machine in `APP_LIFECYCLE.md` sent a failed update to `update_failed` and then "→ running (after rollback)", and the update transaction said a rollback ends with "mark `update_failed`". Issue #631 said the same: a failed update "ends with the old version running on its old data, in `update_failed`".
+**Now:** after a **good rollback** (the old version is healthy again on its old data) the row is `running`. The failure is kept apart from the state, in the instance's update-failure columns (the version that failed, the step, a short message, the time), which drive the tile badge and the list #634 shows, and a later good update clears them. **`update_failed` is the state when the rollback itself fails** and the old version is not running. It is treated like `failed`: the "failed" splash, and Start is the retry, which first finishes a rollback that did not finish. A brain that stops mid-update leaves an `updating` row, and the startup pass puts the old version back, so no row stays `updating`.
+**Why:** many paths read `running` as "the containers are up": the startup pass brings a `running` app back after a reboot, Stop is legal only from `running`, the health and automatic-restart loops watch only `running` apps, and the dashboard opens them. A rolled-back app is up. Parked in `update_failed` it would be treated as down: after a reboot the startup pass would not bring it back, it could not be stopped, and it would get no health checks. Keeping "the update failed" as a record next to the state gives the dashboard the same signal without breaking those paths.
+**Affected docs:** `APP_LIFECYCLE.md` (# per-instance state machine, # update + rollback, # on-disk layout per instance, # reconciliation, # stop, start, uninstall, # concurrency), `UPDATES.md` (# 4 As built (#631), # 6, # 7 Compatibility matrix), `APP_ISOLATION.md` (# User-namespace tiers), `APP_STORE.md`, `BRAIN_UI_PROTOCOL.md`, `DASHBOARD.md` (# Tile, Settings), `LOGGING.md`, `docs/architecture.md`.
+
+---
+
+## 2026-10-13 — An app too big for the box is refused at install; a tight one needs "Install anyway" (#599)
+
+**Previously:** `resources.recommended` was advice only, never a gate (`APP_MANIFEST.md` # B2, `APP_ISOLATION.md` # Resource limits). The specs promised an install-time capacity check that was never built, and the brain did not even parse the block. The GPU gate in `APP_ISOLATION.md` # GPU was the one hard capacity refusal, and it named `recommended` as the case that is not one.
+**Now:** the brain computes each app's **fit** on this box and returns it on the app's store page and in the install plan. **Too big** (more memory than MemTotal rounded up to a whole GiB, or more CPU cores than the box has) is a hard refusal at install, before any work starts. **Tight** (fits the box, but not next to the apps that are running) is a warning, and the dialog needs an explicit "Install anyway". On hosted, both link to the box's page on the portal to upgrade it. `recommended` is still never a cgroup cap.
+**Why:** a hosted box with 3.8 GB ran two apps whose manifests recommended 4 GB and 2.5 GB. Nothing in the store said so, the box ran out of memory and one app wedged (#597, #599). An app that recommends more than the whole box will not run well there at any time, the same reasoning that makes no-GPU a hard gate: the owner should learn it from the store, not from a stalled box. Tight stays a warning, because stopping another app fixes it and the owner may know their usage better than the manifest. The rounding up to a whole GiB keeps a 4G app installable on a box sold as 4 GB, whose MemTotal is about 3.8 GiB.
+**Affected docs:** `APP_MANIFEST.md` (# B2, # Locked decisions), `APP_ISOLATION.md` (# GPU, # Resource limits), `APP_STORE.md` (# Apps this box cannot run), `BRAIN_UI_PROTOCOL.md` (catalog routes, # install-plan), `BRAIN_HOST_PROTOCOL.md` (`GET /v1/system/resources`), `docs/architecture.md`.
+
+---
+
+## 2026-10-13 — The automatic restart gives up after one hour (#620)
+
+**Previously:** an app that stays broken gets at most 3 automatic restarts in any rolling hour (#598). So it got about 3 restarts every hour for as long as it stayed broken, each one audited, while the issue said the brain "stopped trying". The count was in memory, so a brain restart started it again.
+**Now:** the brain tries for one hour, then gives up for good. After 3 automatic restarts that did not bring the app back (waits of 5, 10 and 20 minutes), it never restarts the app by itself again, and writes no more `app.restart.auto` records. The issue says the brain restarted it 3 times, that this did not help, and that the user can stop the app and start it to try again. Giving up ends only when the app answers a real health check (not a tick with no sample), when a person starts the app, or when a person turns its automatic restart setting off and on; each gives the app a fresh hour. The count is stored in the app's row, so it survives a brain restart. The #598 cap of 3 restarts in any hour stays for an app that recovers between restarts.
+**Why:** a restart that did not help three times will not help a fourth time. Repeating it every hour forever only fills the audit log and tells the user something untrue. The user is the one who can fix the app now, so the issue tells them what to do, and anything they do on the app lets the brain try again.
+**Affected docs:** `HEALTH.md` (# Automatic restart), `APP_LIFECYCLE.md` (# Locked: automatic restart of an unresponsive app), `LOGGING.md` (`app.restart.auto`), `BRAIN_UI_PROTOCOL.md`, `docs/architecture.md`.
+
+---
+
+## 2026-10-13 — The brain restarts an app whose `app-unresponsive` stays raised (#598)
+
+**Previously:** `app-unresponsive` only surfaces. Its Tier-2 action is a restart the user starts, and `HEALTH.md` # What's deliberately out of scope said every Tier-2 action is user-initiated, with host-agent's systemd restart policy as the only exception.
+**Now:** when the issue has stayed raised for 5 minutes, past the app's start-period grace, the brain restarts the app by itself, through the same Stop and Start a person does. Each restart in the last hour doubles the wait (5, 10, 20 minutes), and an app is restarted at most 3 times in any hour, then the issue says automatic restarts did not help. A stopped or failed app, an app with a lifecycle operation in flight, and an app whose per-app setting is off are never restarted. Each restart is an `app.restart.auto` audit record, shown in Activity, and the issue says when the brain last restarted the app. The limit is a rolling hour, read as written in the issue: an app that stays broken gets at most 3 restarts in any hour, not 3 in total.
+**Why:** an app's backend hung during startup after a reboot, alive but never listening, and stayed down for 15 hours until its owner restarted it by hand. Nothing in the stack acts on a process that is alive but not serving: pm2 restarts only on exit, and Docker records `unhealthy` but restarts nothing. A restart is safe to repeat, so the brain can do it without asking, as long as it is bounded, visible, never against the user, and can be turned off. It became safe only once the probe was right on hosted (#609, #610). Since a tick with no sample clears the issue, a gap can only delay a restart, never cause one.
+**Affected docs:** `HEALTH.md` (# Taxonomy row, # Automatic restart, # What's deliberately out of scope), `APP_LIFECYCLE.md` (# Locked: automatic restart of an unresponsive app), `LOGGING.md` (`app.restart.auto`), `BRAIN_UI_PROTOCOL.md`, `DASHBOARD.md`, `TESTING.md`, `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+---
+
+## 2026-10-13 — The health probe reaches owner-only apps through a Caddy probe server the brain writes (#610)
+
+**Previously:** the `app-unresponsive` probe goes through Caddy's front door with the app's `Host` (2026-06-02). On hosted the forward-auth gate answers an owner-only app's probe with its login redirect, which #609 made no sample, so such an app was never probed. #610 planned a second Caddy server for the probe, declared in the staged `caddy.json` on the OS line.
+**Now:** the brain writes the second server, `moose-probe`, through Caddy's admin API, like the routes. It listens only on a unix socket next to the admin socket and holds a copy of every app route with no gate. The brain writes it only when its admin API is on the socket. A probe server answer marked `X-Moose-Probe: no-route`, or a socket that does not answer, is no sample.
+**Why:** the staged `caddy.json` is copied to a box once and no update replaces it (`BUILD.md` # As built), so a server declared there would have reached new boxes only. Written by the brain, it reaches every box with a control-plane release. The cost: a Caddy recreate loses it with every route (#613), so the brain's route writes put it back when it is missing, and a brain restart writes it whole. The probe still talks only to Caddy, so the 2026-06-02 reasoning (keep the brain off app networks) holds.
+**Affected docs:** `HEALTH.md` (# Detector catalog: the row and a new paragraph), `CONTROL_PLANE.md` (# Locked: Caddy is moose substrate), `APP_MANIFEST.md` (# B `health_probe`), `THREAT_MODEL.md` (B2), `TESTING.md`, `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+---
+
+## 2026-10-13 — The brain moves a box made before #608 to the Caddy admin socket, at once (#612)
+
+**Previously:** host-agent is the only writer of the staged `compose.yml`, and the brain only reads it (`UPDATES.md` # 8.3). A box made before #608 kept its TCP admin API (the entry below). The plan in #612 also waited for the 7-day revert window to close before it moved a box, so that a revert could never land on a brain from before #608.
+**Now:** two decisions, both the maintainer's:
+- **The brain writes one line of `compose.yml`.** At its own startup, once, before its compose up, a brain that finds TCP in the staged `caddy.json` adds the `./caddy:/run/moose-caddy` bind to the `caddy` service and points `admin.listen` at the socket. It is a narrow exception to "host-agent is the only writer": a different line from the updater's UI line, written only at brain startup, a one-line edit checked by a parse, with copies of both files kept as `*.tcp-admin`. If the socket does not answer, it puts both files back and the box stays on TCP until the next brain start.
+- **The move happens at once.** The brain does not look at the ledger or the revert window. The accepted cost: a revert to a brain from before #608 on a moved box gets a brain that dials TCP `:2019`, which Caddy no longer has. Apps keep the routes Caddy already holds, but the brain cannot change routes, so a new install gets none and a stop or start does not flip its route, until the next control-plane update. A brain from #608 on reads the address from `caddy.json`, so any later update fixes it.
+**Why:** host-agent doing the edit was rejected because at boot it would race the brain's own startup compose on the same project, the collision `UPDATES.md` # 3 step 3c warns about. The brain is the actor that runs that compose and then dials the address, so the edit, the recreate and the dial happen in one process, in order. Waiting for the revert window would leave a box open to route rewrites from any app for up to 7 days after every control-plane update, to protect against a revert that is rare and that only stops route changes, not traffic.
+**Affected docs:** `UPDATES.md` # 8.3 and Locked decisions, `CONTROL_PLANE.md` # Locked: Caddy is moose substrate, `THREAT_MODEL.md` (B2, the list of gaps), `BUILD.md` # As built (copy once), `docs/architecture.md`, `docs/dev/hosted-boot-proof.md`.
+
+---
+
+## 2026-10-13 — Apps leave `moose-ingress`; the brain reads Caddy's admin address from the staged `caddy.json` (#608)
+
+**Previously:** every app's main service joined `moose-ingress` with the brain, Caddy and the socket proxy, so an app could reach the proxy (host root, #430) and Caddy's TCP admin API. The brain dialed Caddy's admin API at the address host-agent put in `MOOSE_CADDY_ADMIN`. The issue planned to keep that, with host-agent passing a unix socket instead.
+**Now:** no app joins `moose-ingress`; the brain attaches Caddy to each app's own network. On a box made since #608 Caddy's admin API is a unix socket only the brain mounts. The brain reads where the admin API is from the staged `caddy.json`, and uses `MOOSE_CADDY_ADMIN` only when it cannot read that file. **Hosted boxes made before #608 keep their TCP admin API** until #612 moves them over. The maintainer chose this over migrating them in #608.
+**Why:** the staged `compose.yml` and `caddy.json` are copied to a box once and an OS update never replaces them (`BUILD.md` # As built), and an existing brain container keeps its env. So an env value from host-agent would point some brain at a listener its Caddy does not have, whichever value it chose, and the box would lose every route write. The staged file always matches the Caddy the box runs. Migrating old boxes needs a version gate between the brain and the staged files, which would have made #608 much larger. Old boxes still lose their reach to the proxy and the brain, the more severe half.
+**Affected docs:** `CONTROL_PLANE.md` (# Locked: Docker socket exposure, # Locked: Caddy is moose substrate), `THREAT_MODEL.md` (B2, accepted-risk list), `APP_ISOLATION.md` (# Inter-app traffic), `docs/architecture.md`.
+
+---
+
+## 2026-10-13 — `app-unresponsive` also reads Docker's health status (#609)
+
+**Previously:** `app-unresponsive` came only from the manifest `health_probe` (2026-06-02). An app with no `health_probe` never raised it, and Docker's `HEALTHCHECK` was ignored. The probe followed redirects.
+**Now:** Docker's `State.Health.Status` of the main service is a second signal, for every app. `unhealthy` fails the tick; `starting` and no healthcheck add nothing. The probe no longer follows redirects, and on hosted the forward-auth gate's `302` to the box login is not a sample.
+**Why:** on a hosted box an owner-only app's backend returned `502` for 15 hours while Docker reported the container `unhealthy`, and no issue was raised. The probe got the gate's `302` to the login, which the default healthy set (< 500) read as healthy, and a followed redirect can land on a page that answers `200` for an app that is down. Docker already knows the answer for every image that ships a healthcheck, and it costs nothing to read: the detector already inspects the container each tick. The 2026-06-02 reasoning against using `HEALTHCHECK` was that moose cannot add one for the author; that still holds, so the manifest probe stays, but an image that already has one should be heard.
+**Affected docs:** `HEALTH.md` (# Detector catalog: the row, the measurement, three new paragraphs), `APP_MANIFEST.md` (# B `health_probe`, the locked-decision bullet).
+
+---
+
+## 2026-10-12 — An admin can restart the box for an OS update now (#509)
+
+**Previously:** an OS update reboots only in the window, after stream B, with no prompt (2026-10-01, `UPDATES.md` # 7). How the admin sees the reboot was open (`NEXT.md` # Reboot scheduling UX). Update now (#488) covered only the control plane, which never restarts the box.
+
+**Now:** on a hosted box, Settings → System's Update now also covers an OS release that is already installed in the other slot. The box applies the control plane first, then switches slots and restarts at once, outside the window. The screen says before the click that the box restarts, and for how long. The window's two per-night guards are skipped, as for the control plane, and the switch counts as the coming night's one. The trial guard stays, and a slot that does not come up is still given up on its own.
+
+**Why:** the maintainer's call when #509 started. An admin who sees a waiting system update and a quiet moment should not have to wait for 03:00. The automatic revert makes a daytime restart as safe as a nightly one; what it costs is a few minutes offline that the admin chose and was told about. A release that is still downloading is not waited for, so the click never starts a long download it cannot show.
+
+**Affected docs:** `UPDATES.md` # 1, # 6, # 7, # 8.2, # 8.4; `NEXT.md` # Reboot scheduling UX (narrowed); `BRAIN_HOST_PROTOCOL.md`; `BRAIN_UI_PROTOCOL.md`; `docs/architecture.md`; `docs/dev/hosted-boot-proof.md`.
+
+## 2026-10-11 — The hosted owner gets sudo with no password while SSH is on (#602)
+
+**Previously:** admins are in `sudo`, and `sudo` asks for their moose password (2026-05-15, "Admins get sudo; UI is the path, SSH is rescue"). That holds on both profiles and for every admin, the hosted owner included.
+
+**Now:** on a hosted box, the owner account gets `sudo` with no password prompt, for as long as that account has SSH on and is an admin. host-agent writes `/etc/sudoers.d/moose-owner` (root, `0440`, one line: `<owner> ALL=(ALL) NOPASSWD: ALL`) when the owner turns SSH on and removes it when they turn it off or the account is deleted. The owner is the account the portal sign-in created (`box_meta` `sso_owner_user_id`). Nothing else changes: the appliance writes no rule, every account the owner creates keeps the password prompt, and the owner's password, the portal sign-in and the SSH key rule all stay as they were. The rule only makes `sudo` skip its prompt.
+
+**Why:**
+
+- **The prompt was a dead end.** The portal sign-in gives the owner a random password that is thrown away (`ENVIRONMENT.md` # Owner sign-in & seed ingestion), so nobody knows it. The portal confirm (#469) covers the dashboard and has nothing like it in a terminal. So the owner could SSH in with their key and then not run one command as root. The rescue path that 2026-05-15 gave admins SSH for did not exist on hosted. A real case: an app's backend hung for hours, and the owner could not run `docker logs` or `docker exec` to see why.
+- **The key already admits the owner.** SSH on hosted needs a public key (2026-09-09), and the owner has no password they can use, so the key is the factor that lets them in. A `sudo` password they cannot know adds no protection on top of it.
+- **It is scoped to the one account that needs it, and only while SSH is on.** An account the owner creates has a real password and keeps the prompt. SSH is off by default, and the rule exists only while it is on.
+
+**What apps can and cannot do with it.** Apps cannot use the rule. A container runs with `cap_drop: ALL`, `no-new-privileges` and its own filesystem, so the host's `sudo` and `/etc/sudoers` do not exist inside it. A folder app runs as the owner's UID, but it is meant to see only the use-case folders it was granted, never the home directory itself or any dotfile, so it cannot plant shell code for the owner's next login or add an SSH key. `APP_ISOLATION.md` # Runtime identity & data ownership now states this as an invariant. **One known hole breaks it today (#604):** a folder source is checked for symlinks only at install, so an app that can write `~/Documents` can swap another app's subfolder source for a symlink to `../.ssh` before that app's next start. Before this decision that gave a shell as the owner; with it, it gives root while the owner's SSH is on. #604 is the fix.
+
+**What does change:**
+
+1. **A stolen owner SSH key means root.** Before, it meant a shell as the owner. This is limited by SSH being off by default and the rule existing only while SSH is on.
+2. **A takeover of the owner's portal account means root,** because adding an SSH key is confirmed through the portal. Any password-based alternative to this rule would sit behind the same confirm, so it would not change this.
+3. **Code the owner runs in their own shell gets root with no prompt.** A `sudo` password is weak protection there anyway: code running as the user can wait for the next prompt.
+4. **Root can read the box's seed credentials.** They are scoped to this one box.
+
+**The rule covers every session of that account, not only SSH.** That is fine on hosted because the owner has no password they can use, so an SSH key is the only way in. Any future way to log in as the owner gets root with it and must protect itself. The web terminal (`NEXT.md` # Web terminal in the dashboard) is the known case: opening it as the owner needs the portal confirm (#469), and it ends when that elevation window ends.
+
+**How it is built:** the brain decides (hosted, this account is the owner, and it is an admin) and sends `passwordless_sudo` on `POST /v1/ssh/set-access`. host-agent does not know the profile or the owner and renders what it is told, the same split as `require_password`. It checks the rule with `visudo -cf` before it goes live, puts it in the same undo set as the keys and the drop-in, and at every start removes a rule whose account is not enabled in the sshd drop-in. The rule names the account rather than the `sudo` group, so a role change pushes the owner's SSH again, and a demotion removes it. Showing the owner's `sudo` use in Activity is the follow-up, #601.
+
+**Affected docs:** `USERS_AND_GROUPS.md` (# Roles map to Linux group membership, # The hosted owner, # Rescue path, # Locked decisions), `AUTH.md` # Device access (the profile table and the text below it), `ENVIRONMENT.md` # Access & files, `APP_ISOLATION.md` (the invariant), `BRAIN_HOST_PROTOCOL.md` # SSH access, `BUILD.md` # 1b (the keep list), `NEXT.md` # Web terminal in the dashboard, `docs/architecture.md`. Progress: `hosted-owner-sudo.md`.
+
 ## 2026-10-07 — A box may pull an image from a backup source when upstream fails (#588)
 
 **Previously:** we did not host or mirror container images. A box pulled only from the author's registry, and image mirroring was a deferred, Tier-3 concern (`APP_STORE.md` # Locked decisions, the 2026-05-17 store entry below). A rate limit or a deleted upstream image failed the install; #586 added a 30-second backoff for short rate-limit spikes only.

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/onmoose/os/internal/hostagent"
+	"github.com/onmoose/os/internal/hostagent/updatetarget"
 	"github.com/onmoose/os/internal/protocol"
 )
 
@@ -34,7 +38,7 @@ func fakeUpdateTarget() protocol.UpdateTarget {
 		Running:    protocol.ControlPlanePair{Brain: fakeRunningBrain, UI: fakeRunningUI},
 		CheckedAt:  time.Now().UTC().Format(time.RFC3339),
 		From:       "default",
-		Window:     "03:00-04:00",
+		Window:     fakeWindow().String(),
 		WindowFrom: "default",
 		Profile:    "appliance",
 	}
@@ -46,6 +50,21 @@ func fakeUpdateTarget() protocol.UpdateTarget {
 	}
 
 	out.OS = fakeOSUpdate()
+	// The dev machine's own zone, read the way the real loop reads it, or
+	// UTC when it cannot be named.
+	_, out.Zone = fakeZone()
+	if os.Getenv("MOOSE_FAKE_UPDATE_PROFILE") == "hosted" {
+		out.Profile, out.AutoApply = "hosted", true
+	}
+	switch os.Getenv("MOOSE_FAKE_UPDATE_LAST") {
+	case "":
+	case protocol.ControlPlaneOutcomeGood:
+		out.Last = fakeOutcome("j_fake0001", false)
+	case protocol.ControlPlaneOutcomeFailed:
+		out.Last = fakeOutcome("j_fake0001", true)
+	default:
+		slog.Warn("host-agent (fake): unknown MOOSE_FAKE_UPDATE_LAST; reporting none")
+	}
 
 	want := os.Getenv("MOOSE_FAKE_UPDATE_TARGET")
 	switch want {
@@ -103,6 +122,219 @@ func fakeOSUpdate() *protocol.OSUpdate {
 		out.Detail = "the bundle's sha256 is 0000..., not the 5555... the update target names; refusing it"
 	case protocol.OSUpdateNone:
 		out.Target = nil
+	}
+	return out
+}
+
+// fakeApplyTime is how long a fake Update now takes. Long enough to see the
+// dashboard's "Updating…" view, short enough not to wait for.
+const fakeApplyTime = 8 * time.Second
+
+// fakeOutcome is a canned control-plane outcome, from 0.17.0 to 0.18.0.
+func fakeOutcome(id string, failed bool) *protocol.ControlPlaneOutcome {
+	now := time.Now().UTC()
+	o := &protocol.ControlPlaneOutcome{
+		ID: id, Outcome: protocol.ControlPlaneOutcomeGood, Version: "0.18.0", From: "0.17.0",
+		StartedAt: now.Add(-fakeApplyTime).Format(time.RFC3339), At: now.Format(time.RFC3339),
+		BrainChanged: true, UIChanged: true,
+	}
+	if failed {
+		o.Outcome, o.FailureMode, o.Reverted = protocol.ControlPlaneOutcomeFailed, "health", true
+	}
+	return o
+}
+
+// fakeTargetApplier is the fake's Update now (#488, #509): it takes the job
+// lock like the real one and plays both streams in the window's order. Stream
+// B, when a control-plane target is available: a few seconds, then the box on
+// the target with a good `last`. Stream A, when the OS report says installed
+// (MOOSE_FAKE_OS_UPDATE=installed): `rebooting` for a few seconds, then the box
+// on the new release with a good `os.last`. MOOSE_FAKE_UPDATE_APPLY=fail makes
+// both fail and go back instead. Nothing really restarts, so the dashboard's
+// wait ends as soon as the outcome lands.
+type fakeTargetApplier struct {
+	a *hostagent.Agent
+	r *hostagent.FakeUpdateTargetReporter
+}
+
+func (f fakeTargetApplier) ApplyTarget() (string, error) {
+	cur := f.r.Read()
+	cp := cur.AutoApply && cur.State == protocol.UpdateTargetAvailable
+	osReady := cur.AutoApply && cur.OS != nil && cur.OS.State == protocol.OSUpdateInstalled && cur.OS.Target != nil
+	if !cp && !osReady {
+		return "", hostagent.ErrNothingToApply
+	}
+	fail := os.Getenv("MOOSE_FAKE_UPDATE_APPLY") == "fail"
+	idc := make(chan string, 1)
+	wait := func(ctx context.Context) error {
+		select {
+		case <-time.After(fakeApplyTime):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	job, err := f.a.StartJob(protocol.JobKindSystemUpdate, 2*time.Minute, func(ctx context.Context) error {
+		id := <-idc
+		if cp {
+			if err := wait(ctx); err != nil {
+				return err
+			}
+			next := f.r.Read()
+			next.Last = fakeOutcome(id, fail)
+			if !fail && next.Target != nil {
+				next.State = protocol.UpdateTargetCurrent
+				next.Running = protocol.ControlPlanePair{Brain: next.Target.BrainImage, UI: next.Target.UIImage}
+			}
+			f.r.Set(next)
+			slog.Info("host-agent (fake) applied the update target", "job_id", id, "step", next.Last.Outcome)
+		}
+		if osReady {
+			next := f.r.Read()
+			o := *next.OS
+			o.State = protocol.OSUpdateRebooting
+			next.OS = &o
+			f.r.Set(next)
+			if err := wait(ctx); err != nil {
+				return err
+			}
+			next = f.r.Read()
+			o = *next.OS
+			to := o.Target.Version
+			last := &protocol.OSOutcome{ID: "os-" + to + "-" + id, Outcome: protocol.OSOutcomeGood, Version: to, From: o.Running,
+				At: time.Now().UTC().Format(time.RFC3339)}
+			if fail {
+				last.Outcome = protocol.OSOutcomeReverted
+				o.State, o.Detail = protocol.OSUpdateHeld, "this release was already tried tonight; the next window tries again"
+			} else {
+				o.State, o.Running = protocol.OSUpdateCurrent, to
+			}
+			o.Last = last
+			next.OS = &o
+			f.r.Set(next)
+			slog.Info("host-agent (fake) switched the OS", "job_id", id, "os", to, "step", last.Outcome)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	idc <- job.ID
+	return job.ID, nil
+}
+
+// fakeWindow is the window the fake reports: MOOSE_FAKE_UPDATE_WINDOW, or the
+// default when it is unset or cannot be read.
+func fakeWindow() updatetarget.Window {
+	w, err := updatetarget.ParseWindow(os.Getenv("MOOSE_FAKE_UPDATE_WINDOW"))
+	if err != nil {
+		slog.Warn("host-agent (fake): MOOSE_FAKE_UPDATE_WINDOW is not HH:MM-HH:MM; using the default", "err", err)
+		return updatetarget.DefaultWindow
+	}
+	return w
+}
+
+// fakeZone is the dev machine's zone, the way the real loop reads it, or UTC
+// when it cannot be named. A real box always names its zone; a nameless one
+// would send the brain to its fallback.
+func fakeZone() (*time.Location, string) {
+	loc, name := updatetarget.SystemZone()
+	if name == "" {
+		return time.UTC, "UTC"
+	}
+	return loc, name
+}
+
+// fakeHold is the fake's side of PUT and DELETE /v1/system/update-hold
+// (#632). It cuts a hold the way the real loop does, to the lease and to the
+// window's end minus the cap, so a brain in dev sees the same answers.
+type fakeHold struct {
+	r   *hostagent.FakeUpdateTargetReporter
+	mu  sync.Mutex
+	end time.Time
+	now func() time.Time
+}
+
+func newFakeHold(r *hostagent.FakeUpdateTargetReporter) *fakeHold {
+	return &fakeHold{r: r, now: time.Now}
+}
+
+// window is the window and zone of the current report.
+func (h *fakeHold) window() (updatetarget.Window, *time.Location) {
+	rep := h.r.Read()
+	w, err := updatetarget.ParseWindow(rep.Window)
+	if err != nil {
+		w = updatetarget.DefaultWindow
+	}
+	loc := time.UTC
+	if l, err := time.LoadLocation(rep.Zone); err == nil && rep.Zone != "" {
+		loc = l
+	}
+	return w, loc
+}
+
+func (h *fakeHold) SetHold(until time.Time) time.Time {
+	w, loc := h.window()
+	now := h.now().In(loc)
+	end := until
+	if lim := now.Add(protocol.UpdateHoldLease); end.After(lim) {
+		end = lim
+	}
+	if limit := updatetarget.HoldCap(w, now); end.After(limit) {
+		end = limit
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !end.After(now) {
+		h.end = time.Time{}
+		return time.Time{}
+	}
+	if !h.end.After(now) {
+		slog.Info("host-agent (fake): the brain holds the OS switch", "until", end.Format(time.RFC3339))
+	}
+	h.end = end
+	return end
+}
+
+func (h *fakeHold) ClearHold() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.end.After(h.now()) {
+		slog.Info("host-agent (fake): the brain cleared its hold on the OS switch")
+	}
+	h.end = time.Time{}
+}
+
+// live is the end of the live hold, or false.
+func (h *fakeHold) live() (time.Time, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.end.After(h.now()) {
+		return time.Time{}, false
+	}
+	return h.end, true
+}
+
+// fakeReport is the fake's GET /v1/system/update-target: the canned report,
+// plus the two fields that move with the clock (#632). The fake has no
+// control plane that applies in the window, so stream B is done whenever
+// the window is open and nothing waits to apply.
+type fakeReport struct {
+	r    *hostagent.FakeUpdateTargetReporter
+	hold *fakeHold
+}
+
+func (f fakeReport) Read() protocol.UpdateTarget {
+	out := f.r.Read()
+	w, loc := f.hold.window()
+	done := ""
+	pending := out.AutoApply && out.State == protocol.UpdateTargetAvailable
+	if night, ok := updatetarget.NightOf(w, f.hold.now().In(loc)); ok && !pending {
+		done = night.Format(time.DateOnly)
+	}
+	out.ControlPlaneDoneNight = &done
+	if end, ok := f.hold.live(); ok {
+		out.HoldUntil = end.UTC().Format(time.RFC3339)
 	}
 	return out
 }

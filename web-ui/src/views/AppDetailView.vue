@@ -24,9 +24,12 @@ import DOMPurify from "dompurify";
 import { ChevronLeft, ChevronRight, Cpu, Folder, Globe, HardDrive, Info, Network, X } from "lucide-vue-next";
 import { api, type CatalogDetail, type CatalogHome } from "../api";
 import { useAppInstances, useStartInstall } from "../useInstall";
-import { permissionLines, type PermissionLine } from "../installSteps";
+import { permissionLines, spaceTight, type PermissionLine } from "../installSteps";
 import { formatSize, safeExternalUrl } from "../utils";
+import { SPACE_TITLE, recommendedCPU, recommendedMemory, spaceText } from "../fit";
 import AppGlyph from "../components/AppGlyph.vue";
+import FitNotice from "../components/FitNotice.vue";
+import WarningAlert from "../components/WarningAlert.vue";
 import SplitButton from "../components/SplitButton.vue";
 import HealthGated from "../components/HealthGated.vue";
 
@@ -63,7 +66,23 @@ const { householdInstance, ownPersonalInstance, installing, canInstallHousehold 
 
 // The install plan and what Install does (useStartInstall). The plan also
 // feeds the Permissions group in the right column.
-const { planQuery, plan, unavailable, goInstall, pending } = useStartInstall(manifestId);
+const { planQuery, plan, unavailable, tooBig, goInstall, pending } = useStartInstall(manifestId);
+
+// Whether the app fits this box's memory and CPU (#599). The plan's figure
+// wins, because it is the one the Install button follows; the detail's own is
+// the same reading and shows while the plan loads. Both are re-read when an app
+// starts or stops (useEvents).
+const fit = computed(() => plan.value?.fit ?? app.value?.fit);
+const memoryLabel = computed(() => recommendedMemory(fit.value));
+// space is the not-enough-disk warning, from the plan's box-specific footprint:
+// the same 90% rule the install pages use (spaceTight). null when it fits or
+// the brain could not measure the free space.
+const space = computed(() => {
+  const fp = plan.value?.footprint;
+  if (!fp || !spaceTight(fp)) return null;
+  return spaceText(fp.image_disk_bytes + (fp.estimated_state_bytes ?? 0), fp.free_bytes);
+});
+const cpuLabel = computed(() => recommendedCPU(fit.value));
 
 // The Permissions group in the right column, in the install flow's words.
 const permissions = computed(() => (plan.value ? permissionLines(plan.value.permissions) : []));
@@ -73,6 +92,8 @@ const permissionIcons: Record<PermissionLine["kind"], unknown> = {
   gpu: Cpu,
   device: HardDrive,
   folder: Folder,
+  // Not on the install plan; the update lines have it (wantLines).
+  public_path: Globe,
 };
 
 // The split button's menu. Only admins outside single-user mode get the
@@ -291,15 +312,17 @@ watch(shots, (list) => {
 
           <!-- Install button: shown when the caller has no own instance yet, or
                while their own copy is still installing, or alongside "Open shared
-               app" so the caller can still install their own copy. -->
+               app" so the caller can still install their own copy. An app too
+               big for this box keeps the button, disabled; the fit notice
+               above the price panel says why. -->
           <HealthGated
-            v-if="!unavailable && (!ownPersonalInstance || ownPersonalInstance.state === 'installing')"
+            v-if="(!unavailable || tooBig) && (!ownPersonalInstance || ownPersonalInstance.state === 'installing')"
             blocks="apps"
           >
             <SplitButton
               :label="installing ? 'Installing…' : pending ? 'Starting…' : 'Install'"
               :loading="installing || pending || planQuery.isPending.value"
-              :disabled="installing || pending || planQuery.isPending.value"
+              :disabled="tooBig || installing || pending || planQuery.isPending.value"
               :items="dropdownItems"
               @click="goInstall()"
             />
@@ -307,8 +330,9 @@ watch(shots, (list) => {
         </div>
       </header>
 
-      <!-- This box cannot install the app: say why, in place of Install. -->
-      <p v-if="unavailable" class="text-sm text-muted-foreground">{{ unavailable }}</p>
+      <!-- This box cannot install the app: say why, in place of Install. Too
+           big is said by the fit notice above the price panel. -->
+      <p v-if="unavailable && !tooBig" class="text-sm text-muted-foreground">{{ unavailable }}</p>
 
       <!-- Screenshots gallery. Each shot is a button that opens the full-screen
            viewer below; the border stays because it is what gives a white
@@ -397,6 +421,15 @@ watch(shots, (list) => {
         <p v-else class="text-sm text-muted-foreground">No description provided.</p>
 
         <aside class="space-y-8 text-sm">
+          <!-- The app does not fit this box's memory or CPU: its own block above
+               the price panel. Tight warns, too big says why Install is
+               disabled. Either may carry the Upgrade link. -->
+          <!-- Not enough free disk: a warning only, the install still goes. -->
+          <WarningAlert v-if="space" :title="SPACE_TITLE">
+            <p>{{ space }}</p>
+          </WarningAlert>
+          <FitNotice :fit="fit" />
+
           <!-- Pricing panel: what moose charges, then what a third party charges
                to make the app useful. A required cost opens expanded — it is the
                one someone has to read before installing; an optional one stays
@@ -494,6 +527,14 @@ watch(shots, (list) => {
               <div v-if="sizeLabel" class="flex justify-between gap-4">
                 <dt class="text-muted-foreground">Size</dt>
                 <dd class="text-right">{{ sizeLabel }}</dd>
+              </div>
+              <div v-if="memoryLabel" class="flex justify-between gap-4">
+                <dt class="text-muted-foreground">Memory</dt>
+                <dd class="text-right">{{ memoryLabel }}</dd>
+              </div>
+              <div v-if="cpuLabel" class="flex justify-between gap-4">
+                <dt class="text-muted-foreground">CPU</dt>
+                <dd class="text-right">{{ cpuLabel }}</dd>
               </div>
               <div v-if="app.license" class="flex justify-between gap-4">
                 <dt class="text-muted-foreground">License</dt>

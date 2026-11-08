@@ -9,6 +9,8 @@ import Dock from "./Dock.vue";
 import ToastHost from "./ToastHost.vue";
 import ElevateDialog from "./ElevateDialog.vue";
 import HealthBanner from "./HealthBanner.vue";
+import UpdatePrompt from "./UpdatePrompt.vue";
+import UpdatesToast from "./UpdatesToast.vue";
 import { useEvents } from "../useEvents";
 
 useEvents();
@@ -50,5 +52,10 @@ useEvents();
     <Dock />
     <ToastHost />
     <ElevateDialog />
+    <!-- Asks the owner about app updates that want more access, once per
+         session (UPDATES.md # 6, #633). -->
+    <UpdatePrompt />
+    <!-- "3 apps updated overnight", once (UPDATES.md # 6, #634). -->
+    <UpdatesToast />
   </div>
 </template>

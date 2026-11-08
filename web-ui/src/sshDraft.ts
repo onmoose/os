@@ -15,6 +15,9 @@ export interface PendingKey {
   tempId: string;
   publicKey: string;
   label: string;
+  // From the brain's key check at "Add key". Missing on a draft stored before
+  // the check existed.
+  fingerprint?: string;
 }
 
 export interface SSHDraft {
@@ -52,11 +55,27 @@ export function looksLikePrivateKey(text: string): boolean {
   return text.includes("PRIVATE KEY");
 }
 
+// dropHiddenChanges clears the method changes from a draft that ends with SSH
+// off: new keys, removals and the password choice. The screen hides the methods
+// while SSH is off, and a change nobody can see must never be saved. The switch
+// itself does this when it is turned off, but SSH can also end up off by other
+// paths: another tab turns it off and the refetch puts the draft back to
+// following the box, or an older draft comes back from sessionStorage.
+export function dropHiddenChanges(d: SSHDraft, box: SSHAccess): void {
+  if (d.enabled ?? box.enabled) return;
+  d.added = [];
+  d.removed = [];
+  d.requirePassword = null;
+}
+
 // buildSaveBody turns the draft into the whole-state PUT /me/ssh body. Kept keys
 // come first, in the order the box holds them, then the new ones: the brain
 // reports a bad key by its index in this list, and keptCount is what maps that
 // index back to a pending key.
-export function buildSaveBody(d: SSHDraft, box: SSHAccess, ownerHasNoPassword: boolean) {
+export function buildSaveBody(draft: SSHDraft, box: SSHAccess, ownerHasNoPassword: boolean) {
+  // A copy, so the last guard against a hidden change does not edit the draft.
+  const d: SSHDraft = { ...draft, removed: [...draft.removed], added: [...draft.added] };
+  dropHiddenChanges(d, box);
   const removed = new Set(d.removed);
   const kept = (box.keys ?? []).filter((k) => !removed.has(k.id));
   const requirePassword = d.requirePassword ?? box.require_password;
@@ -162,6 +181,7 @@ export function restoreDraft(
     removed: (d.removed ?? []).filter((id) => boxIds.has(id)),
     added: (d.added ?? []).filter((a) => !boxBlobs.has(keyBlob(a.publicKey))),
   };
+  dropHiddenChanges(draft, box);
 
   const baseIds = new Set(stored.base.keyIds);
   const moved =

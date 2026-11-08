@@ -351,3 +351,35 @@ Unlike `docs/progress/` entries (frozen ADR snapshots), this file is **mutable b
 - **What breaks:** the install never finishes. nocodb logs `ReplyError: NOPERM User nocodb_<n> has no permissions to run the 'flushdb' command` as an unhandled rejection, its container turns unhealthy about 30 s after start, and `compose up` fails with `dependency failed to start: container ... nocodb is unhealthy`. Seen the same way in all three Docker modes of the #516 pre-test (`docs/progress/userns-remap-pretest.md`), so it is not a remap issue.
 - **Why moose can't satisfy it (v1):** the refusal is on purpose. Every app shares one Valkey keyspace, and the per-app ACL user is the isolation boundary (`SERVICE_PROVISIONING.md` # Per-app isolation in shared instances), so one app must not wipe the keys of the others. Per-app key isolation is deferred (`NEXT.md` # Managed-service per-app key isolation). Until then, an app that clears its Redis at start can only run on a Redis of its own, not on managed Valkey.
 - **Status:** open. nocodb's catalog package was fixed the same day. Expect recurrence: any app that calls `FLUSHDB` or `FLUSHALL` at start, often to clear a cache or a lock left from the last run, is a repeat candidate. A dedicated Valkey per app, the `isolated: true` shape in that `NEXT.md` item, would let such an app flush its own instance.
+
+### grpc-ingress — signoz (2026-10-13)
+
+- **Severity:** degraded
+- **Trigger:** SigNoz takes telemetry through an OpenTelemetry collector that listens for OTLP twice: gRPC on 4317 and HTTP on 4318. Many OpenTelemetry SDKs, and the collectors people run in front of their own apps, export over gRPC to 4317 by default.
+- **What breaks:** an SDK left on its defaults sends to `<app-host>:4317` and nothing arrives. On a real install, `curl http://signoz.local:4317/` from the box could not connect. With `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and the app's ingest token in an `Authorization` header (the settings in the store description), the same data posts to `/v1/traces`, `/v1/metrics` and `/v1/logs` and arrives. The OpenTelemetry Python SDK, configured only through env, delivered a span that way.
+- **Why moose can't satisfy it (v1):** the same mechanism as `grpc-ingress — laminar`: one routed HTTP port per app, and an ingress that dials plain HTTP upstreams, so h2c does not survive the hop even if a second port were routed. The app-side proxy splits by path on one HTTP origin and cannot carry a second protocol.
+- **Status:** open. Shipped `degraded` (`onmoose/store` `apps/signoz/`, limitation `grpc-export-not-routed`), with the HTTP setting named in the store description. This is the second app in this class, and the first whose whole job is receiving OTLP, as the laminar entry predicted.
+
+### secondary-subdomain — librechat (2026-10-13)
+
+- **Severity:** degraded
+- **Trigger:** LibreChat v0.8.8 ships a second web app beside the chat UI: `admin-panel` (`registry.librechat.ai/clickhouse/librechat-admin-panel`, source `LibreChat-AI/admin-panel`). Upstream serves it on its own port in `docker-compose.yml` and on its own host (`admin.localhost`) in `deploy-compose.yml`. Its base path is `VITE_BASE_PATH`, which must match at build time, so the published image only works at the root of an origin.
+- **What breaks:** the admin panel is the GUI for everything in `librechat.yaml` (interface settings, endpoints, MCP servers) and for role and group overrides. LibreChat itself still runs, chats, and lets an admin manage permissions from its own screens, but an admin on moose has no way to change `librechat.yaml` settings: there is no shell into the sandbox and no second origin for the panel.
+- **Why moose can't satisfy it (v1):** an app gets exactly one routed origin, `MOOSE_APP_URL`. The panel cannot share it, because both apps want `/`, and the panel's subpath is baked into its build. moose has no way for an app to ask for a second subdomain.
+- **Status:** open. librechat shipped `degraded` (`onmoose/store` `apps/librechat/`) without the panel. `lobe-chat` records the same class as a `cause` for its browser-direct S3 origin. Expect recurrence: any app whose admin UI, file store or second client is a separate web app on its own host is a repeat candidate.
+
+### config-field-single-service — librechat (2026-10-13)
+
+- **Severity:** cosmetic
+- **Trigger:** a `config:` value lands only in the one service it names (`service:`, default `main_service`; `internal/lifecycle/config.go` `configEnvByService`), and the lint refuses the same `role` on two fields. LibreChat reads the OpenAI key in `api` (chat) and again in `rag_api` (embeddings for file search).
+- **What breaks:** the AI account the user picks at install fills the chat key only. File search needs the key a second time, in a plain field (`RAG_OPENAI_API_KEY`, `service: rag_api`) that the provider tiles cannot fill. Both features work once the key is pasted twice.
+- **Why moose can't satisfy it (v1):** a config field has one target service, and a slot's role can belong to one field only. There is no way to say "inject this value into these two services".
+- **Status:** open. Expect recurrence: any app that splits a provider's API across a web service and a worker that both call the provider. A `service:` list on a config field would close it.
+
+### config-field-single-service — rakazo (2026-10-13)
+
+- **Severity:** cosmetic
+- **Trigger:** Rakazo's `api` and `worker` both read the deployment model key (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`) and the computer provider and its key (`SANDBOX_PROVIDER`, plus `E2B_API_KEY`, `DAYTONA_API_KEY` or `BOX_API_KEY`). Upstream runs them as two services. A `config:` value lands only in the one service it names (`internal/lifecycle/config.go` `configEnvByService`), so it reaches one of them only.
+- **What breaks:** nothing the user sees. The store package runs both processes in one container (`server`), so every field targets one service. The cost is packaging: a wrapper starts both processes and exits when either one does, so moose restarts the pair, and the two processes no longer have separate memory limits or restarts.
+- **Why moose can't satisfy it (v1):** same as the librechat entry: a config field has one target service. Second app to hit this class, and the first where it forced a change in the app's topology rather than a second paste.
+- **Status:** open. A `service:` list on a config field would let the package keep upstream's two services.

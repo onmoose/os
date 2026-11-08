@@ -46,6 +46,11 @@
 #                      caps-tier app's data kept across a container recreate
 #     remap-reboot     the same disk booted again: every check of `remap` again
 #                      on what the box brought back, and the caps-tier data kept
+#     app-update       app updates (#630): an update by hand on the old data, a
+#                      broken update rolled back from the snapshot, an update
+#                      that waits for the owner's yes, Go back, and a nightly
+#                      update that the OS switch waits for, then the same disk
+#                      on slot B. Its own overlay, like the OS update boots.
 #
 # On PASS the script powers the box off cleanly (the serial-only analogue of the
 # medium lane's SSH `systemctl poweroff`) so the brain's SQLite box-id write flushes
@@ -228,8 +233,8 @@ OS_STATE_DIR=/var/lib/moose/test/os
 os_stage() { cat "$OS_STATE_DIR/stage" 2>/dev/null || echo 1; }
 set_os_stage() { mkdir -p "$OS_STATE_DIR" && echo "$1" > "$OS_STATE_DIR/stage" && sync; }
 case "$MODE" in
-os-update|os-revert) ;;
-*) [ "$BOOTED" = A ] || fail "layout: booted slot '$BOOTED', want A (only the OS update boots leave slot A)" ;;
+os-update|os-revert|app-update) ;;
+*) [ "$BOOTED" = A ] || fail "layout: booted slot '$BOOTED', want A (only the OS update boots and app-update leave slot A)" ;;
 esac
 
 # The broken slot of the os-revert boot (#563). host-agent is kept from starting
@@ -737,6 +742,42 @@ json_str_of() { # DOC KEY -> value
     sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" <<<"$1" | head -1
 }
 
+# Caddy's admin API is a unix socket in the staged control-plane dir (#608): no
+# TCP listener, so nothing on any network reaches it, the apps Caddy joins
+# included. The lean image has no curl, and bash cannot open a unix socket, so
+# this speaks HTTP/1.0 on it with perl-base (in every Debian image). Host
+# 127.0.0.1 is one of the values Caddy accepts on a unix socket.
+CADDY_ADMIN_SOCK=/var/lib/moose/control-plane/caddy/admin.sock
+caddy_admin_get() { # PATH -> full response
+    perl -MIO::Socket::UNIX -e '
+        my $s = IO::Socket::UNIX->new(Peer => $ARGV[0]) or die "connect $ARGV[0]: $!\n";
+        print $s "GET $ARGV[1] HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
+        print while <$s>;' "$CADDY_ADMIN_SOCK" "$1"
+}
+# Caddy's probe server (#610) listens on a second socket in the same dir: every
+# app route, with no forward-auth gate, for the brain's app-unresponsive probe.
+# Same perl as above, with any method, Host and an optional body.
+CADDY_PROBE_SOCK=/var/lib/moose/control-plane/caddy/probe.sock
+caddy_probe() { # METHOD PATH HOST [BODY] -> full response
+    perl -MIO::Socket::UNIX -e '
+        my ($sock, $m, $p, $h, $b) = @ARGV; $b = "" unless defined $b;
+        my $s = IO::Socket::UNIX->new(Peer => $sock) or die "connect $sock: $!\n";
+        print $s "$m $p HTTP/1.0\r\nHost: $h\r\nContent-Length: " . length($b) . "\r\n\r\n$b";
+        print while <$s>;' "$CADDY_PROBE_SOCK" "$@"
+}
+
+# host-agent's own socket, for the few calls only the brain makes, such as the
+# hold on the OS switch (#632). Same perl as above: any method, an optional
+# JSON body.
+AGENT_SOCK=/var/run/moose/agent.sock
+agent_req() { # METHOD PATH [BODY] -> full response
+    perl -MIO::Socket::UNIX -e '
+        my ($sock, $m, $p, $b) = @ARGV; $b = "" unless defined $b;
+        my $s = IO::Socket::UNIX->new(Peer => $sock) or die "connect $sock: $!\n";
+        print $s "$m $p HTTP/1.0\r\nHost: agent\r\nContent-Type: application/json\r\nContent-Length: " . length($b) . "\r\n\r\n$b";
+        print while <$s>;' "$AGENT_SOCK" "$@"
+}
+
 # Wait for a line matching a fixed pattern in the brain's container log. The brain
 # writes each milestone to stdout ONCE at startup, but `docker logs` reads the
 # daemon's json-file, which buffers the container's stream before flushing to disk
@@ -773,6 +814,7 @@ update)   DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 ssh)      DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 remap|remap-reboot) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 os-update|os-revert) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
+app-update) DASH_HOST="$(json_str "$SEED" box_id).onmoose.io" ;;
 esac
 echo "cloud-assertions: probing control plane at Host=$DASH_HOST (mode=$MODE)"
 
@@ -1335,6 +1377,196 @@ access)
         echo "cloud-assertions: image_user $svc runs remapped as its image's user (Config.User='$c_user', cap_add=$c_capadd) and wrote $dir/id.txt as host uid $id_owner: $(cat "$id_file")"
     done
 
+    # 4e. THE PROBE SOCKET (#610). The app-unresponsive probe has no box
+    #     session, so on Caddy's :80 the gate of an owner-only app answers it
+    #     with the login redirect and the probe never sees the app. The brain
+    #     writes a second Caddy server, moose-probe, on a unix socket next to
+    #     the admin socket, with a copy of every app route and no gate, and
+    #     probes through it. probewho is whoami with a health_probe on /health,
+    #     installed owner-only (the hosted default). whoami answers GET /health
+    #     with the status a POST to /health sets, so the app can answer 502 and
+    #     then 200 with its container running all along.
+    pw_resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"probewho","scope":"household"}' 2>/dev/null)"
+    pw_job="$(json_str_of "$pw_resp" job_id)"
+    [ -n "$pw_job" ] || fail "probe: install probewho returned no job id: status='$(status_of "$pw_resp")' $(tail -1 <<<"$pw_resp" | cut -c1-400)"
+    pw_st=""; pw_jr=""
+    for _i in $(seq 1 240); do
+        pw_jr="$(full_get "/api/v1/jobs/${pw_job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+        pw_st="$(json_str_of "$pw_jr" status)"
+        case "$pw_st" in completed|failed|cancelled) break ;; esac
+        sleep 1
+    done
+    [ "$pw_st" = completed ] || fail "probe: install probewho ended '$pw_st', want completed: $(grep -o '"error":{[^}]*}' <<<"$pw_jr" | cut -c1-600)"
+    pw_id="$(json_str_of "$pw_jr" instance_id)"
+    [ -n "$pw_id" ] || fail "probe: install probewho completed with no instance id: $(tail -1 <<<"$pw_jr" | cut -c1-400)"
+    pw_host="probewho.${apex}"
+    # Owner-only: with no session, Caddy's :80 sends the probe's own request to
+    # the box login. That is all the old probe ever got for this app.
+    pw_gate="$(full_get /health "$pw_host" 2>/dev/null || true)"
+    grep -q ' 302' <<<"$(status_of "$pw_gate")" || fail "probe: probewho is not behind the gate on :80: status='$(status_of "$pw_gate")'"
+
+    # 4e-1. The socket: in the 0700 dir only the brain and Caddy mount, and the
+    #       probe server's only listener. No app container mounts that dir, and
+    #       a unix socket is on no network, so no app can reach it.
+    [ -S "$CADDY_PROBE_SOCK" ] || fail "probe: no probe socket at $CADDY_PROBE_SOCK: $(ls -la "$(dirname "$CADDY_PROBE_SOCK")" 2>&1 | tr '\n' ' ')"
+    pw_listen="$(caddy_admin_get /config/apps/http/servers/moose-probe/listen 2>&1 | tail -1 | tr -d '\r')"
+    [ "$pw_listen" = '["unix//run/moose-caddy/probe.sock"]' ] \
+        || fail "probe: the probe server listens on '$pw_listen', want only the unix socket"
+    for c in $(docker ps --filter label=moose.managed=true --format '{{.Names}}'); do
+        c_mounts="$(docker inspect "$c" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null)"
+        grep -qE '(^| )/var/lib/moose/control-plane(/| |$)' <<<"$c_mounts" \
+            && fail "probe: APP REACHES THE PROBE SOCKET: $c mounts the control-plane dir: $c_mounts"
+    done
+    echo "cloud-assertions: probe server listens only on $CADDY_PROBE_SOCK, in a dir no app container mounts"
+
+    # 4e-2. Through the socket the request reaches the app past the gate, with
+    #       no identity header, and a host with no route gets the marked
+    #       catch-all, not a bare 404 the probe would read as healthy.
+    pw_echo="$(caddy_probe GET / "$pw_host" 2>&1)"
+    grep -qi 'Hostname:' <<<"$pw_echo" || fail "probe: the probe socket did not reach probewho past the gate: $(head -3 <<<"$pw_echo" | tr '\r\n' '  ')"
+    grep -qi '^X-Moose-User:' <<<"$pw_echo" && fail "probe: the probe socket sent an identity header to the app"
+    pw_health="$(caddy_probe GET /health "$pw_host" 2>&1)"
+    grep -q ' 200' <<<"$(status_of "$pw_health")" || fail "probe: probewho /health through the socket answered '$(status_of "$pw_health")', want 200"
+    grep -qi '^X-Moose-Probe:' <<<"$pw_health" && fail "probe: a routed answer carries the no-route mark"
+    pw_none="$(caddy_probe GET /health "nothing-here.${apex}" 2>&1)"
+    grep -q ' 404' <<<"$(status_of "$pw_none")" && grep -qi '^X-Moose-Probe: no-route' <<<"$pw_none" \
+        || fail "probe: a host with no probe route answered '$(status_of "$pw_none")' without the no-route mark"
+    echo "cloud-assertions: the probe socket reaches probewho past the gate (no identity header), and a missing route answers 404 with X-Moose-Probe: no-route"
+
+    # The brain's view of probewho, from GET /api/v1/health: raised, clear, or
+    # error when the answer is not a 200 (so an error is never read as clear).
+    pw_issue() {
+        local r; r="$(full_get /api/v1/health "$apex" "$session_cookie" 2>/dev/null || true)"
+        if ! grep -q ' 200' <<<"$(status_of "$r")"; then echo error; return; fi
+        if grep -qF "\"id\":\"app-unresponsive\",\"instance_key\":\"${pw_id}\"" <<<"$r"; then echo raised; else echo clear; fi
+    }
+    pw_wait() { # WANT SECONDS -> 0 when pw_issue says WANT within SECONDS
+        local want="$1" _i
+        for _i in $(seq 1 "$2"); do
+            [ "$(pw_issue)" = "$want" ] && return 0
+            sleep 1
+        done
+        return 1
+    }
+
+    # 4e-3. Healthy through the socket: past its 1s start_period, across more
+    #       than one 60s health tick, probewho is not flagged.
+    sleep 70
+    [ "$(pw_issue)" = clear ] || fail "probe: healthy probewho is flagged app-unresponsive (or the health API failed: $(pw_issue))"
+
+    # 4e-4. The upstream answers 502. Raised on the 2nd failed tick: so not
+    #       before about one tick (60s) has passed, and within three.
+    caddy_probe POST /health "$pw_host" 502 >/dev/null 2>&1 || fail "probe: could not set probewho /health to 502"
+    grep -q ' 502' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" || fail "probe: probewho /health does not answer 502 after the POST"
+    pw_t0="$(date +%s)"
+    pw_wait raised 200 || fail "probe: probewho answering 502 was not flagged app-unresponsive within 200s: $(pw_issue)"
+    pw_dt="$(( $(date +%s) - pw_t0 ))"
+    [ "$pw_dt" -ge 50 ] || fail "probe: app-unresponsive raised ${pw_dt}s after the 502; the first failed tick alone must not raise it"
+    echo "cloud-assertions: an owner-only app answering 502 was flagged app-unresponsive ${pw_dt}s later (2nd failed tick), through the probe socket"
+
+    # 4e-5. It recovers: cleared on the first good tick.
+    caddy_probe POST /health "$pw_host" 200 >/dev/null 2>&1 || fail "probe: could not set probewho /health back to 200"
+    pw_wait clear 90 || fail "probe: app-unresponsive was not cleared within 90s of probewho answering 200 again: $(pw_issue)"
+    echo "cloud-assertions: app-unresponsive cleared on the first good tick after probewho recovered"
+
+    # 4f. AUTOMATIC RESTART (#598). An app whose app-unresponsive issue stays
+    #     raised for 5 minutes is restarted by the brain, the same stop and
+    #     start a person would do. whoami keeps the status a POST to /health
+    #     set in memory only, so the restart itself brings probewho back to
+    #     200: it recovers with nobody acting. A second copy of probewho has
+    #     the per-app setting off, answers 502 for the same time, and must be
+    #     left alone. The 3-in-an-hour limit, the backoff, and the stopped and
+    #     busy apps are unit-tested (cmd/brain/autorestart_test.go).
+    ar_issue() { # INSTANCE_ID -> raised | clear | error
+        local r; r="$(full_get /api/v1/health "$apex" "$session_cookie" 2>/dev/null || true)"
+        if ! grep -q ' 200' <<<"$(status_of "$r")"; then echo error; return; fi
+        if grep -qF "\"id\":\"app-unresponsive\",\"instance_key\":\"$1\"" <<<"$r"; then echo raised; else echo clear; fi
+    }
+    ar_started() { docker inspect "moose-$1-probewho" --format '{{.State.StartedAt}}' 2>/dev/null; }
+    ar_audit() { # INSTANCE_ID -> the app.restart.auto records for it, one per line
+        local r; r="$(full_get '/api/v1/audit?limit=200' "$apex" "$session_cookie" 2>/dev/null || true)"
+        grep -oF "\"action\":\"app.restart.auto\",\"target_kind\":\"app\",\"target_id\":\"$1\",\"success\":true" <<<"$r" || true
+    }
+    ar_resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"probewho","scope":"household","confirm":true}' 2>/dev/null)"
+    ar_job="$(json_str_of "$ar_resp" job_id)"
+    [ -n "$ar_job" ] || fail "auto-restart: install a second probewho returned no job id: status='$(status_of "$ar_resp")' $(tail -1 <<<"$ar_resp" | cut -c1-400)"
+    ar_st=""; ar_jr=""
+    for _i in $(seq 1 240); do
+        ar_jr="$(full_get "/api/v1/jobs/${ar_job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+        ar_st="$(json_str_of "$ar_jr" status)"
+        case "$ar_st" in completed|failed|cancelled) break ;; esac
+        sleep 1
+    done
+    [ "$ar_st" = completed ] || fail "auto-restart: install a second probewho ended '$ar_st', want completed: $(grep -o '"error":{[^}]*}' <<<"$ar_jr" | cut -c1-600)"
+    ar_off="$(json_str_of "$ar_jr" instance_id)"
+    [ -n "$ar_off" ] || fail "auto-restart: the second probewho completed with no instance id"
+    ar_slug="$(json_str_of "$(full_get "/api/v1/apps/${ar_off}" "$apex" "$session_cookie" 2>/dev/null)" slug)"
+    [ -n "$ar_slug" ] || fail "auto-restart: no slug for the second probewho ($ar_off)"
+    ar_off_host="${ar_slug}.${apex}"
+    # The setting is on by default, and the owner turns it off for this copy.
+    grep -qF '"auto_restart":true' <<<"$(full_get "/api/v1/apps/${ar_off}" "$apex" "$session_cookie" 2>/dev/null)" \
+        || fail "auto-restart: a new app does not report auto_restart true"
+    ar_put="$(full_send PUT "/api/v1/apps/${ar_off}/auto-restart" "$apex" "$session_cookie" '{"enabled":false}' 2>/dev/null)"
+    grep -q ' 200' <<<"$(status_of "$ar_put")" && grep -qF '"auto_restart":false' <<<"$ar_put" \
+        || fail "auto-restart: turning the setting off answered '$(status_of "$ar_put")': $(tail -1 <<<"$ar_put" | cut -c1-300)"
+
+    ar_on_t0="$(ar_started "$pw_id")"
+    ar_off_t0="$(ar_started "$ar_off")"
+    [ -n "$ar_on_t0" ] && [ -n "$ar_off_t0" ] || fail "auto-restart: no StartedAt for the probewho containers ('$ar_on_t0', '$ar_off_t0')"
+    [ -z "$(ar_audit "$pw_id")" ] || fail "auto-restart: probewho was restarted automatically before the test"
+    caddy_probe POST /health "$pw_host" 502 >/dev/null 2>&1 || fail "auto-restart: could not set probewho /health to 502"
+    caddy_probe POST /health "$ar_off_host" 502 >/dev/null 2>&1 || fail "auto-restart: could not set $ar_slug /health to 502"
+    for _i in $(seq 1 200); do
+        [ "$(ar_issue "$pw_id")" = raised ] && [ "$(ar_issue "$ar_off")" = raised ] && break
+        sleep 1
+    done
+    [ "$(ar_issue "$pw_id")" = raised ] && [ "$(ar_issue "$ar_off")" = raised ] \
+        || fail "auto-restart: both copies answering 502 were not flagged within 200s ($(ar_issue "$pw_id"), $(ar_issue "$ar_off"))"
+    ar_raised="$(date +%s)"
+    echo "cloud-assertions: both probewho copies answer 502 and are flagged app-unresponsive"
+
+    # 4f-1. probewho is restarted once, not before the 5-minute window, and
+    #       comes back answering 200 with the issue cleared, with nobody acting.
+    ar_on_t1="$ar_on_t0"
+    for _i in $(seq 1 480); do
+        ar_on_t1="$(ar_started "$pw_id")"
+        [ -n "$ar_on_t1" ] && [ "$ar_on_t1" != "$ar_on_t0" ] && break
+        sleep 1
+    done
+    [ -n "$ar_on_t1" ] && [ "$ar_on_t1" != "$ar_on_t0" ] \
+        || fail "auto-restart: probewho was not restarted within 480s of its issue being raised: $(ar_issue "$pw_id")"
+    ar_dt="$(( $(date +%s) - ar_raised ))"
+    [ "$ar_dt" -ge 280 ] || fail "auto-restart: probewho was restarted ${ar_dt}s after its issue was raised; the window is 5 minutes"
+    for _i in $(seq 1 180); do
+        [ "$(ar_issue "$pw_id")" = clear ] && break
+        sleep 1
+    done
+    [ "$(ar_issue "$pw_id")" = clear ] || fail "auto-restart: app-unresponsive not cleared within 180s of the automatic restart: $(ar_issue "$pw_id")"
+    grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" \
+        || fail "auto-restart: probewho does not answer 200 after the automatic restart"
+    # The record lands when the restart ends, a beat after the route flip.
+    for _i in $(seq 1 30); do
+        [ "$(ar_audit "$pw_id" | wc -l)" -ge 1 ] && break
+        sleep 1
+    done
+    [ "$(ar_audit "$pw_id" | wc -l)" -eq 1 ] \
+        || fail "auto-restart: want exactly one successful app.restart.auto record for probewho, got: $(ar_audit "$pw_id" | tr '\n' ' ')"
+    echo "cloud-assertions: probewho was restarted automatically ${ar_dt}s after its issue was raised, recovered, and the restart is in the audit log"
+
+    # 4f-2. The copy with the setting off was left alone: same container start,
+    #       still flagged, no record.
+    [ "$(ar_started "$ar_off")" = "$ar_off_t0" ] || fail "auto-restart: $ar_slug was restarted with its setting off"
+    [ "$(ar_issue "$ar_off")" = raised ] || fail "auto-restart: $ar_slug is no longer flagged: $(ar_issue "$ar_off")"
+    [ -z "$(ar_audit "$ar_off")" ] || fail "auto-restart: $ar_slug has an app.restart.auto record with its setting off"
+    echo "cloud-assertions: $ar_slug, with automatic restart off, was not restarted and stays flagged"
+    # Leave it healthy for the steps below.
+    caddy_probe POST /health "$ar_off_host" 200 >/dev/null 2>&1 || fail "auto-restart: could not set $ar_slug /health back to 200"
+    for _i in $(seq 1 90); do
+        [ "$(ar_issue "$ar_off")" = clear ] && break
+        sleep 1
+    done
+    [ "$(ar_issue "$ar_off")" = clear ] || fail "auto-restart: $ar_slug was not cleared within 90s of answering 200"
+
     # 5. THE HOSTED CONFIRM STEP (os#469). Destructive admin writes sit behind a
     #    re-auth gate, and until now a hosted owner could not pass it: the portal
     #    signs them in and the box gives their PAM account a random password nobody
@@ -1404,7 +1636,285 @@ access)
         || fail "access: the off-box-return landing minted no session; sign-in must still succeed"
     echo "cloud-assertions: an off-box return path is refused and the owner lands on the box's own front page"
 
-    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes), and folder apps write to the host on both sources"
+    # 6. APPS ARE OFF THE CONTROL-PLANE NETWORK (#608). whoami answered through
+    #    Caddy above, owner-only and public. This checks the topology behind that:
+    #    Caddy reaches the app by joining the app's own network, the app is on no
+    #    network the brain, the socket proxy or Caddy's admin API is on, and the
+    #    admin API listens on a unix socket only. Before #608 an app could reach
+    #    docker-proxy:2375 (host root, THREAT_MODEL.md B2) and the unauthenticated
+    #    moose-caddy:2019.
+    app_net="moose-app-${inst_id}"
+
+    # 6a. No app container is on moose-ingress, and Caddy is on the app network.
+    on_ingress="$(docker network inspect moose-ingress --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' 2>/dev/null)"
+    [ -n "$on_ingress" ] || fail "net: could not list the containers on moose-ingress"
+    for c in $(docker ps --filter label=moose.managed=true --format '{{.Names}}'); do
+        grep -qx "$c" <<<"$on_ingress" \
+            && fail "net: APP ON THE CONTROL-PLANE NETWORK: $c is on moose-ingress (on it: $(tr '\n' ' ' <<<"$on_ingress"))"
+    done
+    caddy_on() { docker inspect moose-caddy --format '{{json .NetworkSettings.Networks}}' 2>/dev/null | grep -q "\"$1\""; }
+    caddy_on "$app_net" || fail "net: caddy is not on the app network $app_net"
+    echo "cloud-assertions: no app container is on moose-ingress; caddy is on $app_net"
+
+    # 6b. From inside the app's own network namespace, nothing on the control
+    #     plane answers: not by name, and not by its moose-ingress address. The
+    #     probe joins whoami's netns (whoami is FROM scratch, no shell) and uses
+    #     bash's /dev/tcp from the brain image, which is on the box already. Caddy's
+    #     :80 is the positive control: it is the front door every app may use, and
+    #     it shows the probe itself works.
+    probe_img="$(docker inspect -f '{{.Config.Image}}' moose-brain)"
+    ingress_ip() { docker inspect -f '{{with index .NetworkSettings.Networks "moose-ingress"}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null; }
+    reach() { # HOST PORT -> 0 when a TCP connect from the app's netns succeeds
+        docker run --rm --network "container:${cname}" --entrypoint bash "$probe_img" \
+            -c "timeout 3 bash -c '</dev/tcp/$1/$2'" >/dev/null 2>&1
+    }
+    reach moose-caddy 80 || fail "net: the probe in ${cname}'s netns cannot reach moose-caddy:80, so its negative results below would prove nothing"
+    for target in moose-caddy:2019 docker-proxy:2375 moose-brain:8080 \
+        "$(ingress_ip moose-caddy):2019" "$(ingress_ip moose-docker-proxy):2375" "$(ingress_ip moose-brain):8080"; do
+        case "$target" in :*) fail "net: no moose-ingress address for the target behind '$target'" ;; esac
+        reach "${target%:*}" "${target##*:}" \
+            && fail "net: CONTROL PLANE REACHABLE FROM AN APP: ${cname} connected to $target"
+    done
+    echo "cloud-assertions: from inside the app, moose-caddy:2019, docker-proxy:2375 and moose-brain:8080 refuse, by name and by moose-ingress address; caddy :80 answers"
+
+    # 6c. The admin API is a unix socket in a dir owned by Caddy's remapped root,
+    #     mode 0700, and the brain drives Caddy through it (the routes above prove
+    #     that). Caddy itself no longer listens on :2019 at all.
+    sock_dir="$(dirname "$CADDY_ADMIN_SOCK")"
+    [ "$(stat -c '%a %u' "$sock_dir" 2>/dev/null)" = "700 ${remap_base}" ] \
+        || fail "net: $sock_dir is '$(stat -c '%a %u:%g' "$sock_dir" 2>&1)', want mode 700 owned by the remap base ${remap_base}"
+    grep -q '"unix//run/moose-caddy/admin.sock"' <<<"$(caddy_admin_get /config/admin 2>&1)" \
+        || fail "net: Caddy's admin API does not answer on $CADDY_ADMIN_SOCK: $(caddy_admin_get /config/admin 2>&1 | head -3 | tr '\r\n' '  ')"
+    docker exec moose-caddy wget -qO- -T 3 http://127.0.0.1:2019/config/ >/dev/null 2>&1 \
+        && fail "net: Caddy still serves its admin API on TCP :2019"
+    docker logs moose-brain 2>&1 | grep -F 'caddy admin' | grep -qF "unix://${CADDY_ADMIN_SOCK}" \
+        || fail "net: the brain did not pick the admin socket from the staged caddy.json: $(docker logs moose-brain 2>&1 | grep -F 'caddy admin' | tail -1)"
+    echo "cloud-assertions: Caddy's admin API is on $CADDY_ADMIN_SOCK only (dir 700, owner ${remap_base}); no TCP :2019"
+
+    # 6d. A Caddy RECREATE drops its networks (a restart does not). The brain
+    #     must put Caddy back on every running app's network within one health
+    #     tick (60s), without running compose itself. The recreate here is the
+    #     same compose run host-agent's updater does, on the same project.
+    cp_project="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' moose-caddy)"
+    caddy_img="$(docker inspect -f '{{.Config.Image}}' moose-caddy)"
+    old_caddy="$(docker inspect -f '{{.Id}}' moose-caddy)"
+    # For 6d-1: what must not change across the recreate and the brain's
+    # restore. The brain is not restarted, and no app is restarted (#598):
+    # a restart, automatic or not, gives the container a new start time.
+    rs_brain0="$(docker inspect -f '{{.State.StartedAt}}' moose-brain)"
+    rs_whoami0="$(docker inspect -f '{{.State.StartedAt}}' "$cname")"
+    rs_pw0="$(ar_started "$pw_id")"
+    # Read the whole log first, then count: grep -q on a live pipe would cut
+    # docker logs short, which pipefail reads as a failure.
+    brain_log_count() { local l; l="$(docker logs moose-brain 2>&1)"; grep -cF "$1" <<<"$l"; }
+    rs_lost0="$(brain_log_count "caddy: lost the brain's config")"
+    rs_done0="$(brain_log_count 'caddy: config written again')"
+    [ -n "$rs_brain0" ] && [ -n "$rs_whoami0" ] && [ -n "$rs_pw0" ] \
+        || fail "restore: no StartedAt for the brain, whoami or probewho ('$rs_brain0', '$rs_whoami0', '$rs_pw0')"
+    # A stopped app, so the restore of a splash is proved too. The brain
+    # route goes through Caddy, which is still whole here.
+    st_resp="$(full_send POST "/api/v1/apps/${ar_off}/stop" "$apex" "$session_cookie" '{}' 2>/dev/null)"
+    grep -qE ' 20[02]' <<<"$(status_of "$st_resp")" || fail "restore: stop $ar_slug answered '$(status_of "$st_resp")'"
+    for _i in $(seq 1 60); do
+        grep -qF 'is stopped.' <<<"$(full_get / "$ar_off_host" 2>/dev/null)" && break
+        sleep 1
+    done
+    grep -qF 'is stopped.' <<<"$(full_get / "$ar_off_host" 2>/dev/null)" \
+        || fail "restore: $ar_slug does not show its stopped splash before the recreate: $(status_of "$(full_get / "$ar_off_host" 2>/dev/null)")"
+    rc_out="$(cd /var/lib/moose/control-plane && MOOSE_CADDY_IMAGE="$caddy_img" docker compose -f compose.yml -p "$cp_project" up -d --force-recreate --no-deps caddy 2>&1)" \
+        || fail "net: recreating caddy failed: $rc_out"
+    [ "$(docker inspect -f '{{.Id}}' moose-caddy)" != "$old_caddy" ] || fail "net: caddy was not recreated (same container id)"
+    back=""
+    for _i in $(seq 1 90); do
+        caddy_on "$app_net" && { back=1; break; }
+        sleep 1
+    done
+    [ -n "$back" ] || fail "net: caddy was not back on $app_net within 90s of a recreate (one health tick is 60s)"
+    echo "cloud-assertions: after a caddy recreate, the brain put caddy back on $app_net within ${_i}s"
+
+    # 6d-1. THE BRAIN WRITES CADDY'S CONFIG AGAIN, WITH NO RESTART (#613). The
+    #       recreated Caddy started from the staged caddy.json: no app route,
+    #       no dashboard route, no probe server and no TLS policy. On the
+    #       health tick that put Caddy back on the app network, the brain sees
+    #       that its mark is gone and writes all of it again. So within one
+    #       more tick at most: whoami answers through :80, the stopped app
+    #       shows its splash, the dashboard answers at the apex, :443 is bound
+    #       again, and the probe socket reaches whoami and probewho. The brain
+    #       was not restarted, and no app was restarted or flagged.
+    for _i in $(seq 1 90); do
+        [ "$(brain_log_count "caddy: lost the brain's config")" -gt "$rs_lost0" ] && break
+        sleep 1
+    done
+    [ "$(brain_log_count "caddy: lost the brain's config")" -gt "$rs_lost0" ] \
+        || fail "restore: the brain did not see that the recreated caddy lost its config"
+    rs_ok=""
+    for _i in $(seq 1 90); do
+        rs_who="$(full_get / "$app_host" 2>/dev/null || true)"
+        if grep -q ' 200' <<<"$(status_of "$rs_who")" && grep -qi 'Hostname:' <<<"$rs_who"; then rs_ok=1; break; fi
+        sleep 1
+    done
+    [ -n "$rs_ok" ] || fail "restore: whoami does not answer through the recreated caddy with no brain restart: status='$(status_of "$rs_who")'"
+    for _i in $(seq 1 30); do
+        [ "$(brain_log_count 'caddy: config written again')" -gt "$rs_done0" ] && break
+        sleep 1
+    done
+    [ "$(brain_log_count 'caddy: config written again')" -gt "$rs_done0" ] \
+        || fail "restore: the brain did not log that it wrote the config again: $(docker logs moose-brain 2>&1 | grep -F 'caddy restore' | tail -3)"
+    grep -qF 'is stopped.' <<<"$(full_get / "$ar_off_host" 2>/dev/null)" \
+        || fail "restore: $ar_slug lost its stopped splash: $(status_of "$(full_get / "$ar_off_host" 2>/dev/null)")"
+    grep -q ' 200' <<<"$(status_of "$(full_get /api/v1/health "$apex" "$session_cookie" 2>/dev/null)")" \
+        || fail "restore: the dashboard route is not back: /api/v1/health at the apex answered '$(status_of "$(full_get /api/v1/health "$apex" "$session_cookie" 2>/dev/null)")'"
+    timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/443' 2>/dev/null \
+        || fail "restore: :443 is not bound again after the restore (the TLS policy is not back)"
+    [ "$(caddy_admin_get /config/apps/http/servers/moose/listen 2>&1 | tail -1 | tr -d '\r')" = '[":80",":443"]' ] \
+        || fail "restore: the moose server listens on '$(caddy_admin_get /config/apps/http/servers/moose/listen 2>&1 | tail -1)', want :80 and :443"
+    grep -qF "\"*.${box_id}.onmoose.io\"" <<<"$(caddy_admin_get /config/apps/tls/certificates/automate 2>&1)" \
+        || fail "restore: the wildcard is not in Caddy's automate list again: $(caddy_admin_get /config/apps/tls/certificates/automate 2>&1 | tail -1 | cut -c1-300)"
+    grep -qi 'Hostname:' <<<"$(caddy_probe GET / "$app_host" 2>&1)" \
+        || fail "restore: the probe socket does not reach whoami: $(caddy_probe GET / "$app_host" 2>&1 | head -1)"
+    grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" \
+        || fail "restore: the probe socket does not reach probewho: $(caddy_probe GET /health "$pw_host" 2>&1 | head -1)"
+    grep -qi '^X-Moose-Probe: splash' <<<"$(caddy_probe GET / "$ar_off_host" 2>&1)" \
+        || fail "restore: the probe copy of $ar_slug is not its marked splash: $(caddy_probe GET / "$ar_off_host" 2>&1 | head -3 | tr '\r\n' '  ')"
+    [ "$(docker inspect -f '{{.State.StartedAt}}' moose-brain)" = "$rs_brain0" ] \
+        || fail "restore: the brain was restarted; the point is that it is not"
+    # Give the probe one more tick on the restored routes before reading the
+    # issues, so a wrong route would have had its chance to fail.
+    sleep 65
+    [ "$(docker inspect -f '{{.State.StartedAt}}' "$cname")" = "$rs_whoami0" ] || fail "restore: whoami was restarted"
+    [ "$(ar_started "$pw_id")" = "$rs_pw0" ] || fail "restore: probewho was restarted"
+    for rs_id in "$inst_id" "$pw_id"; do
+        [ "$(ar_issue "$rs_id")" = clear ] || fail "restore: $rs_id is flagged app-unresponsive after the restore: $(ar_issue "$rs_id")"
+    done
+    echo "cloud-assertions: after a caddy recreate, the brain wrote its config again with no restart: app route, splash, dashboard, TLS and probe copies are back, and no app was restarted or flagged"
+
+    # 6e. The updater starts the brain last, after any Caddy recreate. Restart
+    #     the brain the same way and check the app answers through the
+    #     recreated Caddy: the admin socket a new Caddy made is one the brain
+    #     can use, and the startup writes every route again.
+    #     Since #613 Caddy still holds the routes the brain wrote back in
+    #     6d-1, so whoami answers before the new brain is done starting. Wait
+    #     for the end of its startup (the dashboard route is its last Caddy
+    #     write) first: its compose up on the control-plane project must be
+    #     over before 6g runs compose on the same project.
+    rr_dash0="$(brain_log_count 'caddy: dashboard route installed')"
+    docker restart moose-brain >/dev/null || fail "net: could not restart the brain"
+    for _i in $(seq 1 120); do
+        [ "$(brain_log_count 'caddy: dashboard route installed')" -gt "$rr_dash0" ] && break
+        sleep 1
+    done
+    [ "$(brain_log_count 'caddy: dashboard route installed')" -gt "$rr_dash0" ] \
+        || fail "net: the restarted brain did not finish its startup within 120s"
+    rr_resp=""
+    for _i in $(seq 1 120); do
+        rr_resp="$(full_get / "$app_host" 2>/dev/null || true)"
+        grep -q ' 200' <<<"$(status_of "$rr_resp")" && grep -qi 'Hostname:' <<<"$rr_resp" && break
+        sleep 1
+    done
+    grep -qi 'Hostname:' <<<"$rr_resp" \
+        || fail "net: whoami did not answer through the recreated caddy after a brain restart: status='$(status_of "$rr_resp")'"
+    echo "cloud-assertions: whoami answers through the recreated caddy"
+    # The restart wrote the probe server and every copy again (#610). Each
+    # copy is written just after its app route, so give it a moment.
+    for _i in $(seq 1 15); do
+        grep -qi 'Hostname:' <<<"$(caddy_probe GET / "$app_host" 2>&1)" && break
+        sleep 1
+    done
+    grep -qi 'Hostname:' <<<"$(caddy_probe GET / "$app_host" 2>&1)" \
+        || fail "probe: after the brain restart the probe socket does not reach whoami: $(caddy_probe GET / "$app_host" 2>&1 | head -1)"
+    echo "cloud-assertions: after the brain restart the probe socket reaches whoami again"
+
+    # 6g. A BOX MADE BEFORE #608 MOVES ITSELF TO THE SOCKET (#612). Such a box
+    #     kept the staged files it got at first boot: caddy.json with the admin
+    #     API on TCP 0.0.0.0:2019 and a compose.yml with no bind for caddy/.
+    #     Put this box in that state, with Caddy really running on TCP, then
+    #     restart the brain twice: once with the socket made to fail, where the
+    #     brain must put the files back and stay on TCP, and once normally,
+    #     where it must move the box to the socket.
+    cp_dir=/var/lib/moose/control-plane
+    caddy_tcp_ok() { docker exec moose-caddy wget -qO- -T 3 http://127.0.0.1:2019/config/ >/dev/null 2>&1; }
+    whoami_answers() { # LABEL
+        local resp="" _i
+        for _i in $(seq 1 120); do
+            resp="$(full_get / "$app_host" 2>/dev/null || true)"
+            grep -q ' 200' <<<"$(status_of "$resp")" && grep -qi 'Hostname:' <<<"$resp" && return 0
+            sleep 1
+        done
+        fail "migrate: whoami did not answer through caddy $1: status='$(status_of "$resp")'"
+    }
+    sed -i 's#"listen": "unix//run/moose-caddy/admin.sock"#"listen": "0.0.0.0:2019"#' "$cp_dir/caddy.json"
+    sed -i '\#^ *- \./caddy:/run/moose-caddy$#d' "$cp_dir/compose.yml"
+    grep -q '"listen": "0.0.0.0:2019"' "$cp_dir/caddy.json" || fail "migrate: could not stage the pre-#608 caddy.json: $(grep -F listen "$cp_dir/caddy.json")"
+    grep -qF './caddy:/run/moose-caddy' "$cp_dir/compose.yml" && fail "migrate: could not stage the pre-#608 compose.yml"
+    pre_out="$(cd "$cp_dir" && MOOSE_CADDY_IMAGE="$caddy_img" docker compose -f compose.yml -p "$cp_project" up -d --no-deps caddy 2>&1)" \
+        || fail "migrate: bringing caddy up on the pre-#608 files failed: $pre_out"
+    for _i in $(seq 1 30); do caddy_tcp_ok && break; sleep 1; done
+    caddy_tcp_ok || fail "migrate: caddy on the pre-#608 files does not answer on TCP :2019"
+    echo "cloud-assertions: migrate: caddy runs on the pre-#608 files, admin API on TCP :2019"
+
+    # 6g-1. The socket fails. A non-empty dir owned by host root where the
+    #       socket goes: Caddy's remapped root cannot remove it, so Caddy's admin
+    #       API cannot start on the socket. The brain sets the owner of caddy/
+    #       itself, so a wrong owner on the dir would not do.
+    rm -f "$cp_dir/caddy/admin.sock"
+    mkdir -p "$cp_dir/caddy/admin.sock/blocker"
+    docker restart moose-brain >/dev/null || fail "migrate: could not restart the brain"
+    wait_brain_log 'caddy admin: could not move to the unix socket' 180 \
+        || fail "migrate: the brain did not report a failed move with the socket blocked: $(docker logs moose-brain 2>&1 | grep -F 'caddy admin' | tail -3)"
+    # This error comes only after the files were written and Caddy recreated on
+    # them, so the move got as far as the socket and failed there.
+    # No grep -q: it would exit at the first match, docker logs would get
+    # SIGPIPE, and pipefail would read that as no match.
+    docker logs moose-brain 2>&1 | grep -F 'caddy admin socket did not come up' >/dev/null \
+        || fail "migrate: the move failed before it reached the socket: $(docker logs moose-brain 2>&1 | grep -F 'could not move' | tail -1)"
+    grep -q '"listen": "0.0.0.0:2019"' "$cp_dir/caddy.json" || fail "migrate: caddy.json was not put back after the failed move: $(grep -F listen "$cp_dir/caddy.json")"
+    grep -qF './caddy:/run/moose-caddy' "$cp_dir/compose.yml" && fail "migrate: compose.yml was not put back after the failed move"
+    whoami_answers "after the failed move"
+    caddy_tcp_ok || fail "migrate: after the failed move caddy does not answer on TCP :2019"
+    reach moose-caddy 2019 || fail "migrate: after the failed move the box should still be on TCP, but moose-caddy:2019 refuses from ${cname}"
+    echo "cloud-assertions: migrate: with the socket blocked the brain put the files back; the box stays on TCP and whoami answers"
+
+    # 6g-2. The move. caddy/ removed as well, as on a box whose host-agent
+    #       predates #608: the brain must make it, for the remap base.
+    rm -rf "$cp_dir/caddy"
+    docker restart moose-brain >/dev/null || fail "migrate: could not restart the brain"
+    wait_brain_log 'caddy admin: moved to the unix socket' 180 \
+        || fail "migrate: the brain did not move the box to the socket: $(docker logs moose-brain 2>&1 | grep -F 'caddy admin' | tail -3)"
+    grep -q '"listen": "unix//run/moose-caddy/admin.sock"' "$cp_dir/caddy.json" || fail "migrate: caddy.json does not name the socket: $(grep -F listen "$cp_dir/caddy.json")"
+    grep -qF -- '- ./caddy:/run/moose-caddy' "$cp_dir/compose.yml" || fail "migrate: compose.yml does not bind caddy/"
+    grep -q '"listen": "0.0.0.0:2019"' "$cp_dir/caddy.json.tcp-admin" || fail "migrate: no copy of the TCP caddy.json was kept"
+    [ "$(stat -c '%a %u' "$cp_dir/caddy" 2>/dev/null)" = "700 ${remap_base}" ] \
+        || fail "migrate: $cp_dir/caddy is '$(stat -c '%a %u:%g' "$cp_dir/caddy" 2>&1)', want mode 700 owned by the remap base ${remap_base}"
+    grep -q '"unix//run/moose-caddy/admin.sock"' <<<"$(caddy_admin_get /config/admin 2>&1)" \
+        || fail "migrate: Caddy's admin API does not answer on $CADDY_ADMIN_SOCK: $(caddy_admin_get /config/admin 2>&1 | head -3 | tr '\r\n' '  ')"
+    caddy_tcp_ok && fail "migrate: Caddy still serves its admin API on TCP :2019 after the move"
+    whoami_answers "after the move"
+    reach moose-caddy 80 || fail "migrate: the probe in ${cname}'s netns cannot reach moose-caddy:80 after the move"
+    reach moose-caddy 2019 && fail "migrate: ADMIN API REACHABLE FROM AN APP after the move: ${cname} connected to moose-caddy:2019"
+    # A moved box gets the probe server too, from the same brain start (#610).
+    for _i in $(seq 1 15); do
+        grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" && break
+        sleep 1
+    done
+    grep -q ' 200' <<<"$(status_of "$(caddy_probe GET /health "$pw_host" 2>&1)")" \
+        || fail "migrate: after the move the probe socket does not reach probewho: $(caddy_probe GET /health "$pw_host" 2>&1 | head -1)"
+    echo "cloud-assertions: migrate: the brain moved a pre-#608 box to the socket: no TCP :2019, admin API on the socket, whoami answers, moose-caddy:2019 refuses from inside the app"
+
+    # 6f. Uninstall removes the app network cleanly: the brain takes Caddy off it
+    #     first, or Docker refuses to remove a network a container is still on.
+    #     The owner session survives the brain restart (sessions are in SQLite).
+    un_status="$(status_of "$(full_send DELETE "/api/v1/apps/${inst_id}" "$apex" "$session_cookie" '{}' 2>/dev/null)")"
+    grep -q ' 202' <<<"$un_status" || fail "net: uninstall whoami answered '$un_status'; wanted 202"
+    gone=""
+    for _i in $(seq 1 90); do
+        docker network inspect "$app_net" >/dev/null 2>&1 || { gone=1; break; }
+        sleep 1
+    done
+    [ -n "$gone" ] || fail "net: $app_net still exists 90s after uninstall (on it: $(docker network inspect "$app_net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>&1))"
+    caddy_on "$app_net" && fail "net: caddy is still attached to the removed $app_net"
+    echo "cloud-assertions: uninstall removed $app_net, with caddy taken off it first"
+
+    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes), folder apps write to the host on both sources, and apps are off the control-plane network (#608)"
     ;;
 ssh)
     # SSH end-to-end on a booted hosted box (#467). #464 built the whole path from
@@ -1423,6 +1933,9 @@ ssh)
 
     DROPIN=/etc/ssh/sshd_config.d/moose-allowed.conf
     KEYSDIR=/etc/ssh/moose-authorized-keys
+    # The hosted owner's prompt-free sudo rule (#602). It exists only while the
+    # owner has SSH on.
+    SUDOERS=/etc/sudoers.d/moose-owner
 
     # A TCP connect to :22, as the answer to "is the port open". /dev/tcp fails on a
     # closed port, which is exactly the signal — no ss/netstat parsing.
@@ -1449,6 +1962,7 @@ ssh)
     unit_active && fail "ssh: ssh.service is active at boot — the image enabled sshd; on hosted that leaves :22 open for the life of the box"
     port22_open && fail "ssh: :22 answers at boot with no account enabled"
     [ -f "$DROPIN" ] && fail "ssh: $DROPIN exists at boot — nothing should be rendered before an account opts in"
+    [ -e "$SUDOERS" ] && fail "ssh: $SUDOERS exists at boot, before any account turned SSH on"
 
     # Host keys are this box's own, not the image's. Debian's postinst generates
     # them at IMAGE BUILD time, so every box provisioned from one image would share
@@ -1593,6 +2107,23 @@ ssh)
         || fail "ssh: sshd does not offer publickey either: '$pw_methods'"
     echo "cloud-assertions: password-only login refused — sshd offers '${pw_methods#*continue: }' and nothing else"
 
+    # --- 5b. the owner can use sudo over SSH with no password (#602).
+    # The portal sign-in gives the owner a random password nobody knows, so a
+    # sudo prompt would be a dead end on the one account the rescue path is
+    # for. The harness set a password above only to pass the dashboard's
+    # re-auth; NOPASSWD must not need it, and `sudo -n` fails rather than
+    # prompts, so a success here means the rule did the work.
+    [ -f "$SUDOERS" ] || fail "ssh: the owner turned SSH on but $SUDOERS was not written"
+    [ "$(stat -c '%u %a' "$SUDOERS")" = "0 440" ] \
+        || fail "ssh: $SUDOERS is $(stat -c '%u %a' "$SUDOERS"), want root-owned 440 (sudo refuses a file anyone can write)"
+    grep -qx "${owner} ALL=(ALL) NOPASSWD: ALL" "$SUDOERS" \
+        || fail "ssh: $SUDOERS does not hold the owner's rule: $(cat "$SUDOERS")"
+    visudo -c >/dev/null 2>&1 || fail "ssh: the box's sudo config does not pass visudo -c with the owner's rule in it: $(visudo -c 2>&1 | tail -3)"
+    sudo_out="$(ssh $SSH_OPTS -i "$KEYFILE" "${owner}@127.0.0.1" 'sudo -n true && echo MOOSE_SUDO_OK' 2>&1)"
+    grep -q MOOSE_SUDO_OK <<<"$sudo_out" \
+        || fail "ssh: the owner could not run sudo without a password over SSH: $sudo_out"
+    echo "cloud-assertions: the owner, with SSH on, runs sudo over SSH with no password ($SUDOERS is root 440 and passes visudo)"
+
     # --- 6. the optional second factor makes the key alone insufficient.
     # The optional factor is a second lock, never a second door: AuthenticationMethods
     # becomes publickey,password, so sshd demands BOTH and neither alone gets in
@@ -1646,16 +2177,53 @@ ssh)
         && fail "ssh: the managed key file ${KEYSDIR}/${owner} survived the account being turned off"
     echo "cloud-assertions: SSH off — ssh.service stopped, :22 closed, managed key file removed"
 
+    # --- 8b. SSH off takes the sudo rule with it (#602).
+    [ -e "$SUDOERS" ] && fail "ssh: $SUDOERS survived the owner turning SSH off: $(cat "$SUDOERS")"
+    # Assert the reason, not only the failure: `sudo -n` fails for many
+    # reasons, and only "a password is required" says the rule is gone.
+    osudo="$(runuser -u "$owner" -- sudo -n true 2>&1 && echo MOOSE_SUDO_OK)"
+    grep -q MOOSE_SUDO_OK <<<"$osudo" \
+        && fail "ssh: the owner can still run sudo with no password after turning SSH off"
+    grep -qi 'password is required' <<<"$osudo" \
+        || fail "ssh: after SSH off the owner's sudo failed, but not by asking for a password: $osudo"
+    echo "cloud-assertions: SSH off removed $SUDOERS, and the owner's sudo asks for a password again"
+
+    # --- 8c. a host-agent restart removes a stale rule (#602).
+    # host-agent keeps no state, so at start it checks the rule against the
+    # sshd drop-in and removes it when the account it names does not have SSH
+    # on. This is what stops a crash between two steps, or an older /etc, from
+    # leaving root with no prompt behind. Plant the rule a crash would leave and
+    # restart.
+    printf '# planted by the boot lane\n%s ALL=(ALL) NOPASSWD: ALL\n' "$owner" > "$SUDOERS" \
+        && chmod 0440 "$SUDOERS" || fail "ssh: could not plant a stale $SUDOERS"
+    systemctl restart host-agent.service || fail "ssh: could not restart host-agent"
+    stale_gone=""
+    for _i in $(seq 1 60); do
+        if systemctl is-active -q host-agent.service && [ ! -e "$SUDOERS" ] && [ -S /run/moose/agent.sock ]; then
+            stale_gone=1; break
+        fi
+        sleep 1
+    done
+    [ -n "$stale_gone" ] \
+        || fail "ssh: after a host-agent restart the stale $SUDOERS is still there (the owner has SSH off): $(journalctl -u host-agent.service -b --no-pager 2>&1 | grep -i sudo | tail -5)"
+    # Give the brain a moment to see the new socket before the next API call.
+    sleep 5
+    echo "cloud-assertions: a host-agent restart removed a stale sudo rule for an account with SSH off"
+
     # --- 9. deleting a user who had SSH on takes their access with them.
     # This cleanup landed in #464 and nothing outside a booted box can check it: a
     # name left in AllowUsers or a key file left in ${KEYSDIR} is a credential for an
     # account that no longer exists. Needs a second account, because the owner cannot
     # delete itself.
+    #
+    # The second account is an admin, so it is in the sudo group and also proves
+    # the other half of #602: an account the owner creates has a real password and
+    # keeps the sudo prompt. Only the owner gets the rule.
     GONE_USER=sshgone
     GONE_PW='moose-cloud-lane-gone-pw'
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before creating the second account failed"
     mk="$(full_send POST /api/v1/users "$apex" "$owner_cookie" \
-        "{\"display_name\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"member\"}" 2>/dev/null)"
+        "{\"display_name\":\"${GONE_USER}\",\"password\":\"${GONE_PW}\",\"role\":\"admin\"}" 2>/dev/null)"
     grep -qE ' (200|201)' <<<"$(status_of "$mk")" \
         || fail "ssh: could not create the second account: status='$(status_of "$mk")'"
     gone_id="$(json_str_of "$mk" id)"
@@ -1688,6 +2256,25 @@ ssh)
         || fail "ssh: drop-in does not name '$GONE_USER' after they turned SSH on: $(cat "$DROPIN")"
     [ -f "${KEYSDIR}/${GONE_USER}" ] || fail "ssh: no managed key file for '$GONE_USER'"
 
+    # A second admin with SSH on still gets the sudo prompt (#602). `sudo -n`
+    # fails instead of prompting, and says a password is required. Check the
+    # group first, or a refusal would only prove the account cannot sudo at all.
+    id -nG "$GONE_USER" | grep -qw sudo \
+        || fail "ssh: the second admin '$GONE_USER' is not in the sudo group ($(id -nG "$GONE_USER")), so the prompt check below would prove nothing"
+    [ -e "$SUDOERS" ] && fail "ssh: $SUDOERS exists while only the second admin has SSH on: $(cat "$SUDOERS")"
+    gsudo=""
+    for _i in $(seq 1 30); do
+        gsudo="$(ssh $SSH_OPTS -i "$KEYFILE" "${GONE_USER}@127.0.0.1" 'echo MOOSE_SSH_OK; sudo -n true && echo MOOSE_SUDO_OK' 2>&1)"
+        grep -q MOOSE_SSH_OK <<<"$gsudo" && break
+        sleep 1
+    done
+    grep -q MOOSE_SSH_OK <<<"$gsudo" || fail "ssh: key login as the second admin '$GONE_USER' failed: $gsudo"
+    grep -q MOOSE_SUDO_OK <<<"$gsudo" \
+        && fail "ssh: THE SECOND ADMIN GOT SUDO WITH NO PASSWORD, only the hosted owner may: $gsudo"
+    grep -qi 'password is required' <<<"$gsudo" \
+        || fail "ssh: the second admin's sudo did not ask for a password: $gsudo"
+    echo "cloud-assertions: a second admin with SSH on still gets the sudo password prompt"
+
     elevate "$apex" "$owner_cookie" "$OWNER_PW" || fail "ssh: re-elevate before deleting the second account failed"
     rmu="$(full_send DELETE "/api/v1/users/${gone_id}" "$apex" "$owner_cookie" '{}' 2>/dev/null)"
     grep -qE ' (204|200)' <<<"$(status_of "$rmu")" \
@@ -1704,7 +2291,7 @@ ssh)
         || fail "ssh: :22 still answers after the last enabled account was deleted"
     echo "cloud-assertions: deleting an account with SSH on removed its name, its key file, and closed :22"
 
-    echo "cloud-assertions: hosted SSH verified end-to-end (port opens and closes with the toggle, key required, second factor enforced, deleted account leaves nothing behind)"
+    echo "cloud-assertions: hosted SSH verified end-to-end (port opens and closes with the toggle, key required, second factor enforced, owner sudo with no password only while SSH is on, deleted account leaves nothing behind)"
     ;;
 update)
     # Control-plane update proof (#382): a REAL update and a REAL failed-update-
@@ -1960,6 +2547,27 @@ update)
     grep -q ' 200' <<<"$spa_after" || fail "update: after the revert the dashboard does not answer: status='$spa_after'"
     echo "cloud-assertions: update — REVERT OK (health failure detected, both refs and the SQLite snapshot restored, box serving on the old pair with the same session)"
 
+    # 5e. THE RECORD (#488). The job above lives in host-agent's memory. The
+    #     dashboard reads the outcome from the update-target read instead, which
+    #     host-agent keeps on disk so it outlives the brain the update replaced.
+    #     It must name the failed job, its step, and that the box went back.
+    last_read=""
+    for _i in $(seq 1 60); do
+        last_read="$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)"
+        grep -q "\"id\":\"${bad_job}\"" <<<"$last_read" && break
+        sleep 1
+    done
+    grep -q "\"id\":\"${bad_job}\"" <<<"$last_read" \
+        || fail "update: the update-target read does not report the failed job ${bad_job} as the last update: $(tail -1 <<<"$last_read")"
+    grep -q '"outcome":"failed"' <<<"$last_read" && grep -q '"failure_mode":"health"' <<<"$last_read" && grep -q '"reverted":true' <<<"$last_read" \
+        || fail "update: the last update is not a reverted health failure: $(tail -1 <<<"$last_read")"
+    [ -s "$(dirname "$ledger")/last-update.json" ] \
+        || fail "update: no last-update.json beside the ledger, so the outcome would not survive a host-agent restart"
+    # The zone the window is read in, named the way the loop reads it.
+    grep -qE '"zone":"[^"]+"' <<<"$last_read" \
+        || fail "update: the update-target read names no time zone: $(tail -1 <<<"$last_read")"
+    echo "cloud-assertions: update — LAST OK (the read reports the reverted health failure of ${bad_job} from disk, zone $(json_str_of "$last_read" zone))"
+
     # 6. THE TARGET-DRIVEN PATH (os#401). Everything above was driven by an admin
     #    POSTing two refs. On a hosted box nobody types them: host-agent reads an
     #    update-target source and applies what it is handed, in the update window,
@@ -2165,6 +2773,57 @@ EOF
     grep -qE ' (401|403)' <<<"$anon_read" \
         || fail "update-target: the read answered an unauthenticated caller (status='$anon_read')"
     echo "cloud-assertions: update-target — READ OK (the brain reports the pinned pair the in-guest source served, from=seed, window from the answer, admin-only)"
+
+    # 6d. UPDATE NOW (#488). An admin applies an available target without waiting
+    #     for the window. The answer names a window twelve hours away, so only the
+    #     apply route can move the box. The route takes no refs: host-agent
+    #     applies the target its own loop checked.
+    brain_v4="$(publish_gen "$brain_v3" moose-brain:v4 'LABEL moose.test.generation=v4')" \
+        || fail "update-now: could not publish the gen-4 brain image"
+    ui_v4="$(publish_gen "$ui_v3" moose-ui:v4 'LABEL moose.test.generation=v4')" \
+        || fail "update-now: could not publish the gen-4 ui image"
+    shut_h=$(( ( 10#$(date +%H) + 12 ) % 24 ))
+    shut_window="$(printf '%02d:00-%02d:01' "$shut_h" "$shut_h")"
+    write_target "$brain_v4" "$ui_v4" "v0.0.0-update-now" "$shut_window"
+    systemctl restart host-agent.service || fail "update-now: could not restart host-agent for the gen-4 answer"
+
+    avail_read=""
+    for _i in $(seq 1 120); do
+        avail_read="$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)"
+        grep -q '"state":"available"' <<<"$avail_read" && grep -qF "$brain_v4" <<<"$avail_read" && break
+        sleep 1
+    done
+    grep -q '"state":"available"' <<<"$avail_read" && grep -qF "$brain_v4" <<<"$avail_read" \
+        || fail "update-now: the read never offered the gen-4 pair as available: $(tail -1 <<<"$avail_read")"
+    grep -qF "$brain_v4" "$ledger" \
+        && fail "update-now: the box applied gen-4 before anyone asked, with its window ($shut_window) shut"
+
+    apply_resp="$(full_send POST /api/v1/system/update-target/apply "$apex" "$session_cookie" "" 2>/dev/null || true)"
+    grep -q ' 202' <<<"$(status_of "$apply_resp")" \
+        || fail "update-now: POST /api/v1/system/update-target/apply was not accepted: status='$(status_of "$apply_resp")' $(tail -1 <<<"$apply_resp")"
+    now_job="$(json_str_of "$apply_resp" job_id)"
+    [ -n "$now_job" ] || fail "update-now: no job_id in the accepted apply: $(tail -1 <<<"$apply_resp")"
+    poll_job "$now_job" 420 || fail "update-now: job $now_job never reached a terminal state (last: $(status_of "$JOB_RESP"))"
+    grep -qE '"status"[[:space:]]*:[[:space:]]*"completed"' <<<"$JOB_RESP" \
+        || fail "update-now: the update did not complete: $(tail -1 <<<"$JOB_RESP")"
+    grep -qF "$brain_v4" "$ledger" && grep -qF "$ui_v4" "$ledger" \
+        || fail "update-now: the ledger does not name the gen-4 pair after the apply: $(tr -d '\n' < "$ledger")"
+    gen4="$(docker inspect -f '{{index .Config.Labels "moose.test.generation"}}' moose-brain 2>/dev/null || true)"
+    [ "$gen4" = v4 ] || fail "update-now: the running brain does not carry the gen-4 marker (got '$gen4')"
+
+    # The new brain reports the outcome of the job that replaced it.
+    now_read=""
+    for _i in $(seq 1 90); do
+        now_read="$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)"
+        grep -q "\"id\":\"${now_job}\"" <<<"$now_read" && break
+        sleep 1
+    done
+    grep -q "\"id\":\"${now_job}\"" <<<"$now_read" && grep -q '"outcome":"good"' <<<"$now_read" \
+        || fail "update-now: the read does not report ${now_job} as a good last update: $(tail -1 <<<"$now_read")"
+    # Nothing is left to apply, and the route says so rather than starting a job.
+    again="$(status_of "$(full_send POST /api/v1/system/update-target/apply "$apex" "$session_cookie" "" 2>/dev/null || true)")"
+    grep -q ' 409' <<<"$again" || fail "update-now: a second apply with nothing to apply answered '$again', want 409"
+    echo "cloud-assertions: update-now — APPLY OK (Update now applied the checked gen-4 target outside its window; the new brain reports ${now_job} as good)"
     ;;
 remap|remap-reboot)
     # The user-namespace tiers on the booted image (#531, APP_ISOLATION.md #
@@ -2253,7 +2912,7 @@ remap|remap-reboot)
             fi
             sleep 1
         done
-        fail "remap: GET $2 on $1.$apex through Caddy never answered 200: status='$(status_of "$r")'; caddy route ids: $(docker exec moose-caddy wget -qO- http://localhost:2019/config/apps/http/servers/moose/routes 2>&1 | grep -o '"@id":"[^"]*"' | tr '\n' ' ')"
+        fail "remap: GET $2 on $1.$apex through Caddy never answered 200: status='$(status_of "$r")'; caddy route ids: $(caddy_admin_get /config/apps/http/servers/moose/routes 2>&1 | grep -o '"@id":"[^"]*"' | tr '\n' ' ')"
     }
     remap_wait_file() { for _i in $(seq 1 60); do [ -s "$1" ] && return 0; sleep 1; done; return 1; }
     remap_owner() { stat -c '%u:%g' "$1" 2>/dev/null || echo "<missing $1>"; }
@@ -2437,6 +3096,323 @@ remap|remap-reboot)
         remap_checks
         [ "$RS_TOKEN_NOW" = "$rs_token" ] || fail "remap-reboot: rootsetup lost its data on a reboot: token '$rs_token' became '$RS_TOKEN_NOW'"
         echo "cloud-assertions: remap-reboot: every tier checked again after a real reboot of the same disk; the caps-tier app kept its data (token $rs_token)"
+    fi
+    ;;
+app-update)
+    # APP UPDATES ON A BOOTED BOX (#630, UPDATES.md # 4, APP_LIFECYCLE.md #
+    # update + rollback). The only proof of the app update path with the
+    # socket proxy, the userns remap and a real managed Postgres together. The
+    # app is upnote (dev/cloud/test/catalog/upnote): each version adds the row
+    # row-<version> to its database and its version to data/starts.txt. A new
+    # catalog version reaches the box as a file the boot copies over the
+    # staged catalog, then a brain restart, which reads it and checks for
+    # updates. Two stages, one per slot:
+    #   1 (slot A) A: update 1.0 to 2.0 by hand; B: 3.0 is broken and rolls
+    #              back, 3.1 asks for internet and waits for the owner's yes,
+    #              then Go back to 2.0; C: the nightly window applies 4.0
+    #              while the app's hold keeps the OS switch waiting, then the
+    #              box switches to slot B and reboots.
+    #   2 (slot B) the app on 4.0 on its data, marked as updated overnight,
+    #              and the owner told.
+    # On a run that publishes the OS (os_mode=refuse) RAUC refuses the test
+    # bundle, so stage 1 runs the night with no OS part and ends there.
+    [ -f "$SEED" ] || fail "app-update: $SEED absent"
+    box_id="$(json_str "$SEED" box_id)"
+    apex="${box_id}.onmoose.io"
+    os_cred="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.os_test" 2>/dev/null || true)"
+    IFS=: read -r os_mode os_ver os_sum <<<"$os_cred"
+    [ -n "$os_ver" ] && [ -n "$os_sum" ] || fail "app-update: moose.os_test credential missing or malformed ('$os_cred')"
+    stage="$(os_stage)"
+    target_dir=/var/lib/moose/test-target
+    au_inst() { echo "/var/lib/moose/state/instances/$AU_ID"; }
+    ha_log() { journalctl -u host-agent.service -b --no-pager -o short-unix 2>&1; }
+    # The admin read of what host-agent decided, body only.
+    au_read() { sed '1,/^\r*$/d' <<<"$(full_get /api/v1/system/update-target "$apex" "$session_cookie" 2>/dev/null || true)" | tr -d '\r'; }
+    # The app as the brain reports it, body only (one line of JSON).
+    au_app() { sed '1,/^\r*$/d' <<<"$(full_get "/api/v1/apps/$AU_ID" "$apex" "$session_cookie" 2>/dev/null || true)" | tr -d '\r'; }
+    # au_has DOC KEY VALUE: the document has "KEY":VALUE (VALUE as JSON).
+    au_has() { grep -qF "\"$2\":$3" <<<"$1"; }
+    au_rows() { docker exec moose-svc-postgres-16 psql -U postgres -d "$AU_DB" -tAc 'select v from upnote_rows order by v' 2>&1 | tr '\n' ' ' | sed 's/ $//'; }
+    au_starts() { tr '\n' ' ' < "$(au_inst)/data/starts.txt" 2>/dev/null | sed 's/ $//'; }
+    au_ctr() {
+        AU_CTR=""
+        for _i in $(seq 1 180); do
+            AU_CTR="$(docker ps --filter "label=moose.instance_id=$AU_ID" --filter "label=com.docker.compose.service=upnote" --filter status=running --format '{{.Names}}' | head -1)"
+            [ -n "$AU_CTR" ] && return 0
+            sleep 1
+        done
+        fail "app-update: no running upnote container: $(docker ps -a --filter "label=moose.instance_id=$AU_ID" --format '{{.Names}} {{.Status}}' | tr '\n' ' ')"
+    }
+    # au_job RESPONSE WHAT waits for the job the response started and sets
+    # AU_ST and AU_JR. WATCH, when set, runs every second while it waits.
+    au_job() {
+        local job; AU_ST=""; AU_JR=""
+        job="$(json_str_of "$1" job_id)"
+        [ -n "$job" ] || fail "app-update: $2 did not start: status='$(status_of "$1")' body=$(tail -1 <<<"$1" | cut -c1-400)"
+        for _i in $(seq 1 600); do
+            AU_JR="$(full_get "/api/v1/jobs/${job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+            AU_ST="$(json_str_of "$AU_JR" status)"
+            case "$AU_ST" in completed|failed|cancelled|stalled) return 0 ;; esac
+            [ -n "${WATCH:-}" ] && $WATCH
+            sleep 1
+        done
+        fail "app-update: $2 did not end in 600 s (last status '$AU_ST')"
+    }
+    # au_running VERSION: the app is running on VERSION, in its container.
+    au_running() {
+        local a=""
+        for _i in $(seq 1 120); do
+            a="$(au_app)"
+            au_has "$a" state '"running"' && au_has "$a" version "\"$1\"" && break
+            sleep 1
+        done
+        au_has "$a" state '"running"' && au_has "$a" version "\"$1\"" \
+            || fail "app-update: the app is not running on $1: $(cut -c1-600 <<<"$a")"
+        au_ctr
+        [ "$(docker inspect "$AU_CTR" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^UPNOTE_VERSION=//p')" = "$1" ] \
+            || fail "app-update: the upnote container does not run $1: $(docker inspect "$AU_CTR" --format '{{.Config.Env}}' | cut -c1-300)"
+        # Still in the default tier after the update: remapped, root inside.
+        [ -z "$(docker inspect "$AU_CTR" --format '{{.HostConfig.UsernsMode}}')" ] && [ "$(host_uid_of "$AU_CTR")" = "$remap_base" ] \
+            || fail "app-update: upnote $1 is not remapped: UsernsMode='$(docker inspect "$AU_CTR" --format '{{.HostConfig.UsernsMode}}')' host uid '$(host_uid_of "$AU_CTR")'"
+    }
+    # au_rows_are WANT: the database holds exactly these rows, once the app
+    # has written its own.
+    au_rows_are() {
+        local r=""
+        for _i in $(seq 1 120); do r="$(au_rows)"; [ "$r" = "$1" ] && return 0; sleep 1; done
+        fail "app-update: the rows are '$r', want '$1'"
+    }
+    # au_catalog VERSION: the catalog now has upnote VERSION. The brain reads
+    # the staged file at startup only, and checks for updates there.
+    au_catalog() {
+        cp "/var/lib/moose/test-catalogs/upnote-$1.json" /var/lib/moose/catalog-seed.json || fail "app-update: no test catalog for upnote $1"
+        docker restart moose-brain >/dev/null || fail "app-update: could not restart the brain"
+        local a=""
+        for _i in $(seq 1 180); do
+            a="$(au_app)"
+            au_has "$a" available_version "\"$1\"" && return 0
+            sleep 1
+        done
+        fail "app-update: after the catalog moved to $1 the brain offers no update to it: $(cut -c1-600 <<<"$a")"
+    }
+    # au_target WINDOW [os]: the answer the in-guest source serves, with the
+    # OS bundle when the second word is os.
+    au_target() {
+        if [ "${2:-}" = os ]; then
+            printf '{"version":"os-test","window":"%s","os":[{"version":"%s","bundle_url":"http://127.0.0.1:5001/bundles/os-test.raucb","bundle_sha256":"%s"}]}\n' \
+                "$1" "$os_ver" "$os_sum" > "$target_dir/target.json"
+        else
+            printf '{"version":"os-test","window":"%s"}\n' "$1" > "$target_dir/target.json"
+        fi
+        systemctl restart host-agent.service || fail "app-update: could not restart host-agent"
+        local rd=""
+        for _i in $(seq 1 120); do rd="$(au_read)"; grep -qF "\"window\":\"$1\"" <<<"$rd" && return 0; sleep 1; done
+        fail "app-update: host-agent did not take the window $1 from the answer: $(cut -c1-400 <<<"$rd")"
+    }
+
+    if [ "$stage" = 1 ]; then
+        [ "$BOOTED" = A ] || fail "app-update: the first boot is on slot '$BOOTED', want A"
+        sso_token="$(tr -d '\r\n' < "${CREDENTIALS_DIRECTORY:-/nonexistent}/moose.sso_token" 2>/dev/null || true)"
+        [ -n "$sso_token" ] || fail "app-update: moose.sso_token credential missing"
+        sso_resp="$(full_get "/_moose/sso?token=${sso_token}" "$apex" 2>/dev/null || true)"
+        grep -q ' 303' <<<"$(status_of "$sso_resp")" || fail "app-update: SSO landing did not 303: status='$(status_of "$sso_resp")'"
+        session_cookie="$(cookie_val "$sso_resp" moose_session)"
+        [ -n "$session_cookie" ] || fail "app-update: no moose_session cookie from the SSO landing"
+
+        # The in-guest update source, with a window twelve hours away, so
+        # nothing updates on its own before phase C, whatever the hour of
+        # the run. The default window (03:00-04:00) would otherwise be live
+        # for a run that starts near 03:00. The bundle disk is mounted for
+        # phase C; with os_mode=full host-agent installs it into slot B ahead
+        # of the window, as on a real night.
+        mkdir -p "$target_dir/bundles"
+        bdev="$(blkid -L moose-os-test 2>/dev/null || true)"
+        [ -n "$bdev" ] || fail "app-update: no disk labelled moose-os-test (the harness's bundle disk)"
+        mount -o ro "$bdev" "$target_dir/bundles" || fail "app-update: cannot mount the bundle disk $bdev"
+        mkdir -p /etc/systemd/system/host-agent.service.d
+        printf '[Service]\nEnvironment=MOOSE_UPDATE_OS_URL_PREFIX=http://127.0.0.1:5001/\n' > /etc/systemd/system/host-agent.service.d/30-os-update-test.conf
+        systemctl daemon-reload
+        caddy_image="$(docker inspect -f '{{.Config.Image}}' moose-caddy 2>/dev/null || true)"
+        docker rm -f moose-test-target >/dev/null 2>&1 || true
+        printf '{"version":"os-test"}\n' > "$target_dir/target.json"
+        docker run -d --restart unless-stopped --name moose-test-target -p 127.0.0.1:5001:80 -v "$target_dir":/srv:ro "$caddy_image" \
+            caddy file-server --root /srv --listen :80 >/dev/null 2>&1 || fail "app-update: could not start the in-guest file server"
+        for _i in $(seq 1 60); do grep -q ' 200' <<<"$(http_status_addr 127.0.0.1 5001 /target.json 2>/dev/null)" && break; sleep 1; done
+        shut="$(printf '%02d:00-%02d:01' $(( (10#$(date +%H) + 12) % 24 )) $(( (10#$(date +%H) + 12) % 24 )))"
+        au_target "$shut" "$([ "$os_mode" = full ] && echo os)"
+
+        # The managed Postgres and upnote run postgres:16, test-only like
+        # the remap boot's.
+        docker load -i /var/lib/moose/test-images/postgres-16.tar >/dev/null 2>&1 \
+            || fail "app-update: docker load postgres-16.tar failed: $(docker load -i /var/lib/moose/test-images/postgres-16.tar 2>&1 | tail -2)"
+        resp="$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"upnote","scope":"personal"}' 2>/dev/null)"
+        au_job "$resp" "install upnote 1.0"
+        [ "$AU_ST" = completed ] || fail "app-update: install upnote 1.0 ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
+        AU_ID="$(json_str_of "$AU_JR" instance_id)"
+        [ -n "$AU_ID" ] || fail "app-update: install completed with no instance id"
+        AU_DB="$(sed -n 's/^MOOSE_SERVICE_DATABASE_NAME=//p' "$(au_inst)/.env")"
+        [ -n "$AU_DB" ] || fail "app-update: upnote's .env names no MOOSE_SERVICE_DATABASE_NAME"
+        # Automatic updates off until phase C: phases A and B are by hand.
+        au_off="$(full_send PUT "/api/v1/apps/$AU_ID/auto-update" "$apex" "$session_cookie" '{"enabled":false}' 2>/dev/null)"
+        grep -q ' 200' <<<"$(status_of "$au_off")" || fail "app-update: turning automatic updates off failed: $(status_of "$au_off")"
+        au_running 1.0
+        au_rows_are "row-1.0"
+        echo "cloud-assertions: app-update: upnote 1.0 installed ($AU_ID) on the managed Postgres (database $AU_DB), remapped; rows: $(au_rows); starts: $(au_starts)"
+
+        # A. AN UPDATE BY HAND, 1.0 to 2.0. The new version runs on the old
+        #    data, and the snapshot of that data is kept for Go back.
+        au_catalog 2.0
+        au_has "$(au_app)" status '"available"' || fail "app-update: 2.0 is not classified available: $(au_app | cut -c1-600)"
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/update" "$apex" "$session_cookie" '' 2>/dev/null)"
+        au_job "$resp" "the update to 2.0"
+        [ "$AU_ST" = completed ] || fail "app-update: the update to 2.0 ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
+        au_running 2.0
+        au_rows_are "row-1.0 row-2.0"
+        [ "$(au_starts)" = "1.0 2.0" ] || fail "app-update: data/starts.txt says '$(au_starts)' after the update to 2.0, want '1.0 2.0'"
+        snap="$(au_inst)/snapshots/pre-update-1.0"
+        [ -s "$snap.json" ] && [ -s "$snap.tar" ] && ls "$snap".*.pgdump >/dev/null 2>&1 \
+            || fail "app-update: no complete snapshot of 1.0: $(ls -la "$(au_inst)/snapshots" 2>&1 | tr '\n' ' ')"
+        echo "cloud-assertions: app-update: UPDATE OK (1.0 to 2.0 by hand: running 2.0 on the old row and file, snapshot pre-update-1.0 kept: $(cd "$(au_inst)/snapshots" && ls | tr '\n' ' '))"
+
+        # B1. A BROKEN UPDATE, 2.0 to 3.0. 3.0 writes its row and its line,
+        #     then reports unhealthy. The update must put 2.0 back on the data
+        #     from before it: the restore goes through the socket proxy.
+        au_catalog 3.0
+        saw3=""
+        au_watch3() { [ -n "$saw3" ] && return 0; grep -qw 'row-3.0' <<<"$(au_rows)" && grep -qx 3.0 "$(au_inst)/data/starts.txt" 2>/dev/null && saw3=yes; return 0; }
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/update" "$apex" "$session_cookie" '' 2>/dev/null)"
+        WATCH=au_watch3 au_job "$resp" "the update to 3.0"
+        [ -n "$saw3" ] || fail "app-update: 3.0 never wrote its row and its line, so the rollback proves nothing (job '$AU_ST')"
+        au_running 2.0
+        a="$(au_app)"
+        au_has "$a" failed_version '"3.0"' || fail "app-update: the failed update to 3.0 is not recorded: $(cut -c1-600 <<<"$a")"
+        au_rows_are "row-1.0 row-2.0"
+        grep -qx 3.0 "$(au_inst)/data/starts.txt" && fail "app-update: data/starts.txt still has 3.0's line after the rollback: '$(au_starts)'"
+        echo "cloud-assertions: app-update: ROLLBACK OK (3.0 wrote its row and line, went unhealthy, job '$AU_ST'; back on 2.0 with rows '$(au_rows)' and starts '$(au_starts)', failure recorded)"
+
+        # B2. AN UPDATE THAT ASKS FOR MORE, 2.0 to 3.1 (internet). It waits
+        #     for the owner, who is told, and a plain Update is refused.
+        au_catalog 3.1
+        a="$(au_app)"
+        au_has "$a" status '"needs_approval"' || fail "app-update: 3.1 is not classified needs_approval: $(cut -c1-600 <<<"$a")"
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/update" "$apex" "$session_cookie" '' 2>/dev/null)"
+        grep -qE ' 4[0-9][0-9]' <<<"$(status_of "$resp")" || fail "app-update: a plain Update of 3.1 was not refused: $(status_of "$resp")"
+        au_running 2.0
+        nb=""
+        for _i in $(seq 1 60); do nb="$(full_get /api/v1/notifications "$apex" "$session_cookie" 2>/dev/null || true)"; grep -q ' 3.1 wants new access' <<<"$nb" && break; sleep 1; done
+        grep -q ' 3.1 wants new access' <<<"$nb" || fail "app-update: the owner was not told that 3.1 wants new access: $(sed '1,/^\r*$/d' <<<"$nb" | cut -c1-400)"
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/update/approve" "$apex" "$session_cookie" '{"version":"3.1"}' 2>/dev/null)"
+        au_job "$resp" "the approved update to 3.1"
+        [ "$AU_ST" = completed ] || fail "app-update: the approved update to 3.1 ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
+        au_running 3.1
+        au_rows_are "row-1.0 row-2.0 row-3.1"
+        grep -qx 3.1 "$(au_inst)/data/starts.txt" || fail "app-update: 3.1 wrote no line to data/starts.txt: '$(au_starts)'"
+        echo "cloud-assertions: app-update: APPROVAL OK (3.1 waited for the owner, a plain Update was refused, the owner was told; after the yes it runs 3.1)"
+
+        # B3. GO BACK. The app returns to 2.0 with the data from just before
+        #     3.1, and its automatic updates stay off.
+        au_has "$(au_app)" can_rollback true || fail "app-update: no Go back offered after the update to 3.1: $(au_app | cut -c1-600)"
+        resp="$(full_send POST "/api/v1/apps/$AU_ID/rollback" "$apex" "$session_cookie" '' 2>/dev/null)"
+        au_job "$resp" "Go back"
+        [ "$AU_ST" = completed ] || fail "app-update: Go back ended '$AU_ST': $(grep -o '"error":{[^}]*}' <<<"$AU_JR" | cut -c1-600)"
+        au_running 2.0
+        au_rows_are "row-1.0 row-2.0"
+        grep -qx 3.1 "$(au_inst)/data/starts.txt" && fail "app-update: data/starts.txt still has 3.1's line after Go back: '$(au_starts)'"
+        grep -qx 1.0 "$(au_inst)/data/starts.txt" || fail "app-update: data/starts.txt lost 1.0's line after Go back: '$(au_starts)'"
+        au_has "$(au_app)" auto_update false || fail "app-update: automatic updates are on after Go back: $(au_app | cut -c1-600)"
+        echo "cloud-assertions: app-update: GO BACK OK (back on 2.0 with rows '$(au_rows)' and starts '$(au_starts)', automatic updates off)"
+
+        # C. THE NIGHT. First the work: the catalog moves to 4.0 and the
+        #    owner turns automatic updates on, while the window is still 12
+        #    hours away, so no brain restart sits between the window and the
+        #    hold. Slot B must be installed by now (the setup's answer named
+        #    the bundle), or the hold would have nothing to keep waiting.
+        if [ "$os_mode" = full ]; then
+            for _i in $(seq 1 300); do grep -q "installed into the other slot" <<<"$(ha_log)" && break; sleep 1; done
+            grep -q "installed into the other slot" <<<"$(ha_log)" \
+                || fail "app-update: the OS bundle is not installed into slot B before the night: $(ha_log | grep -i 'os update' | tail -4 | tr '\n' ' ')"
+        fi
+        au_catalog 4.0
+        au_has "$(au_app)" status '"available"' || fail "app-update: 4.0 is not classified available: $(au_app | cut -c1-600)"
+        au_on="$(full_send PUT "/api/v1/apps/$AU_ID/auto-update" "$apex" "$session_cookie" '{"enabled":true}' 2>/dev/null)"
+        grep -q ' 200' <<<"$(status_of "$au_on")" || fail "app-update: turning automatic updates on failed: $(status_of "$au_on")"
+        #    Then the window: it opens in about six minutes and lasts an
+        #    hour. host-agent ticks once when au_target restarts it, before
+        #    the window, and then sleeps about 15 minutes (13 to 17 with its
+        #    jitter): a new hold does not wake it. So its first tick in the
+        #    window comes 7 to 11 minutes after the window opens. With slot
+        #    B installed, that tick would switch at once without the hold.
+        #    The hour keeps the brain's cut-off (20 minutes before the end)
+        #    well after that tick.
+        # One reading of the clock, so the window and its open time agree.
+        opens_min="$(date -d '+6 minutes' '+%Y-%m-%d %H:%M')"
+        opens_at="$(date -d "${opens_min}:00" +%s)"
+        opens="$(date -d "@$opens_at" +%H:%M)"; ends="$(date -d "@$((opens_at + 3600))" +%H:%M)"
+        au_target "$opens-$ends" "$([ "$os_mode" = full ] && echo os)"
+        # The brain reads the new window on its next one-minute step and
+        # holds from 15 minutes before it opens.
+        rd=""
+        for _i in $(seq 1 150); do rd="$(au_read)"; grep -q '"hold_until":"20' <<<"$rd" && break; sleep 1; done
+        grep -q '"hold_until":"20' <<<"$rd" || fail "app-update: the brain did not hold the OS switch before the window: $(cut -c1-400 <<<"$rd")"
+        [ "$(date +%s)" -lt "$opens_at" ] || fail "app-update: the hold came only after the window opened, so this run does not prove the order"
+        au_running 2.0
+        echo "cloud-assertions: app-update: HOLD OK (the brain holds the OS switch before the window $opens-$ends opens; still on 2.0)"
+        mkdir -p "$OS_STATE_DIR" && chmod 700 "$OS_STATE_DIR"
+        printf 'session_cookie=%q\nAU_ID=%q\nAU_DB=%q\nos_mode=%q\n' "$session_cookie" "$AU_ID" "$AU_DB" "$os_mode" > "$OS_STATE_DIR/app-update" \
+            || fail "app-update: could not keep the session and the app for slot B in $OS_STATE_DIR"
+        [ "$os_mode" = full ] && set_os_stage 2
+        a=""
+        # Up to 30 minutes: the window opens in about five, and host-agent's
+        # first tick in it can come 11 minutes after that.
+        for _i in $(seq 1 1800); do
+            a="$(au_app)"
+            au_has "$a" version '"4.0"' && au_has "$a" state '"running"' && break
+            sleep 1
+        done
+        au_has "$a" version '"4.0"' || fail "app-update: the window did not update the app to 4.0: $(cut -c1-600 <<<"$a"); brain: $(docker logs moose-brain 2>&1 | grep -i 'nightly' | tail -5 | tr '\n' ' ')"
+        [ "$(date +%s)" -ge "$opens_at" ] || fail "app-update: the app updated before the window opened"
+        echo "cloud-assertions: app-update: NIGHT OK (the window updated the app to 4.0 at $(date +%H:%M:%S), before any OS switch)"
+        if [ "$os_mode" = full ]; then
+            echo "cloud-assertions: app-update: waiting for host-agent to switch to slot B and reboot"
+            sleep 900
+            fail "app-update: host-agent never switched slots after the app update: $(ha_log | grep -i 'os update' | tail -6 | tr '\n' ' ')"
+        fi
+        # os_mode=refuse: no OS part, so the night ends here. The hold must
+        # be gone once the app has no work left.
+        for _i in $(seq 1 120); do rd="$(au_read)"; grep -q '"hold_until":"20' <<<"$rd" || break; sleep 1; done
+        grep -q '"hold_until":"20' <<<"$rd" && fail "app-update: the hold is still live after the night's app work: $(cut -c1-400 <<<"$rd")"
+        au_running 4.0
+        au_rows_are "row-1.0 row-2.0 row-4.0"
+        echo "cloud-assertions: app-update: NO OS PART (os_mode=refuse): the night ended with the app on 4.0 and the hold cleared"
+    else
+        # 2. SLOT B, after the switch the app's hold let go.
+        [ "$stage" = 2 ] && [ "$BOOTED" = B ] || fail "app-update: stage $stage booted slot '$BOOTED', want stage 2 on slot B"
+        [ -s "$OS_STATE_DIR/app-update" ] || fail "app-update: slot A left no session and app for slot B in $OS_STATE_DIR/app-update"
+        # shellcheck disable=SC1090
+        . "$OS_STATE_DIR/app-update"
+        for _i in $(seq 1 300); do grep -q "the new slot is healthy and marked good" <<<"$(ha_log)" && break; sleep 1; done
+        grep -q "the new slot is healthy and marked good" <<<"$(ha_log)" || fail "app-update: host-agent did not mark slot B good"
+        me=""
+        for _i in $(seq 1 90); do me="$(status_of "$(full_get /api/v1/me "$apex" "$session_cookie" 2>/dev/null || true)")"; grep -q ' 200' <<<"$me" && break; sleep 1; done
+        grep -q ' 200' <<<"$me" || fail "app-update: the owner's session does not work on slot B (status '$me')"
+        au_running 4.0
+        au_rows_are "row-1.0 row-2.0 row-4.0"
+        a="$(au_app)"
+        au_has "$a" updated_overnight true && au_has "$a" updated_from '"2.0"' \
+            || fail "app-update: the app does not say it was updated overnight from 2.0: $(cut -c1-600 <<<"$a")"
+        # The order: the update ran on slot A, before this boot. A switch that
+        # came too early would leave the update to slot B, inside the same
+        # window, and every check above would still pass. updated_at is when
+        # the update took its snapshot, at its start.
+        up_at="$(json_str_of "$a" updated_at)"
+        up_s="$(date -d "$up_at" +%s 2>/dev/null || true)"
+        boot_s="$(awk '/^btime /{print $2}' /proc/stat)"
+        [ -n "$up_s" ] && [ -n "$boot_s" ] && [ "$up_s" -lt "$boot_s" ] \
+            || fail "app-update: the update to 4.0 did not run on slot A before the switch: updated_at '$up_at' ($up_s), slot B booted at $boot_s"
+        nb=""
+        for _i in $(seq 1 60); do nb="$(full_get /api/v1/notifications "$apex" "$session_cookie" 2>/dev/null || true)"; grep -q ' updated to 4.0' <<<"$nb" && break; sleep 1; done
+        grep -q ' updated to 4.0' <<<"$nb" || fail "app-update: the owner was not told of the overnight update: $(sed '1,/^\r*$/d' <<<"$nb" | cut -c1-400)"
+        echo "cloud-assertions: app-update: SLOT B OK (the box switched after the app update: updated at $up_at, slot B booted $(( boot_s - up_s )) s later and marked good; upnote 4.0 runs on rows '$(au_rows)', updated overnight from 2.0, the owner told)"
     fi
     ;;
 os-update|os-revert)
@@ -2641,8 +3617,10 @@ UNIT
         t_in="$(ha_log | grep 'installed into the other slot' | tail -1 | awk '{print $1}')"
         echo "cloud-assertions: $MODE: INSTALL AHEAD OK (slot B holds $os_ver, ORDER still 'A B', os.state=installed); measured: download+digest $(awk -v a="$t_dl" -v b="$t_got" 'BEGIN{printf "%.1f", b-a}') s, rauc install $(awk -v a="$t_got" -v b="$t_in" 'BEGIN{printf "%.1f", b-a}') s, bundle $(stat -c %s "$target_dir/bundles/os-test.raucb") bytes"
 
-        # 1c. THE SWITCH. An open window: host-agent puts slot B first and
-        #     reboots. The next stage runs on slot B.
+        # 1c. THE SWITCH. host-agent puts slot B first and reboots; the next
+        #     stage runs on slot B. os-update asks for it with Update now
+        #     while the window stays shut (#509); os-revert opens the window,
+        #     so both ways in are proven.
         boot_gate
         if [ "$MODE" = os-update ]; then
             # A faked Debian major (BUILD.md # 1b, rule 4): the state partition
@@ -2656,9 +3634,42 @@ UNIT
         fi
         date +%s > "$OS_STATE_DIR/switch-at"
         set_os_stage 2
-        write_os_target "$os_sum" "00:00-23:59"
-        systemctl restart host-agent.service
-        echo "cloud-assertions: $MODE: window open; waiting for host-agent to switch to slot B and reboot"
+        if [ "$MODE" = os-update ]; then
+            # First THE BRAIN'S HOLD (#632). A hold on host-agent's socket, as
+            #     the brain sends while it updates apps, keeps the switch
+            #     waiting, Update now's included; clearing it lets the switch
+            #     go at once. The brain itself has no app work here, so after
+            #     its first wake it leaves the hold alone.
+            hold_until="$(date -u -d '+10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+            hold_resp="$(agent_req PUT /v1/system/update-hold "{\"until\":\"${hold_until}\"}" 2>&1 || true)"
+            grep -q ' 200' <<<"$(status_of "$hold_resp")" && grep -q '"until":"20' <<<"$hold_resp" \
+                || fail "$MODE: host-agent did not take the hold: $(tr -d '\r' <<<"$hold_resp" | tr '\n' ' ' | cut -c1-300)"
+            # The answer carries only an OS part, so stream B has nothing to
+            # do and Update now is the OS switch alone. With the hold live it
+            # is accepted, and the switch waits.
+            apply_resp="$(full_send POST /api/v1/system/update-target/apply "$apex" "$session_cookie" "" 2>/dev/null || true)"
+            grep -q ' 202' <<<"$(status_of "$apply_resp")" \
+                || fail "$MODE: Update now was not accepted with slot B installed and a hold: status='$(status_of "$apply_resp")' $(tail -1 <<<"$apply_resp")"
+            wait_ha "an admin asked to switch now; waiting first" 60 "the switch did not wait for the hold"
+            # Long enough for three of the loop's 10 s retries.
+            for _i in $(seq 1 35); do
+                ha_log | grep -q 'switching now, as an admin asked' && fail "$MODE: the box switched while the brain's hold was live"
+                sleep 1
+            done
+            [ "$(grubvar ORDER)" = "A B" ] || fail "$MODE: the boot order moved while the hold was live: ORDER='$(grubvar ORDER)'"
+            held_read="$(os_read)"
+            grep -q '"hold_until":"' <<<"$held_read" || fail "$MODE: the update-target read does not show the hold: $(cut -c1-400 <<<"$held_read")"
+            [ "$(os_field "$held_read" state)" = installed ] && grep -q 'the switch waits for app updates' <<<"$held_read" \
+                || fail "$MODE: under the hold the read says os.state '$(os_field "$held_read" state)', detail '$(os_field "$held_read" detail)'; want installed and waiting for app updates"
+            echo "cloud-assertions: $MODE: HOLD OK (with the brain's hold live, Update now was accepted and the switch waited 35 s; the read shows hold_until and says the switch waits for app updates)"
+            clear_resp="$(agent_req DELETE /v1/system/update-hold 2>&1 || true)"
+            grep -q ' 204' <<<"$(status_of "$clear_resp")" || fail "$MODE: host-agent did not clear the hold: $(status_of "$clear_resp")"
+            echo "cloud-assertions: $MODE: hold cleared; waiting for host-agent to switch to slot B and reboot (window shut: $shut)"
+        else
+            write_os_target "$os_sum" "00:00-23:59"
+            systemctl restart host-agent.service
+            echo "cloud-assertions: $MODE: window open; waiting for host-agent to switch to slot B and reboot"
+        fi
         sleep 900
         fail "$MODE: host-agent never switched slots and rebooted: $(ha_log | grep -i 'os update' | tail -6 | tr '\n' ' ')"
     fi

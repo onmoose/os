@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/onmoose/os/internal/hostagent/osupdate"
@@ -44,6 +45,32 @@ type updateTargetReport struct {
 	// release and slot, and the last outcome, which outlive a reboot. Nil on
 	// a box that cannot update its OS.
 	os osFacts
+	// lastUpdate reads stream B's last outcome from disk (#488). Nil reports
+	// none.
+	lastUpdate lastUpdateReader
+	// zone reads the box's time zone, the same way the loop does. Nil
+	// reports none.
+	zone func() (*time.Location, string)
+}
+
+// lastUpdateReader is the slice of controlplane.LastUpdate the report reads.
+type lastUpdateReader interface {
+	Last() (*protocol.ControlPlaneOutcome, error)
+}
+
+// readLast reads stream B's last outcome. A record it cannot read is logged
+// and left out: the screen then says nothing about the last update, which is
+// better than a wrong sentence.
+func (r updateTargetReport) readLast() *protocol.ControlPlaneOutcome {
+	if r.lastUpdate == nil {
+		return nil
+	}
+	o, err := r.lastUpdate.Last()
+	if err != nil {
+		slog.Warn("update target: cannot read the last control-plane update", "err", err)
+		return nil
+	}
+	return o
 }
 
 // osFacts is the slice of osupdate.Applier the report reads.
@@ -51,6 +78,7 @@ type osFacts interface {
 	Running() (version, slot string)
 	Last() *protocol.OSOutcome
 	Peek(rel updatetarget.OSRelease) (state, detail string, ok bool)
+	OnTrial() bool
 }
 
 // osReporter returns the applier as osFacts, or a nil interface for a nil
@@ -68,7 +96,7 @@ func (r updateTargetReport) readOS() *protocol.OSUpdate {
 	if r.os == nil {
 		return &protocol.OSUpdate{State: protocol.OSUpdateUnsupported, Detail: "this host-agent cannot update the OS"}
 	}
-	out := &protocol.OSUpdate{State: protocol.OSUpdateNone, Last: r.os.Last()}
+	out := &protocol.OSUpdate{State: protocol.OSUpdateNone, Last: r.os.Last(), Trial: r.os.OnTrial()}
 	out.Running, out.Slot = r.os.Running()
 	if r.loop == nil {
 		out.Detail = "this box has no update loop, so it will not update its OS"
@@ -90,6 +118,12 @@ func (r updateTargetReport) readOS() *protocol.OSUpdate {
 		}
 		out.Target = &protocol.OSRelease{Version: s.Target.Version, BundleURL: s.Target.BundleURL, BundleSHA256: s.Target.BundleSHA256}
 	}
+	// The refresh above reads the job and the record, which know nothing of
+	// the brain's hold (#632). An installed release that waits for it says
+	// so.
+	if _, held := r.loop.Hold(); held && out.State == protocol.OSUpdateInstalled {
+		out.Detail = updatetarget.SwitchWaitsForApps
+	}
 	return out
 }
 
@@ -104,6 +138,10 @@ func (r updateTargetReport) Read() protocol.UpdateTarget {
 		WindowFrom: r.windowFrom,
 		Profile:    r.profile,
 		AutoApply:  r.autoApply,
+		Last:       r.readLast(),
+	}
+	if r.zone != nil {
+		_, out.Zone = r.zone()
 	}
 	var runErr error
 	if r.running != nil {
@@ -117,6 +155,16 @@ func (r updateTargetReport) Read() protocol.UpdateTarget {
 	// failure instead would hide the fault that needs a human behind one that
 	// looks transient. The read failure is not dropped: it rides along in
 	// detail, because a box with two faults must not report one of them.
+	// Whether stream B is done for tonight (#632). Always sent, "" when it
+	// is not, so the brain can tell this host-agent from an older one.
+	done := r.controlPlaneDone()
+	out.ControlPlaneDoneNight = &done
+	if r.loop != nil {
+		if until, ok := r.loop.Hold(); ok {
+			out.HoldUntil = until.UTC().Format(time.RFC3339)
+		}
+	}
+
 	if r.loop == nil {
 		out.State, out.Detail = protocol.UpdateTargetDisabled, r.disabledErr
 		if runErr != nil {
@@ -164,6 +212,32 @@ func (r updateTargetReport) Read() protocol.UpdateTarget {
 		out.State = protocol.UpdateTargetUnknown
 	}
 	return out
+}
+
+// controlPlaneDone is the control_plane_done_night value: the night stream B
+// is done for, as YYYY-MM-DD, or "". With no loop there is no stream B to
+// wait for, so the night is done as soon as the window is open.
+func (r updateTargetReport) controlPlaneDone() string {
+	if r.loop != nil {
+		if night, ok := r.loop.ControlPlaneDone(); ok {
+			return night.Format(time.DateOnly)
+		}
+		return ""
+	}
+	loc := time.Local
+	if r.zone != nil {
+		if l, _ := r.zone(); l != nil {
+			loc = l
+		}
+	}
+	w := r.window
+	if w == (updatetarget.Window{}) {
+		w = updatetarget.DefaultWindow
+	}
+	if night, ok := updatetarget.NightOf(w, time.Now().In(loc)); ok {
+		return night.Format(time.DateOnly)
+	}
+	return ""
 }
 
 // offer converts a target to the wire shape. PublishedAt is omitted when the

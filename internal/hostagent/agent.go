@@ -144,15 +144,15 @@ type LogSource interface {
 
 // RAMReporter is a consumer-side interface for the locus-B ram-pressure
 // detector: it reads the kernel's PSI memory file (/proc/pressure/memory, the
-// `some avg60` field) and emits a ram-pressure finding when memory-stall
-// pressure is sustained above threshold. It backs the resources category of GET
-// /v1/health/system. Provider packages return concrete types:
+// `full avg300` field) and /proc/meminfo, and emits a ram-pressure finding when
+// the box stalls on memory or is nearly out of it (#597). It backs the
+// resources category of GET /v1/health/system. Provider packages return concrete types:
 // rampressure.Reporter (real /proc) for cmd/host-agent-real, FakeRAMReporter for
 // the fake binary and tests.
 //
 // Read always returns a usable slice (nil = pressure below threshold) and never
 // errors — like ServiceReporter, a PSI reading is data, not a failure; a missing
-// PSI file fails open to nil.
+// or unparseable file fails open for its own signal.
 type RAMReporter interface {
 	Read() []protocol.Finding
 }
@@ -436,6 +436,17 @@ type Agent struct {
 	// in cmd/host-agent-real vs a canned reporter in the fake binary. When nil,
 	// the endpoint reports state "unknown".
 	UpdateTarget UpdateTargetReporter
+	// TargetApplier, when non-nil, backs POST /v1/jobs/system-update-target:
+	// apply the loop's checked target now (#488). Nil is a 501.
+	TargetApplier TargetApplier
+	// UpdateHold, when non-nil, backs PUT and DELETE /v1/system/update-hold:
+	// the brain's hold on the OS switch while it updates apps (#632). The
+	// update-target loop in cmd/host-agent-real, an in-memory hold in the
+	// fake. Nil is a 501.
+	UpdateHold UpdateHolder
+	// LastUpdate, when non-nil, keeps the outcome of every control-plane
+	// update on disk, so it outlives the brain the update replaced (#488).
+	LastUpdate LastUpdateSaver
 
 	// OS, when non-nil, backs os_version and os_slot of GET /v1/system/status:
 	// the OS release this box runs and the slot it booted (#563). Wired only
@@ -489,6 +500,8 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/system/resources", a.systemResources)
 	mux.HandleFunc("GET /v1/system/gpu", a.systemGPU)
 	mux.HandleFunc("GET /v1/system/update-target", a.systemUpdateTarget)
+	mux.HandleFunc("PUT "+protocol.UpdateHoldPath, a.setUpdateHold)
+	mux.HandleFunc("DELETE "+protocol.UpdateHoldPath, a.clearUpdateHold)
 	mux.HandleFunc("POST /v1/auth/verify-password", a.verifyPassword)
 	mux.HandleFunc("POST /v1/auth/set-password", a.setPassword)
 	mux.HandleFunc("POST /v1/auth/set-role", a.setRole)
@@ -499,6 +512,7 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/health/system", a.systemHealth)
 	mux.HandleFunc("GET /v1/journal/follow", a.journalFollow)
 	mux.HandleFunc("POST /v1/jobs/system-update", a.startSystemUpdate)
+	mux.HandleFunc("POST "+protocol.SystemUpdateTargetApplyPath, a.applyUpdateTarget)
 	mux.HandleFunc("GET /v1/jobs/{id}", a.jobStatus)
 	mux.HandleFunc("GET /v1/users/{username}/exists", a.userExists)
 	mux.HandleFunc("GET /v1/users/{username}/home", a.resolveHome)
@@ -636,7 +650,7 @@ func (a *Agent) systemResources(w http.ResponseWriter, r *http.Request) {
 	secs := elapsed.Seconds()
 	writeJSON(w, http.StatusOK, protocol.SystemResources{
 		TsNs:    time.Now().UnixNano(),
-		CPU:     protocol.CPUCounters{TotalJiffies: int64(secs * 400), IdleJiffies: int64(secs * 300)},
+		CPU:     protocol.CPUCounters{TotalJiffies: int64(secs * 400), IdleJiffies: int64(secs * 300), Cores: 4},
 		LoadAvg: [3]float64{0.42, 0.51, 0.48},
 		Mem: protocol.MemCounters{
 			TotalBytes:     16728338432,

@@ -31,6 +31,10 @@ import { useAuth, isHosted } from "@/auth";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
 import AppLogs from "@/components/AppLogs.vue";
 import Button from "@/components/ui/Button.vue";
+import PermissionList from "@/components/PermissionList.vue";
+import { wantLines } from "@/installSteps";
+import { failedStep } from "@/updates";
+import RollbackButton from "@/components/RollbackButton.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -71,7 +75,9 @@ const stopped = computed(() => app.value?.state === "stopped");
 // `failed` shares the Start control as a click-to-retry (#154): the brain runs
 // the identical Start transaction from `stopped` or `failed`. The logs below are
 // the failure reason, so a retry from here isn't blind.
-const failed = computed(() => app.value?.state === "failed");
+// `update_failed` (#631) is retried the same way: an update could not put the
+// old version back, and Start finishes that first.
+const failed = computed(() => app.value?.state === "failed" || app.value?.state === "update_failed");
 
 function invalidate() {
   qc.invalidateQueries({ queryKey: ["apps"] });
@@ -102,7 +108,14 @@ const start = useMutation({
 const confirmingUninstall = ref(false);
 
 // Logs start collapsed. They're a drill-down, not the first thing on the page.
-const logsOpen = ref(false);
+// A link to #logs (View logs under a failed update, #634) opens them.
+const logsOpen = ref(route.hash === "#logs");
+watch(
+  () => route.hash,
+  (h) => {
+    if (h === "#logs") logsOpen.value = true;
+  },
+);
 const uninstall = useMutation({
   mutationFn: async () => awaitJob(await api.del<Job>(`/apps/${id.value}`)),
   onSuccess: () => {
@@ -111,8 +124,74 @@ const uninstall = useMutation({
   },
 });
 
+// ── Updates (UPDATES.md # 4 and # 6, #631) ───────────────────────────────────
+// The brain finds a new version in the catalog and says whether it can apply
+// it (update.can_apply) or why not (update.reason). Update runs the same
+// transaction as the box's own updates, as a job: the app is down for a
+// moment, and a version that does not start is rolled back.
+const appUpdate = computed(() => app.value?.update ?? null);
+const updateApp = useMutation({
+  mutationFn: async () => awaitJob(await api.post<Job>(`/apps/${id.value}/update`)),
+  onSettled: invalidate,
+});
+// An update that asks for more access (#633) waits for a yes: the owner of
+// a personal app, an admin for a household app (update.can_approve). The
+// lines are the install screen's words (wantLines). Allow & update runs the
+// same job as Update. Someone who cannot allow it (an admin looking at
+// another person's app) is told whose yes it waits for.
+const wants = computed(() => wantLines(appUpdate.value?.wants));
+const needsApproval = computed(() => appUpdate.value?.status === "needs_approval");
+const approveUpdate = useMutation({
+  mutationFn: async () =>
+    awaitJob(await api.post<Job>(`/apps/${id.value}/update/approve`, { version: appUpdate.value?.available_version })),
+  onSettled: invalidate,
+});
+const waitsFor = computed(() => {
+  if (app.value?.scope === "household") return "It waits for an admin to allow it.";
+  return `It waits for ${app.value?.owner_username || "its owner"} to allow it. Only they can allow it.`;
+});
+const updating = computed(
+  () => app.value?.state === "updating" || updateApp.isPending.value || approveUpdate.isPending.value,
+);
+const customApp = computed(() => app.value?.version === "custom");
+const updateSummary = computed(() => {
+  const u = appUpdate.value;
+  if (customApp.value) return "This app was added by hand, so moose has no newer version of it.";
+  if (updating.value) return "Updating. The app is down for a moment.";
+  if (!u?.available_version) return "This is the newest version in the app store.";
+  if (u.status === "available") return `Version ${u.available_version} is available.`;
+  return `Version ${u.available_version} is in the app store. ${u.reason ?? ""}`.trim();
+});
+const failedAt = computed(() => {
+  const at = appUpdate.value?.failed_at;
+  return at ? new Date(at).toLocaleString() : "";
+});
+// The last good update, while it can be rolled back by hand (#634): 7 days
+// after it, with the data from just before it.
+const updatedAt = computed(() => {
+  const at = appUpdate.value?.updated_at;
+  return at ? new Date(at).toLocaleString() : "";
+});
+const rollbackUntil = computed(() => {
+  const at = appUpdate.value?.rollback_until;
+  return at ? new Date(at).toLocaleString() : "";
+});
+
+// The box's own updates of this app. On by default; off means the user
+// updates it here, by hand.
+const autoUpdate = computed<boolean>(() => app.value?.auto_update ?? true);
+const setAutoUpdate = useMutation({
+  mutationFn: (enabled: boolean) => api.put<Instance>(`/apps/${id.value}/auto-update`, { enabled }),
+  onSettled: invalidate,
+});
+
 const busy = computed(
-  () => stop.isPending.value || start.isPending.value || uninstall.isPending.value,
+  () =>
+    stop.isPending.value ||
+    start.isPending.value ||
+    uninstall.isPending.value ||
+    updateApp.isPending.value ||
+    approveUpdate.isPending.value,
 );
 
 // ── Access mode (#306/#307, ENVIRONMENT.md # Per-app owner-only access) ───────
@@ -143,6 +222,16 @@ const accessSummary = computed(() => {
     return "Only you can open the app. Visitors sign in to your box first. Some app paths are open to the public, so tools outside your box can reach them.";
   }
   return "Only you can open it. Visitors sign in to your box first.";
+});
+
+// ── Automatic restart (#598, HEALTH.md # Automatic restart) ──────────────────
+// The brain restarts an app that stays unresponsive. The owner (or an admin)
+// can turn that off while they fix the app by hand. Both profiles. The PUT
+// echoes the updated instance, so invalidate refreshes the page without a job.
+const autoRestart = computed<boolean>(() => app.value?.auto_restart ?? true);
+const setAutoRestart = useMutation({
+  mutationFn: (enabled: boolean) => api.put<Instance>(`/apps/${id.value}/auto-restart`, { enabled }),
+  onSettled: invalidate,
 });
 
 // ── Outgoing email (SERVICE_PROVISIONING.md # BYO outgoing mail) ─────────────
@@ -634,6 +723,129 @@ const saveConfig = useMutation({
         </p>
       </section>
 
+      <!-- Automatic restart (#598): on by default; off while debugging by hand. -->
+      <section v-if="canControl" class="space-y-2">
+        <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Automatic restart</h2>
+        <div class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3">
+          <div class="min-w-0">
+            <div class="text-sm font-medium">Restart it when it stops responding</div>
+            <div class="text-xs text-muted-foreground">
+              moose restarts the app if it does not respond for 5 minutes. Turn this off while you fix the app by hand.
+            </div>
+          </div>
+          <SwitchRoot
+            :model-value="autoRestart"
+            aria-label="Restart the app when it stops responding"
+            :disabled="setAutoRestart.isPending.value"
+            class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-border bg-muted outline-none transition-colors data-[state=checked]:border-accent data-[state=checked]:bg-accent disabled:cursor-default"
+            @update:model-value="(on: boolean) => setAutoRestart.mutate(on)"
+          >
+            <SwitchThumb
+              class="pointer-events-none block size-4 translate-x-0.5 rounded-full bg-card shadow transition-transform data-[state=checked]:translate-x-[1.125rem]"
+            />
+          </SwitchRoot>
+        </div>
+        <p v-if="setAutoRestart.isError.value" class="text-sm text-destructive">
+          Couldn't change automatic restart: {{ (setAutoRestart.error.value as Error)?.message }}
+        </p>
+      </section>
+
+      <!-- Updates (#631): the version, a new one if the app store has it, the
+           Update button when the brain can apply it, the last update that did
+           not go through (and, #632, whether the nightly window paused it),
+           and the automatic update switch. An update that asks for more
+           access (#633) shows what it wants and Allow & update. -->
+      <section v-if="canControl" class="space-y-2">
+        <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Updates</h2>
+        <div class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">Version {{ app.version }}</div>
+            <div class="text-xs text-muted-foreground">{{ updateSummary }}</div>
+          </div>
+          <Button
+            v-if="appUpdate?.can_apply"
+            size="sm"
+            :disabled="busy || updating"
+            @click="updateApp.mutate()"
+          >
+            {{ updating ? "Updating…" : `Update to ${appUpdate.available_version}` }}
+          </Button>
+          <Button
+            v-else-if="needsApproval && appUpdate?.can_approve"
+            size="sm"
+            :disabled="busy || updating"
+            @click="approveUpdate.mutate()"
+          >
+            {{ updating ? "Updating…" : "Allow & update" }}
+          </Button>
+          <div
+            v-if="needsApproval && wants.length > 0 && !updating"
+            class="w-full space-y-1 border-t border-border pt-3 text-xs text-muted-foreground"
+          >
+            <p class="font-medium text-foreground">{{ app.name }} {{ appUpdate?.available_version }} wants new access:</p>
+            <PermissionList :lines="wants" />
+            <p v-if="!appUpdate?.can_approve">{{ waitsFor }}</p>
+            <p v-else-if="appUpdate?.declined">You chose to keep the current version. You can still allow it here.</p>
+          </div>
+          <div
+            v-if="appUpdate?.failed_version && !updating"
+            class="flex w-full items-start gap-2 border-t border-border pt-3 text-xs text-amber-700"
+          >
+            <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              The update to {{ appUpdate.failed_version }} did not go through<template v-if="failedAt"> ({{ failedAt }})</template>.
+              {{ failedStep(appUpdate.failed_kind) }}
+              {{ appUpdate.failed_message }}
+              <template v-if="appUpdate.paused">
+                Update is failing repeatedly. Paused. moose no longer tries it at night, but you can still update the app here.
+              </template>
+              <RouterLink :to="{ hash: '#logs' }" class="underline underline-offset-2 hover:text-foreground">View logs</RouterLink>
+            </span>
+          </div>
+        </div>
+        <div
+          v-if="appUpdate?.updated_from && !updating"
+          class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
+        >
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">Updated from {{ appUpdate.updated_from }}</div>
+            <div class="text-xs text-muted-foreground">
+              {{ app.name }} moved from {{ appUpdate.updated_from }} to {{ app.version }}<template v-if="appUpdate.updated_overnight"> overnight</template>, {{ updatedAt }}.
+              If something does not work as before, you can go back to {{ appUpdate.updated_from }} until {{ rollbackUntil }}.
+            </div>
+          </div>
+          <RollbackButton v-if="appUpdate.can_rollback" :app="app" />
+        </div>
+        <p v-if="updateApp.isError.value" class="text-sm text-destructive">
+          Couldn't update: {{ (updateApp.error.value as Error)?.message }}
+        </p>
+        <p v-if="approveUpdate.isError.value" class="text-sm text-destructive">
+          Couldn't update: {{ (approveUpdate.error.value as Error)?.message }}
+        </p>
+        <div v-if="!customApp" class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3">
+          <div class="min-w-0">
+            <div class="text-sm font-medium">Update it automatically</div>
+            <div class="text-xs text-muted-foreground">
+              When this is on, moose installs new versions of the app by itself, at night in the update window. When it is off, you update the app here.
+            </div>
+          </div>
+          <SwitchRoot
+            :model-value="autoUpdate"
+            aria-label="Update the app automatically"
+            :disabled="setAutoUpdate.isPending.value"
+            class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-border bg-muted outline-none transition-colors data-[state=checked]:border-accent data-[state=checked]:bg-accent disabled:cursor-default"
+            @update:model-value="(on: boolean) => setAutoUpdate.mutate(on)"
+          >
+            <SwitchThumb
+              class="pointer-events-none block size-4 translate-x-0.5 rounded-full bg-card shadow transition-transform data-[state=checked]:translate-x-[1.125rem]"
+            />
+          </SwitchRoot>
+        </div>
+        <p v-if="setAutoUpdate.isError.value" class="text-sm text-destructive">
+          Couldn't change automatic update: {{ (setAutoUpdate.error.value as Error)?.message }}
+        </p>
+      </section>
+
       <!-- Outgoing email: provider binding for mail-capable apps. -->
       <section v-if="app.mail_supported && canControl" class="space-y-2">
         <h2 class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Outgoing email</h2>
@@ -899,7 +1111,7 @@ const saveConfig = useMutation({
       <!-- Logs: collapsed by default; a full-width accordion row (styled like
            the Installed apps list rows) that expands the log panel on click. The
            chevron at the end rotates to signal expansion. -->
-      <section v-if="canControl" class="flex flex-col gap-2">
+      <section v-if="canControl" id="logs" class="flex flex-col gap-2">
         <button
           type="button"
           class="flex w-full shrink-0 cursor-pointer items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 text-sm hover:bg-muted"
