@@ -89,10 +89,11 @@ type fakeDocker struct {
 
 	// attached is the networks each container is on, by container name, as
 	// NetworkConnect/NetworkDisconnect leave them and ContainerNetworks reads
-	// them. networkConnectErr forces NetworkConnect to fail, and
-	// containerNetworksErr forces ContainerNetworks to fail.
+	// them. networkConnectErr, networkDisconnectErr and containerNetworksErr
+	// force those calls to fail. A failed disconnect leaves attached as it is.
 	attached             map[string]map[string]bool
 	networkConnectErr    error
+	networkDisconnectErr error
 	containerNetworksErr error
 
 	// networks is each network NetworkCreate made and its internal flag, as
@@ -432,6 +433,9 @@ func (f *fakeDocker) NetworkDisconnect(_ context.Context, network, container str
 	f.record("NetworkDisconnect", network, container)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.networkDisconnectErr != nil {
+		return f.networkDisconnectErr
+	}
 	delete(f.attached[container], network)
 	return nil
 }

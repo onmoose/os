@@ -104,7 +104,8 @@ type DockerDriver interface {
 	NetworkConnect(ctx context.Context, network, container string) error
 	NetworkDisconnect(ctx context.Context, network, container string) error
 	// ContainerNetworks lists the networks a container is attached to, by
-	// name. Read-only; needs only the proxy's CONTAINERS endpoint family.
+	// name, whether it runs or not. A missing container is errNoSuchContainer.
+	// Read-only; needs only the proxy's CONTAINERS endpoint family.
 	ContainerNetworks(ctx context.Context, container string) (map[string]bool, error)
 	PSManaged(ctx context.Context) (map[string]bool, error)
 	// RestartCounts reports each managed instance's cumulative container
@@ -456,9 +457,26 @@ func (cliDocker) ContainerNetworks(ctx context.Context, container string) (map[s
 	out, err := exec.CommandContext(ctx, "docker", "inspect", "--type", "container",
 		"--format", "{{json .NetworkSettings.Networks}}", container).Output()
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if noSuchContainer(string(exit.Stderr)) {
+				return nil, fmt.Errorf("inspect %s networks: %w", container, errNoSuchContainer)
+			}
+			return nil, fmt.Errorf("inspect %s networks: %w: %s", container, err, strings.TrimSpace(string(exit.Stderr)))
+		}
 		return nil, fmt.Errorf("inspect %s networks: %w", container, err)
 	}
 	return parseContainerNetworks(out)
+}
+
+// errNoSuchContainer says the container does not exist, so it is on no network.
+var errNoSuchContainer = errors.New("no such container")
+
+// noSuchContainer reports whether a `docker inspect` failure says the container
+// does not exist. Any other wording stays a failure, which is the safe side: a
+// caller then warns and tries again, and does not take it as clean.
+func noSuchContainer(out string) bool {
+	return strings.Contains(out, "No such container")
 }
 
 // parseContainerNetworks reads the `{{json .NetworkSettings.Networks}}` of

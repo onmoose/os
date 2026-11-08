@@ -3,9 +3,12 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -187,6 +190,13 @@ func TestDockerNetworkErrorWording(t *testing.T) {
 	if notAttached("Error response from daemon: permission denied") {
 		t.Fatalf("a real failure read as not attached")
 	}
+	// `docker inspect --type container` on a missing container, Docker 28.
+	if !noSuchContainer("\nError response from daemon: No such container: moose-x-app\n") {
+		t.Fatalf("missing-container wording not recognized")
+	}
+	if noSuchContainer("Cannot connect to the Docker daemon at tcp://docker-proxy:2375") {
+		t.Fatalf("a real failure read as a missing container")
+	}
 }
 
 // An app installed before #608 has a saved override that attaches its main
@@ -214,6 +224,7 @@ func TestReconcileMovesOldAppsOffIngress(t *testing.T) {
 			if err := os.WriteFile(ovPath, []byte(old), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			e.docker.attached[alias] = map[string]bool{appNet: true, ingressNetwork: true}
 			e.docker.calls = nil
 
 			if err := e.m.Reconcile(context.Background()); err != nil {
@@ -255,6 +266,192 @@ func TestReconcileMovesOldAppsOffIngress(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ingressFixture is an installed app with an override that no longer names
+// moose-ingress, and the name of its main container.
+func ingressFixture(t *testing.T) (*testEnv, string, string) {
+	t.Helper()
+	e := newTestEnv(t)
+	inst := installWhoami(t, e)
+	e.docker.calls = nil
+	return e, inst.ID, "moose-" + inst.ID + "-whoami"
+}
+
+// A clean override says nothing about the container. The disconnect goes by the
+// container's own networks, so one left on moose-ingress comes off.
+func TestMigrateOffIngressCleanOverrideStillAttached(t *testing.T) {
+	e, id, ctr := ingressFixture(t)
+	e.docker.attached[ctr] = map[string]bool{ingressNetwork: true}
+
+	changed, err := e.m.migrateOffIngress(context.Background(), id)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if changed {
+		t.Fatalf("a clean override reported as changed")
+	}
+	if e.docker.attached[ctr][ingressNetwork] {
+		t.Fatalf("container still on moose-ingress: %v", e.docker.methods())
+	}
+}
+
+// The bug this closes: the first start cleans the file and the disconnect
+// fails. The second start sees a clean file, and must still disconnect.
+func TestMigrateOffIngressRetriesAFailedDisconnect(t *testing.T) {
+	e, id, ctr := ingressFixture(t)
+	ovPath := filepath.Join(e.m.instanceDir(id), "compose.override.yml")
+	old := "networks:\n    moose-ingress:\n        external: true\n" +
+		"services:\n    whoami:\n        container_name: " + ctr + "\n        networks:\n" +
+		"            moose-ingress:\n                aliases:\n                    - " + ctr + "\n"
+	if err := os.WriteFile(ovPath, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.docker.attached[ctr] = map[string]bool{ingressNetwork: true}
+	e.docker.networkDisconnectErr = errors.New("docker unreachable")
+
+	changed, err := e.m.migrateOffIngress(context.Background(), id)
+	if err == nil {
+		t.Fatalf("a failed disconnect returned no error")
+	}
+	if !changed {
+		t.Fatalf("the override was cleaned but not reported as changed")
+	}
+	got, rerr := os.ReadFile(ovPath)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if strings.Contains(string(got), ingressNetwork) {
+		t.Fatalf("override still names moose-ingress:\n%s", got)
+	}
+
+	e.docker.networkDisconnectErr = nil
+	changed, err = e.m.migrateOffIngress(context.Background(), id)
+	if err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	if changed {
+		t.Fatalf("the second start reported a clean override as changed")
+	}
+	if e.docker.attached[ctr][ingressNetwork] {
+		t.Fatalf("the second start did not disconnect the container")
+	}
+}
+
+// A normal box: nothing to do, and no disconnect call.
+func TestMigrateOffIngressNotAttached(t *testing.T) {
+	e, id, ctr := ingressFixture(t)
+	e.docker.attached[ctr] = map[string]bool{"moose-app-" + id: true}
+
+	if _, err := e.m.migrateOffIngress(context.Background(), id); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if callIndex(e.docker.Calls(), "NetworkDisconnect", ingressNetwork) >= 0 {
+		t.Fatalf("disconnected a container that was not attached: %v", e.docker.methods())
+	}
+}
+
+// A removed or a failed app has no container. That is not a failure.
+func TestMigrateOffIngressNoContainer(t *testing.T) {
+	e, id, _ := ingressFixture(t)
+	e.docker.containerNetworksErr = fmt.Errorf("inspect: %w", errNoSuchContainer)
+
+	if _, err := e.m.migrateOffIngress(context.Background(), id); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if callIndex(e.docker.Calls(), "NetworkDisconnect", ingressNetwork) >= 0 {
+		t.Fatalf("disconnected a container that does not exist: %v", e.docker.methods())
+	}
+}
+
+// Not knowing is not the same as clean.
+func TestMigrateOffIngressInspectFailureIsAnError(t *testing.T) {
+	e, id, _ := ingressFixture(t)
+	e.docker.containerNetworksErr = errors.New("docker unreachable")
+
+	if _, err := e.m.migrateOffIngress(context.Background(), id); err == nil {
+		t.Fatalf("a failed inspect counted as clean")
+	}
+}
+
+// A broken manifest on a clean override leaves no name to ask for. It must not
+// return an error, or Reconcile would warn about it at every start.
+func TestMigrateOffIngressCleanOverrideBadManifest(t *testing.T) {
+	e, id, _ := ingressFixture(t)
+	if err := os.Remove(filepath.Join(e.m.instanceDir(id), "manifest.yml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.m.migrateOffIngress(context.Background(), id); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(e.docker.Calls()) != 0 {
+		t.Fatalf("want no docker calls with no name to ask for, got %v", e.docker.methods())
+	}
+}
+
+// The override cannot be read, but the container can still be taken off.
+func TestMigrateOffIngressBadOverrideStillDisconnects(t *testing.T) {
+	e, id, ctr := ingressFixture(t)
+	if err := os.Remove(filepath.Join(e.m.instanceDir(id), "compose.override.yml")); err != nil {
+		t.Fatal(err)
+	}
+	e.docker.attached[ctr] = map[string]bool{ingressNetwork: true}
+
+	if _, err := e.m.migrateOffIngress(context.Background(), id); err == nil {
+		t.Fatalf("a missing override returned no error")
+	}
+	if e.docker.attached[ctr][ingressNetwork] {
+		t.Fatalf("container still on moose-ingress: %v", e.docker.methods())
+	}
+}
+
+// warnRecorder keeps the attributes of each warning, so a test can read what
+// Reconcile logged.
+type warnRecorder struct {
+	mu    sync.Mutex
+	warns []map[string]string
+}
+
+func (r *warnRecorder) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelWarn }
+func (r *warnRecorder) WithAttrs([]slog.Attr) slog.Handler           { return r }
+func (r *warnRecorder) WithGroup(string) slog.Handler                { return r }
+func (r *warnRecorder) Handle(_ context.Context, rec slog.Record) error {
+	got := map[string]string{"msg": rec.Message}
+	rec.Attrs(func(a slog.Attr) bool {
+		got[a.Key] = a.Value.String()
+		return true
+	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.warns = append(r.warns, got)
+	return nil
+}
+
+// A container that stays attached is the one failure that must be seen, and the
+// warning must name the app.
+func TestReconcileWarnsWhenDisconnectFails(t *testing.T) {
+	e, id, ctr := ingressFixture(t)
+	e.docker.attached[ctr] = map[string]bool{ingressNetwork: true}
+	e.docker.networkDisconnectErr = errors.New("docker unreachable")
+
+	rec := &warnRecorder{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(rec))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	if err := e.m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for _, w := range rec.warns {
+		if w["msg"] == "reconcile: move app off the control-plane network" {
+			if w["instance_id"] != id || !strings.Contains(w["err"], "docker unreachable") {
+				t.Fatalf("warning does not name the app and the cause: %v", w)
+			}
+			return
+		}
+	}
+	t.Fatalf("no warning for the failed disconnect: %v", rec.warns)
 }
 
 // CaddyOffNetwork names the running apps the last pass left Caddy off, so the
