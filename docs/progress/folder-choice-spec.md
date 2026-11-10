@@ -35,8 +35,8 @@ Closes #655. Follows [terminal-apps-design.md](terminal-apps-design.md), which l
 
 ## What's next
 
-1. The three code issues of `TERMINAL_APPS.md` # Planned work item 1: the manifest, admission and install changes; the folder chooser; changing folders after install.
+1. The three code issues of `TERMINAL_APPS.md` # Planned work item 1, in order: #657 (manifest, admission and install), #658 (the folder chooser), #659 (changing folders after install).
 2. #604.
-3. The `moose-terminal` base image in `onmoose/app-images`, starting with that repo's two rule changes.
-4. Locked access mode, personal-only and hosted-only for terminal apps.
+3. The `moose-terminal` base image, onmoose/app-images#46, starting with that repo's two rule changes.
+4. Locked access mode, personal-only and hosted-only for terminal apps, #660.
 5. The first apps, Claude Code and OpenCode, as catalog app issues in `onmoose/store`.
