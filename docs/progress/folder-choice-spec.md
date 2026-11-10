@@ -30,6 +30,9 @@ Closes #655. Follows [terminal-apps-design.md](terminal-apps-design.md), which l
 - **An older brain refuses `projects`,** and a `default` without `scope: pick-subfolder`. The catalog has to keep `scope: pick-subfolder` next to `default`, and hold back an app that uses `projects`, until every box reads the new form. Nothing enforces this; it is a rule for catalog authors.
 - **The old doc example `default: Notes/Obsidian` did not match the code,** which joins `default` under the folder (`internal/lifecycle/lifecycle.go` `hostSource`). The spec now says `default` is relative to the folder (`default: Obsidian`). The `BRAIN_UI_PROTOCOL.md` example `subfolder_default` is changed to match. Whether any store manifest wrote the folder name into `default` was not checked.
 
+- **Changing folders asks for no password again,** like install, which also widens what an app reaches without one. The review agent asked whether it belongs under the 5-minute re-prompt for destructive operations (`USERS_AND_GROUPS.md`). Kept as is: it moves no files and deletes nothing.
+- **Nothing lints the back-compat rule for catalog authors.** A `moose manifest` check that warns on `default` without `scope: pick-subfolder` would catch it; it goes in the first code issue.
+
 ## What's next
 
 1. The three code issues of `TERMINAL_APPS.md` # Planned work item 1: the manifest, admission and install changes; the folder chooser; changing folders after install.
