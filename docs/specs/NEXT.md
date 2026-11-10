@@ -249,7 +249,7 @@ Third-party stores, external tooling, and (later) `moosectl` need non-interactiv
 
 ### Permission revocation after install
 
-A user granted Immich access to `~/Photos/`. Six months later they want to revoke it without uninstalling. Today the manifest declares permissions at install; nothing covers the *change* path. UX: per-app permissions screen mirroring iOS/Android's, with consequences spelled out ("Immich will no longer be able to see your photos"). Brain side: re-render compose, restart instance, audit-event.
+A user granted Immich access to `~/Photos/`. Six months later they want to revoke it without uninstalling. Today the manifest declares permissions at install; nothing covers the *change* path. UX: per-app permissions screen mirroring iOS/Android's, with consequences spelled out ("Immich will no longer be able to see your photos"). Brain side: re-render compose, restart instance, audit-event. Part of it is no longer here: #655 pulls changing *where* a folder points, skipping an optional folder and adding or removing extra folders into v1 (`DASHBOARD.md` # Changing folders after install). What stays open is taking a grant away: a folder the app needs, write down to read, internet.
 
 **Context:** `APP_MANIFEST.md` (`permissions.folders`), `APP_ISOLATION.md`, `APP_LIFECYCLE.md`, `LOGGING.md` (audit).
 **Why Tier 3:** install-time grant works for v1; revocation is the second-order feature users will ask for once they've lived with the box for a while.
@@ -321,7 +321,7 @@ A managed queue + worker that apps can fire background work into (overnight re-e
 
 ### Terminal apps (AI coding agents) in a browser tab
 
-Run terminal apps such as Claude Code, Codex CLI, Grok CLI and OpenCode as personal catalog apps that open in a new tab, on the hosted profile first. Draft design in `TERMINAL_APPS.md` (2026-10-06): user-chosen folder slots with a safety limit, a `Projects` folder, a Git integration, and a shared `moose-terminal` base image (ttyd + tmux) with a project page. This is not the host shell below: it runs inside the normal app sandbox. Open: where the base image is built, whether Claude Code may be baked into a published image, the session cap, field names, ownership of the moose GitHub App, and a login in front of apps on the appliance.
+Run terminal apps such as Claude Code, Codex CLI, Grok CLI and OpenCode as personal catalog apps that open in a new tab, on the hosted profile only. Design in `TERMINAL_APPS.md` (draft 2026-10-06, questions answered 2026-11-10): folders the user chooses within a limit, a `Projects` folder, and a shared `moose-terminal` base image (ttyd + tmux) with a project page, built in `onmoose/app-images`. This is not the host shell below: it runs inside the normal app sandbox. The folder part is specced (#655). Still open: a login in front of apps on the appliance, before terminal apps can ship there. The Git integration is after v1.
 
 **Context:** `TERMINAL_APPS.md`, `APP_MANIFEST.md`, `STORAGE.md`, `DASHBOARD.md`, `ENVIRONMENT.md`.
 

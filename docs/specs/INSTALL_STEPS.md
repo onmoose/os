@@ -230,6 +230,17 @@ recommends:
 - `mail` is a special member. Today a `one_of` member is a kind (only `ai`), a slot, or a plain `app_env`, and a member that matches no field is dropped. `mail` matches no field, so it must be resolved from the manifest's `mail:` block instead. The lenient reader drops a `mail` member when the manifest has no `mail:` block, and logs it; the lint rejects that case.
 - The shape is a proposal: see # Open questions.
 
+### 5b. The folder step with the folder chooser (#655, planned, not built)
+
+The folder step stays the consent screen, and keeps its place last. What changes is that the user can now choose where each folder points (`APP_MANIFEST.md` # `folders`):
+
+- **One row per folder.** What the app can do there (write access in red, as now), then the folder it points at, written as a path ("Notes / Obsidian"), with **Change**. The suggestion is picked in advance, so the common case is still one Continue (or Install). For a personal app the radios for "yours" or "the household's" stay, shown only when there is a real choice, and Change opens the folder chooser in that tree (`DASHBOARD.md` # Folder chooser).
+- **An `optional` folder** has **Don't use a folder** as a choice in its row, never as a button, like "Don't send email". It starts on the suggestion: the step is the consent screen, and the user sees it either way.
+- **`extra_folders`** adds **Add a folder** under the rows, which opens the chooser. Each added folder is a row with **Remove**. None are added in advance.
+- **Errors.** A `422` on `config.folders.<folder>` or `config.extra_folders[<i>]` opens this step with the message on that row.
+- **Session storage** keeps the chosen paths with the other non-secret answers (# Build rules, rule 5).
+- **Words.** "Folder", never "volume", "mount" or "path" on screen (`STORAGE.md` # Stance). The path is shown with " / " between its parts, with no leading slash and no `~`.
+
 ### 6. Other rules
 
 - **Accessibility.** A tile grid is a radio group: arrow keys move between tiles, and each tile's name is text. On each step, focus moves to the page heading, and the page title changes to match.

@@ -147,6 +147,8 @@ Optional but expected. One or more drives, each ext4 + LUKS + TPM-enrolled indep
   Documents/
   Notes/
   Downloads/
+  Projects/                      made the first time an app asks for it, not at user creation
+  Recipes/                       an example of a folder the user made through moose
   Shared/                        → symlink to /srv/moose/shared/
 
 /srv/moose/shared/               household-shared content (mirrors the use-case folders)
@@ -177,6 +179,14 @@ Two mistakes here fail **silently**. Neither shows an error:
 The use-case folders (`Photos`, `Music`, `Movies`, `Documents`, `Notes`, `Downloads`) are auto-created at user creation. `~/.config/user-dirs.dirs` is populated so XDG-aware tools resolve them. Users may rename, delete, or add folders — apps resolve canonical paths via XDG so a rename doesn't break them.
 
 `Movies` (not `Videos`) — matches macOS, signals "stuff you watch" rather than "videos you record."
+
+#### `Projects` is made on first use (#655)
+
+It is the seventh folder name (`APP_MANIFEST.md` # `folders`), the one terminal apps suggest for their work (`TERMINAL_APPS.md`). It is not made at user creation: most people never write code, and an empty folder in everyone's home is noise. host-agent makes it, owned by the user, the first time an app is pointed at it, the same way it makes any suggested folder that does not exist yet. It has no XDG entry, since XDG has no name for it.
+
+#### Folders made through moose (#655)
+
+A user can make a new folder at the top of their home while they choose a folder for an app (`DASHBOARD.md` # Folder chooser), for example `~/Recipes`. The brain keeps a row for each one (the user and the folder name), and only such a folder, the use-case folders and the folders inside them can be given to an app (`APP_ISOLATION.md` # User content). A name that starts with a dot, the name `bin`, and a name that is already taken are refused. The row stays when no app uses the folder any more; the folder belongs to the user, like every other folder in their home. If the user deletes or renames it over SSH, the row no longer matches a folder, and it is not offered. The future Files page (`FILES.md`) uses the same rows when it makes a folder at the top of the home.
 
 ### Permissions
 

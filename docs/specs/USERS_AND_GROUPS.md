@@ -49,7 +49,7 @@ On a hosted box, the owner is the account the portal sign-in created (`ENVIRONME
 - **Only while SSH is on.** SSH is off by default.
 - **The password is not touched.** `/etc/shadow`, the portal sign-in and the key requirement stay as they are. The rule only makes `sudo` skip its prompt.
 - **It covers every session of that account, not only SSH.** That is fine because an SSH key is the only way the owner can log in to the host. A future way in (a web terminal in the dashboard, `NEXT.md`) would get root with it, so it must protect itself: opening it as the owner needs the portal confirm, and it ends when that elevation window ends.
-- **Apps cannot use it.** Containers have no host `sudo`, and a folder app is meant to see only its granted use-case folders, never the home directory or a dotfile (`APP_ISOLATION.md` # Invariant: the owner's UID never runs app code outside a container). One known hole breaks that today: a symlink swapped into another app's folder source between two starts (#604).
+- **Apps cannot use it.** Containers have no host `sudo`, and a folder app is meant to see only the folders it was granted, inside the folder limit, never the home directory, a dot folder, a dotfile or `~/bin` (`APP_ISOLATION.md` # Invariant: the owner's UID never runs app code outside a container). One known hole breaks that today: a symlink swapped into another app's folder source between two starts (#604).
 
 The cost is stated in `DECISIONS.md` 2026-10-11: a stolen owner SSH key, or a takeover of the owner's portal account, now means root. Showing the owner's `sudo` use in Activity is #601.
 

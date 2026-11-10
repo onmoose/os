@@ -1,6 +1,6 @@
 # moose terminal apps
 
-> **Draft design, not built.** Working spec for running terminal-based apps (AI coding agents such as Claude Code, Codex CLI, Grok CLI and OpenCode) as moose apps that open in a browser tab. Captures a design discussion held on 2026-10-06. Nothing here is built yet, and the decisions below are not yet in `DECISIONS.md`. Companion to `APP_MANIFEST.md` (folders, needs), `STORAGE.md` (use-case folders), `DASHBOARD.md` (install flow, Integrations), `SERVICE_PROVISIONING.md` (per-user accounts), `ENVIRONMENT.md` (hosted forward-auth, per-app access mode) and `APP_ISOLATION.md` (the sandbox these apps run in).
+> **Draft design, not built.** Working spec for running terminal-based apps (AI coding agents such as Claude Code, Codex CLI, Grok CLI and OpenCode) as moose apps that open in a browser tab. Captures a design discussion held on 2026-10-06, with its open questions answered on 2026-11-10 (`DECISIONS.md` 2026-11-10). Nothing here is built yet. The folder part is specced in the docs that own it (#655). Companion to `APP_MANIFEST.md` (folders, needs), `STORAGE.md` (use-case folders), `DASHBOARD.md` (install flow, Integrations), `SERVICE_PROVISIONING.md` (per-user accounts), `ENVIRONMENT.md` (hosted forward-auth, per-app access mode) and `APP_ISOLATION.md` (the sandbox these apps run in).
 
 ## Goal
 
@@ -30,36 +30,30 @@ What each tool offers today (October 2026):
 - **Claude Code:** no official local web UI. "Remote Control" (`claude --remote`) drives a session from claude.ai through Anthropic's servers, which is not what we want here. Proprietary license (see # Images). Uses the base image.
 - **Grok:** the common `grok-cli` is a community tool (MIT); xAI's own is "Grok Build". No web UI. Uses the base image.
 
-## Folders: slots, chosen by the user
+## Folders, chosen by the user
 
-The fixed list of six use-case folders (`photos`, `music`, `movies`, `documents`, `notes`, `downloads`, enforced in `internal/manifest/manifest.go`) becomes a **starting list, not a limit**. This changes how `permissions.folders` works for every app, not just terminal apps.
+Specced in #655 for every app, not only terminal apps. The owners are `APP_MANIFEST.md` # `folders` (the manifest), `APP_ISOLATION.md` # User content (the limit), `STORAGE.md` (`Projects`, folders made through moose) and `DASHBOARD.md` (# Folder chooser, # Changing folders after install). In short:
 
-- **The manifest declares slots, not folders.** A slot is a named need (`workspace`, `photos`, `notes`). Each slot has a *suggested* folder, a mode (`read` or `write`), and whether the app needs it to run.
-- **The user decides where each slot points**, at install: one of the default folders, a subfolder of one, or a brand new folder they name on the spot.
-- **"Required" means "point this at some folder"**, not "this exact folder". Immich needs a photos folder to work, so its slot is required, but the user picks which folder, and an empty new one is fine. An optional slot can be skipped.
-- **The app sees a stable path and env var per slot**: `/moose/<slot>` and `MOOSE_FOLDER_<SLOT>`, as today. Only the host source changes. The brain already resolves the source at install (personal or shared, plus a subfolder), so this extends the existing mechanism.
-- **Extra folders.** A manifest flag (working name `extra_folders: true`) lets the user add any number of further folders. They mount at `/moose/extra/<FolderName>`. Terminal apps and file managers use this, so the user can give an agent their folder of Markdown notes. Apps like Immich do not.
-- **Back-compat.** Existing manifests keep working: the six current `folder:` values become slots with that folder as the suggestion (two-major back-compat rule, `APP_MANIFEST.md` # Format).
-- **Changing folders after install: yes, in v1** (decided). A minimal "add or remove a folder" control on the app's detail page, pulled forward from the deferred per-app permissions screen (`DASHBOARD.md`, `NEXT.md` Tier 3). It recreates the container, which ends running terminal sessions, and the UI must warn about that.
+- **The manifest names the folder, the user chooses where it points.** `folders:` keeps its `- folder:` entries. The name is what the app sees (`/moose/projects`, `MOOSE_FOLDER_PROJECTS`), and the folder of the same name is the suggestion. `default:` suggests a subfolder, and `optional: true` lets the user skip it. `scope` is gone.
+- **"Required" means "point this at some folder"**, not "this exact folder". An empty new folder is fine.
+- **Extra folders.** `extra_folders: write` lets the user add any number of further folders, at `/moose/extra/<Name>`. Terminal apps declare it, so the user can give an agent their folder of Markdown notes.
+- **The limit.** A personal folder is in the user's own home, never the home itself, under a use-case folder or a folder made through moose, with no dot level and no symlink. moose never makes a folder named `bin` or starting with a dot. The limit protects the user from an app (an agent with `~/.ssh` has the user's keys, and on hosted the owner's shell is root), not from themselves.
+- **`Projects`** is the seventh folder name, the suggestion for terminal apps, made the first time an app asks for it.
+- **Changing folders after install** is on the app's settings page. It recreates the container, which ends running terminal sessions, and the page warns about that.
 
-### The safety limit (decided)
+A terminal app's manifest:
 
-The user can point a slot at any folder, within these rules:
+```yaml
+permissions:
+  folders:
+    - folder: projects
+      mode: write
+  extra_folders: write
+```
 
-- Inside the user's own home or the household shared tree (`/srv/moose/shared/`).
-- No hidden folders (`~/.ssh`, `~/.config`, any path part starting with `.`).
-- No symlink that leads out of the tree.
-- Never another user's home, never `/var/lib/moose`.
+## Git integration (after v1)
 
-Today host-agent's `prepare-folder` requires the path to start with a use-case folder (`BRAIN_HOST_PROTOCOL.md` # prepare-folder). That rule becomes the list above. The limit protects the user from an app (an agent with `~/.ssh` has the user's keys), not from themselves.
-
-### The `Projects` folder (decided)
-
-- A new suggested folder, `Projects/`, the default for terminal apps' `workspace` slot.
-- It is created **the first time an app asks for it**, not at user creation for everyone. Most users never code, and an empty folder in their home is noise.
-- Needs a `STORAGE.md` change.
-
-## Git integration (decided)
+**Not in v1** (`DECISIONS.md` 2026-11-10). The agent works on the box, so it is useful with local git alone: commits, branches and history all work. A user who wants to push runs `gh auth login` in the terminal. `gh` shows its own device code, and keeps the login in the app's home folder, which survives restarts. `git` and `gh` are in the base image for this. What the integration would add is one place to manage accounts and a faster setup. The sketch below is kept for when it is built. If it is, the `onmoose` org owns the moose GitHub App, and its public client id ships in the brain.
 
 A new section **Settings → Integrations → Git**, next to AI services and Email, following the same pattern: a grid of providers, each asking only what it needs.
 
@@ -91,7 +85,7 @@ A new section **Settings → Integrations → Git**, next to AI services and Ema
 
 ## The `moose-terminal` base image
 
-One image that every CLI app builds on. A CLI app is then a small Dockerfile: `FROM moose-terminal`, install the CLI, set the command.
+One image that every CLI app builds on. It is built and published in `onmoose/app-images`, with the CLI images on top of it (`DECISIONS.md` 2026-11-10). That repo already probes every image under moose's sandbox, signs it, and lets Renovate bump it weekly, which a CLI that releases every week needs. Two of its rules change first: a folder may hold our own source (the project page and the start script), and an upstream may be an npm package or a binary release, not only a git commit. A CLI app is then a small Dockerfile: `FROM moose-terminal`, install the CLI, set the command.
 
 **Contents:**
 
@@ -106,42 +100,43 @@ Opening the app opens **a new tab at `<slug>.<box>/`**. That page is a **simple 
 
 **The project page lists:**
 
-- One level of the `workspace` slot: each subfolder is a project.
+- One level of the `projects` folder: each subfolder is a project.
 - Each extra folder as its own entry.
 - Per row: name, when last used, a dot if a session is running, and a "stop session" button.
 
-**Actions:** New folder, and Clone (repos from the bound git account, or a pasted URL). No delete or rename: Files does that, and the agent page is the wrong place to lose a folder.
+**Actions:** New folder, and Clone (a pasted URL; a private repo uses the login the user made in the terminal with `gh auth login`). No delete or rename: Files does that, and the agent page is the wrong place to lose a folder.
 
 **URL contract:**
 
 | Path | What it does |
 |---|---|
 | `/` | The project page. |
-| `/p/<slot>/<path>` | The terminal, in that folder, attached to that folder's tmux session. |
-| `/clone?repo=<url>&into=<slot>` | Clones inside the app with its injected credentials, then opens the new folder. |
+| `/p/<folder>/<path>` | The terminal, in that folder, attached to that folder's tmux session. |
+| `/clone?repo=<url>&into=<folder>` | Clones inside the app with the user's own terminal login, then opens the new folder. |
 
-The start script checks every path itself: it must be inside a mounted slot, with no `..` and no symlink that leads out. The URL is never trusted.
+The start script checks every path itself: it must be inside a mounted folder (`/moose/projects` or `/moose/extra/<Name>`), with no `..` and no symlink that leads out. The URL is never trusted.
 
 **Sessions:**
 
 - One tmux session per folder. Two tabs on the same project show the same session.
 - Closing a tab leaves the agent running. Reopening the URL reattaches. Project URLs can be bookmarked.
-- A cap on sessions running at once. Each agent is a Node process using roughly 200 to 400 MB, and a box can be an old laptop. The number is not set yet.
+- **No cap on sessions in v1.** Each agent uses roughly 200 to 400 MB, but sessions run only when the user starts one, the page has a stop button, and the box already warns on RAM pressure (#597). A later change can refuse a new session when `MemAvailable` in `/proc/meminfo` is low; it needs no brain work.
 
 **The terminal page:** a "Back to projects" link, and a key bar for Esc, Ctrl, Tab and arrows on phones.
 
-**Later:** "Open with <app>" on folders in the dashboard's Files page (`FILES.md`), as a plain link to `<slug>.<box>/p/<slot>/<path>`.
+**Later:** "Open with <app>" on folders in the dashboard's Files page (`FILES.md`), as a plain link to `<slug>.<box>/p/<folder>/<path>`.
 
 ## The agent CLIs
 
 - **Logging in to the AI (decided: both).** If the user binds an account from the existing **AI services** integration at install, the brain injects the key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...) and no login is needed. Without one, the first run shows the CLI's own login, which covers subscriptions (Claude Pro/Max, ChatGPT plans). The AI step is optional.
 - **The CLI's home folder** (`~/.claude`, `~/.codex`: logins, settings, history) lives in the instance state dir. It survives restarts and is deleted on uninstall. Project files never live there.
-- **Updates (decided: catalog releases).** Self-update is turned off. New CLI versions ship as catalog releases, so versions are pinned and update notes show in the dashboard. This needs an automatic rebuild pipeline in `onmoose/store`, because Claude Code releases about weekly.
+- **Updates (decided: catalog releases).** Self-update is turned off. New CLI versions ship as catalog releases, so versions are pinned and update notes show in the dashboard. `onmoose/app-images`'s weekly Renovate bumps rebuild the images, and the catalog picks up the new digest.
 - **Previewing a dev server** the agent starts (`npm run dev` on port 3000): needed, parked for v2. It needs per-port routes (for example `3000-claude.<box>`) through Caddy and forward-auth.
 
 ## Security and access
 
 - **Personal-only.** Terminal apps cannot be installed as household instances: git ownership (a repo and the agent must have the same owner, or git refuses with "dubious ownership") and per-person credentials both need it. A personal instance runs as the owner's UID.
+- **Hosted only.** The brain refuses a terminal app on the appliance (# Open questions, 6).
 - **v1: access locked to "Only me".** On hosted, a public terminal app is an open shell on the internet with the user's API key and git token. The manifest needs a flag that locks the access mode, and the brain must refuse to change it (not only hide the switch).
 - **v2: sharing a session.** The user wants to share a session on purpose. Planned shape: a share link with a unique, unguessable URL that does not contain the project name, scoped to one session, and revocable. Not designed yet.
 - **CI proof.** The hosted `access` boot proves ttyd's WebSocket works through forward-auth and that the forward-auth cookie is still stripped.
@@ -152,25 +147,33 @@ The start script checks every path itself: it must be inside a mounted slot, wit
 
 - **`moose-terminal` base image:** public. Only open-source tools (ttyd MIT, tmux ISC, git GPL-2.0 from Debian packages with their sources available).
 - **Codex, OpenCode, Grok CLI images:** public. Their licenses (Apache-2.0, MIT, MIT) allow redistribution.
-- **Claude Code: open legal question.** Its license is "© Anthropic PBC. All rights reserved. Use is subject to Anthropic's Commercial Terms of Service." Baking it into a public image we publish is redistribution, which those terms may not allow. A private image does not fix that: we would still be distributing it to every box. A likely way out: the Claude Code app image contains only the base image plus a pinned version number, and the box installs that exact version from npm on first start into the persisted home. The version stays pinned by the catalog (so "updates are catalog releases" still holds), and the user's box downloads it from Anthropic directly. Needs a check of Anthropic's terms before we choose.
+- **Claude Code: installed on the box, not baked in** (decided 2026-11-10). Its license is "© Anthropic PBC. All rights reserved." Anthropic's legal page allows "preinstalling or running Claude Code in your products or services (e.g. in hosted sandboxes or other agent infrastructure)" under its Commercial Terms, which moose accepts for the hosted service, on these conditions: the binary is not modified, no built-in login method is removed or disabled, each user signs in with their own API key or Claude plan, and we never pay for or resell their usage. Both logins above qualify. The Claude Code app image holds only the base image and a pinned version number. On first start the box installs that exact version with Anthropic's native installer (`install.sh` with the version; npm is deprecated) into the persisted home, with `DISABLE_UPDATES=1`, which Anthropic documents for distributors who ship their own versions. So no image we publish contains Anthropic's binary, the catalog still pins the version, and the user's box downloads it from Anthropic. We may say the app "runs Claude Code"; using Anthropic's logo as the catalog icon needs their written permission, so the icon is plain until then.
 
 ## Open questions
 
-1. **Where the `moose-terminal` image is built and published.** `onmoose/store` (with the catalog apps) or its own repo. Unknown whether store builds images today.
-2. **Claude Code redistribution** (above).
-3. **Session cap** number, and what the page shows when it is hit.
-4. **Manifest field names**: slots, `extra_folders`, the git need, the locked-access flag. All are working names.
-5. **Ownership of the moose GitHub App**: the account, its name, where its client id lives.
-6. **Appliance**: forward-auth (or another login) in front of apps before terminal apps ship there.
+Answered on 2026-11-10 (`DECISIONS.md` 2026-11-10):
+
+1. **Where the image is built:** `onmoose/app-images` (# The `moose-terminal` base image).
+2. **Claude Code redistribution:** installed on the box at first start, under Anthropic's Commercial Terms (# Images).
+3. **Session cap:** none in v1 (# Sessions).
+4. **Manifest field names:** the folder keys are in `APP_MANIFEST.md` # `folders` (#655). The locked access mode, personal-only and hosted-only keys are named in their own PR (# Planned work, item 4).
+5. **The moose GitHub App:** owned by the `onmoose` org, if the Git integration is built after v1.
+
+Still open:
+
+6. **Appliance:** a login (forward-auth or another) in front of apps, before terminal apps can ship there. Until then the brain refuses them on the appliance.
 
 ## Planned work (proposed order)
 
-1. Spec PR: folder slots, user-chosen folders and the safety limit, `Projects`, folders changeable after install (`APP_MANIFEST.md`, `STORAGE.md`, `DASHBOARD.md`, `BRAIN_HOST_PROTOCOL.md`, `DECISIONS.md`).
-2. Git integration (`SERVICE_PROVISIONING.md`, `DASHBOARD.md`, `APP_MANIFEST.md`).
-3. `moose-terminal` base image: ttyd, tmux, tools, project page, start script, key bar.
-4. Locked access mode for terminal apps, and personal-only.
-5. First apps: Claude Code on the base image, OpenCode on its own web UI.
-6. Later: "Open with" in Files, dev-server previews, session sharing.
+1. **Spec: folders the user chooses** (#655, this change). Code, as separate issues in this order:
+   1. The manifest and admission changes (`optional`, `extra_folders`, `projects`, `scope` ignored), the new folder elections on install, and the wider `prepare-folder` check.
+   2. The folder chooser: host-agent's folder list op, `GET /api/v1/me/folders`, the component, and the install's folder step.
+   3. Changing folders after install: `PUT /api/v1/apps/{id}/folders` and the app page's Folders section.
+2. **Fix #604** (a folder source swapped for a symlink between two starts). It must land before item 5.
+3. **`moose-terminal` base image** in `onmoose/app-images`: the two rule changes there first, then ttyd, tmux, tools, the project page, the start script, the key bar.
+4. **Locked access mode, personal-only, hosted-only** for terminal apps (manifest keys, brain refusals, the store hiding them where they cannot run, the `access` boot proving the WebSocket through forward-auth).
+5. **First apps:** Claude Code on the base image, OpenCode on its own image (`ghcr.io/anomalyco/opencode`, `opencode web`). Catalog app issues in `onmoose/store`.
+6. **Later:** the Git integration, "Open with" in Files, dev-server previews, session sharing, a free-memory check before a new session, the appliance.
 
 ## Sources
 
