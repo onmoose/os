@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1178,22 +1177,27 @@ func (a *Agent) resolveHome(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.ResolveHomeResponse{HomePath: home, UID: uid, GID: gid})
 }
 
-// ValidUserFolderPath checks the path of a prepare-folder request. It must be a
-// clean relative path, with no empty, "." or ".." level, and its first level
-// must be one of protocol.UseCaseFolderDirs. So the op can only ever touch a
-// use-case folder or something below it, never another part of the home.
+// ValidUserFolderPath checks the path of a prepare-folder request against the
+// parts of the folder limit host-agent can see (APP_ISOLATION.md # User
+// content, #655). It must be a relative path with at least one level, so never
+// the home itself. No level may be empty or start with a dot, which also rules
+// out "." and "..", and keeps ~/.ssh, ~/.config and ~/Projects/app/.git out.
+// The first level may not be "bin": Debian's ~/.profile puts ~/bin on the
+// owner's PATH. The rest of the limit, that the first level is a use-case
+// folder or a folder made through moose, is the brain's check: host-agent
+// cannot see the brain's rows. The walk itself never follows a symlink.
 func ValidUserFolderPath(rel string) error {
 	if rel == "" || strings.HasPrefix(rel, "/") {
 		return fmt.Errorf("path must be relative to the home")
 	}
 	parts := strings.Split(rel, "/")
 	for _, p := range parts {
-		if p == "" || p == "." || p == ".." {
-			return fmt.Errorf("path must not have empty, . or .. levels")
+		if p == "" || strings.HasPrefix(p, ".") {
+			return fmt.Errorf("path must not have an empty level or a level that starts with a dot")
 		}
 	}
-	if !slices.Contains(protocol.UseCaseFolderDirs, parts[0]) {
-		return fmt.Errorf("path must start with a use-case folder")
+	if parts[0] == "bin" {
+		return fmt.Errorf("path must not start with bin")
 	}
 	return nil
 }

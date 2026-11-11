@@ -50,7 +50,9 @@ func prepareUnder(home, rel string, uid, gid int) error {
 	}
 	parts := strings.Split(rel, "/")
 	for i, part := range parts {
-		if part == "" || part == "." || part == ".." {
+		// The handler has already refused these (ValidUserFolderPath). Checked
+		// again here, because this is the code that runs as root in the home.
+		if part == "" || strings.HasPrefix(part, ".") || (i == 0 && part == "bin") {
 			syscall.Close(fd)
 			return fmt.Errorf("usermgr: bad level %q in %q", part, rel)
 		}
