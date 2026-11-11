@@ -252,7 +252,22 @@ POST /v1/users/{username}/prepare-folder
 → 409     { "code": "not-a-directory", "message": "a file or link is in the way of the folder" }
 ```
 
-`path` is relative to the home. It has no empty, `.` or `..` level, and its first level is one of the use-case folders (`Photos`, `Documents`, `Movies`, `Music`, `Notes`, `Downloads`), so the op can never touch anything else in a home, such as `~/.ssh`. host-agent resolves the home from the username, never from a path the brain sends. It creates each missing level owned by the user, sets the owner of the last level (which a Docker bind may have left `root:root` before this op existed), and leaves every other existing level alone. It never follows a symlink: each level is opened relative to the one before with `O_NOFOLLOW`, because the user owns the home and a root process that followed `~/Documents -> /etc` would hand `/etc` to them. A symlink or a file on the way is the 409. The op is idempotent. The fake host-agent creates the path under the dev operator's own home, the one its `home` route hands out, with no chown.
+`path` is relative to the home. It has no empty, `.` or `..` level. As built (#519) its first level must be one of the use-case folders (`Photos`, `Documents`, `Movies`, `Music`, `Notes`, `Downloads`), so the op can never touch anything else in a home, such as `~/.ssh`.
+
+**Planned with #655 (not built):** the user may point a folder at any path inside the folder limit (`APP_ISOLATION.md` # User content), which includes `Projects` and folders made through moose. host-agent cannot see which folders moose made (that is a brain row), so its check becomes the part of the limit it can see: the path has at least one level, no level starts with a dot, and the first level is not `bin`. Any other name is `400 bad-path`. The first-level rule (a use-case folder or a folder moose made) is the brain's, checked before it sends the request. This is also how a new folder is made: the brain sends its path and records the row once the op succeeds. host-agent resolves the home from the username, never from a path the brain sends. It creates each missing level owned by the user, sets the owner of the last level (which a Docker bind may have left `root:root` before this op existed), and leaves every other existing level alone. It never follows a symlink: each level is opened relative to the one before with `O_NOFOLLOW`, because the user owns the home and a root process that followed `~/Documents -> /etc` would hand `/etc` to them. A symlink or a file on the way is the 409. The op is idempotent. The fake host-agent creates the path under the dev operator's own home, the one its `home` route hands out, with no chown.
+
+**Listing folders for the folder chooser (#655, planned, not built).** The dashboard's folder chooser (`DASHBOARD.md` # Folder chooser) shows one level of folders at a time. The brain cannot read `/home`, so it asks host-agent. Pattern A:
+
+```
+GET /v1/users/{username}/folders?path=Documents
+→ 200 OK  { "folders": ["Notebooks", "Taxes 2026"], "truncated": false }
+→ 400     { "code": "bad-path", ... }
+→ 404     { "code": "unknown-user", ... }
+→ 404     { "code": "not-found", "message": "the folder does not exist" }
+→ 409     { "code": "not-a-directory", "message": "a file or link is in the way of the folder" }
+```
+
+`path` is relative to the home, with the same level rules as `prepare-folder` (no empty, `.` or `..` level, no level that starts with a dot); an empty `path` lists the top of the home. host-agent opens each level relative to the one before with `O_NOFOLLOW`, as `prepare-folder` does, so a symlink on the way is the 409. It returns only the names of real directories, sorted, and leaves out every name that starts with a dot and every symlink. It returns at most 1000 names, with `truncated: true` when there were more. It reads only names: no sizes, no file names, no content. The brain filters the top level further (use-case folders and folders moose made, `APP_ISOLATION.md` # User content) before the dashboard sees it. The shared tree needs no host-agent op: the brain has it mounted (`CONTROL_PLANE.md` # Locked: host-agent launches the brain container) and lists it itself with the same rules. The fake host-agent lists the dev operator's own home, the one its `home` route hands out. The future Files page (`FILES.md`) has a fuller list of its own; this op stays the narrow one, the same way `prepare-folder` stays narrow.
 
 **Account-name existence probe.** The brain derives a Linux account name from the display name a person types (`FIRST_RUN.md` # Identity & display names), and has to know whether a candidate name is already on the host before it settles on one. Pattern A:
 
