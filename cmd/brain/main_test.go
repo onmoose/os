@@ -211,18 +211,94 @@ func containsString(ss []string, want string) bool {
 type fakeStatusReader struct {
 	version string
 	err     error
+	// noFolderPins reports an old host-agent with no folder pin op (#604).
+	// The default is a capable agent, so the version tests do not also raise
+	// folder-pin-unsupported.
+	noFolderPins bool
 }
 
 func (f fakeStatusReader) SystemStatus(context.Context) (protocol.SystemStatus, error) {
 	if f.err != nil {
 		return protocol.SystemStatus{}, f.err
 	}
-	return protocol.SystemStatus{AgentVersion: f.version}, nil
+	return protocol.SystemStatus{AgentVersion: f.version, FolderPins: !f.noFolderPins}, nil
 }
 
 func versionActive(mgr *health.Manager) bool {
 	_, ok := mgr.Get("version-mismatch", "")
 	return ok
+}
+
+func folderPinsActive(mgr *health.Manager) bool {
+	_, ok := mgr.Get("folder-pin-unsupported", "")
+	return ok
+}
+
+// TestCheckAgentVersion_NoFolderPinsRaises: an old host-agent omits FolderPins,
+// so the same status read raises folder-pin-unsupported (#604). Folder apps
+// keep running, so this is a warning, not a blocked-apps version issue.
+func TestCheckAgentVersion_NoFolderPinsRaises(t *testing.T) {
+	mgr := health.NewManager(nil)
+	fs := &fakeEventStore{}
+
+	checkAgentVersion(context.Background(), fakeStatusReader{version: minimumAgentVersion, noFolderPins: true},
+		mgr, audit.New(fs), notify.New(&fakeNotifStore{}, nil), nil)
+
+	if !folderPinsActive(mgr) {
+		t.Fatal("want folder-pin-unsupported active for a host-agent with no folder pin op")
+	}
+	if versionActive(mgr) {
+		t.Fatal("want no version-mismatch for a current agent that only lacks the pin op")
+	}
+	if len(fs.events) != 1 ||
+		fs.events[0].Action != audit.ActionHealthIssueRaised ||
+		fs.events[0].TargetID != "folder-pin-unsupported" {
+		t.Fatalf("want one raised audit record for folder-pin-unsupported, got %+v", fs.events)
+	}
+}
+
+// TestCheckAgentVersion_FolderPinsClears: once the agent reports the capability,
+// the issue clears and writes the clear audit record.
+func TestCheckAgentVersion_FolderPinsClears(t *testing.T) {
+	mgr := health.NewManager(nil)
+	fs := &fakeEventStore{}
+	auditor := audit.New(fs)
+	notifier := notify.New(&fakeNotifStore{}, nil)
+
+	checkAgentVersion(context.Background(), fakeStatusReader{version: minimumAgentVersion, noFolderPins: true}, mgr, auditor, notifier, nil)
+	if !folderPinsActive(mgr) {
+		t.Fatal("setup: want folder-pin-unsupported active")
+	}
+	checkAgentVersion(context.Background(), fakeStatusReader{version: minimumAgentVersion}, mgr, auditor, notifier, nil)
+	if folderPinsActive(mgr) {
+		t.Fatal("want folder-pin-unsupported cleared once the agent reports FolderPins")
+	}
+	if len(fs.events) != 2 ||
+		fs.events[1].Action != audit.ActionHealthIssueCleared ||
+		fs.events[1].TargetID != "folder-pin-unsupported" {
+		t.Fatalf("want a raise then a clear audit record, got %+v", fs.events)
+	}
+}
+
+// TestCheckAgentVersion_StatusErrorLeavesFolderPins: an unreachable host-agent
+// is not evidence that the pin op is missing, so the issue state survives.
+func TestCheckAgentVersion_StatusErrorLeavesFolderPins(t *testing.T) {
+	mgr := health.NewManager(nil)
+	fs := &fakeEventStore{}
+	auditor := audit.New(fs)
+	notifier := notify.New(&fakeNotifStore{}, nil)
+
+	checkAgentVersion(context.Background(), fakeStatusReader{version: minimumAgentVersion, noFolderPins: true}, mgr, auditor, notifier, nil)
+	if !folderPinsActive(mgr) {
+		t.Fatal("setup: want folder-pin-unsupported active")
+	}
+	checkAgentVersion(context.Background(), fakeStatusReader{err: errors.New("unreachable")}, mgr, auditor, notifier, nil)
+	if !folderPinsActive(mgr) {
+		t.Fatal("want folder-pin-unsupported to survive a status read error")
+	}
+	if len(fs.events) != 1 {
+		t.Fatalf("want no extra audit records from a failed read, got %+v", fs.events)
+	}
 }
 
 // TestAgentVersionAcceptable pins the compatible-range comparison

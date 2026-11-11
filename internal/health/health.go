@@ -552,6 +552,19 @@ func builtinDefinitions() []Definition {
 			BlocksApps: true,
 			Summary:    "moose's system agent needs an update.",
 		},
+		// folder-pin-unsupported is the same locus-C status read, but for a
+		// capability instead of a version floor (#604). An older host-agent has
+		// no POST /v1/folders/pin, so the brain falls back to the prepare-folder
+		// re-check. Folder apps keep working, but a terminal app can still swap
+		// a folder source for a symlink between two starts. Warning, Tier 2 (the
+		// agent updates itself), and it blocks nothing: an update closes the
+		// race, and an app that cannot start because of a swapped folder is
+		// refused on its own.
+		{
+			ID: "folder-pin-unsupported", Category: CategoryVersion,
+			Severity: SeverityWarning, Tier: 2,
+			Summary: "moose's system agent cannot lock folder apps to their folders yet.",
+		},
 		// State (HEALTH.md # State). brain-db-corrupt is a locus-C brain check:
 		// PRAGMA integrity_check at boot + every 6h (cmd/brain checkBrainDBIntegrity).
 		// A corrupt brain database can't be trusted for any mutation, so it blocks

@@ -64,6 +64,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	// and (under a root-run suite) their on-disk preparation never touch the real
 	// /srv (mirrors how the fake host roots personal homes under homeRoot).
 	m.sharedRoot = t.TempDir()
+	host.sharedRoot = m.sharedRoot
 	// Tests must never shell out to `docker compose config -q`.
 	m.SetAdmitter(admission.CheckStructure)
 	// Keep timeout small so health-failure tests finish fast.
