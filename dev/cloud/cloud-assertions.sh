@@ -1498,7 +1498,7 @@ access)
     # /srv/moose/shared/Documents/Notebooks; the secret the swap points at is a
     # real shared folder the app's group can write, so a followed link would
     # show up as a file there.
-    filedrop_install '{"manifest_id":"filedropsub","scope":"household"}' household-sub
+    filedrop_install '{"manifest_id":"filedropsub","scope":"household","confirm":true}' household-sub
     sh_id="$FD_ID"
     sh_dir=/srv/moose/shared/Documents/Notebooks
     wait_file "$sh_dir/filedrop.txt" \
