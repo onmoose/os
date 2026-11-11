@@ -183,7 +183,7 @@ func TestInstallFolders_SharedSkippedUnderUnprivilegedBrain(t *testing.T) {
 	app, _ := installFolders(t, e, store.ScopeHousehold,
 		Owner{UserID: "u_admin", Username: "admin"},
 		foldersManifest("write", "pick-subfolder"),
-		[]FolderMount{{Folder: "documents", Source: sourceShared, Subfolder: "Shared"}})
+		[]FolderMount{{Folder: "documents", Source: sourceShared, Path: "Documents/Shared"}})
 
 	// Install succeeded (installFolders fatals otherwise) and the override still
 	// binds the shared source the root brain would have prepared...

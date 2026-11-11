@@ -499,12 +499,12 @@ func (m *Manager) updateIsolation(ctx context.Context, inst store.Instance, oldM
 		iso.gpu = g
 	}
 	switch {
-	case len(man.Permissions.Folders) > 0:
+	case man.Permissions.FolderApp():
 		override, err := os.ReadFile(filepath.Join(m.instanceDir(inst.ID), "compose.override.yml"))
 		if err != nil {
 			return iso, fmt.Errorf("read the override: %w", err)
 		}
-		mounts, err := mountsFromOverride(override, oldMan, man, inst.Scope, m.sharedRoot)
+		mounts, err := mountsFromOverride(override, man, inst.Scope, m.sharedRoot)
 		if err != nil {
 			return iso, err
 		}
@@ -536,14 +536,16 @@ func (m *Manager) updateIsolation(ctx context.Context, inst store.Instance, oldM
 // folderBinds reads back the folder binds an install wrote: each
 // `<host path>:/moose/<folder>:<mode>` volume of an override, by folder, with
 // the host path as it is and its source (shared when it is under sharedBase).
-func folderBinds(override []byte, sharedBase string) (map[string]FolderMount, error) {
+// The extra folders, `<host path>:/moose/extra/<Name>:<mode>`, come back in a
+// list of their own, in the order the override has them.
+func folderBinds(override []byte, sharedBase string) (map[string]FolderMount, []FolderMount, error) {
 	var doc struct {
 		Services map[string]struct {
 			Volumes []string `yaml:"volumes"`
 		} `yaml:"services"`
 	}
 	if err := yaml.Unmarshal(override, &doc); err != nil {
-		return nil, fmt.Errorf("parse the override: %w", err)
+		return nil, nil, fmt.Errorf("parse the override: %w", err)
 	}
 	names := make([]string, 0, len(doc.Services))
 	for name := range doc.Services {
@@ -551,6 +553,8 @@ func folderBinds(override []byte, sharedBase string) (map[string]FolderMount, er
 	}
 	sort.Strings(names)
 	out := map[string]FolderMount{}
+	var extras []FolderMount
+	seenExtra := map[string]bool{}
 	for _, name := range names {
 		for _, v := range doc.Services[name].Volumes {
 			i := strings.LastIndex(v, ":")
@@ -563,57 +567,63 @@ func folderBinds(override []byte, sharedBase string) (map[string]FolderMount, er
 				continue
 			}
 			src, dest := rest[:j], rest[j+1:]
-			folder, ok := strings.CutPrefix(dest, "/moose/")
-			if _, seen := out[folder]; !ok || seen {
-				continue
-			}
 			source := sourcePersonal
 			if src == sharedBase || strings.HasPrefix(src, sharedBase+"/") {
 				source = sourceShared
 			}
+			if extra, ok := strings.CutPrefix(dest, extraDir+"/"); ok {
+				if !seenExtra[extra] {
+					seenExtra[extra] = true
+					extras = append(extras, FolderMount{Extra: extra, Source: source, hostPath: src})
+				}
+				continue
+			}
+			folder, ok := strings.CutPrefix(dest, "/moose/")
+			if _, seen := out[folder]; !ok || seen || strings.Contains(folder, "/") {
+				continue
+			}
 			out[folder] = FolderMount{Folder: folder, Source: source, hostPath: src}
 		}
 	}
-	return out, nil
+	return out, extras, nil
 }
 
 // mountsFromOverride is the folder binds of the new version, in the order the
-// new manifest declares its folders. A folder the old override binds keeps
-// its host path as it is, so the update binds exactly the source the
-// installer elected. Two cases change the bind, and only an update the owner
-// approved has them (#633, UPDATES.md # As built (#633)):
+// new manifest declares its folders, then the extra folders. A folder the old
+// override binds keeps its host path as it is, so the folder the user chose
+// never moves in an update (#655, UPDATES.md # What an allowed update turns
+// on). A folder with no bind is one the new version adds, or an optional one
+// the user skipped:
 //
-//   - A folder the new version adds gets the install default: the owner's own
-//     folder for a personal app, the household's shared folder for a household
-//     app, and for a pick-subfolder folder the manifest's default subfolder.
-//   - A folder whose scope widens from pick-subfolder to whole binds the
-//     whole folder, from the same source.
+//   - When it is optional in the new version, it stays off. The owner can add
+//     it from the app's page.
+//   - When it is required, it gets its suggestion (SuggestedFolderPath) from
+//     the install's default source: the owner's own folder for a personal
+//     app, the household's shared folder for a household app. This asks for
+//     more access, so only an update the owner allowed gets here (#633,
+//     widenedAccess).
 //
-// The mode comes from the new manifest when the override is written.
-func mountsFromOverride(override []byte, oldMan, man *manifest.Manifest, scope, sharedBase string) ([]FolderMount, error) {
-	binds, err := folderBinds(override, sharedBase)
+// The extra folders are kept while the new version still declares
+// extra_folders, and dropped when it does not. The mode comes from the new
+// manifest when the override is written.
+func mountsFromOverride(override []byte, man *manifest.Manifest, scope, sharedBase string) ([]FolderMount, error) {
+	binds, extras, err := folderBinds(override, sharedBase)
 	if err != nil {
 		return nil, err
 	}
-	wasSub := map[string]bool{}
-	for _, f := range oldMan.Permissions.Folders {
-		wasSub[f.Folder] = f.Scope == "pick-subfolder"
-	}
-	out := make([]FolderMount, 0, len(man.Permissions.Folders))
+	out := make([]FolderMount, 0, len(man.Permissions.Folders)+len(extras))
 	for _, f := range man.Permissions.Folders {
-		b, ok := binds[f.Folder]
-		switch {
-		case !ok:
-			mt := FolderMount{Folder: f.Folder, Source: defaultFolderSource(scope)}
-			if f.Scope == "pick-subfolder" {
-				mt.Subfolder = f.Default
-			}
-			out = append(out, mt)
-		case wasSub[f.Folder] && f.Scope != "pick-subfolder":
-			out = append(out, FolderMount{Folder: f.Folder, Source: b.Source})
-		default:
+		if b, ok := binds[f.Folder]; ok {
 			out = append(out, b)
+			continue
 		}
+		if f.Optional {
+			continue
+		}
+		out = append(out, FolderMount{Folder: f.Folder, Source: defaultFolderSource(scope), Path: SuggestedFolderPath(f)})
+	}
+	if man.Permissions.ExtraFolders != "" {
+		out = append(out, extras...)
 	}
 	return out, nil
 }
@@ -744,8 +754,8 @@ func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, m
 	if err := m.prepareBindDirs(id, composeBytes, iso); err != nil {
 		return err
 	}
-	// A folder bind that is not the old one (a new folder, or a whole folder
-	// in place of one folder in it) is made ready the way install does it.
+	// A folder bind that is not the old one (a new required folder, or a
+	// skipped one that became required) is made ready the way install does it.
 	var fresh []FolderMount
 	for _, mt := range iso.mounts {
 		if mt.hostPath == "" {
@@ -753,15 +763,15 @@ func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, m
 		}
 	}
 	if len(fresh) > 0 {
-		username := ""
+		var owner Owner
 		if inst.Scope == store.ScopePersonal {
-			owner, err := m.store.GetUser(inst.OwnerUserID)
+			u, err := m.store.GetUser(inst.OwnerUserID)
 			if err != nil {
 				return fmt.Errorf("read the app's owner: %w", err)
 			}
-			username = owner.Username
+			owner = Owner{UserID: u.ID, Username: u.Username}
 		}
-		if err := m.prepareFolderSources(ctx, id, username, iso, fresh); err != nil {
+		if err := m.prepareFolderSources(ctx, id, owner, iso, fresh); err != nil {
 			return err
 		}
 	}

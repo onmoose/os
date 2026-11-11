@@ -798,6 +798,9 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 		Confirm    bool   `json:"confirm,omitempty"` // proceed past the duplicate-install warning
 		Config     struct {
 			Folders []FolderElection `json:"folders,omitempty"`
+			// ExtraFolders are the folders the user added for an app whose
+			// manifest declares extra_folders (#655).
+			ExtraFolders []ExtraFolderElection `json:"extra_folders,omitempty"`
 			// MailProviderID binds a mail-capable app to a registered outgoing-mail
 			// provider (SERVICE_PROVISIONING.md # BYO outgoing mail). Empty ⇒ unbound.
 			MailProviderID string `json:"mail_provider_id,omitempty"`
@@ -843,7 +846,25 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 	if !man.IsListed() {
 		return nil, huma.Error404NotFound("no such catalog app")
 	}
-	mounts, err := resolveElections(man, scope, in.Body.Config.Folders)
+	// The folders made through moose for the owner: with the use-case
+	// folders, the only top-level folders a personal source may start at
+	// (APP_ISOLATION.md # User content). A household app binds only the
+	// shared tree, so it needs none.
+	var made map[string]bool
+	if scope == store.ScopePersonal {
+		names, err := s.store.MadeFolders(owner.UserID)
+		if err != nil {
+			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"},
+				map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}, false)
+			slog.Error("install: read the folders made through moose", "manifest_id", manifestID, "user_id", owner.UserID, "err", err)
+			return nil, huma.Error500InternalServerError("could not read your folders")
+		}
+		made = make(map[string]bool, len(names))
+		for _, n := range names {
+			made[n] = true
+		}
+	}
+	mounts, err := resolveElections(man, scope, in.Body.Config.Folders, in.Body.Config.ExtraFolders, made)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"},
 			map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}, false)

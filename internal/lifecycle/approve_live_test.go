@@ -138,7 +138,7 @@ func TestLiveApprovedUpdateWholeFolder(t *testing.T) {
 	mkFile(t, filepath.Join(home, "Documents", "Notebooks", "nb.txt"), "in the subfolder")
 	mkFile(t, filepath.Join(home, "Documents", "top.txt"), "at the top")
 	sub := "  folders:\n    - folder: documents\n      mode: read\n      scope: pick-subfolder\n      default: Notebooks\n"
-	inst := installLivePersonal(t, e, id, sub, []FolderMount{{Folder: "documents", Source: sourcePersonal, Subfolder: "Notebooks"}})
+	inst := installLivePersonal(t, e, id, sub, []FolderMount{{Folder: "documents", Source: sourcePersonal, Path: "Documents/Notebooks"}})
 	if got, _ := liveExec(t, inst.ID, "cat", "/moose/documents/nb.txt"); got != "in the subfolder" {
 		t.Fatalf("1.0 does not see its subfolder: %q", got)
 	}

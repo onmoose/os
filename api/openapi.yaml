@@ -776,6 +776,12 @@ components:
           type:
             - array
             - "null"
+        extra_folders:
+          items:
+            $ref: "#/components/schemas/ExtraFolderElection"
+          type:
+            - array
+            - "null"
         fields:
           additionalProperties:
             type: string
@@ -1149,11 +1155,29 @@ components:
         - description
         - required
       type: object
+    ExtraFolderElection:
+      additionalProperties: false
+      properties:
+        new:
+          type: boolean
+        path:
+          type: string
+        source:
+          type: string
+      required:
+        - path
+      type: object
     FolderElection:
       additionalProperties: false
       properties:
         folder:
           type: string
+        new:
+          type: boolean
+        path:
+          type: string
+        skip:
+          type: boolean
         source:
           type: string
         subfolder:
@@ -1512,6 +1536,8 @@ components:
           type: string
         mode:
           type: string
+        optional:
+          type: boolean
         scope:
           type: string
         sources:
@@ -1522,6 +1548,7 @@ components:
         - folder
         - mode
         - scope
+        - optional
         - sources
       type: object
     InstallPlanFootprint:
@@ -1568,6 +1595,8 @@ components:
           type:
             - array
             - "null"
+        extra_folders:
+          type: string
         folders:
           items:
             $ref: "#/components/schemas/InstallPlanFolder"

@@ -53,7 +53,7 @@ permissions:
     - folder: movies
       mode: write
       scope: pick-subfolder
-      default: Movies/Family
+      default: Family
     - folder: music
       mode: read
       scope: whole
@@ -267,7 +267,7 @@ func TestInstallPlan_FoldersAndPermissions(t *testing.T) {
 		t.Fatalf("folders: want 2, got %d", len(p.Folders))
 	}
 
-	// First folder: movies, write, pick-subfolder, default Movies/Family.
+	// First folder: movies, write, pick-subfolder, default Family.
 	movies := p.Folders[0]
 	if movies.Folder != "movies" {
 		t.Errorf("folder[0].folder: want movies, got %q", movies.Folder)
@@ -278,8 +278,8 @@ func TestInstallPlan_FoldersAndPermissions(t *testing.T) {
 	if movies.Scope != "pick-subfolder" {
 		t.Errorf("folder[0].scope: want pick-subfolder, got %q", movies.Scope)
 	}
-	if movies.SubfolderDefault != "Movies/Family" {
-		t.Errorf("folder[0].subfolder_default: want Movies/Family, got %q", movies.SubfolderDefault)
+	if movies.SubfolderDefault != "Family" {
+		t.Errorf("folder[0].subfolder_default: want Family, got %q", movies.SubfolderDefault)
 	}
 
 	// Household source: options=[shared], default=shared.
