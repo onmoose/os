@@ -72,11 +72,11 @@ func (s *Server) listMyFolders(ctx context.Context, in *struct {
 			names, truncated, err = nil, false, nil
 		}
 		if err != nil {
-			return nil, folderListError(err, "shared", rel)
+			return nil, folderListError(err, "list folders: the shared tree", rel)
 		}
 		out := FolderListDTO{Folders: []FolderEntryDTO{}, Truncated: truncated}
 		if rel == "" {
-			out.Folders = topLevel(names, nil)
+			out.Folders = topLevel(names, nil, truncated)
 			out.Truncated = false
 		} else {
 			for _, n := range names {
@@ -96,11 +96,11 @@ func (s *Server) listMyFolders(ctx context.Context, in *struct {
 	}
 	res, err := s.host.ListUserFolders(ctx, id.User.Username, rel)
 	if err != nil {
-		return nil, folderListError(err, "personal", rel)
+		return nil, folderListError(err, "list folders: the home", rel)
 	}
 	out := FolderListDTO{Folders: []FolderEntryDTO{}, Truncated: res.Truncated}
 	if rel == "" {
-		out.Folders = topLevel(res.Folders, made)
+		out.Folders = topLevel(res.Folders, made, res.Truncated)
 		// The filtered top has at most the use-case folders and the rows,
 		// so it is never cut, even when the home itself was.
 		out.Truncated = false
@@ -116,10 +116,21 @@ func (s *Server) listMyFolders(ctx context.Context, in *struct {
 // use-case folders, with missing for one that is not there, and the folders
 // made through moose that are still there. A row whose folder was deleted or
 // renamed is not offered (STORAGE.md # Folders made through moose).
-func topLevel(onDisk []string, made map[string]bool) []FolderEntryDTO {
+// cut says the listing stopped at protocol.MaxFolderListing names, so a name
+// missing from it may still be there: then every allowed name is taken as
+// there, and a folder that is not gets a 404 when it is opened.
+func topLevel(onDisk []string, made map[string]bool, cut bool) []FolderEntryDTO {
 	there := make(map[string]bool, len(onDisk))
 	for _, n := range onDisk {
 		there[n] = true
+	}
+	if cut {
+		for _, n := range protocol.UseCaseFolderDirs {
+			there[n] = true
+		}
+		for n := range made {
+			there[n] = true
+		}
 	}
 	out := []FolderEntryDTO{}
 	for _, n := range protocol.UseCaseFolderDirs {
@@ -135,7 +146,7 @@ func topLevel(onDisk []string, made map[string]bool) []FolderEntryDTO {
 }
 
 // folderListError maps a listing failure to the answer the chooser shows.
-func folderListError(err error, source, rel string) error {
+func folderListError(err error, what, rel string) error {
 	switch {
 	case errors.Is(err, hostclient.ErrFolderNotFound), errors.Is(err, folderlist.ErrNotFound):
 		return huma.Error404NotFound("This folder is not there any more.")
@@ -144,7 +155,7 @@ func folderListError(err error, source, rel string) error {
 	case errors.Is(err, hostclient.ErrBadPath):
 		return configError("path", "Choose a folder such as Documents/Taxes")
 	}
-	slog.Error("list folders", "source", source, "dir", rel, "err", err)
+	slog.Error(what, "dir", rel, "err", err)
 	return huma.Error502BadGateway("Could not read your folders. Try again.")
 }
 

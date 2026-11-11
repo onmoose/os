@@ -189,3 +189,21 @@ func TestInstallNewFolderOnHandMadeName422(t *testing.T) {
 		t.Errorf("made folders = %v, %v; want none", got, err)
 	}
 }
+
+// A home listing cut at 1000 names may leave out an allowed folder, so the
+// filtered top takes every allowed name as there rather than marking it
+// missing or dropping a folder made through moose (Greptile on #663).
+func TestTopLevel_CutListing(t *testing.T) {
+	got := topLevel([]string{"Documents"}, map[string]bool{"Recipes": true}, true)
+	for _, f := range got {
+		if f.Missing {
+			t.Errorf("%s marked missing in a cut listing", f.Name)
+		}
+	}
+	if !slices.Contains(got, FolderEntryDTO{Name: "Recipes", MadeByMoose: true}) {
+		t.Errorf("Recipes dropped from a cut listing: %+v", got)
+	}
+	if got := topLevel([]string{"Documents"}, map[string]bool{"Recipes": true}, false); slices.Contains(got, FolderEntryDTO{Name: "Recipes", MadeByMoose: true}) {
+		t.Errorf("Recipes offered although a full listing does not have it")
+	}
+}

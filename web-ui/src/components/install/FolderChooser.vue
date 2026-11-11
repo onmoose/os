@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/vue-query";
 import { ChevronLeft, ChevronRight, Folder, FolderPlus } from "lucide-vue-next";
 import { computed, nextTick, ref } from "vue";
 import { ApiError, api, type FolderEntry, type FolderList } from "../../api";
+import { useAuth } from "../../auth";
 import { newFolderNameError, showPath, USE_CASE_FOLDERS } from "../../installSteps";
 import Button from "../ui/Button.vue";
 
@@ -48,8 +49,11 @@ const notOnDisk = computed(() => {
   return !!segs.value[0] && missingTops.value.has(key(source.value, segs.value[0]));
 });
 
+// The key names the signed-in user, so a cached listing is never shown to
+// the next person who signs in on the same tab.
+const { currentUser } = useAuth();
 const query = useQuery({
-  queryKey: computed(() => ["me-folders", source.value, path.value]),
+  queryKey: computed(() => ["me-folders", currentUser.value?.id ?? "", source.value, path.value]),
   queryFn: async () => {
     const out = await api.get<FolderList>(
       `/me/folders?source=${encodeURIComponent(source.value)}&path=${encodeURIComponent(path.value)}`,
@@ -193,7 +197,9 @@ const heading = computed(() => (atTop.value ? sourceName(source.value) : (segs.v
     </form>
 
     <div class="flex flex-wrap items-center gap-2 pt-1">
-      <Button v-if="!naming" type="button" size="sm" variant="secondary" @click="startNaming">
+      <!-- The top of the shared tree takes only the shared use-case folders, so
+           a new folder there would always be refused (APP_ISOLATION.md). -->
+      <Button v-if="!naming && !(atTop && source === 'shared')" type="button" size="sm" variant="secondary" @click="startNaming">
         <FolderPlus class="size-4" aria-hidden="true" /> New folder
       </Button>
       <span class="flex-1" />
