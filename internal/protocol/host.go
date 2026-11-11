@@ -472,6 +472,33 @@ type FolderPinFailure struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// PrepareUserFolderResponse is the 200 body of prepare-folder (#658). MadeTop
+// is true when this call made the first level of the path, and false when that
+// level was already there. The brain needs it for a new folder (the election's
+// new: true): a first level that was already there is a folder the user made by
+// hand, which may not be given to an app (APP_ISOLATION.md # User content), so
+// the brain refuses it and writes no made_folders row. A host-agent from before
+// #658 sends {}, which reads as false, so the brain refuses every new folder on
+// it rather than record a hand-made one.
+type PrepareUserFolderResponse struct {
+	MadeTop bool `json:"made_top"`
+}
+
+// ListUserFoldersResponse is GET /v1/users/{username}/folders?path=<rel> (#658),
+// the one level of folders the folder chooser shows (BRAIN_HOST_PROTOCOL.md #
+// Listing folders for the folder chooser). Folders are the names of the real
+// directories in <home>/<rel>, sorted, with no name that starts with a dot and
+// no symlink. At most MaxFolderListing names; Truncated is true when there were
+// more. 400 "bad-path", 404 "unknown-user", 404 "not-found" when the folder is
+// not there, 409 "not-a-directory" when a level is a file or a symlink.
+type ListUserFoldersResponse struct {
+	Folders   []string `json:"folders"`
+	Truncated bool     `json:"truncated"`
+}
+
+// MaxFolderListing is the most names one folder listing returns (#658).
+const MaxFolderListing = 1000
+
 // UseCaseFolderDirs are the capitalized use-case folders under a user's home
 // and the shared tree (STORAGE.md # What apps and users actually see), with
 // Projects, which is made the first time an app asks for it (#655). The brain

@@ -776,6 +776,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One level of the caller's own folders, for the folder chooser */
+        get: operations["list-my-folders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/password": {
         parameters: {
             query?: never;
@@ -1760,6 +1777,21 @@ export interface components {
             skip?: boolean;
             source?: string;
             subfolder?: string;
+        };
+        FolderEntryDTO: {
+            made_by_moose?: boolean;
+            missing?: boolean;
+            name: string;
+        };
+        FolderListDTO: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/FolderListDTO.json
+             */
+            readonly $schema?: string;
+            folders: components["schemas"]["FolderEntryDTO"][] | null;
+            truncated: boolean;
         };
         FolderSources: {
             household: components["schemas"]["SourceMenu"];
@@ -4368,6 +4400,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-my-folders": {
+        parameters: {
+            query?: {
+                /** @description personal (your home) or shared (the household's shared folders) */
+                source?: "personal" | "shared";
+                /** @description The folder to list, relative to the top, such as Documents/Taxes. Empty lists the top. */
+                path?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderListDTO"];
                 };
             };
             /** @description Error */

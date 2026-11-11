@@ -250,11 +250,11 @@ func TestResolveHome(t *testing.T) {
 func TestPrepareUserFolder(t *testing.T) {
 	c := New(startFakeAuthAgent(t))
 	ctx := context.Background()
-	if err := c.PrepareUserFolder(ctx, "alice", "Documents/Notebooks"); err != nil {
+	if _, err := c.PrepareUserFolder(ctx, "alice", "Documents/Notebooks"); err != nil {
 		t.Fatalf("PrepareUserFolder: %v", err)
 	}
 	// Any non-2xx is an install error the brain rolls back on.
-	err := c.PrepareUserFolder(ctx, "alice", "Music")
+	_, err := c.PrepareUserFolder(ctx, "alice", "Music")
 	if err == nil || !strings.Contains(err.Error(), "not-a-directory") {
 		t.Fatalf("PrepareUserFolder(conflict) = %v; want a not-a-directory error", err)
 	}

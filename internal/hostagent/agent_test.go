@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/onmoose/os/internal/hostagent/netstate"
@@ -175,6 +176,10 @@ type stubUserMgr struct {
 	wellKnownIdentityErr error
 	allocateErr          error
 	releaseErr           error
+	prepareMadeTop       bool
+	listCalls            []struct{ user, rel string }
+	listNames            []string
+	listErr              error
 	// resolveHomeResult is returned on ResolveHome success; zero value = /home/<user>, 3000, 3000.
 	resolveHomeResult *struct {
 		home     string
@@ -230,9 +235,14 @@ func (s *stubUserMgr) ResolveHome(user string) (string, int, int, error) {
 	return "/home/" + user, 3000, 3000, nil
 }
 
-func (s *stubUserMgr) PrepareFolder(user, rel string) error {
+func (s *stubUserMgr) PrepareFolder(user, rel string) (bool, error) {
 	s.prepareCalls = append(s.prepareCalls, struct{ user, rel string }{user, rel})
-	return s.prepareErr
+	return s.prepareMadeTop, s.prepareErr
+}
+
+func (s *stubUserMgr) ListFolders(user, rel string) ([]string, bool, error) {
+	s.listCalls = append(s.listCalls, struct{ user, rel string }{user, rel})
+	return s.listNames, false, s.listErr
 }
 
 func (s *stubUserMgr) PinFolder(user string, shared bool, rel string) (string, error) {
@@ -1651,5 +1661,64 @@ func TestUserExists_DelegatesToUserMgrWhenSet(t *testing.T) {
 	}
 	if len(mgr.existsCalls) != 2 {
 		t.Errorf("UserExists called %d times; want 2", len(mgr.existsCalls))
+	}
+}
+
+// GET /v1/users/{username}/folders reaches the user manager with the path,
+// maps its errors, and refuses a bad path before the host (#658).
+func TestListFolders_Handler(t *testing.T) {
+	for _, tc := range []struct {
+		path     string
+		err      error
+		status   int
+		wantCode string
+	}{
+		{"Documents", nil, http.StatusOK, ""},
+		{"", nil, http.StatusOK, ""},
+		{"Documents", ErrUnknownUser, http.StatusNotFound, "unknown-user"},
+		{"Documents", fmt.Errorf("w: %w", ErrFolderNotFound), http.StatusNotFound, "not-found"},
+		{"Documents", fmt.Errorf("w: %w", ErrNotADirectory), http.StatusConflict, "not-a-directory"},
+		{"Documents/.ssh", nil, http.StatusBadRequest, "bad-path"},
+	} {
+		mgr := &stubUserMgr{listNames: []string{"Books", "Taxes"}, listErr: tc.err}
+		a := New(&stubVerifier{}, NewFakePublisher(".local"))
+		a.UserMgr = mgr
+		mux := http.NewServeMux()
+		a.Mount(mux)
+		w := get(t, mux, "/v1/users/cindy/folders?path="+tc.path)
+		if w.Code != tc.status {
+			t.Errorf("%q %v: status = %d, want %d: %s", tc.path, tc.err, w.Code, tc.status, w.Body)
+			continue
+		}
+		if tc.status == http.StatusOK {
+			body := decodeBody[protocol.ListUserFoldersResponse](t, w)
+			if !slices.Equal(body.Folders, []string{"Books", "Taxes"}) {
+				t.Errorf("folders = %v", body.Folders)
+			}
+			if len(mgr.listCalls) != 1 || mgr.listCalls[0].user != "cindy" || mgr.listCalls[0].rel != tc.path {
+				t.Errorf("ListFolders calls = %+v", mgr.listCalls)
+			}
+			continue
+		}
+		if e := decodeBody[protocol.Error](t, w); e.Code != tc.wantCode {
+			t.Errorf("%q %v: code = %q, want %q", tc.path, tc.err, e.Code, tc.wantCode)
+		}
+		if tc.wantCode == "bad-path" && len(mgr.listCalls) != 0 {
+			t.Errorf("user manager was called for a bad path: %+v", mgr.listCalls)
+		}
+	}
+}
+
+// prepare-folder sends made_top from the user manager (#658).
+func TestPrepareFolder_SendsMadeTop(t *testing.T) {
+	for _, made := range []bool{true, false} {
+		a := New(&stubVerifier{}, NewFakePublisher(".local"))
+		a.UserMgr = &stubUserMgr{prepareMadeTop: made}
+		mux := http.NewServeMux()
+		a.Mount(mux)
+		w := post(t, mux, "/v1/users/cindy/prepare-folder", protocol.PrepareUserFolderRequest{Path: "Recipes"})
+		if got := decodeBody[protocol.PrepareUserFolderResponse](t, w); w.Code != http.StatusOK || got.MadeTop != made {
+			t.Errorf("status %d, made_top = %v; want %v", w.Code, got.MadeTop, made)
+		}
 	}
 }

@@ -198,8 +198,9 @@ type HostDriver interface {
 	// exists and is owned by the user before compose up (#519). The brain
 	// cannot do it: its container does not mount /home, so host-agent does it
 	// as a narrow named op (CONTROL_PLANE.md # Locked: host-agent hardening
-	// directives). rel starts with the capitalized folder, e.g. "Documents/Work".
-	PrepareUserFolder(ctx context.Context, user, rel string) error
+	// directives). rel is inside the folder limit, e.g. "Documents/Work".
+	// madeTop is true when the call made the first level of rel (#658).
+	PrepareUserFolder(ctx context.Context, user, rel string) (madeTop bool, err error)
 	// PinFolder walks a folder source without following a symlink and
 	// bind-mounts the walked inode at a root-owned pin path (#604). The brain
 	// calls it before every compose up and compose create, so a symlink

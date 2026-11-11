@@ -334,7 +334,9 @@ func (m *Manager) fallbackFolderPins(ctx context.Context, dir string, sources []
 			}
 			continue
 		}
-		if err := m.host.PrepareUserFolder(ctx, username, s.rel); err != nil {
+		// made_top (#658) only matters when an install asks for a new folder.
+		// This re-checks a folder the app already binds, so it is not read.
+		if _, err := m.host.PrepareUserFolder(ctx, username, s.rel); err != nil {
 			return fmt.Errorf("prepare folder source %q: %w", s.src, err)
 		}
 	}

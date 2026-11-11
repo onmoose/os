@@ -677,6 +677,10 @@ type fakeHost struct {
 	// sharedRoot is where the fake's shared tree lives; newTestEnv sets it to
 	// the Manager's sharedRoot.
 	sharedRoot string
+	// homeTops are the top-level folders already in a home, keyed
+	// "<user>/<name>" (#658). PrepareUserFolder reports a first level in it as
+	// found, not made, and adds every first level it sees.
+	homeTops map[string]bool
 
 	// remapBase is the remap_base WellKnownIdentity reports (nil: no remap,
 	// like the fake host-agent). wellKnownErr forces that call to fail.
@@ -719,11 +723,23 @@ func (h *fakeHost) ResolveHome(_ context.Context, user string) (protocol.Resolve
 	return protocol.ResolveHomeResponse{HomePath: filepath.Join(h.homeRoot, user), UID: 3000, GID: 3000}, nil
 }
 
-func (h *fakeHost) PrepareUserFolder(_ context.Context, user, rel string) error {
+func (h *fakeHost) PrepareUserFolder(_ context.Context, user, rel string) (bool, error) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.calls = append(h.calls, call{method: "PrepareUserFolder", args: []any{user, rel}})
-	h.mu.Unlock()
-	return h.prepareErr
+	if h.prepareErr != nil {
+		return false, h.prepareErr
+	}
+	// The first level is made unless it is already in the home (#658):
+	// homeTops holds the top-level folders a test put there by hand, and the
+	// ones an earlier call made.
+	top, _, _ := strings.Cut(rel, "/")
+	if h.homeTops == nil {
+		h.homeTops = map[string]bool{}
+	}
+	made := !h.homeTops[user+"/"+top]
+	h.homeTops[user+"/"+top] = true
+	return made, nil
 }
 
 func (h *fakeHost) PinFolder(_ context.Context, req protocol.PinFolderRequest) (protocol.PinFolderResponse, error) {
