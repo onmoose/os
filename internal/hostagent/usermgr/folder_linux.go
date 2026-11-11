@@ -310,6 +310,12 @@ func writePinFailure(dir string, failure *protocol.FolderPinFailure) {
 // mountPinAt is mountPin with an explicit pin root, so the boot restorer can
 // be pointed at a temp dir in tests.
 func mountPinAt(fd int, pin string, want syscall.Stat_t, pinRoot string) error {
+	// The restorer runs before host-agent, so /run/moose may not exist yet.
+	// Make its parent the mode host-agent's RuntimeDirectory uses, then the pin
+	// root itself root-only.
+	if err := os.MkdirAll(filepath.Dir(pinRoot), 0o755); err != nil {
+		return fmt.Errorf("usermgr: make pin root parent for %q: %w", pinRoot, err)
+	}
 	if err := os.MkdirAll(pinRoot, 0o700); err != nil {
 		return fmt.Errorf("usermgr: make pin root %q: %w", pinRoot, err)
 	}
