@@ -235,6 +235,7 @@ func (s *Server) registerAll(api huma.API) {
 	s.registerAuth(api)
 	s.registerUsers(api)
 	s.registerMeRoutes(api)
+	s.registerFolderRoutes(api)
 	s.registerSSHRoutes(api)
 	s.registerHealth(api)
 	s.registerNotifications(api)
@@ -850,21 +851,33 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 	// folders, the only top-level folders a personal source may start at
 	// (APP_ISOLATION.md # User content). A household app binds only the
 	// shared tree, so it needs none.
-	var made map[string]bool
+	var made, onDisk map[string]bool
 	if scope == store.ScopePersonal {
-		names, err := s.store.MadeFolders(owner.UserID)
-		if err != nil {
+		var err error
+		if made, err = s.madeFolderSet(owner.UserID); err != nil {
 			s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"},
 				map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}, false)
 			slog.Error("install: read the folders made through moose", "manifest_id", manifestID, "user_id", owner.UserID, "err", err)
 			return nil, huma.Error500InternalServerError("could not read your folders")
 		}
-		made = make(map[string]bool, len(names))
-		for _, n := range names {
-			made[n] = true
+		// A new folder may not take a name that is already in the home
+		// (#658): list the top of the home, but only when it matters. The
+		// job checks again when host-agent makes the folder.
+		if wantsNewFolder(in.Body.Config.Folders, in.Body.Config.ExtraFolders) {
+			res, err := s.host.ListUserFolders(ctx, owner.Username, "")
+			if err != nil {
+				s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"},
+					map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}, false)
+				slog.Error("install: list the top of the home", "manifest_id", manifestID, "username", owner.Username, "err", err)
+				return nil, huma.Error502BadGateway("Could not check your folders. Try again.")
+			}
+			onDisk = make(map[string]bool, len(res.Folders))
+			for _, n := range res.Folders {
+				onDisk[n] = true
+			}
 		}
 	}
-	mounts, err := resolveElections(man, scope, in.Body.Config.Folders, in.Body.Config.ExtraFolders, made)
+	mounts, err := resolveElections(man, scope, in.Body.Config.Folders, in.Body.Config.ExtraFolders, made, onDisk)
 	if err != nil {
 		s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"},
 			map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}, false)

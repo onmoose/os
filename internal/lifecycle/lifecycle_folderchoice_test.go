@@ -7,6 +7,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -179,5 +180,36 @@ func TestUpdateSkippedFolderBecomesRequired(t *testing.T) {
 	wantVols := []string{home + "/Documents:/moose/documents:ro", home + "/Notes/Obsidian:/moose/notes:ro"}
 	if !slices.Equal(got, wantVols) {
 		t.Fatalf("2.0 binds %v, want %v", got, wantVols)
+	}
+}
+
+// A new folder whose name turned out to be in the home already, made by hand
+// between the API's check and host-agent's walk, fails the install and gets no
+// row (#658): only a folder moose made may be given to an app. Two folders of
+// one install under the same new name are fine: the first one made it.
+func TestInstallFolders_NewFolderFoundThereIsRefused(t *testing.T) {
+	e := newTestEnv(t)
+	addUser(t, e, "u_alex", "alex")
+	owner := Owner{UserID: "u_alex", Username: "alex"}
+	e.writeCatalogApp(t, "filesapp", foldersCompose, choiceManifest)
+	e.docker.digests[testImage] = testDigest
+	e.host.homeTops = map[string]bool{"alex/scripts": true}
+
+	_, err := e.m.Install(context.Background(), mustLoadApp(t, e.m, "filesapp"), owner, store.ScopePersonal, []FolderMount{
+		{Folder: "projects", Source: sourcePersonal, Path: "scripts", NewFolder: true},
+	}, "", nil, nil, nil)
+	if !errors.Is(err, ErrFolderAlreadyThere) {
+		t.Fatalf("install = %v; want ErrFolderAlreadyThere", err)
+	}
+	if got, err := e.store.MadeFolders("u_alex"); err != nil || len(got) != 0 {
+		t.Errorf("made folders = %v, %v; want none", got, err)
+	}
+
+	_, _ = installFolders(t, e, store.ScopePersonal, owner, choiceManifest, []FolderMount{
+		{Folder: "projects", Source: sourcePersonal, Path: "Site/app", NewFolder: true},
+		{Source: sourcePersonal, Path: "Site/notes", Extra: "notes", NewFolder: true},
+	})
+	if got, err := e.store.MadeFolders("u_alex"); err != nil || !slices.Equal(got, []string{"Site"}) {
+		t.Errorf("made folders = %v, %v; want [Site]", got, err)
 	}
 }

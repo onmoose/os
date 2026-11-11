@@ -147,7 +147,7 @@ export function stepList(needs: Needs, plan: InstallPlan): string[] {
   if (needs.requiredFields.length > 0) out.push(STEP_SETTINGS);
   // The folder step is the consent screen for folder access, so it shows
   // for every app that uses a folder, even with nothing to choose.
-  if ((plan.permissions.folders ?? []).length > 0) out.push(STEP_FOLDERS);
+  if ((plan.permissions.folders ?? []).length > 0 || plan.permissions.extra_folders) out.push(STEP_FOLDERS);
   return out;
 }
 
@@ -394,8 +394,10 @@ export function defaultKeyLabel(base: string, labels: string[]): string {
 // they live in the AI and email forms until the account is saved.
 
 export type Draft = {
-  sources: Record<string, string>;
-  subfolders: Record<string, string>;
+  // folders is the choice for each declared folder, by folder; extras are the
+  // extra folders the user added (#658).
+  folders: Record<string, FolderPick>;
+  extras: ExtraPick[];
   // mail is the picked email account id, "" when email is not used.
   mail: string;
   values: Record<string, string>;
@@ -475,7 +477,7 @@ export function stepForError(
     needs.aiGroups.find((g) => g.slots.some((s) => s.id === slotId))?.step ??
     (needs.optionalSlots.some((s) => s.id === slotId) ? STEP_AI_OPTIONAL : "");
 
-  if (location.startsWith("config.folders.")) return STEP_FOLDERS;
+  if (location.startsWith("config.folders.") || location.startsWith("config.extra_folders[")) return STEP_FOLDERS;
   if (location === "config.mail_provider_id") return hasMail ? STEP_EMAIL : "";
   if (location.startsWith("config.ai_bindings.")) {
     return stepOfSlot(location.slice("config.ai_bindings.".length)) || needs.aiGroups[0]?.step || "";
@@ -601,4 +603,46 @@ export function sourceLabel(folder: string, source: string, singleUser: boolean)
     return singleUser ? `Shared ${name} (accessible from your other devices)` : `The household's shared ${name}`;
   }
   return `Your ${name}`;
+}
+
+// ── Folders the user chooses (#658) ─────────────────────────────────────────
+
+// FolderPick is the choice for one declared folder on the folder step: the
+// source (personal or shared), the folder it points at, relative to the top
+// of that tree ("Notes/Obsidian"), whether its first level is a folder the
+// user made in the chooser (sent as new: true), and whether an optional
+// folder is left out.
+export type FolderPick = { source: string; path: string; isNew: boolean; skip: boolean };
+
+// ExtraPick is one extra folder the user added, for an app with extra_folders.
+export type ExtraPick = { source: string; path: string; isNew: boolean };
+
+// USE_CASE_FOLDERS are the folders at the top of a home an app may always be
+// pointed at (STORAGE.md), the same list the brain filters the top level with.
+export const USE_CASE_FOLDERS = ["Documents", "Downloads", "Movies", "Music", "Notes", "Photos", "Projects"];
+
+// suggestedPath is where a folder points unless the user changes it: the
+// folder, or the manifest's suggested subfolder inside it.
+export function suggestedPath(f: { folder: string; subfolder_default?: string }): string {
+  const top = folderName(f.folder);
+  return f.subfolder_default ? `${top}/${f.subfolder_default}` : top;
+}
+
+// showPath writes a folder path for the screen: "Notes / Obsidian", with no
+// leading slash and no ~ (INSTALL_STEPS.md # 5b, Words).
+export function showPath(path: string): string {
+  return path.split("/").filter(Boolean).join(" / ");
+}
+
+// newFolderNameError says why a new folder name cannot be used, or "" when it
+// can. The brain checks again; this only saves a round trip for the common
+// mistakes. taken are the names already listed where the folder goes.
+export function newFolderNameError(name: string, atTop: boolean, taken: string[]): string {
+  const n = name.trim();
+  if (!n) return "Type a name for the folder.";
+  if (n.startsWith(".")) return "A folder name cannot start with a dot.";
+  if (/[/:$\\]/.test(n)) return "A folder name cannot have a slash, a colon or a dollar sign in it.";
+  if (atTop && (n === "bin" || n === "Shared")) return `A new folder cannot be named ${n}. Choose another name.`;
+  if (taken.includes(n)) return "There is already a folder with this name here.";
+  return "";
 }

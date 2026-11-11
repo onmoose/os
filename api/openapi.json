@@ -1680,6 +1680,55 @@
         ],
         "type": "object"
       },
+      "FolderEntryDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "made_by_moose": {
+            "type": "boolean"
+          },
+          "missing": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "FolderListDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/FolderListDTO.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "folders": {
+            "items": {
+              "$ref": "#/components/schemas/FolderEntryDTO"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "folders",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "FolderSources": {
         "additionalProperties": false,
         "properties": {
@@ -6473,6 +6522,61 @@
           }
         },
         "summary": "Identity of the current session"
+      }
+    },
+    "/api/v1/me/folders": {
+      "get": {
+        "operationId": "list-my-folders",
+        "parameters": [
+          {
+            "description": "personal (your home) or shared (the household's shared folders)",
+            "explode": false,
+            "in": "query",
+            "name": "source",
+            "schema": {
+              "default": "personal",
+              "description": "personal (your home) or shared (the household's shared folders)",
+              "enum": [
+                "personal",
+                "shared"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "The folder to list, relative to the top, such as Documents/Taxes. Empty lists the top.",
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "description": "The folder to list, relative to the top, such as Documents/Taxes. Empty lists the top.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderListDTO"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "One level of the caller's own folders, for the folder chooser"
       }
     },
     "/api/v1/me/password": {

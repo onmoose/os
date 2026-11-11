@@ -124,6 +124,11 @@ export type AuditEvent = Schemas["AuditEventDTO"];
 export type HealthIssue = Schemas["Issue"];
 export type Job = Schemas["Job"];
 export type FolderElection = Schemas["FolderElection"];
+export type ExtraFolderElection = Schemas["ExtraFolderElection"];
+// FolderList is one level of the caller's own folders, for the folder chooser
+// (GET /api/v1/me/folders, #658).
+export type FolderList = Schemas["FolderListDTO"];
+export type FolderEntry = Schemas["FolderEntryDTO"];
 export type InstallRequest = Schemas["Install-appRequest"];
 export type InstallPlan = Schemas["InstallPlanDTO"];
 export type InstallPlanFolder = Schemas["InstallPlanFolder"];

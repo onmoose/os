@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/onmoose/os/internal/folderlist"
 	"github.com/onmoose/os/internal/hostagent/netstate"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/version"
@@ -33,6 +35,11 @@ var ErrUnknownUser = errors.New("unknown user")
 // symlink, which the op never follows. The handler maps it to a 409 with code
 // "not-a-directory", so the brain can tell the person something is in the way.
 var ErrNotADirectory = errors.New("not a directory")
+
+// ErrFolderNotFound is returned by UserManager.ListFolders when the folder to
+// list, or a level on the way to it, is not there. The handler maps it to a 404
+// with code "not-found" (#658).
+var ErrFolderNotFound = folderlist.ErrNotFound
 
 // AgentVersion is the systemStatus handler's self-reported agent_version.
 // Despite living in a file full of fake-agent scaffolding, systemStatus is
@@ -254,9 +261,17 @@ type UserManager interface {
 	ResolveHome(user string) (home string, uid, gid int, err error)
 	// PrepareFolder makes sure <home>/<rel> exists for a personal folder
 	// source (POST /v1/users/{username}/prepare-folder). The handler has
-	// already checked rel with ValidUserFolderPath. It returns ErrUnknownUser
-	// or ErrNotADirectory for the two cases the brain tells apart.
-	PrepareFolder(user, rel string) error
+	// already checked rel with ValidUserFolderPath. madeTop is true when this
+	// call made the first level of rel, and false when it was already there
+	// (#658). It returns ErrUnknownUser or ErrNotADirectory for the two cases
+	// the brain tells apart.
+	PrepareFolder(user, rel string) (madeTop bool, err error)
+	// ListFolders returns the names of the real directories in <home>/<rel>
+	// (GET /v1/users/{username}/folders, #658), sorted, with no dot name and no
+	// symlink, at most protocol.MaxFolderListing of them. The handler has
+	// already checked rel with ValidListFolderPath; an empty rel is the home.
+	// It returns ErrUnknownUser, ErrFolderNotFound or ErrNotADirectory.
+	ListFolders(user, rel string) (names []string, truncated bool, err error)
 	WellKnownIdentity() (appUID, appGID, sharedGID int, err error)
 	// RemapBase returns the first host id of the moose-remap subordinate
 	// range, the base of Docker's daemon-wide userns-remap. ok is false when
@@ -516,6 +531,7 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/users/{username}/exists", a.userExists)
 	mux.HandleFunc("GET /v1/users/{username}/home", a.resolveHome)
 	mux.HandleFunc("POST /v1/users/{username}/prepare-folder", a.prepareUserFolder)
+	mux.HandleFunc("GET /v1/users/{username}/folders", a.listUserFolders)
 	mux.HandleFunc("GET /v1/identity/well-known", a.wellKnownIdentity)
 	mux.HandleFunc("POST /v1/identity/app-service", a.allocateAppService)
 	mux.HandleFunc("POST /v1/identity/app-service/release", a.releaseAppService)
@@ -1226,11 +1242,11 @@ func (a *Agent) prepareUserFolder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if a.UserMgr != nil {
-		err := a.UserMgr.PrepareFolder(username, req.Path)
+		madeTop, err := a.UserMgr.PrepareFolder(username, req.Path)
 		switch {
 		case err == nil:
 			slog.Info("prepare-folder", "username", username, "dir", req.Path)
-			writeJSON(w, http.StatusOK, struct{}{})
+			writeJSON(w, http.StatusOK, protocol.PrepareUserFolderResponse{MadeTop: madeTop})
 		case errors.Is(err, ErrUnknownUser):
 			writeErr(w, http.StatusNotFound, "unknown-user", "user not found")
 		case errors.Is(err, ErrNotADirectory):
@@ -1249,13 +1265,84 @@ func (a *Agent) prepareUserFolder(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
 		return
 	}
+	top, _, _ := strings.Cut(req.Path, "/")
+	_, statErr := os.Lstat(filepath.Join(home, top))
+	madeTop := errors.Is(statErr, fs.ErrNotExist)
 	if err := os.MkdirAll(filepath.Join(home, filepath.FromSlash(req.Path)), 0o755); err != nil {
 		slog.Error("prepare-folder (fake)", "username", username, "dir", req.Path, "err", err)
 		writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
 		return
 	}
 	slog.Info("prepare-folder (fake)", "username", username, "dir", req.Path)
-	writeJSON(w, http.StatusOK, struct{}{})
+	writeJSON(w, http.StatusOK, protocol.PrepareUserFolderResponse{MadeTop: madeTop})
+}
+
+// ValidListFolderPath checks the path of a folder listing (#658). An empty
+// path is the top of the home. Otherwise it is relative, and no level may be
+// empty or start with a dot, the same level rules as ValidUserFolderPath. A
+// first level of bin is allowed here: listing reads only names, and the brain
+// filters the top level before the dashboard sees it.
+func ValidListFolderPath(rel string) error {
+	if rel == "" {
+		return nil
+	}
+	if strings.HasPrefix(rel, "/") {
+		return fmt.Errorf("path must be relative to the home")
+	}
+	for _, p := range strings.Split(rel, "/") {
+		if p == "" || strings.HasPrefix(p, ".") {
+			return fmt.Errorf("path must not have an empty level or a level that starts with a dot")
+		}
+	}
+	return nil
+}
+
+// listUserFolders returns one level of folders in the user's home for the
+// folder chooser (#658, BRAIN_HOST_PROTOCOL.md # Listing folders for the folder
+// chooser). It reads names only. The real op opens each level with O_NOFOLLOW
+// (usermgr); the fake lists the dev operator's own home, the one the fake
+// resolve-home hands out.
+func (a *Agent) listUserFolders(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+	if username == "" {
+		writeErr(w, http.StatusBadRequest, "bad-request", "username is required")
+		return
+	}
+	rel := r.URL.Query().Get("path")
+	if err := ValidListFolderPath(rel); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad-path", err.Error())
+		return
+	}
+	var (
+		names     []string
+		truncated bool
+		err       error
+	)
+	if a.UserMgr != nil {
+		names, truncated, err = a.UserMgr.ListFolders(username, rel)
+	} else {
+		var home string
+		home, _, _, err = devIdentity()
+		if err == nil {
+			names, truncated, err = folderlist.List(home, rel)
+		}
+	}
+	switch {
+	case err == nil:
+		if names == nil {
+			names = []string{}
+		}
+		writeJSON(w, http.StatusOK, protocol.ListUserFoldersResponse{Folders: names, Truncated: truncated})
+	case errors.Is(err, ErrUnknownUser):
+		writeErr(w, http.StatusNotFound, "unknown-user", "user not found")
+	case errors.Is(err, ErrFolderNotFound):
+		writeErr(w, http.StatusNotFound, "not-found", "the folder does not exist")
+	case errors.Is(err, ErrNotADirectory), errors.Is(err, folderlist.ErrNotADirectory):
+		writeErr(w, http.StatusConflict, "not-a-directory", "a file or link is in the way of the folder")
+	default:
+		slog.Error("list-folders", "username", username, "dir", rel, "err", err)
+		writeErr(w, http.StatusInternalServerError, "list-folders-failed", "list-folders failed")
+	}
 }
 
 // wellKnownIdentity returns the fixed service-account UIDs/GIDs for the

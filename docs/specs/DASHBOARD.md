@@ -66,7 +66,7 @@ Rationale: two people may want genuinely different things from the same app — 
 
 ### Folder chooser
 
-Planned with #655, not built. One small component for choosing a folder, used on the install's folder step (`INSTALL_STEPS.md`), for an extra folder, and on the app page's folder control below. It is not a file browser: it shows folders only, one level at a time, and never files.
+Planned with #655, built in #658 (`web-ui/src/components/install/FolderChooser.vue`). One small component for choosing a folder, used on the install's folder step (`INSTALL_STEPS.md`), for an extra folder, and on the app page's folder control below. It is not a file browser: it shows folders only, one level at a time, and never files.
 
 - **What it shows.** The current folder's name at the top, with **Back** when it is not the top. Under it, its folders as a list, from `GET /api/v1/me/folders` (`BRAIN_UI_PROTOCOL.md` # Folder chooser). Clicking a folder goes into it. A personal app starts in the user's home, whose top shows only the use-case folders and the folders the user made through moose; a use-case folder that does not exist yet (usually `Projects`) is listed with "New" beside it. A household app starts in the household shared folders.
 - **Two buttons at the bottom.** **New folder** asks for a name and goes into the new folder, which is made when the app is installed or saved. **Choose this folder** picks the folder that is open.
