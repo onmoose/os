@@ -11,6 +11,7 @@ README is the developer-side install/test reference.
 | `moose-storage-verify.service` | `/etc/systemd/system/moose-storage-verify.service` |
 | `moose-recovery.target` | `/etc/systemd/system/moose-recovery.target` |
 | `host-agent.service` | `/etc/systemd/system/host-agent.service` |
+| `moose-folder-pins.service` | `/etc/systemd/system/moose-folder-pins.service` |
 | `dropins/<unit>.d/moose.conf` | `/etc/systemd/system/<unit>.d/moose.conf` |
 
 Drop-ins live at `/etc/systemd/system/<unit>.service.d/moose.conf` per

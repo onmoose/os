@@ -100,6 +100,8 @@ chmod 0644 /etc/resolv.conf
 # mkosi.extra.wiring) points the bootstrap at the baked images + control-plane
 # dir. Order-after the image loader lives in that drop-in.
 enable_unit /etc/systemd/system/host-agent.service host-agent.service
+# Restore folder source pins before Docker starts containers (#604).
+enable_unit /etc/systemd/system/moose-folder-pins.service moose-folder-pins.service
 
 # First-boot control-plane image loader (reused verbatim from the medium lane).
 enable_unit /etc/systemd/system/moose-load-images.service moose-load-images.service

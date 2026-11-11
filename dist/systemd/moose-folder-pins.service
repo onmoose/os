@@ -1,0 +1,26 @@
+[Unit]
+Description=moose folder source pins
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/APP_ISOLATION.md
+Documentation=https://github.com/onmoose/os/blob/main/docs/specs/BRAIN_HOST_PROTOCOL.md
+# A folder app binds a pin path under /run/moose/folder-pins, which is a bind
+# mount of the folder source's inode (#604). /run is a tmpfs, so a reboot clears
+# the pins. Docker would then create each missing pin path as an empty root-owned
+# directory and start the app against an empty folder, and a one-shot job would
+# run again. Restore the pins before Docker starts any container.
+#
+# Ordered after storage because the instance records live under
+# /var/lib/moose/state on the data drive. The cloud image has no data-drive
+# assembly, so that ordering is a no-op there and local-fs is enough.
+After=local-fs.target moose-storage-ready.target
+Wants=moose-storage-ready.target
+Before=docker.service
+# Nothing to restore on a box with no instances yet.
+ConditionPathIsDirectory=/var/lib/moose/state/instances
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/moose/host-agent-real --restore-folder-pins --state-dir /var/lib/moose/state --pin-root /run/moose/folder-pins
+
+[Install]
+WantedBy=multi-user.target
