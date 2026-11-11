@@ -41,6 +41,7 @@ import {
   type AIProvider,
   type CatalogDetail,
   type FolderElection,
+  type ExtraFolderElection,
   type InstallPlan,
   type InstallRequest,
   type Scope,
@@ -74,6 +75,9 @@ import {
   draftKey,
   filledBy,
   folderName,
+  suggestedPath,
+  type ExtraPick,
+  type FolderPick,
   groupMet,
   loadDraft,
   needOfStep,
@@ -179,8 +183,8 @@ const ready = computed(
 );
 
 // ── Draft ───────────────────────────────────────────────────────────────────
-const folderSources = ref<Record<string, string>>({});
-const folderSubfolders = ref<Record<string, string>>({});
+const folderPicks = ref<Record<string, FolderPick>>({});
+const extraPicks = ref<ExtraPick[]>([]);
 const mailProviderId = ref(""); // "" is no email
 const configValues = ref<Record<string, string>>({});
 const aiChoices = ref<Record<string, AIChoice>>({});
@@ -228,16 +232,22 @@ const key = computed(() => draftKey(userId.value, manifestId.value, scope.value)
 let seededFor = "";
 function seed(p: InstallPlan) {
   const saved = loadDraft(key.value);
-  const sources: Record<string, string> = {};
-  const subs: Record<string, string> = {};
+  // Each folder starts on its suggestion, or on the tab's saved choice when
+  // that is still one the plan allows (INSTALL_STEPS.md # 5b).
+  const picks: Record<string, FolderPick> = {};
   for (const f of p.permissions.folders ?? []) {
     const menu = f.sources[scope.value];
-    const s = saved?.sources?.[f.folder];
-    sources[f.folder] = s && (menu.options ?? []).includes(s) ? s : menu.default;
-    if (f.scope === "pick-subfolder") subs[f.folder] = saved?.subfolders?.[f.folder] ?? f.subfolder_default ?? "";
+    const s = saved?.folders?.[f.folder];
+    picks[f.folder] =
+      s && typeof s.path === "string" && (menu.options ?? []).includes(s.source)
+        ? { source: s.source, path: s.path, isNew: !!s.isNew, skip: !!s.skip && f.optional }
+        : { source: menu.default, path: suggestedPath(f), isNew: false, skip: false };
   }
-  folderSources.value = sources;
-  folderSubfolders.value = subs;
+  folderPicks.value = picks;
+  extraPicks.value =
+    p.permissions.extra_folders && Array.isArray(saved?.extras)
+      ? saved.extras.filter((x) => typeof x?.path === "string" && typeof x?.source === "string")
+      : [];
 
   const mailIds = new Set((p.mail?.providers ?? []).map((m) => m.id));
   mailProviderId.value = saved?.mail && mailIds.has(saved.mail) ? saved.mail : "";
@@ -259,8 +269,8 @@ function seed(p: InstallPlan) {
 }
 
 const draft = computed<Draft>(() => ({
-  sources: folderSources.value,
-  subfolders: folderSubfolders.value,
+  folders: folderPicks.value,
+  extras: extraPicks.value,
   mail: mailProviderId.value,
   values: configValues.value,
   ai: aiChoices.value,
@@ -474,8 +484,8 @@ onBeforeUnmount(() => {
 // clicks, so leaving it with Back changes nothing.
 const pageMail = ref("");
 const pageMailService = ref("");
-const pageSources = ref<Record<string, string>>({});
-const pageSubfolders = ref<Record<string, string>>({});
+const pagePicks = ref<Record<string, FolderPick>>({});
+const pageExtras = ref<ExtraPick[]>([]);
 // pageValues is the "needs these to run" step's copy of its fields. It goes
 // back to configValues only on Continue, so Back drops an edit. It lives in
 // memory only, never in the draft.
@@ -507,8 +517,8 @@ watch(
     }
     if (step.value === STEP_EMAIL || step.value === STEP_EMAIL_SERVICE) pageMailService.value = mailService.value;
     if (step.value === STEP_FOLDERS) {
-      pageSources.value = { ...folderSources.value };
-      pageSubfolders.value = { ...folderSubfolders.value };
+      pagePicks.value = { ...folderPicks.value };
+      pageExtras.value = [...extraPicks.value];
     }
     const ai = aiPage.value;
     if (ai) {
@@ -736,8 +746,8 @@ function onContinue() {
   }
   if (name === STEP_SETTINGS) configValues.value = { ...configValues.value, ...pageValues.value };
   if (name === STEP_FOLDERS) {
-    folderSources.value = { ...pageSources.value };
-    folderSubfolders.value = { ...pageSubfolders.value };
+    folderPicks.value = { ...pagePicks.value };
+    extraPicks.value = [...pageExtras.value];
   }
   finishStep(name);
 }
@@ -821,14 +831,20 @@ const leftIsCancel = computed(() => noSteps.value || step.value === steps.value[
 function buildRequest(p: InstallPlan): InstallRequest {
   const elections: FolderElection[] = folders.value.map((f) => {
     const e: FolderElection = { folder: f.folder };
-    if ((f.sources[scope.value].options ?? []).length > 1) e.source = folderSources.value[f.folder];
-    if (f.scope === "pick-subfolder") {
-      const sub = folderSubfolders.value[f.folder];
-      if (sub) e.subfolder = sub;
-    }
+    const pick = folderPicks.value[f.folder];
+    if (!pick) return e;
+    if (pick.skip) return { folder: f.folder, skip: true };
+    if ((f.sources[scope.value].options ?? []).length > 1) e.source = pick.source;
+    e.path = pick.path;
+    if (pick.isNew) e.new = true;
     return e;
   });
   const req: InstallRequest = { manifest_id: p.manifest_id, scope: scope.value, config: { folders: elections } };
+  if (extraPicks.value.length > 0) {
+    req.config!.extra_folders = extraPicks.value.map(
+      (x): ExtraFolderElection => ({ source: x.source, path: x.path, ...(x.isNew ? { new: true } : {}) }),
+    );
+  }
   // confirm only when this draft showed the duplicate warning. A user who
   // skipped the first step (a link straight to a later step) never saw it,
   // so the brain's 409 asks on the last step instead, as it does for a copy
@@ -884,12 +900,17 @@ const onLastPage = computed(() => step.value === lastPage.value);
 // A 422 goes to the step that owns the field, with the error there
 // (INSTALL_STEPS.md # 1, Errors). One no step owns, and a 409, show on the
 // last step above its Install button.
-const pageError = ref<{ step: string; message: string } | null>(null);
+// location is kept for the folder step, which shows the error on its row.
+const pageError = ref<{ step: string; message: string; location?: string } | null>(null);
 watch(submitError, (message) => {
   if (!message || !plan.value) return;
   const owner = stepForError(submitLocation.value, needs.value, requires.value, !!plan.value.mail);
   const target = owner && validSteps.value.has(owner) ? owner : lastPage.value;
-  pageError.value = { step: target, message };
+  pageError.value = {
+    step: target,
+    message,
+    location: target === STEP_FOLDERS ? submitLocation.value : undefined,
+  };
   submitError.value = null;
   if (step.value !== target) router.push(to(target));
 });
@@ -1041,7 +1062,7 @@ watch(
       </Heading>
 
       <p
-        v-if="pageError && pageError.step === step"
+        v-if="pageError && pageError.step === step && !(step === STEP_FOLDERS && pageError.location)"
         class="mx-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive sm:mx-0"
         role="alert"
       >
@@ -1147,9 +1168,11 @@ watch(
              folder the app uses. -->
         <FolderChoices
           v-else-if="step === 'folders'"
-          v-model:sources="pageSources"
-          v-model:subfolders="pageSubfolders"
+          v-model:picks="pagePicks"
+          v-model:extras="pageExtras"
           :folders="folders"
+          :extra-folders="plan.permissions.extra_folders"
+          :error="pageError?.step === step && pageError.location ? { location: pageError.location, message: pageError.message } : null"
           :scope="scope"
           :app-name="plan.name"
         />
