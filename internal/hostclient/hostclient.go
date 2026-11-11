@@ -163,11 +163,65 @@ func (c *Client) ResolveHome(ctx context.Context, username string) (protocol.Res
 
 // PrepareUserFolder asks host-agent to make sure a personal folder source,
 // <home>/<rel>, exists and is owned by the user before an app binds it (#519).
-// rel starts with a use-case folder, such as "Documents/Notebooks". The brain
-// cannot make the folder itself: its container does not mount /home.
-func (c *Client) PrepareUserFolder(ctx context.Context, username, rel string) error {
-	return c.do(ctx, "POST", "/v1/users/"+url.PathEscape(username)+"/prepare-folder",
-		protocol.PrepareUserFolderRequest{Path: rel}, nil)
+// rel is inside the folder limit, such as "Documents/Notebooks". The brain
+// cannot make the folder itself: its container does not mount /home. madeTop
+// is true when this call made the first level of rel (#658); a host-agent
+// from before #658 never says so, which reads as false.
+func (c *Client) PrepareUserFolder(ctx context.Context, username, rel string) (madeTop bool, err error) {
+	var out protocol.PrepareUserFolderResponse
+	if err := c.do(ctx, "POST", "/v1/users/"+url.PathEscape(username)+"/prepare-folder",
+		protocol.PrepareUserFolderRequest{Path: rel}, &out); err != nil {
+		return false, err
+	}
+	return out.MadeTop, nil
+}
+
+// ErrFolderNotFound is returned by ListUserFolders when the folder to list is
+// not there (host-agent 404 "not-found").
+var ErrFolderNotFound = errors.New("folder not found")
+
+// ErrNotADirectory is returned by ListUserFolders when a file or a symlink is
+// in the way (host-agent 409 "not-a-directory").
+var ErrNotADirectory = errors.New("a file or link is in the way of the folder")
+
+// ErrBadPath is returned by ListUserFolders when host-agent refuses the path
+// (400 "bad-path").
+var ErrBadPath = errors.New("bad folder path")
+
+// ListUserFolders returns one level of folders in the user's home, <home>/<rel>
+// (GET /v1/users/{username}/folders, #658), for the folder chooser. An empty
+// rel is the top of the home. It returns ErrUnknownUser, ErrFolderNotFound,
+// ErrNotADirectory or ErrBadPath for the cases the API tells apart.
+func (c *Client) ListUserFolders(ctx context.Context, username, rel string) (protocol.ListUserFoldersResponse, error) {
+	path := "/v1/users/" + url.PathEscape(username) + "/folders?path=" + url.QueryEscape(rel)
+	resp, err := c.request(ctx, "GET", path, nil)
+	if err != nil {
+		return protocol.ListUserFoldersResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var e protocol.Error
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		switch e.Code {
+		case "unknown-user":
+			return protocol.ListUserFoldersResponse{}, ErrUnknownUser
+		case "not-found":
+			return protocol.ListUserFoldersResponse{}, ErrFolderNotFound
+		case "not-a-directory":
+			return protocol.ListUserFoldersResponse{}, ErrNotADirectory
+		case "bad-path":
+			return protocol.ListUserFoldersResponse{}, ErrBadPath
+		}
+		if e.Code == "" {
+			e.Code, e.Message = "host-agent-error", resp.Status
+		}
+		return protocol.ListUserFoldersResponse{}, fmt.Errorf("host-agent %s: %s (%s)", path, e.Message, e.Code)
+	}
+	var out protocol.ListUserFoldersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return protocol.ListUserFoldersResponse{}, err
+	}
+	return out, nil
 }
 
 // WellKnownIdentity returns the fixed service-account UIDs/GIDs for moose-app
