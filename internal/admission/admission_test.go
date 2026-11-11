@@ -329,6 +329,8 @@ func TestCheckManifestRootSetup(t *testing.T) {
 		{name: "folderless", man: manifest.Manifest{RootSetup: true}},
 		{name: "with internet and lan", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{Internet: true, LAN: true}}},
 		{name: "with folders", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{Folders: folders}}, wantName: "folders"},
+		// extra_folders alone makes a folder app (#655).
+		{name: "with extra_folders", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{ExtraFolders: "read"}}, wantName: "folders"},
 		{name: "with gpu", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{GPU: true}}, wantName: "gpu: true"},
 		{name: "with devices", man: manifest.Manifest{RootSetup: true, Permissions: manifest.Permissions{Devices: []string{"/dev/ttyUSB0"}}}, wantName: "devices"},
 		{name: "with service_user", man: manifest.Manifest{RootSetup: true, ServiceUser: true}, wantName: "service_user"},

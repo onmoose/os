@@ -994,12 +994,66 @@ func TestParseFoldersRejectsBadModeAndScope(t *testing.T) {
 }
 
 func TestParseFoldersRejectsDefaultMisuse(t *testing.T) {
-	// default only valid with pick-subfolder; no traversal/absolute paths.
-	if _, err := Parse(withPerms("  folders:\n    - { folder: photos, default: Sub }\n")); err == nil || !strings.Contains(err.Error(), "default is only valid") {
-		t.Fatalf("want default-with-whole error, got %v", err)
+	// No traversal, absolute path or dot level in a default.
+	for _, bad := range []string{"../etc", "/etc", "Sub/.git", ".hidden", "a//b", "a:b"} {
+		if _, err := Parse(withPerms("  folders:\n    - { folder: photos, scope: pick-subfolder, default: \"" + bad + "\" }\n")); err == nil || !strings.Contains(err.Error(), "relative subfolder") {
+			t.Errorf("default %q: want a bad-default error, got %v", bad, err)
+		}
 	}
-	if _, err := Parse(withPerms("  folders:\n    - { folder: photos, scope: pick-subfolder, default: ../etc }\n")); err == nil || !strings.Contains(err.Error(), "relative subpath") {
-		t.Fatalf("want traversal error, got %v", err)
+}
+
+// #655: default no longer needs scope: pick-subfolder, projects is the
+// seventh folder, optional and extra_folders parse, and scope still parses.
+func TestParseFoldersChosenByTheUser(t *testing.T) {
+	m, err := Parse(withPerms(`  folders:
+    - { folder: projects, mode: write }
+    - { folder: notes, default: Obsidian, optional: true }
+    - { folder: photos, scope: pick-subfolder, default: Trips }
+  extra_folders: write
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	p := m.Permissions
+	if p.Folders[0].Folder != "projects" || p.Folders[0].Optional {
+		t.Errorf("projects parsed wrong: %+v", p.Folders[0])
+	}
+	if n := p.Folders[1]; n.Default != "Obsidian" || !n.Optional || n.Scope != "whole" {
+		t.Errorf("notes parsed wrong: %+v", n)
+	}
+	if p.ExtraFolders != "write" || !p.FolderApp() {
+		t.Errorf("extra_folders = %q, FolderApp = %v", p.ExtraFolders, p.FolderApp())
+	}
+	only, err := Parse(withPerms("  extra_folders: read\n"))
+	if err != nil || !only.Permissions.FolderApp() {
+		t.Errorf("extra_folders alone makes a folder app: %v, %+v", err, only.Permissions)
+	}
+	if _, err := Parse(withPerms("  extra_folders: all\n")); err == nil || !strings.Contains(err.Error(), "extra_folders") {
+		t.Errorf("want an extra_folders error, got %v", err)
+	}
+	if _, err := Parse(withPerms("  folders:\n    - { folder: notes }\n    - { folder: notes, mode: write }\n")); err == nil || !strings.Contains(err.Error(), "listed twice") {
+		t.Errorf("want a listed-twice error, got %v", err)
+	}
+}
+
+// A brain from before #655 refuses projects and a default without scope:
+// pick-subfolder, so the lint warns about both (APP_MANIFEST.md # folders).
+func TestLintWarnsWhatOlderBrainsRefuse(t *testing.T) {
+	m, err := Parse(withPerms(`  folders:
+    - { folder: projects }
+    - { folder: notes, default: Obsidian }
+    - { folder: photos, scope: pick-subfolder, default: Trips }
+    - { folder: music, optional: true }
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	errs, warns := Lint(m, LintOptions{})
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v", errs)
+	}
+	if len(warns) != 2 || !strings.Contains(warns[0], "folders[projects]") || !strings.Contains(warns[1], "folders[notes]") {
+		t.Fatalf("warns = %v; want one for projects and one for notes", warns)
 	}
 }
 
