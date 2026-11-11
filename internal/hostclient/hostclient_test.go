@@ -110,6 +110,26 @@ func startFakeAuthAgent(t *testing.T) string {
 		_ = json.NewEncoder(w).Encode(struct{}{})
 	})
 
+	mux.HandleFunc("POST "+protocol.FolderPinPath, func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.PinFolderRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Path {
+		case "Documents/Notebooks":
+			_ = json.NewEncoder(w).Encode(protocol.PinFolderResponse{Path: "/run/moose/folder-pins/8-100"})
+		case "Documents/Swapped":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "not-a-directory", Message: "a file or link is in the way of the folder"})
+		case "Documents/Gone":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "unknown-user", Message: "user not found"})
+		default:
+			// No route: an old host-agent with no folder pin op.
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "not-found", Message: "no such route"})
+		}
+	})
+
 	mux.HandleFunc("GET /v1/identity/well-known", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(protocol.WellKnownIdentityResponse{
 			MooseAppUID:    2000,
@@ -237,6 +257,36 @@ func TestPrepareUserFolder(t *testing.T) {
 	err := c.PrepareUserFolder(ctx, "alice", "Music")
 	if err == nil || !strings.Contains(err.Error(), "not-a-directory") {
 		t.Fatalf("PrepareUserFolder(conflict) = %v; want a not-a-directory error", err)
+	}
+}
+
+func TestPinFolder(t *testing.T) {
+	c := New(startFakeAuthAgent(t))
+	ctx := context.Background()
+
+	resp, err := c.PinFolder(ctx, protocol.PinFolderRequest{Username: "alice", Path: "Documents/Notebooks"})
+	if err != nil {
+		t.Fatalf("PinFolder: %v", err)
+	}
+	if resp.Path != "/run/moose/folder-pins/8-100" {
+		t.Errorf("PinFolder path = %q", resp.Path)
+	}
+
+	_, err = c.PinFolder(ctx, protocol.PinFolderRequest{Username: "alice", Path: "Documents/Swapped"})
+	if !errors.Is(err, ErrFolderSourceSwapped) {
+		t.Fatalf("PinFolder(swapped) = %v; want ErrFolderSourceSwapped", err)
+	}
+
+	// A 404 is an old host-agent with no pin op, not an unknown user here.
+	_, err = c.PinFolder(ctx, protocol.PinFolderRequest{Username: "alice", Path: "Other"})
+	if !errors.Is(err, ErrPinUnsupported) {
+		t.Fatalf("PinFolder(404) = %v; want ErrPinUnsupported", err)
+	}
+
+	// A 404 that names the user is the deleted-owner case, not an old agent.
+	_, err = c.PinFolder(ctx, protocol.PinFolderRequest{Username: "alice", Path: "Documents/Gone"})
+	if !errors.Is(err, ErrUnknownUser) {
+		t.Fatalf("PinFolder(unknown-user) = %v; want ErrUnknownUser", err)
 	}
 }
 

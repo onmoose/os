@@ -170,6 +170,52 @@ func (c *Client) PrepareUserFolder(ctx context.Context, username, rel string) er
 		protocol.PrepareUserFolderRequest{Path: rel}, nil)
 }
 
+// ErrPinUnsupported is returned by PinFolder when this host-agent has no
+// /v1/folders/pin op (404). The brain then falls back to the prepare-folder
+// re-check so folder apps keep working, and the folder-pin-unsupported health
+// issue tells the admin an OS update closes the swap race (#604).
+var ErrPinUnsupported = errors.New("host-agent cannot pin folder sources")
+
+// ErrFolderSourceSwapped is returned by PinFolder when host-agent found a file
+// or a symlink where a folder should be (409). The brain refuses the start
+// instead of binding a different folder (#604).
+var ErrFolderSourceSwapped = errors.New("a file or link is in the way of the folder")
+
+// PinFolder asks host-agent to pin one folder source by inode (#604). rel is
+// relative to the user's home, or to the shared tree when shared is true.
+// Returns the host pin path to write into compose.pins.yml.
+//
+// Does not go through do, because the 404 and 409 must survive as typed
+// sentinels: 404 is "old host-agent, fall back", 409 is "refuse the start".
+func (c *Client) PinFolder(ctx context.Context, req protocol.PinFolderRequest) (protocol.PinFolderResponse, error) {
+	resp, err := c.request(ctx, "POST", protocol.FolderPinPath, req)
+	if err != nil {
+		return protocol.PinFolderResponse{}, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		// Distinguish a deleted owner from an old host-agent with no route.
+		var e protocol.Error
+		if json.NewDecoder(resp.Body).Decode(&e) == nil && e.Code == "unknown-user" {
+			return protocol.PinFolderResponse{}, ErrUnknownUser
+		}
+		return protocol.PinFolderResponse{}, ErrPinUnsupported
+	case resp.StatusCode == http.StatusConflict:
+		return protocol.PinFolderResponse{}, ErrFolderSourceSwapped
+	case resp.StatusCode >= 300:
+		return protocol.PinFolderResponse{}, statusErr(protocol.FolderPinPath, resp)
+	}
+	var out protocol.PinFolderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return protocol.PinFolderResponse{}, fmt.Errorf("host-agent %s: read the answer: %w", protocol.FolderPinPath, err)
+	}
+	if out.Path == "" {
+		return protocol.PinFolderResponse{}, fmt.Errorf("host-agent %s: empty pin path", protocol.FolderPinPath)
+	}
+	return out, nil
+}
+
 // WellKnownIdentity returns the fixed service-account UIDs/GIDs for moose-app
 // and moose-shared from the host. The brain calls this during install to build
 // user: and group_add directives for household-scope app instances.

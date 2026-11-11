@@ -257,6 +257,11 @@ type UserManager interface {
 	// already checked rel with ValidUserFolderPath. It returns ErrUnknownUser
 	// or ErrNotADirectory for the two cases the brain tells apart.
 	PrepareFolder(user, rel string) error
+	// PinFolder walks <home>/<rel> (or <SharedRoot>/<rel> when shared) without
+	// following a symlink and bind-mounts the walked inode at a root-owned pin
+	// path (POST /v1/folders/pin, #604). It returns that path, or
+	// ErrUnknownUser / ErrNotADirectory for the cases the brain tells apart.
+	PinFolder(user string, shared bool, rel string) (string, error)
 	WellKnownIdentity() (appUID, appGID, sharedGID int, err error)
 	// RemapBase returns the first host id of the moose-remap subordinate
 	// range, the base of Docker's daemon-wide userns-remap. ok is false when
@@ -516,6 +521,7 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/users/{username}/exists", a.userExists)
 	mux.HandleFunc("GET /v1/users/{username}/home", a.resolveHome)
 	mux.HandleFunc("POST /v1/users/{username}/prepare-folder", a.prepareUserFolder)
+	mux.HandleFunc("POST "+protocol.FolderPinPath, a.pinFolder)
 	mux.HandleFunc("GET /v1/identity/well-known", a.wellKnownIdentity)
 	mux.HandleFunc("POST /v1/identity/app-service", a.allocateAppService)
 	mux.HandleFunc("POST /v1/identity/app-service/release", a.releaseAppService)
@@ -620,6 +626,10 @@ func (a *Agent) systemStatus(w http.ResponseWriter, r *http.Request) {
 		DataDiskFreeBytes:  free,
 		DataDiskTotalBytes: total,
 		Disks:              disks,
+		// Both binaries compile this handler, and both implement the pin op:
+		// the real one mounts, the fake returns the real path. An older
+		// host-agent has no field at all, so the brain reads false.
+		FolderPins: true,
 	})
 }
 
@@ -1256,6 +1266,98 @@ func (a *Agent) prepareUserFolder(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("prepare-folder (fake)", "username", username, "dir", req.Path)
 	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// pinFolder walks one folder source and pins it by inode (#604). The brain
+// calls it before every compose up and compose create, because Docker resolves
+// a bind source at container start: a re-check at install or update leaves a
+// window for a terminal app to swap the source for a symlink between starts.
+//
+// When UserMgr is wired (cmd/host-agent-real) the real op walks the source with
+// O_NOFOLLOW and bind-mounts the walked inode. The fake branch walks the same
+// way with Lstat and returns the real path: the dev loop runs unprivileged and
+// has no need to mount, but a planted symlink still refuses, so the refusal
+// path stays testable under `make dev`.
+func (a *Agent) pinFolder(w http.ResponseWriter, r *http.Request) {
+	var req protocol.PinFolderRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := ValidUserFolderPath(req.Path); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad-path", err.Error())
+		return
+	}
+	if !req.Shared && req.Username == "" {
+		writeErr(w, http.StatusBadRequest, "bad-request", "username is required")
+		return
+	}
+
+	if a.UserMgr != nil {
+		pin, err := a.UserMgr.PinFolder(req.Username, req.Shared, req.Path)
+		switch {
+		case err == nil:
+			slog.Info("pin-folder", "username", req.Username, "shared", req.Shared, "dir", req.Path, "pin", pin)
+			writeJSON(w, http.StatusOK, protocol.PinFolderResponse{Path: pin})
+		case errors.Is(err, ErrUnknownUser):
+			writeErr(w, http.StatusNotFound, "unknown-user", "user not found")
+		case errors.Is(err, ErrNotADirectory):
+			slog.Warn("pin-folder: something that is not a folder is in the way", "username", req.Username, "shared", req.Shared, "dir", req.Path, "err", err)
+			writeErr(w, http.StatusConflict, "not-a-directory", "a file or link is in the way of the folder")
+		default:
+			slog.Error("pin-folder: user-manager error", "username", req.Username, "shared", req.Shared, "dir", req.Path, "err", err)
+			writeErr(w, http.StatusInternalServerError, "pin-folder-failed", "pin-folder failed")
+		}
+		return
+	}
+
+	root := protocol.SharedRoot
+	if !req.Shared {
+		home, _, _, err := devIdentity()
+		if err != nil {
+			slog.Error("pin-folder (fake): resolve operator identity", "err", err)
+			writeErr(w, http.StatusInternalServerError, "pin-folder-failed", "pin-folder failed")
+			return
+		}
+		root = home
+	}
+	real, err := walkFolderNoFollow(root, req.Path)
+	if errors.Is(err, ErrNotADirectory) {
+		slog.Warn("pin-folder (fake): something that is not a folder is in the way", "dir", req.Path, "err", err)
+		writeErr(w, http.StatusConflict, "not-a-directory", "a file or link is in the way of the folder")
+		return
+	}
+	if err != nil {
+		slog.Error("pin-folder (fake)", "dir", req.Path, "err", err)
+		writeErr(w, http.StatusInternalServerError, "pin-folder-failed", "pin-folder failed")
+		return
+	}
+	slog.Info("pin-folder (fake)", "dir", req.Path, "path", real)
+	writeJSON(w, http.StatusOK, protocol.PinFolderResponse{Path: real})
+}
+
+// walkFolderNoFollow walks rel below root one level at a time with Lstat, so a
+// symlink or a file where a folder should be returns ErrNotADirectory. It is
+// the fake's stand-in for the real O_NOFOLLOW walk; it returns the real path
+// so the fake pins are a no-op in compose.
+func walkFolderNoFollow(root, rel string) (string, error) {
+	cur := root
+	for _, part := range strings.Split(rel, "/") {
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			// The fake cannot mount, and Docker would create a missing bind
+			// source. Return the real path as a no-op pin so `make dev` keeps
+			// installing shared-folder apps it cannot prepare.
+			return filepath.Join(root, filepath.FromSlash(rel)), nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if !fi.IsDir() {
+			return "", fmt.Errorf("%w: %q", ErrNotADirectory, cur)
+		}
+	}
+	return cur, nil
 }
 
 // wellKnownIdentity returns the fixed service-account UIDs/GIDs for the
