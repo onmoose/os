@@ -1436,7 +1436,7 @@ access)
     [ "$(folder_state "$sub_id")" = failed ] \
         || fail "folders: personal sub app row is '$(folder_state "$sub_id")' after the refusal, want failed"
     [ ! -e "$sub_home/.ssh/filedrop.txt" ] \
-        || fail "folders: SECURITY — the app wrote filedrop.txt into $sub_home/.ssh; the symlink was followed"
+        || fail "folders: SECURITY: the app wrote filedrop.txt into $sub_home/.ssh; the symlink was followed"
     [ -z "$(docker ps --filter "label=moose.instance_id=$sub_id" --format '{{.Names}}')" ] \
         || fail "folders: a container for $sub_id is running after the refusal"
     echo "cloud-assertions: the swapped personal sub folder was refused and ~/.ssh was not bound"
@@ -1455,6 +1455,27 @@ access)
     [ -n "$sub_c" ] || fail "folders: no running container for personal sub app $sub_id after the restart"
     sub_src="$(docker inspect "$sub_c" --format '{{range .Mounts}}{{if eq .Destination "/moose/documents"}}{{.Source}}{{end}}{{end}}')"
     echo "cloud-assertions: the personal sub folder started again after it was put back"
+
+    # What the pin adds over a re-check at start: a swap made while the app
+    # runs, followed by a restart Docker does on its own (restart:
+    # unless-stopped after a crash, or a daemon restart), never reaches the
+    # brain's check. The container must still bind the pinned inode, so the
+    # file lands in the real folder under its new name, and nothing lands in
+    # ~/.ssh.
+    rm -f "$sub_dir/filedrop.txt" "$sub_home/.ssh/filedrop.txt"
+    mv "$sub_dir" "$sub_dir.real"
+    ln -s "$sub_home/.ssh" "$sub_dir"
+    docker restart "$sub_c" >/dev/null \
+        || fail "folders: docker restart of $sub_c failed"
+    wait_file "$sub_dir.real/filedrop.txt" \
+        || fail "folders: after a swap while pinned and a docker restart, the app wrote no file into the pinned folder: $(ls -la "$sub_dir.real" "$sub_home/.ssh" 2>&1 | tr '\n' ' ')"
+    [ ! -e "$sub_home/.ssh/filedrop.txt" ] \
+        || fail "folders: SECURITY: after a swap while pinned and a docker restart, the app wrote into $sub_home/.ssh"
+    [ "$(docker inspect "$sub_c" --format '{{range .Mounts}}{{if eq .Destination "/moose/documents"}}{{.Source}}{{end}}{{end}}')" = "$sub_src" ] \
+        || fail "folders: after docker restart, $sub_c no longer binds the pin $sub_src"
+    rm -f "$sub_dir"
+    mv "$sub_dir.real" "$sub_dir"
+    echo "cloud-assertions: a swap while pinned and a docker restart kept the pinned folder and left ~/.ssh alone"
 
     # The boot restorer puts a pin back before Docker starts. Prove the unit is
     # ordered there and that one run remounts a pin that was detached.
@@ -1498,7 +1519,7 @@ access)
     grep -qiE 'not a folder|link' <<<"$FJ_ERROR" \
         || fail "folders: the shared refusal did not name the link: $FJ_ERROR"
     [ ! -e "$sh_secret/filedrop.txt" ] \
-        || fail "folders: SECURITY — the app wrote filedrop.txt into $sh_secret; the shared symlink was followed"
+        || fail "folders: SECURITY: the app wrote filedrop.txt into $sh_secret; the shared symlink was followed"
     rm -f "$sh_dir.real/filedrop.txt"
     rm -f "$sh_dir"
     mv "$sh_dir.real" "$sh_dir"

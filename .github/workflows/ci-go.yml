@@ -75,6 +75,22 @@ jobs:
       - name: Test (full suite incl. pamverifier)
         run: set -o pipefail && make test GOTESTFLAGS=-v 2>&1 | tee /tmp/gotest.log
 
+      # The folder pin test needs root for its bind mount, so the suite above
+      # skips it. The runner has passwordless sudo: run it again as root, and
+      # fail if it skipped or did not pass, so the pin's walk and mount are
+      # proved on every PR, not only on a box (#604). Root gets its own build
+      # cache, so the runner's cache stays owned by the runner user.
+      - name: Test the folder pin as root
+        run: |
+          set -euo pipefail
+          sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" GOCACHE=/tmp/gocache-root \
+            CGO_CFLAGS="$CGO_CFLAGS" \
+            go test -count=1 -v -run 'TestPinFolder' ./internal/hostagent/usermgr 2>&1 | tee /tmp/gotest-root.log
+          if grep -q -- '--- SKIP' /tmp/gotest-root.log || ! grep -q -- '--- PASS: TestPinFolder' /tmp/gotest-root.log; then
+            echo "the folder pin test did not run and pass as root" >&2
+            exit 1
+          fi
+
       # Surface skips, don't fail on them: 22 are legitimate here (root, avahi,
       # NetworkManager, bash). The point is that a NEW silent skip is visible to
       # a reviewer instead of hiding in a green check. Never fails the job —
