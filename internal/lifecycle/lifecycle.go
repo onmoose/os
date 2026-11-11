@@ -91,6 +91,12 @@ func SuggestedFolderPath(f manifest.Folder) string {
 	return p
 }
 
+// ErrFolderAlreadyThere is returned by an install when a new folder (the
+// election's new: true) turned out to be in the owner's home already when
+// host-agent went to make it (#658). The words are the user's: the job error
+// shows them.
+var ErrFolderAlreadyThere = errors.New("a folder with this name is already in your home, and moose can only use a new folder it made itself. Choose another name")
+
 // FolderMount is one resolved per-folder election the override generator binds.
 // The manifest declares the folder + mode; the installer elects Source
 // (personal|shared) and Path, where the folder points (#655). Built and
@@ -666,12 +672,14 @@ func (m *Manager) prepareFolderSources(ctx context.Context, id string, owner Own
 	// follows a symlink. Under the fake host-agent (make dev) it creates the
 	// folder in the operator's own home. SHARED sources are prepared below, by
 	// a different rule.
+	madeNow := map[string]bool{}
 	for _, mt := range mounts {
 		if mt.Source != sourcePersonal {
 			continue
 		}
 		rel := mt.relPath()
-		if err := m.host.PrepareUserFolder(ctx, owner.Username, rel); err != nil {
+		madeTop, err := m.host.PrepareUserFolder(ctx, owner.Username, rel)
+		if err != nil {
 			return fmt.Errorf("prepare folder source %q: %w", iso.hostSource(mt), err)
 		}
 		// A new top-level folder gets its row once host-agent has made it, so
@@ -682,6 +690,18 @@ func (m *Manager) prepareFolderSources(ctx context.Context, id string, owner Own
 		// "moose made this folder", so it is written once the folder exists.
 		if mt.NewFolder {
 			top, _, _ := strings.Cut(rel, "/")
+			if madeTop {
+				madeNow[top] = true
+			}
+			// The API refused a name that was already in the home before the
+			// install started (#658). A folder that appeared since, made by
+			// hand, is refused here, and gets no row: only a folder moose made
+			// may be given to an app (APP_ISOLATION.md # User content). Two
+			// folders of one install under the same new name are fine: the
+			// first one made it.
+			if !madeNow[top] {
+				return fmt.Errorf("%w: %q", ErrFolderAlreadyThere, top)
+			}
 			if err := m.store.AddMadeFolder(owner.UserID, top); err != nil {
 				return fmt.Errorf("record the new folder %q: %w", top, err)
 			}
@@ -2890,3 +2910,7 @@ func completionGateTargets(svcs map[string]composeService) map[string]bool {
 func newInstanceID(manifestID string) string {
 	return fmt.Sprintf("%s-%s", manifestID, time.Now().Format("20060102t150405"))
 }
+
+// SharedRoot is the household shared tree root the brain binds shared folder
+// sources from. The API lists it for the folder chooser (#658).
+func (m *Manager) SharedRoot() string { return m.sharedRoot }

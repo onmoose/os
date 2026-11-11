@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/onmoose/os/internal/auth"
 	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/events"
+	"github.com/onmoose/os/internal/folderlist"
 	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/protocol"
@@ -82,6 +84,9 @@ type harness struct {
 	// instance's persisted manifest at <stateDir>/instances/<id>/manifest.yml —
 	// the copy the brain reads for an app that is already installed (#434).
 	stateDir string
+	// homes holds one folder per username, the homes the host-agent mock
+	// lists for the folder chooser (#658).
+	homes string
 }
 
 // srvServer exposes the underlying *Server for tests that exercise handler
@@ -208,6 +213,33 @@ func newHarness(t *testing.T, opts ...func(*Server)) *harness {
 			},
 		})
 	})
+	// The folder chooser's listing (#658) reads a real tree, homes/<user>, so
+	// a test makes folders with os.MkdirAll and sees the same rules
+	// (folderlist) the fake host-agent applies.
+	homes := t.TempDir()
+	mux.HandleFunc("GET /v1/users/{username}/folders", func(w http.ResponseWriter, r *http.Request) {
+		rel := r.URL.Query().Get("path")
+		names, truncated, err := folderlist.List(filepath.Join(homes, r.PathValue("username")), rel)
+		if rel == "" && errors.Is(err, folderlist.ErrNotFound) {
+			names, err = nil, nil
+		}
+		switch {
+		case errors.Is(err, folderlist.ErrNotFound):
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "not-found", Message: "the folder does not exist"})
+		case errors.Is(err, folderlist.ErrNotADirectory):
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "not-a-directory", Message: "in the way"})
+		case err != nil:
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "list-folders-failed", Message: err.Error()})
+		default:
+			if names == nil {
+				names = []string{}
+			}
+			_ = json.NewEncoder(w).Encode(protocol.ListUserFoldersResponse{Folders: names, Truncated: truncated})
+		}
+	})
 	hostHTTP := &http.Server{Handler: mux}
 	go func() { _ = hostHTTP.Serve(ln) }()
 	t.Cleanup(func() { _ = hostHTTP.Close() })
@@ -242,7 +274,7 @@ func newHarness(t *testing.T, opts ...func(*Server)) *harness {
 	t.Cleanup(ts.Close)
 
 	jar, _ := newJar()
-	return &harness{srv: ts, jar: jar, t: t, pwds: pwds, pmu: &pmu, st: st, deleteCalls: &deleteCalls, tzCalls: &tzCalls, sshCalls: &sshCalls, roles: roles, apiSrv: srv, catalogDir: catDir, stateDir: stateDir}
+	return &harness{srv: ts, jar: jar, t: t, pwds: pwds, pmu: &pmu, st: st, deleteCalls: &deleteCalls, tzCalls: &tzCalls, sshCalls: &sshCalls, roles: roles, apiSrv: srv, catalogDir: catDir, stateDir: stateDir, homes: homes}
 }
 
 func (h *harness) do(method, path string, body any) *http.Response {

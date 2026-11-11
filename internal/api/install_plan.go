@@ -340,9 +340,11 @@ var newFolderTaken = map[string]bool{"Shared": true}
 // with no colon (manifest.ValidFolderLevel). The first level must be a
 // use-case folder or, for a personal source, a folder made through moose
 // (made) or one the user asks moose to make now (isNew). A new folder may not
-// be named bin, start with a dot, or take a name moose uses. The first-level
-// rule is the brain's alone: host-agent cannot see the rows.
-func checkFolderPath(source, path string, isNew bool, made map[string]bool) (newTop bool, msg string) {
+// be named bin, start with a dot, take a name moose uses, or take a name that
+// is already in the home (onDisk, the top of the owner's home as host-agent
+// listed it, #658): a folder made by hand is not one moose made. The
+// first-level rule is the brain's alone: host-agent cannot see the rows.
+func checkFolderPath(source, path string, isNew bool, made, onDisk map[string]bool) (newTop bool, msg string) {
 	if !manifest.ValidSubfolder(path) {
 		return false, "choose a folder such as Documents/Taxes. A folder name cannot be empty, start with a dot, or contain a colon or a dollar sign"
 	}
@@ -358,6 +360,8 @@ func checkFolderPath(source, path string, isNew bool, made map[string]bool) (new
 		return false, "choose a folder inside one of your folders, such as Documents, or make a new folder"
 	case top == "bin" || newFolderTaken[top]:
 		return false, fmt.Sprintf("a new folder cannot be named %q. Choose another name", top)
+	case onDisk[top]:
+		return false, fmt.Sprintf("a folder named %q is already in your home, and moose can only use a new folder it made itself. Choose another name", top)
 	}
 	return true, ""
 }
@@ -367,6 +371,8 @@ func checkFolderPath(source, path string, isNew bool, made map[string]bool) (new
 // resolved install scope (#655). The install-plan endpoint is advisory; this
 // is the gate. made is the names of the folders the brain made for the owner
 // through moose (store.MadeFolders); it matters only for a personal source.
+// onDisk is the top level of the owner's home, listed only when an election
+// asks for a new folder (#658); nil otherwise.
 //
 // It returns one lifecycle.FolderMount per declared folder the user did not
 // skip, in manifest order, then one per extra folder, or a 422 huma error the
@@ -376,7 +382,7 @@ func checkFolderPath(source, path string, isNew bool, made map[string]bool) (new
 // source not allowed for the scope, a skip of a required folder, a path and a
 // subfolder together, a path outside the folder limit, an extra folder for an
 // app that declares no extra_folders, and the same extra folder twice.
-func resolveElections(man *manifest.Manifest, scope string, elections []FolderElection, extras []ExtraFolderElection, made map[string]bool) ([]lifecycle.FolderMount, error) {
+func resolveElections(man *manifest.Manifest, scope string, elections []FolderElection, extras []ExtraFolderElection, made, onDisk map[string]bool) ([]lifecycle.FolderMount, error) {
 	declared := make(map[string]bool, len(man.Permissions.Folders))
 	for _, f := range man.Permissions.Folders {
 		declared[f.Folder] = true
@@ -429,7 +435,7 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 			}
 			path = lifecycle.FolderDir(f.Folder) + "/" + e.Subfolder
 		}
-		newTop, msg := checkFolderPath(src, path, e.New, made)
+		newTop, msg := checkFolderPath(src, path, e.New, made, onDisk)
 		if msg != "" {
 			return nil, configError(loc, fmt.Sprintf("For the %s folder, %s.", lifecycle.FolderDir(f.Folder), msg))
 		}
@@ -450,7 +456,7 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 		if x.Path == "" {
 			return nil, configError(loc, "Choose a folder to add")
 		}
-		newTop, msg := checkFolderPath(src, x.Path, x.New, made)
+		newTop, msg := checkFolderPath(src, x.Path, x.New, made, onDisk)
 		if msg != "" {
 			return nil, configError(loc, fmt.Sprintf("For the added folder %q, %s.", x.Path, msg))
 		}

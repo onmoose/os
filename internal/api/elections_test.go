@@ -55,7 +55,7 @@ func wantStatus(t *testing.T, err error, status int) {
 
 // resolve is resolveElections with no extra folders and no made folders.
 func resolve(man *manifest.Manifest, scope string, elections []FolderElection) ([]lifecycle.FolderMount, error) {
-	return resolveElections(man, scope, elections, nil, nil)
+	return resolveElections(man, scope, elections, nil, nil, nil)
 }
 
 func TestResolveElections_DefaultsPersonal(t *testing.T) {
@@ -129,7 +129,7 @@ func TestResolveElections_ChosenPath(t *testing.T) {
 	man := jellyfinManifest(t)
 	made := map[string]bool{"Recipes": true}
 	for _, path := range []string{"Documents/Films", "Documents/Taxes 2026", "Projects/site", "Projects/bin", "Recipes", "Recipes/Cakes", "Downloads"} {
-		mounts, err := resolveElections(man, store.ScopePersonal, []FolderElection{{Folder: "movies", Path: path}}, nil, made)
+		mounts, err := resolveElections(man, store.ScopePersonal, []FolderElection{{Folder: "movies", Path: path}}, nil, made, nil)
 		if err != nil {
 			t.Fatalf("path %q: %v", path, err)
 		}
@@ -194,7 +194,7 @@ func TestResolveElections_SkipAndExtraFolders(t *testing.T) {
 	mounts, err := resolveElections(man, store.ScopePersonal,
 		[]FolderElection{{Folder: "projects", Path: "Projects/site"}, {Folder: "notes", Skip: true}},
 		[]ExtraFolderElection{{Path: "Recipes", New: true}, {Path: "Documents/Recipes"}, {Path: "Photos/Recipes", Source: sourceShared}},
-		nil)
+		nil, nil)
 	if err != nil {
 		t.Fatalf("resolveElections: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestResolveElections_Rejections(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := resolveElections(tc.man, tc.scope, tc.elections, tc.extras, made)
+			_, err := resolveElections(tc.man, tc.scope, tc.elections, tc.extras, made, nil)
 			wantStatus(t, err, http.StatusUnprocessableEntity)
 			if got := configLocation(t, err); got != tc.location {
 				t.Errorf("location = %q, want %q", got, tc.location)

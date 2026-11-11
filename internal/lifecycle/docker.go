@@ -196,8 +196,9 @@ type HostDriver interface {
 	// exists and is owned by the user before compose up (#519). The brain
 	// cannot do it: its container does not mount /home, so host-agent does it
 	// as a narrow named op (CONTROL_PLANE.md # Locked: host-agent hardening
-	// directives). rel starts with the capitalized folder, e.g. "Documents/Work".
-	PrepareUserFolder(ctx context.Context, user, rel string) error
+	// directives). rel is inside the folder limit, e.g. "Documents/Work".
+	// madeTop is true when the call made the first level of rel (#658).
+	PrepareUserFolder(ctx context.Context, user, rel string) (madeTop bool, err error)
 	// WellKnownIdentity returns the fixed host service identities: the moose-app
 	// service UID/GID a household instance runs as, and the moose-shared GID a
 	// shared-source folder mount joins via group_add.
