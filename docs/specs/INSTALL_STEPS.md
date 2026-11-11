@@ -230,7 +230,7 @@ recommends:
 - `mail` is a special member. Today a `one_of` member is a kind (only `ai`), a slot, or a plain `app_env`, and a member that matches no field is dropped. `mail` matches no field, so it must be resolved from the manifest's `mail:` block instead. The lenient reader drops a `mail` member when the manifest has no `mail:` block, and logs it; the lint rejects that case.
 - The shape is a proposal: see # Open questions.
 
-### 5b. The folder step with the folder chooser (#655, planned, not built)
+### 5b. The folder step with the folder chooser (#655, built in #658)
 
 The folder step stays the consent screen, and keeps its place last. What changes is that the user can now choose where each folder points (`APP_MANIFEST.md` # `folders`):
 
@@ -240,6 +240,7 @@ The folder step stays the consent screen, and keeps its place last. What changes
 - **Errors.** A `422` on `config.folders.<folder>` or `config.extra_folders[<i>]` opens this step with the message on that row.
 - **Session storage** keeps the chosen paths with the other non-secret answers (# Build rules, rule 5).
 - **Words.** "Folder", never "volume", "mount" or "path" on screen (`STORAGE.md` # Stance). The path is shown with " / " between its parts, with no leading slash and no `~`.
+- **As built (#658).** The chooser opens inside the row, under it, and only one is open at a time. It opens in the folder the row points at. A new folder made in the chooser is shown with "(new)". For an extra folder on a personal app, the chooser has two buttons at the top, Your folders and Shared folders, since an extra folder has no source radios of its own. The step shows for an app with `extra_folders` even when it declares no folder.
 
 ### 6. Other rules
 
