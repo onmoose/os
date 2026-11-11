@@ -79,7 +79,7 @@ func CheckManifest(man *manifest.Manifest) error {
 			return err
 		}
 	}
-	if man.ServiceUser && len(man.Permissions.Folders) > 0 {
+	if man.ServiceUser && man.Permissions.FolderApp() {
 		return reject("manifest sets service_user: true together with a folders grant — a folder app already runs as a managed non-root identity (APP_MANIFEST.md # B); remove service_user")
 	}
 	if _, _, err := StoragePaths(man.Storage); err != nil {
@@ -163,7 +163,7 @@ func StoragePaths(st manifest.Storage) (data, cache []string, err error) {
 func checkRootSetup(man *manifest.Manifest) error {
 	const why = "root_setup is for folderless apps only: it gives capabilities back, which is safe only in a remapped user namespace, and this grant runs the app in the host one (APP_MANIFEST.md # B). Remove root_setup, or package the image to start without root"
 	switch {
-	case len(man.Permissions.Folders) > 0:
+	case man.Permissions.FolderApp():
 		return reject("manifest sets root_setup: true together with a folders grant. %s", why)
 	case man.Permissions.GPU:
 		return reject("manifest sets root_setup: true together with gpu: true. %s", why)
@@ -185,7 +185,7 @@ func checkRootSetup(man *manifest.Manifest) error {
 func checkImageUser(man *manifest.Manifest) error {
 	const why = "image_user is for folderless apps only: it keeps the user id the image names, which is safe only in a remapped user namespace, and this grant runs the app in the host one (APP_MANIFEST.md # B). Remove image_user, or package the image to run as the user moose gives it"
 	switch {
-	case len(man.Permissions.Folders) > 0:
+	case man.Permissions.FolderApp():
 		return reject("manifest sets image_user: true together with a folders grant. %s", why)
 	case man.Permissions.GPU:
 		return reject("manifest sets image_user: true together with gpu: true. %s", why)

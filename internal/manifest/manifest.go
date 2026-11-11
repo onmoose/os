@@ -595,6 +595,12 @@ type Permissions struct {
 	// the earlier `user_folders` / `shared_folders` split.
 	Folders []Folder `yaml:"folders"`
 
+	// ExtraFolders lets the user add more folders of their own choice, with
+	// this mode: "read" or "write", or "" for none (APP_MANIFEST.md # folders,
+	// #655). Each one mounts at /moose/extra/<Name>. An app that sets it is a
+	// folder app even before the user adds a folder (FolderApp).
+	ExtraFolders string `yaml:"extra_folders,omitempty"`
+
 	// Devices lists explicit /dev/... paths to pass through (Zigbee dongles,
 	// webcams). The brain validates each exists before start (APP_ISOLATION.md #
 	// Devices). Separate from GPU.
@@ -607,14 +613,25 @@ type Permissions struct {
 	GPU bool `yaml:"gpu"`
 }
 
-// Folder is one declared use-case content folder. Folder names come from the
-// fixed v1 taxonomy; Mode defaults to read; Scope defaults to whole.
-// pick-subfolder may carry a Default subpath the user can override at install.
+// FolderApp reports whether the app is a folder app: it declares folders or
+// extra_folders. A folder app runs as the owner's UID in the host user
+// namespace even when the user chose no folder for it, so adding one later
+// does not change how it runs (APP_MANIFEST.md # folders, #655).
+func (p Permissions) FolderApp() bool {
+	return len(p.Folders) > 0 || p.ExtraFolders != ""
+}
+
+// Folder is one declared folder. Folder names come from the fixed list
+// (folderTaxonomy); Mode defaults to read. The user chooses where the folder
+// points at install (#655): Default is only the suggested subfolder, under
+// the folder, and Optional lets the user skip it. Scope is still read so an
+// older manifest parses, and it does nothing.
 type Folder struct {
-	Folder  string `yaml:"folder"`            // photos|documents|movies|music|notes|downloads
-	Mode    string `yaml:"mode"`              // read|write (default read)
-	Scope   string `yaml:"scope"`             // whole|pick-subfolder (default whole)
-	Default string `yaml:"default,omitempty"` // default subpath for pick-subfolder
+	Folder   string `yaml:"folder"`             // photos|documents|movies|music|notes|downloads|projects
+	Mode     string `yaml:"mode"`               // read|write (default read)
+	Scope    string `yaml:"scope"`              // whole|pick-subfolder; no effect since #655
+	Default  string `yaml:"default,omitempty"`  // suggested subfolder, relative to the folder
+	Optional bool   `yaml:"optional,omitempty"` // the user may skip the folder
 
 	// Target is the explicit in-container destination path, set ONLY by Door-2
 	// synthetic manifests (DASHBOARD.md # Folder grants carry an explicit
@@ -762,11 +779,13 @@ var reservedConfigEnv = map[string]bool{
 	"IFS": true, "LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "LD_AUDIT": true,
 }
 
-// folderTaxonomy is the fixed v1 use-case folder set (APP_ISOLATION.md # User
-// content). User-defined folders are deferred.
+// folderTaxonomy is the fixed folder list (APP_ISOLATION.md # User content):
+// the six use-case folders and projects (#655). It grows only by a spec
+// change, so the catalog cannot put new folders in people's homes.
 var folderTaxonomy = map[string]bool{
 	"photos": true, "documents": true, "movies": true,
 	"music": true, "notes": true, "downloads": true,
+	"projects": true,
 }
 
 // IsListed reports whether the app is visible/installable through the store.
@@ -1141,17 +1160,29 @@ func (m *Manifest) validateHealthProbe() error {
 }
 
 // ValidatePermissions normalizes folder defaults (mode=read, scope=whole) in
-// place and rejects unknown folder names, modes, scopes, or malformed Door-2
-// targets. It deliberately validates nothing about *source* — personal vs shared
+// place and rejects unknown folder names, modes and scopes, a folder listed
+// twice, a bad default or extra_folders value, or malformed Door-2 targets.
+// It deliberately validates nothing about *source*: personal vs shared
 // is resolved by the installer at install time, not declared here (APP_MANIFEST.md
 // # folders). Exported because the Door-2 "Edit as YAML" overlay parses an
 // admin-authored permissions block through the same gate (DASHBOARD.md # Form is
 // a projection of the synthetic manifest).
 func ValidatePermissions(p *Permissions) error {
+	seen := make(map[string]bool, len(p.Folders))
 	for i := range p.Folders {
 		f := &p.Folders[i]
 		if !folderTaxonomy[f.Folder] {
-			return fmt.Errorf("permissions.folders: unknown folder %q (allowed: photos, documents, movies, music, notes, downloads)", f.Folder)
+			return fmt.Errorf("permissions.folders: unknown folder %q (allowed: photos, documents, movies, music, notes, downloads, projects)", f.Folder)
+		}
+		// The install's elections are keyed by folder, so a store folder may
+		// appear once (APP_MANIFEST.md # folders). A Door-2 grant has a
+		// target and no elections, and may bind one folder at two targets,
+		// so it is not checked: a custom app stored with that must still load.
+		if f.Target == "" {
+			if seen[f.Folder] {
+				return fmt.Errorf("permissions.folders: %q is listed twice; list each folder once", f.Folder)
+			}
+			seen[f.Folder] = true
 		}
 		if f.Mode == "" {
 			f.Mode = "read"
@@ -1159,19 +1190,18 @@ func ValidatePermissions(p *Permissions) error {
 		if f.Mode != "read" && f.Mode != "write" {
 			return fmt.Errorf("permissions.folders[%s]: mode must be read or write, got %q", f.Folder, f.Mode)
 		}
+		// scope does nothing since #655. A value other than the two old ones
+		// is still a typo, so it is still refused.
 		if f.Scope == "" {
 			f.Scope = "whole"
 		}
 		if f.Scope != "whole" && f.Scope != "pick-subfolder" {
 			return fmt.Errorf("permissions.folders[%s]: scope must be whole or pick-subfolder, got %q", f.Folder, f.Scope)
 		}
-		if f.Default != "" {
-			if f.Scope != "pick-subfolder" {
-				return fmt.Errorf("permissions.folders[%s]: default is only valid with scope: pick-subfolder", f.Folder)
-			}
-			if strings.HasPrefix(f.Default, "/") || strings.Contains(f.Default, "..") {
-				return fmt.Errorf("permissions.folders[%s]: default must be a relative subpath under the folder", f.Folder)
-			}
+		// default no longer needs scope: pick-subfolder (#655). The lint warns
+		// about that, because an older brain refuses it.
+		if f.Default != "" && !ValidSubfolder(f.Default) {
+			return fmt.Errorf("permissions.folders[%s]: default must be a relative subfolder under the folder, with no empty, \".\" or \"..\" level and no level that starts with a dot", f.Folder)
 		}
 		// Door-2-only: the explicit in-container destination must be an absolute
 		// path with no traversal (it's a container path the admin typed, not a
@@ -1180,7 +1210,40 @@ func ValidatePermissions(p *Permissions) error {
 			return fmt.Errorf("permissions.folders[%s]: target must be an absolute in-container path with no '..', got %q", f.Folder, f.Target)
 		}
 	}
+	if p.ExtraFolders != "" && p.ExtraFolders != "read" && p.ExtraFolders != "write" {
+		return fmt.Errorf("permissions.extra_folders must be read or write, got %q", p.ExtraFolders)
+	}
 	return nil
+}
+
+// ValidFolderLevel reports whether one level of a folder path is a plain
+// folder name: not empty, not starting with a dot (which also rules out "."
+// and ".."), and with no colon, dollar sign or control character. The dot
+// rule is the folder limit's (APP_ISOLATION.md # User content). A colon would
+// break the compose bind the brain writes, which is "<host path>:<container
+// path>:<mode>". A dollar sign would be read by compose as a variable: an
+// unset "$X" folder turns into "" and binds the whole home.
+func ValidFolderLevel(level string) bool {
+	if level == "" || strings.HasPrefix(level, ".") || len(level) > 255 {
+		return false
+	}
+	for _, r := range level {
+		if r == ':' || r == '$' || r == '/' || r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidSubfolder reports whether p is a relative path whose every level
+// passes ValidFolderLevel.
+func ValidSubfolder(p string) bool {
+	for _, level := range strings.Split(p, "/") {
+		if !ValidFolderLevel(level) {
+			return false
+		}
+	}
+	return true
 }
 
 // kebabSlug matches lowercase alphanumeric labels joined by single hyphens:

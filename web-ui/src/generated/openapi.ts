@@ -1567,6 +1567,7 @@ export interface components {
         };
         ConfigStruct: {
             ai_bindings?: components["schemas"]["AIBindingBody"][] | null;
+            extra_folders?: components["schemas"]["ExtraFolderElection"][] | null;
             fields?: {
                 [key: string]: string;
             };
@@ -1747,8 +1748,16 @@ export interface components {
             required: boolean;
             title: string;
         };
+        ExtraFolderElection: {
+            new?: boolean;
+            path: string;
+            source?: string;
+        };
         FolderElection: {
             folder: string;
+            new?: boolean;
+            path?: string;
+            skip?: boolean;
             source?: string;
             subfolder?: string;
         };
@@ -1890,6 +1899,7 @@ export interface components {
         InstallPlanFolder: {
             folder: string;
             mode: string;
+            optional: boolean;
             scope: string;
             sources: components["schemas"]["FolderSources"];
             subfolder_default?: string;
@@ -1910,6 +1920,7 @@ export interface components {
         };
         InstallPlanPermissions: {
             devices: string[] | null;
+            extra_folders?: string;
             folders: components["schemas"]["InstallPlanFolder"][] | null;
             gpu: boolean;
             internet: boolean;

@@ -397,9 +397,12 @@ func TestUpdateRefusals(t *testing.T) {
 			status: store.UpdateNeedsApproval, reason: "asks for more access",
 			wants: []store.AccessWant{{Kind: store.WantPublicPath, Path: "/api"}},
 		},
-		"folder added": {
+		// A first folder turns a folderless app into a folder app, which
+		// runs as another user, so it is refused even with no remap
+		// (UPDATES.md # What an allowed update turns on, #655).
+		"first folder added": {
 			v2:     strings.Replace(v2(""), "  lan: false\n", "  lan: false\n  folders:\n    - folder: photos\n      mode: read\n", 1),
-			status: store.UpdateNeedsApproval, reason: "asks for more access",
+			status: store.UpdateBlocked, reason: "different kind of isolation",
 			wants: []store.AccessWant{{Kind: store.WantFolder, Folder: "photos", Mode: "read", Change: store.FolderNew, Source: "shared"}},
 		},
 		"managed service major and wider": {

@@ -115,7 +115,7 @@ func TestPrepareUnder_RefusesBadInput(t *testing.T) {
 	if err := prepareUnder("relative/home", "Photos", uid, gid); err == nil {
 		t.Error("relative home: want an error")
 	}
-	for _, rel := range []string{"Photos/../..", "Photos//x", "./Photos", ""} {
+	for _, rel := range []string{"Photos/../..", "Photos//x", "./Photos", "", ".ssh", "Projects/.git", "bin", "bin/x"} {
 		if err := prepareUnder(home, rel, uid, gid); err == nil {
 			t.Errorf("rel %q: want an error", rel)
 		}

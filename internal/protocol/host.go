@@ -387,8 +387,11 @@ type ResolveHomeResponse struct {
 // PrepareUserFolderRequest is POST /v1/users/{username}/prepare-folder. It asks
 // host-agent to make sure a personal folder source exists before an app binds
 // it (APP_ISOLATION.md # Runtime identity & data ownership, #519). Path is
-// relative to the user's home and starts with one of UseCaseFolderDirs, for
-// example "Documents" or "Documents/Notebooks".
+// relative to the user's home, for example "Documents/Notebooks" or
+// "Recipes". Since #655 host-agent checks the parts of the folder limit it can
+// see: at least one level, no level that starts with a dot, and a first level
+// that is not "bin". The brain checks the rest (the first level is a use-case
+// folder or a folder made through moose) before it sends the request.
 //
 // The brain cannot do this itself: it runs in a container that does not mount
 // /home, so a directory it made would land in the container, not on the host.
@@ -402,10 +405,11 @@ type PrepareUserFolderRequest struct {
 }
 
 // UseCaseFolderDirs are the capitalized use-case folders under a user's home
-// and the shared tree (STORAGE.md # What apps and users actually see). The
-// first level of a PrepareUserFolderRequest path must be one of them, so the op
-// can never create or re-own anything else in a home, such as ~/.ssh.
-var UseCaseFolderDirs = []string{"Photos", "Documents", "Movies", "Music", "Notes", "Downloads"}
+// and the shared tree (STORAGE.md # What apps and users actually see), with
+// Projects, which is made the first time an app asks for it (#655). The brain
+// lets an app's folder start at one of them, or at a folder made through moose
+// (APP_ISOLATION.md # User content).
+var UseCaseFolderDirs = []string{"Photos", "Documents", "Movies", "Music", "Notes", "Downloads", "Projects"}
 
 // SharedRoot is the household shared tree, owned root:moose-shared with mode
 // 02770 (STORAGE.md # Permissions). host-agent makes sure it exists before it

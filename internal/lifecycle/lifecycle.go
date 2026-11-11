@@ -71,17 +71,52 @@ const defaultSharedRoot = protocol.SharedRoot
 var folderDir = map[string]string{
 	"photos": "Photos", "documents": "Documents", "movies": "Movies",
 	"music": "Music", "notes": "Notes", "downloads": "Downloads",
+	"projects": "Projects",
+}
+
+// FolderDir is the capitalized folder a folder name suggests, such as
+// "Documents" for documents ("" for a name not in the list).
+func FolderDir(folder string) string { return folderDir[folder] }
+
+// SuggestedFolderPath is where a declared folder points when the user does
+// not choose: the folder, plus the manifest's default subfolder under it
+// (APP_MANIFEST.md # folders). It is relative to the top of the home or the
+// shared tree, such as "Notes/Obsidian". Install and an update that adds a
+// folder both use it, so the two cannot differ.
+func SuggestedFolderPath(f manifest.Folder) string {
+	p := folderDir[f.Folder]
+	if f.Default != "" {
+		p += "/" + f.Default
+	}
+	return p
 }
 
 // FolderMount is one resolved per-folder election the override generator binds.
 // The manifest declares the folder + mode; the installer elects Source
-// (personal|shared) and, for a pick-subfolder folder, a Subfolder. Built and
+// (personal|shared) and Path, where the folder points (#655). Built and
 // validated by the API layer (internal/api resolveElections) — lifecycle treats
 // it as authoritative and only cross-references the manifest for the mount mode.
 type FolderMount struct {
-	Folder    string // taxonomy name (lowercase): photos|documents|movies|music|notes|downloads
-	Source    string // sourcePersonal | sourceShared
-	Subfolder string // optional relative subpath under the folder (pick-subfolder)
+	Folder string // the declared folder name (lowercase): photos|...|projects; "" for an extra folder
+	Source string // sourcePersonal | sourceShared
+
+	// Path is where the folder points, relative to the top of the owner's home
+	// (personal) or of the shared tree (shared), such as "Notes/Obsidian" or
+	// "Recipes". The API has checked it against the folder limit
+	// (APP_ISOLATION.md # User content). Empty means the whole folder that
+	// Folder names.
+	Path string
+
+	// Extra is the <Name> of an extra folder (APP_MANIFEST.md # folders,
+	// extra_folders): it mounts at /moose/extra/<Name>, with the manifest's
+	// extra_folders mode. Empty for a declared folder.
+	Extra string
+
+	// NewFolder says the first level of Path is a folder the user asked moose
+	// to make (the election's new: true). Once host-agent has made it, the
+	// brain stores the row that lets it be chosen again (STORAGE.md # Folders
+	// made through moose).
+	NewFolder bool
 
 	// Target is the in-container destination for a Door-2 grant — the path the
 	// admin typed because a pasted compose has no author to map MOOSE_FOLDER_<NAME>
@@ -121,31 +156,42 @@ type isolation struct {
 	imageIDs map[string]imageIDs
 }
 
-// hostSource resolves the host path bound for one mount: the owner's
-// <home>/<Folder>/ for a personal source, <sharedBase>/<Folder>/ (the household
-// shared tree, /srv/moose/shared in production) for a shared source, narrowed by
-// Subfolder when present.
+// hostSource resolves the host path bound for one mount: <home>/<Path> for a
+// personal source, <sharedBase>/<Path> (the household shared tree,
+// /srv/moose/shared in production) for a shared source.
 func (it *isolation) hostSource(mt FolderMount) string {
 	if mt.hostPath != "" {
 		return mt.hostPath
 	}
-	base := filepath.Join(it.sharedBase, folderDir[mt.Folder])
+	root := it.sharedBase
 	if mt.Source == sourcePersonal {
-		base = filepath.Join(it.home, folderDir[mt.Folder])
+		root = it.home
 	}
-	if mt.Subfolder != "" {
-		base = filepath.Join(base, mt.Subfolder)
-	}
-	return base
+	return filepath.Join(root, filepath.FromSlash(mt.relPath()))
 }
 
+// relPath is the mount's Path, or the whole folder when Path is empty.
+func (mt FolderMount) relPath() string {
+	if mt.Path != "" {
+		return mt.Path
+	}
+	return folderDir[mt.Folder]
+}
+
+// extraDir is the folder in the container that holds the extra folders, and
+// the value of MOOSE_FOLDER_EXTRA (APP_MANIFEST.md # folders).
+const extraDir = "/moose/extra"
+
 // containerDest is where a mount lands inside the container: the admin-typed
-// Door-2 `target` when set, else the fixed `/moose/<folder>` a store app's
-// author maps via MOOSE_FOLDER_<NAME> (DASHBOARD.md # Folder grants carry an
-// explicit destination path).
+// Door-2 `target` when set, /moose/extra/<Name> for an extra folder, else the
+// fixed `/moose/<folder>` a store app's author maps via MOOSE_FOLDER_<NAME>
+// (DASHBOARD.md # Folder grants carry an explicit destination path).
 func containerDest(mt FolderMount) string {
-	if mt.Target != "" {
+	switch {
+	case mt.Target != "":
 		return mt.Target
+	case mt.Extra != "":
+		return extraDir + "/" + mt.Extra
 	}
 	return "/moose/" + mt.Folder
 }
@@ -600,9 +646,9 @@ func customMounts(folders []manifest.Folder, scope string) []FolderMount {
 // from the catalog or synthesized from a pasted compose.
 // prepareFolderSources makes each folder source in mounts ready before the
 // app binds it. Install calls it for every folder, and an update for each
-// folder bind that is new (#633). username is the owner's, for a personal
+// folder bind that is new (#633). owner is the app's owner, for a personal
 // source.
-func (m *Manager) prepareFolderSources(ctx context.Context, id, username string, iso isolation, mounts []FolderMount) error {
+func (m *Manager) prepareFolderSources(ctx context.Context, id string, owner Owner, iso isolation, mounts []FolderMount) error {
 	// Prepare each elected PERSONAL folder source so the app can write user
 	// content into it. A docker-created bind source is root:root (the same
 	// daemon behavior as the private bind dirs of the app), so a folder that does not
@@ -624,12 +670,22 @@ func (m *Manager) prepareFolderSources(ctx context.Context, id, username string,
 		if mt.Source != sourcePersonal {
 			continue
 		}
-		rel := folderDir[mt.Folder]
-		if mt.Subfolder != "" {
-			rel += "/" + filepath.ToSlash(filepath.Clean(mt.Subfolder))
-		}
-		if err := m.host.PrepareUserFolder(ctx, username, rel); err != nil {
+		rel := mt.relPath()
+		if err := m.host.PrepareUserFolder(ctx, owner.Username, rel); err != nil {
 			return fmt.Errorf("prepare folder source %q: %w", iso.hostSource(mt), err)
+		}
+		// A new top-level folder gets its row once host-agent has made it, so
+		// the user can choose it again (STORAGE.md # Folders made through
+		// moose). The row stays if the install fails later: the folder is
+		// the user's now, like any other folder in their home. This is the
+		// reverse of "brain commits first" on purpose: the row only means
+		// "moose made this folder", so it is written once the folder exists.
+		if mt.NewFolder {
+			top, _, _ := strings.Cut(rel, "/")
+			if err := m.store.AddMadeFolder(owner.UserID, top); err != nil {
+				return fmt.Errorf("record the new folder %q: %w", top, err)
+			}
+			slog.Info("folder made through moose", "instance_id", id, "user_id", owner.UserID, "dir", top)
 		}
 	}
 
@@ -901,7 +957,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// host-allocated identity (APP_ISOLATION.md # Runtime identity & data
 	// ownership).
 	iso := isolation{uid: os.Geteuid(), gid: os.Getegid(), gpu: gpu, sharedBase: m.sharedRoot, tier: tier, remapBase: remapBase}
-	if len(man.Permissions.Folders) > 0 {
+	if man.Permissions.FolderApp() {
 		iso.sharedGID, iso.mounts = wk.MooseSharedGID, mounts
 		if scope == store.ScopeHousehold {
 			iso.uid, iso.gid = wk.MooseAppUID, wk.MooseAppGID
@@ -973,7 +1029,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		return rollback(err)
 	}
 
-	if err := m.prepareFolderSources(ctx, id, owner.Username, iso, iso.mounts); err != nil {
+	if err := m.prepareFolderSources(ctx, id, owner, iso, iso.mounts); err != nil {
 		return rollback(err)
 	}
 
@@ -2304,10 +2360,17 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		pinBySvc[p.Service] = p.PinnedRef()
 	}
 	// Mount mode is the manifest's say (read→:ro, write→:rw); the election only
-	// chose the source, never the mode.
+	// chose the source and the path, never the mode. Every extra folder has
+	// the manifest's extra_folders mode.
 	modeByFolder := make(map[string]string, len(man.Permissions.Folders))
 	for _, f := range man.Permissions.Folders {
 		modeByFolder[f.Folder] = f.Mode
+	}
+	mountMode := func(mt FolderMount) string {
+		if mt.Extra != "" {
+			return man.Permissions.ExtraFolders
+		}
+		return modeByFolder[mt.Folder]
 	}
 	appNet := "moose-app-" + id
 	// Managed-service networks the app's declared services must reach
@@ -2394,7 +2457,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 		needShared := false
 		for _, mt := range iso.mounts {
 			mode := ":ro"
-			if modeByFolder[mt.Folder] == "write" {
+			if mountMode(mt) == "write" {
 				mode = ":rw"
 			}
 			volumes = append(volumes, iso.hostSource(mt)+":"+containerDest(mt)+mode)
@@ -2483,8 +2546,20 @@ func (m *Manager) writeEnv(id, slug string, iso isolation) error {
 	// folders) — a store app's compose maps MOOSE_FOLDER_<NAME> to its library
 	// path; a Door-2 grant already bound straight to its target, but the var still
 	// reflects the real in-container path. Stable regardless of the elected source.
+	// A skipped optional folder has no mount, so its variable is not set. The
+	// extra folders share one variable, MOOSE_FOLDER_EXTRA, the folder that
+	// holds them, set when there is at least one, so a set variable always
+	// names a folder that is there (#655).
+	extra := false
 	for _, mt := range iso.mounts {
+		if mt.Extra != "" {
+			extra = true
+			continue
+		}
 		lines = append(lines, "MOOSE_FOLDER_"+strings.ToUpper(mt.Folder)+"="+containerDest(mt))
+	}
+	if extra {
+		lines = append(lines, "MOOSE_FOLDER_EXTRA="+extraDir)
 	}
 	// Re-emit the instance's generated secrets as MOOSE_SECRET_<NAME>
 	// (SERVICE_PROVISIONING.md # Env-var injection). Read from the store rather

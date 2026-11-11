@@ -98,7 +98,27 @@ func Lint(m *Manifest, opts LintOptions) (errs, warns []string) {
 	}
 
 	lintRequires(m, slotOrder, slots, e, w)
+	warns = append(warns, OlderBrainWarnings(m)...)
 	return errs, warns
+}
+
+// OlderBrainWarnings lists the folder keys a brain from before #655 refuses
+// (APP_MANIFEST.md # folders, Older brains reading a newer manifest): a
+// default without scope: pick-subfolder, and the folder projects. This brain
+// reads both, so they are warnings, not errors. They tell a catalog author
+// that the app cannot go out to every box yet. A brain from before #655
+// ignores optional and extra_folders, so those need no warning.
+func OlderBrainWarnings(m *Manifest) []string {
+	var out []string
+	for _, f := range m.Permissions.Folders {
+		if f.Folder == "projects" {
+			out = append(out, "permissions.folders[projects]: a moose brain from before #655 refuses the folder projects; publish this app only once every box runs a newer brain")
+		}
+		if f.Default != "" && f.Scope != "pick-subfolder" {
+			out = append(out, fmt.Sprintf("permissions.folders[%s]: a moose brain from before #655 refuses default without scope: pick-subfolder; add scope: pick-subfolder next to default", f.Folder))
+		}
+	}
+	return out
 }
 
 func lintRequires(m *Manifest, slotOrder []string, slots map[string][]Role, e, w func(string, ...any)) {

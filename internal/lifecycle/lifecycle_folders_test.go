@@ -109,7 +109,7 @@ func TestInstallFolders_PersonalSourceReadWithSubfolder(t *testing.T) {
 	owner := Owner{UserID: "u_alex", Username: "alex"}
 	app, _ := installFolders(t, e, store.ScopePersonal, owner,
 		foldersManifest("read", "pick-subfolder"),
-		[]FolderMount{{Folder: "documents", Source: sourcePersonal, Subfolder: "Work"}})
+		[]FolderMount{{Folder: "documents", Source: sourcePersonal, Path: "Documents/Work"}})
 
 	// Personal instance runs as the owner's UID/GID (fake ResolveHome: 3000).
 	if got := app["user"]; got != "3000:3000" {

@@ -97,7 +97,7 @@ func pickTier(man *manifest.Manifest, base int) (string, error) {
 		return store.UsernsTierHost, nil
 	}
 	p := man.Permissions
-	if len(p.Folders) > 0 || p.GPU || len(p.Devices) > 0 {
+	if p.FolderApp() || p.GPU || len(p.Devices) > 0 {
 		return store.UsernsTierHost, nil
 	}
 	if man.RootSetup {

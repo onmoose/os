@@ -15,6 +15,7 @@ import (
 	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/store"
 )
 
@@ -169,14 +170,21 @@ type InstallPlanPermissions struct {
 	GPU      bool                `json:"gpu"`
 	Devices  []string            `json:"devices"`
 	Folders  []InstallPlanFolder `json:"folders"`
+	// ExtraFolders is "read" or "write" when the user may add more folders
+	// (APP_MANIFEST.md # folders, #655); omitted when the app allows none.
+	ExtraFolders string `json:"extra_folders,omitempty"`
 }
 
 // InstallPlanFolder is one declared folder with its per-scope source menus.
+// Scope is kept for a dashboard from before #655 and limits nothing: the user
+// may point any folder at any path inside the folder limit. The suggestion is
+// the folder plus SubfolderDefault.
 type InstallPlanFolder struct {
 	Folder           string        `json:"folder"`
 	Mode             string        `json:"mode"`
 	Scope            string        `json:"scope"`
 	SubfolderDefault string        `json:"subfolder_default,omitempty"`
+	Optional         bool          `json:"optional"` // the user may skip the folder (#655)
 	Sources          FolderSources `json:"sources"`
 }
 
@@ -242,6 +250,7 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 			Mode:             f.Mode,
 			Scope:            f.Scope,
 			SubfolderDefault: f.Default,
+			Optional:         f.Optional,
 			Sources: FolderSources{
 				Household: householdMenu,
 				Personal:  personalMenu,
@@ -279,11 +288,12 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 		ScopeOptions: opts,
 		ScopeDefault: def,
 		Permissions: InstallPlanPermissions{
-			Internet: man.Permissions.Internet,
-			LAN:      man.Permissions.LAN,
-			GPU:      man.Permissions.GPU,
-			Devices:  devices,
-			Folders:  folders,
+			Internet:     man.Permissions.Internet,
+			LAN:          man.Permissions.LAN,
+			GPU:          man.Permissions.GPU,
+			Devices:      devices,
+			Folders:      folders,
+			ExtraFolders: man.Permissions.ExtraFolders,
 		},
 		Config:   config,
 		Requires: requiresDTO(man),
@@ -291,24 +301,82 @@ func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 }
 
 // FolderElection is one per-folder install-time choice from the consent screen
-// (BRAIN_UI_PROTOCOL.md Pattern B config). Source is personal|shared; Subfolder
-// narrows a pick-subfolder folder. Both optional — an omitted election defaults
-// to the folder's menu default.
+// (BRAIN_UI_PROTOCOL.md # Folder elections after #655). Source is
+// personal|shared. Path is where the folder points, relative to the top of the
+// home (personal) or of the shared tree (shared), such as "Notes/Obsidian".
+// New asks the brain to make a top-level folder that is not there yet. Skip
+// leaves out an optional folder. Subfolder is the form from before #655 and
+// means <Folder>/<Subfolder>; it may not come with Path. Every field but Folder
+// is optional: an omitted field takes the menu default and the suggestion.
 type FolderElection struct {
 	Folder    string `json:"folder"`
 	Source    string `json:"source,omitempty"`
+	Path      string `json:"path,omitempty"`
+	New       bool   `json:"new,omitempty"`
+	Skip      bool   `json:"skip,omitempty"`
 	Subfolder string `json:"subfolder,omitempty"`
 }
 
-// resolveElections is the authoritative validation of the user's per-folder
-// elections against the manifest's declared folders and the resolved install
-// scope. The install-plan endpoint is advisory; this is the gate. It returns one
-// fully-resolved lifecycle.FolderMount per declared folder (every declared
-// folder is bound — an omitted election just takes the menu default), or a 422
-// huma error the caller surfaces and audits. Rejects: an election for a folder
-// the app never declared, a duplicate election, a source not allowed for the
-// scope, and a subfolder on a non-pick-subfolder folder or one that escapes it.
-func resolveElections(man *manifest.Manifest, scope string, elections []FolderElection) ([]lifecycle.FolderMount, error) {
+// ExtraFolderElection is one extra folder the user added, for an app whose
+// manifest declares extra_folders (APP_MANIFEST.md # folders). The brain picks
+// its /moose/extra/<Name> name.
+type ExtraFolderElection struct {
+	Source string `json:"source,omitempty"`
+	Path   string `json:"path"`
+	New    bool   `json:"new,omitempty"`
+}
+
+// newFolderTaken are the top-level names a new folder may not have besides a
+// use-case folder's: ~/Shared is moose's link to the shared tree (STORAGE.md
+// # What apps and users actually see).
+var newFolderTaken = map[string]bool{"Shared": true}
+
+// checkFolderPath checks one chosen path against the folder limit
+// (APP_ISOLATION.md # User content). It returns whether the first level is a
+// new folder the brain must record, or the plain sentence that says why the
+// path is refused.
+//
+// Every level must be a plain name: not empty, not starting with a dot, and
+// with no colon (manifest.ValidFolderLevel). The first level must be a
+// use-case folder or, for a personal source, a folder made through moose
+// (made) or one the user asks moose to make now (isNew). A new folder may not
+// be named bin, start with a dot, or take a name moose uses. The first-level
+// rule is the brain's alone: host-agent cannot see the rows.
+func checkFolderPath(source, path string, isNew bool, made map[string]bool) (newTop bool, msg string) {
+	if !manifest.ValidSubfolder(path) {
+		return false, "choose a folder such as Documents/Taxes. A folder name cannot be empty, start with a dot, or contain a colon or a dollar sign"
+	}
+	top, _, _ := strings.Cut(path, "/")
+	switch {
+	case slices.Contains(protocol.UseCaseFolderDirs, top):
+		return false, ""
+	case source == sourceShared:
+		return false, "choose a folder inside one of the household's shared folders, such as Documents"
+	case made[top]:
+		return false, ""
+	case !isNew:
+		return false, "choose a folder inside one of your folders, such as Documents, or make a new folder"
+	case top == "bin" || newFolderTaken[top]:
+		return false, fmt.Sprintf("a new folder cannot be named %q. Choose another name", top)
+	}
+	return true, ""
+}
+
+// resolveElections is the authoritative validation of the user's folder
+// elections against the manifest's declared folders and extra_folders and the
+// resolved install scope (#655). The install-plan endpoint is advisory; this
+// is the gate. made is the names of the folders the brain made for the owner
+// through moose (store.MadeFolders); it matters only for a personal source.
+//
+// It returns one lifecycle.FolderMount per declared folder the user did not
+// skip, in manifest order, then one per extra folder, or a 422 huma error the
+// caller surfaces and audits. An omitted election takes the menu default
+// source and the suggestion (lifecycle.SuggestedFolderPath). Rejects: an
+// election for a folder the app never declared, a duplicate election, a
+// source not allowed for the scope, a skip of a required folder, a path and a
+// subfolder together, a path outside the folder limit, an extra folder for an
+// app that declares no extra_folders, and the same extra folder twice.
+func resolveElections(man *manifest.Manifest, scope string, elections []FolderElection, extras []ExtraFolderElection, made map[string]bool) ([]lifecycle.FolderMount, error) {
 	declared := make(map[string]bool, len(man.Permissions.Folders))
 	for _, f := range man.Permissions.Folders {
 		declared[f.Folder] = true
@@ -323,29 +391,82 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 		}
 		byFolder[e.Folder] = e
 	}
-
-	mounts := make([]lifecycle.FolderMount, 0, len(man.Permissions.Folders))
-	for _, f := range man.Permissions.Folders {
-		options, src := folderSourceMenu(scope) // src starts at the menu default
-		sub := f.Default                        // "" unless the manifest declared a pick-subfolder default
-		if e, ok := byFolder[f.Folder]; ok {
-			if e.Source != "" {
-				if !slices.Contains(options, e.Source) {
-					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: source %q is not allowed for a %s install (allowed: %s)", f.Folder, e.Source, scope, strings.Join(options, ", ")))
-				}
-				src = e.Source
-			}
-			if e.Subfolder != "" {
-				if f.Scope != "pick-subfolder" {
-					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: a subfolder may only be chosen when the app declares scope: pick-subfolder", f.Folder))
-				}
-				if strings.HasPrefix(e.Subfolder, "/") || strings.Contains(e.Subfolder, "..") {
-					return nil, configError("config.folders."+f.Folder, fmt.Sprintf("config.folders[%s]: subfolder must be a relative path under the folder", f.Folder))
-				}
-				sub = e.Subfolder
-			}
+	options, defSource := folderSourceMenu(scope)
+	source := func(location, label, elected string) (string, error) {
+		if elected == "" {
+			return defSource, nil
 		}
-		mounts = append(mounts, lifecycle.FolderMount{Folder: f.Folder, Source: src, Subfolder: sub})
+		if !slices.Contains(options, elected) {
+			return "", configError(location, fmt.Sprintf("%s: source %q is not allowed for a %s install (allowed: %s)", label, elected, scope, strings.Join(options, ", ")))
+		}
+		return elected, nil
+	}
+
+	mounts := make([]lifecycle.FolderMount, 0, len(man.Permissions.Folders)+len(extras))
+	for _, f := range man.Permissions.Folders {
+		loc, label := "config.folders."+f.Folder, "config.folders["+f.Folder+"]"
+		e := byFolder[f.Folder]
+		if e.Skip {
+			if !f.Optional {
+				return nil, configError(loc, fmt.Sprintf("This app needs the %s folder to run. Choose a folder for it", lifecycle.FolderDir(f.Folder)))
+			}
+			continue
+		}
+		src, err := source(loc, label, e.Source)
+		if err != nil {
+			return nil, err
+		}
+		path := lifecycle.SuggestedFolderPath(f)
+		switch {
+		case e.Path != "" && e.Subfolder != "":
+			return nil, configError(loc, label+": send path or subfolder, not both")
+		case e.Path != "":
+			path = e.Path
+		case e.Subfolder != "":
+			// The form from before #655: a subfolder under the folder.
+			if !manifest.ValidSubfolder(e.Subfolder) {
+				return nil, configError(loc, label+": subfolder must be a relative path under the folder")
+			}
+			path = lifecycle.FolderDir(f.Folder) + "/" + e.Subfolder
+		}
+		newTop, msg := checkFolderPath(src, path, e.New, made)
+		if msg != "" {
+			return nil, configError(loc, fmt.Sprintf("For the %s folder, %s.", lifecycle.FolderDir(f.Folder), msg))
+		}
+		mounts = append(mounts, lifecycle.FolderMount{Folder: f.Folder, Source: src, Path: path, NewFolder: newTop})
+	}
+
+	if len(extras) > 0 && man.Permissions.ExtraFolders == "" {
+		return nil, configError("config.extra_folders[0]", "This app does not let you add more folders")
+	}
+	used := map[string]bool{}
+	seen := map[string]bool{}
+	for i, x := range extras {
+		loc := fmt.Sprintf("config.extra_folders[%d]", i)
+		src, err := source(loc, loc, x.Source)
+		if err != nil {
+			return nil, err
+		}
+		if x.Path == "" {
+			return nil, configError(loc, "Choose a folder to add")
+		}
+		newTop, msg := checkFolderPath(src, x.Path, x.New, made)
+		if msg != "" {
+			return nil, configError(loc, fmt.Sprintf("For the added folder %q, %s.", x.Path, msg))
+		}
+		if seen[src+":"+x.Path] {
+			return nil, configError(loc, "This folder is already added")
+		}
+		seen[src+":"+x.Path] = true
+		// /moose/extra/<Name>, where <Name> is the last part of the path. A
+		// clash takes " 2", then " 3" (APP_MANIFEST.md # folders).
+		base := x.Path[strings.LastIndex(x.Path, "/")+1:]
+		name := base
+		for n := 2; used[name]; n++ {
+			name = fmt.Sprintf("%s %d", base, n)
+		}
+		used[name] = true
+		mounts = append(mounts, lifecycle.FolderMount{Source: src, Path: x.Path, Extra: name, NewFolder: newTop})
 	}
 	return mounts, nil
 }

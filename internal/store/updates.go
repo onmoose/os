@@ -74,7 +74,7 @@ const (
 const (
 	FolderNew   = "new"   // a folder the installed version has no access to
 	FolderWrite = "write" // read access becomes write access
-	FolderWhole = "whole" // one folder inside it becomes the whole folder
+	FolderWhole = "whole" // one folder inside it becomes the whole folder; not made since #657, kept so an older stored check still reads
 )
 
 // AccessWant is one piece of access a new version of an app asks for that the

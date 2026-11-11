@@ -467,15 +467,23 @@ func TestDeleteUser_UserMgrError_Returns500(t *testing.T) {
 // no-op successes (#147).
 // --- prepare-folder tests (#519) ---
 
+// Since #655 host-agent checks only the parts of the folder limit it can see:
+// a first level that is not a use-case folder is fine here (a folder made
+// through moose, such as Recipes, or Projects), because that rule is the
+// brain's. A symlink such as ~/Shared is refused by the walk, not here.
 func TestValidUserFolderPath(t *testing.T) {
-	for _, ok := range []string{"Documents", "Documents/Notebooks", "Photos/2026/Trip", "Downloads"} {
+	for _, ok := range []string{
+		"Documents", "Documents/Notebooks", "Photos/2026/Trip", "Downloads",
+		"Projects", "Projects/site", "Recipes", "Recipes/Cakes", "Projects/bin", "Taxes 2026",
+	} {
 		if err := ValidUserFolderPath(ok); err != nil {
 			t.Errorf("%q: want valid, got %v", ok, err)
 		}
 	}
 	for _, bad := range []string{
-		"", "/home/alex/Documents", ".ssh", ".ssh/authorized_keys", "documents",
-		"Documents/../.ssh", "Documents/./x", "Documents//x", "Documents/", "Shared",
+		"", "/home/alex/Documents", ".ssh", ".ssh/authorized_keys", ".config",
+		"Documents/../.ssh", "Documents/./x", "Documents//x", "Documents/", "..", ".",
+		"Projects/app/.git", "bin", "bin/tool",
 	} {
 		if err := ValidUserFolderPath(bad); err == nil {
 			t.Errorf("%q: want refused", bad)
@@ -552,6 +560,31 @@ func TestPrepareFolder_FakeBranch_CreatesUnderOperatorHome(t *testing.T) {
 	}
 	if fi, err := os.Stat(filepath.Join(home, "Documents", "Notebooks")); err != nil || !fi.IsDir() {
 		t.Errorf("fake did not create the folder under the operator home: %v", err)
+	}
+}
+
+// The fake takes the wider #655 check too: Projects and a folder made through
+// moose are made, and bin or a dot level is refused before anything is made.
+func TestPrepareFolder_FakeBranch_FolderLimit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, mux := newTestAgent(&stubVerifier{})
+
+	for _, ok := range []string{"Projects/site", "Recipes"} {
+		if w := post(t, mux, "/v1/users/alice/prepare-folder", protocol.PrepareUserFolderRequest{Path: ok}); w.Code != http.StatusOK {
+			t.Fatalf("%q: want 200, got %d: %s", ok, w.Code, w.Body)
+		}
+		if fi, err := os.Stat(filepath.Join(home, filepath.FromSlash(ok))); err != nil || !fi.IsDir() {
+			t.Errorf("%q: fake did not create the folder: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"bin", "Projects/app/.git"} {
+		if w := post(t, mux, "/v1/users/alice/prepare-folder", protocol.PrepareUserFolderRequest{Path: bad}); w.Code != http.StatusBadRequest {
+			t.Errorf("%q: want 400, got %d", bad, w.Code)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "bin")); err == nil {
+		t.Error("fake made ~/bin")
 	}
 }
 

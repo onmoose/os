@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/onmoose/os/internal/catalog"
@@ -220,6 +221,14 @@ func classifyUpdate(inst store.Instance, oldMan, newMan *manifest.Manifest, gran
 	if newMan.ServiceUser != oldMan.ServiceUser {
 		return blocked(ErrTierChange.Error())
 	}
+	// A folder app runs as its owner, a folderless app as the brain or its
+	// service identity. On a box with no remap both are the host tier, so
+	// tierKept does not see the change; the runtime user would still change
+	// under the app's own files. Gaining or losing folders and
+	// extra_folders altogether is refused (#655).
+	if newMan.Permissions.FolderApp() != oldMan.Permissions.FolderApp() {
+		return blocked(ErrTierChange.Error())
+	}
 
 	// A new required setting with no default that the instance has no value
 	// for: moose cannot make one up.
@@ -301,6 +310,18 @@ func approvalCovers(inst store.Instance, newMan *manifest.Manifest, sources map[
 // now (sources), or for a new folder the one install picks by default, the
 // owner's own folder for a personal app and the household's shared folder for
 // a household app (mountsFromOverride binds the same).
+//
+// Since #655 a folder is more access only when the update binds it (#655,
+// UPDATES.md # What an allowed update turns on). A new required folder is
+// FolderNew, and a new optional one is not in the list, because it is left
+// off. A folder the user skipped (in had, optional, with no bind in sources)
+// that the new version makes required is FolderNew too: the yes binds its
+// suggestion. A skipped folder that stays optional is not in the list, even
+// when its mode widens. scope no longer limits a folder, so there is no
+// FolderWhole item any more. A new extra_folders grants nothing until the
+// user adds a folder, so it is not in the list. When extra_folders goes from
+// read to write and the app has extra folders, that is one FolderWrite item
+// for the folder "extra".
 func widenedAccess(had grantedAccess, newMan *manifest.Manifest, sources map[string]string, scope string) []store.AccessWant {
 	o, n := had.Permissions, newMan.Permissions
 	var out []store.AccessWant
@@ -333,19 +354,38 @@ func widenedAccess(had grantedAccess, newMan *manifest.Manifest, sources map[str
 		}
 		w := store.AccessWant{Kind: store.WantFolder, Folder: f.Folder, Mode: mode, Source: src}
 		was, ok := oldFolders[f.Folder]
+		_, bound := sources[f.Folder]
 		switch {
+		case !ok && f.Optional:
+			continue
 		case !ok:
 			w.Change = store.FolderNew
-		// The whole folder comes first: it is the wider grant, and the item
-		// carries the new mode, so a folder that gets both says both.
-		case f.Scope != "pick-subfolder" && was.Scope == "pick-subfolder":
-			w.Change = store.FolderWhole
+		case !bound && was.Optional:
+			// The user skipped it. It is more access only when the new
+			// version makes it required, and so binds it.
+			if f.Optional {
+				continue
+			}
+			w.Change = store.FolderNew
 		case mode == "write" && was.Mode != "write":
 			w.Change = store.FolderWrite
 		default:
 			continue
 		}
 		out = append(out, w)
+	}
+	if n.ExtraFolders == "write" && o.ExtraFolders != "write" {
+		// One item for all of them. It names the source of the first extra
+		// folder by name, so the list is the same on every check.
+		first := ""
+		for key := range sources {
+			if strings.HasPrefix(key, extraSourceKey) && (first == "" || key < first) {
+				first = key
+			}
+		}
+		if first != "" {
+			out = append(out, store.AccessWant{Kind: store.WantFolder, Folder: "extra", Mode: "write", Change: store.FolderWrite, Source: sources[first]})
+		}
 	}
 	for _, p := range newMan.Access.PublicPaths {
 		if !slices.Contains(had.PublicPaths, p) {
@@ -365,9 +405,15 @@ func defaultFolderSource(scope string) string {
 	return sourcePersonal
 }
 
+// extraSourceKey starts the key of an extra folder in instanceFolderSources:
+// "extra/<Name>". A declared folder's name never holds a slash, so the two
+// kinds of key cannot clash.
+const extraSourceKey = "extra/"
+
 // instanceFolderSources is where each folder an instance binds comes from,
-// read back from its override: personal or shared, by folder. An instance
-// with no override yet has none.
+// read back from its override: personal or shared, by folder, and by
+// "extra/<Name>" for an extra folder. A folder with no key has no bind: the
+// user skipped it. An instance with no override yet has none.
 func (m *Manager) instanceFolderSources(id string) (map[string]string, error) {
 	override, err := os.ReadFile(filepath.Join(m.instanceDir(id), "compose.override.yml"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -376,13 +422,16 @@ func (m *Manager) instanceFolderSources(id string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	binds, err := folderBinds(override, m.sharedRoot)
+	binds, extras, err := folderBinds(override, m.sharedRoot)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]string, len(binds))
+	out := make(map[string]string, len(binds)+len(extras))
 	for f, b := range binds {
 		out[f] = b.Source
+	}
+	for _, b := range extras {
+		out[extraSourceKey+b.Extra] = b.Source
 	}
 	return out, nil
 }

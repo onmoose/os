@@ -31,8 +31,11 @@ func TestWidenedAccess(t *testing.T) {
 			Folders: []manifest.Folder{
 				{Folder: "photos", Mode: "read", Scope: "whole"},
 				{Folder: "documents", Mode: "read", Scope: "pick-subfolder", Default: "Work"},
+				// The user skipped notes at install: it has no bind in sources.
+				{Folder: "notes", Mode: "read", Optional: true},
 			},
-			Devices: []string{"/dev/ttyUSB0"},
+			ExtraFolders: "read",
+			Devices:      []string{"/dev/ttyUSB0"},
 		},
 		PublicPaths: []string{"/api/"},
 	}
@@ -86,19 +89,27 @@ func TestWidenedAccess(t *testing.T) {
 			man:  accessMan(with(func(p *manifest.Permissions) { p.Folders[0].Mode = "write" }), "/api/"),
 			want: []store.AccessWant{{Kind: store.WantFolder, Folder: "photos", Mode: "write", Change: store.FolderWrite, Source: sourceShared}},
 		},
-		"subfolder to whole": {
-			man:  accessMan(with(func(p *manifest.Permissions) { p.Folders[1].Scope = "whole" }), "/api/"),
-			want: []store.AccessWant{{Kind: store.WantFolder, Folder: "documents", Mode: "read", Change: store.FolderWhole, Source: sourcePersonal}},
+		// scope means nothing since #655: the folder the user chose stays.
+		"subfolder to whole is no more access": {
+			man: accessMan(with(func(p *manifest.Permissions) { p.Folders[1].Scope = "whole" }), "/api/"),
 		},
-		// Both at once: the whole folder is the wider grant, and the mode
-		// rides on the item, so the prompt says "All of your Documents
-		// folder (can add, change, and delete files)".
-		"subfolder to whole, read to write": {
+		"new optional folder is left off": {
 			man: accessMan(with(func(p *manifest.Permissions) {
-				p.Folders[1].Scope = "whole"
-				p.Folders[1].Mode = "write"
+				p.Folders = append(p.Folders, manifest.Folder{Folder: "movies", Mode: "write", Optional: true})
 			}), "/api/"),
-			want: []store.AccessWant{{Kind: store.WantFolder, Folder: "documents", Mode: "write", Change: store.FolderWhole, Source: sourcePersonal}},
+		},
+		"skipped folder becomes required": {
+			man:  accessMan(with(func(p *manifest.Permissions) { p.Folders[2].Optional = false }), "/api/"),
+			want: []store.AccessWant{{Kind: store.WantFolder, Folder: "notes", Mode: "read", Change: store.FolderNew, Source: sourcePersonal}},
+		},
+		"skipped folder that stays optional gets write": {
+			man: accessMan(with(func(p *manifest.Permissions) { p.Folders[2].Mode = "write" }), "/api/"),
+		},
+		"required folder becomes optional": {
+			man: accessMan(with(func(p *manifest.Permissions) { p.Folders[0].Optional = true }), "/api/"),
+		},
+		"no extra folder added: read to write is no more access": {
+			man: accessMan(with(func(p *manifest.Permissions) { p.ExtraFolders = "write" }), "/api/"),
 		},
 		"write to read is narrower": {
 			man: accessMan(with(func(p *manifest.Permissions) { p.Folders[0].Mode = "read" }), "/api/"),
@@ -120,6 +131,22 @@ func TestWidenedAccess(t *testing.T) {
 	}
 }
 
+// extra_folders asks for more only when it goes from read to write and the
+// app has an extra folder: then one item covers all of them (#655).
+func TestWidenedAccess_ExtraFolders(t *testing.T) {
+	had := grantedAccess{Permissions: manifest.Permissions{ExtraFolders: "read"}}
+	extras := map[string]string{"extra/Taxes": sourceShared, "extra/Recipes": sourcePersonal}
+	got := widenedAccess(had, accessMan(manifest.Permissions{ExtraFolders: "write"}), extras, store.ScopePersonal)
+	want := []store.AccessWant{{Kind: store.WantFolder, Folder: "extra", Mode: "write", Change: store.FolderWrite, Source: sourcePersonal}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("read to write with extra folders = %+v, want %+v", got, want)
+	}
+	none := grantedAccess{}
+	if got := widenedAccess(none, accessMan(manifest.Permissions{ExtraFolders: "write"}), nil, store.ScopePersonal); len(got) != 0 {
+		t.Fatalf("a new extra_folders grants nothing yet, got %+v", got)
+	}
+}
+
 // approvalFor is the approval an owner gives for man.
 func approvalFor(t *testing.T, man *manifest.Manifest) store.UpdateApproval {
 	t.Helper()
@@ -128,6 +155,26 @@ func approvalFor(t *testing.T, man *manifest.Manifest) store.UpdateApproval {
 		t.Fatal(err)
 	}
 	return store.UpdateApproval{Version: man.Version, Access: string(b), By: "u_alex"}
+}
+
+// On a box with no remap a folderless app and a folder app are both in the
+// host tier, but they run as different users. Gaining or losing folders or
+// extra_folders altogether is refused, so the user never changes under the
+// app's own files.
+func TestClassifyUpdateRefusesAFolderAppChange(t *testing.T) {
+	inst := store.Instance{ID: "i", Scope: store.ScopePersonal, UsernsTier: store.UsernsTierHost}
+	folderless := &manifest.Manifest{Version: "1.0"}
+	extra := &manifest.Manifest{Version: "2.0", Permissions: manifest.Permissions{ExtraFolders: "read"}}
+	if c := classifyUpdate(inst, folderless, extra, nil, nil, 0, nil); c.Status != store.UpdateBlocked {
+		t.Errorf("folderless to extra_folders: %+v, want blocked", c)
+	}
+	if c := classifyUpdate(inst, extra, &manifest.Manifest{Version: "3.0"}, nil, nil, 0, nil); c.Status != store.UpdateBlocked {
+		t.Errorf("extra_folders to folderless: %+v, want blocked", c)
+	}
+	folders := &manifest.Manifest{Version: "3.0", Permissions: manifest.Permissions{Folders: []manifest.Folder{{Folder: "notes", Mode: "read", Optional: true}}}}
+	if c := classifyUpdate(inst, extra, folders, nil, nil, 0, nil); c.Status == store.UpdateBlocked {
+		t.Errorf("extra_folders to folders stays a folder app: %+v", c)
+	}
 }
 
 func TestClassifyUpdateWithApproval(t *testing.T) {
@@ -402,9 +449,9 @@ func (e *testEnv) overrideVolumes(t *testing.T, id string) []string {
 }
 
 // An approved update that adds a folder binds the install default (the
-// owner's own folder, made ready by host-agent), one that widens a
-// pick-subfolder folder binds the whole folder, and a mode upgrade binds
-// read-write.
+// owner's own folder, made ready by host-agent), and a mode upgrade binds
+// read-write. Since #655 the folder the user chose stays where it is, even
+// when scope goes from pick-subfolder to whole.
 func TestApprovedUpdateBindsNewFolders(t *testing.T) {
 	ctx := context.Background()
 	e := newTestEnv(t)
@@ -413,7 +460,7 @@ func TestApprovedUpdateBindsNewFolders(t *testing.T) {
 	}
 	e.publish(t, "1.0", upImage1, upDigest1, upFolders)
 	inst, err := e.m.Install(ctx, mustLoadApp(t, e.m, "upapp"), Owner{UserID: "u_alex", Username: "alex"}, store.ScopePersonal,
-		[]FolderMount{{Folder: "documents", Source: sourcePersonal, Subfolder: "Notebooks"}}, "", nil, nil, nil)
+		[]FolderMount{{Folder: "documents", Source: sourcePersonal, Path: "Documents/Notebooks"}}, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -422,14 +469,14 @@ func TestApprovedUpdateBindsNewFolders(t *testing.T) {
 		t.Fatalf("1.0 binds %v", got)
 	}
 
-	// 2.0: the whole Documents folder, read-write, and a new Movies folder.
+	// 2.0: scope: whole on Documents, read-write, and a new Movies folder.
 	v2 := strings.Replace(upFolders, "scope: pick-subfolder\n      default: Work\n", "scope: whole\n", 1)
 	v2 = strings.Replace(v2, "mode: read", "mode: write", 1) + "    - folder: movies\n      mode: read\n"
 	e.publish(t, "2.0", upImage2, upDigest2, v2)
 	e.m.CheckUpdates(ctx)
 	r := e.row(t, inst.ID)
 	want := []store.AccessWant{
-		{Kind: store.WantFolder, Folder: "documents", Mode: "write", Change: store.FolderWhole, Source: sourcePersonal},
+		{Kind: store.WantFolder, Folder: "documents", Mode: "write", Change: store.FolderWrite, Source: sourcePersonal},
 		{Kind: store.WantFolder, Folder: "movies", Mode: "read", Change: store.FolderNew, Source: sourcePersonal},
 	}
 	if r.Update.Status != store.UpdateNeedsApproval || !slices.Equal(r.Update.Wants, want) {
@@ -442,7 +489,7 @@ func TestApprovedUpdateBindsNewFolders(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	got := e.overrideVolumes(t, inst.ID)
-	wantVols := []string{home + "/Documents:/moose/documents:rw", home + "/Movies:/moose/movies:ro"}
+	wantVols := []string{home + "/Documents/Notebooks:/moose/documents:rw", home + "/Movies:/moose/movies:ro"}
 	slices.Sort(got)
 	if !slices.Equal(got, wantVols) {
 		t.Fatalf("2.0 binds %v, want %v", got, wantVols)

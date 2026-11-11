@@ -524,6 +524,11 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(aiBindingsDDL); err != nil {
 		return err
 	}
+	// The top-level folders the brain made for a user through moose
+	// (madefolders.go, #655). A new table, so an older box just gets it.
+	if _, err := s.db.Exec(madeFoldersDDL); err != nil {
+		return err
+	}
 
 	// Idempotent migrations: add new columns when an older DB predates them.
 	// SQLite doesn't support IF NOT EXISTS on ALTER TABLE; we detect existence

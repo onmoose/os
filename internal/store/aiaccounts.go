@@ -579,6 +579,9 @@ type DeletedUser struct {
 	AIInstanceIDs []string
 	// Cleared are the values themselves.
 	Cleared []ClearedConfig
+	// MadeFolders are the user's made_folders rows (madefolders.go). They
+	// went with the user row by cascade.
+	MadeFolders []madeFolder
 }
 
 // DeleteUserAndAccountValues removes a user and, in the same transaction,
@@ -608,6 +611,9 @@ func (s *Store) DeleteUserAndAccountValues(userID string, slotFields func(instan
 		return d, err
 	}
 	if d.AIInstanceIDs, d.Cleared, err = clearBindingValues(tx, d.AIBindings, slotFields); err != nil {
+		return DeletedUser{}, err
+	}
+	if d.MadeFolders, err = listMadeFolders(tx, userID); err != nil {
 		return DeletedUser{}, err
 	}
 	res, err := tx.Exec(`DELETE FROM users WHERE id=?`, userID)
@@ -702,6 +708,12 @@ func (s *Store) RestoreDeletedUser(d DeletedUser) error {
 			`INSERT OR IGNORE INTO instance_config (instance_id, app_env, value, secret) VALUES (?,?,?,?)`,
 			c.InstanceID, c.AppEnv, c.Value, c.Secret); err != nil {
 			errs = append(errs, fmt.Errorf("value %s %s: %w", c.InstanceID, c.AppEnv, err))
+		}
+	}
+	for _, f := range d.MadeFolders {
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO made_folders (user_id, name, created_at) VALUES (?,?,?)`,
+			f.userID, f.name, f.createdAt); err != nil {
+			errs = append(errs, fmt.Errorf("made folder %s: %w", f.name, err))
 		}
 	}
 	return errors.Join(errs...)

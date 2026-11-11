@@ -52,7 +52,7 @@ func goldenShapes() []goldenShape {
 		{"folders-household", goldenCatalogInstall("filesapp", foldersCompose, foldersManifest("write", "whole"), store.ScopeHousehold, goldenAdmin,
 			[]FolderMount{{Folder: "documents", Source: sourceShared}})},
 		{"folders-personal", goldenCatalogInstall("filesapp", foldersCompose, foldersManifest("read", "pick-subfolder"), store.ScopePersonal, Owner{UserID: "u_alex", Username: "alex"},
-			[]FolderMount{{Folder: "documents", Source: sourcePersonal, Subfolder: "Work"}})},
+			[]FolderMount{{Folder: "documents", Source: sourcePersonal, Path: "Documents/Work"}})},
 		{"gpu", func(t *testing.T, e *testEnv) store.Instance {
 			e.host.gpu = protocol.SystemGPU{Present: true, Vendor: "intel", RenderGID: 104}
 			return goldenCatalogInstall("gpuapp", migrateJobCompose, gpuManifest, store.ScopeHousehold, goldenAdmin, nil)(t, e)
