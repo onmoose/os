@@ -334,3 +334,86 @@ func TestFolderPinsErrorIsTyped(t *testing.T) {
 		t.Fatal("want folderRefusal to be reachable with errors.As")
 	}
 }
+
+// TestStartRefusesABindOutsideTheFolders: an absolute bind in the override
+// that is under neither the owner's home, the shared tree nor the app's own
+// dir would be bound by its real path, unpinned. The start refuses it (fail
+// closed) and runs no compose up.
+func TestStartRefusesABindOutsideTheFolders(t *testing.T) {
+	e := newTestEnv(t)
+	inst, _ := installPinnedApp(t, e, store.ScopePersonal,
+		Owner{UserID: "u_alex", Username: "alex"},
+		FolderMount{Folder: "documents", Source: sourcePersonal, Path: "Documents/Notebooks"})
+	ctx := context.Background()
+	if err := e.m.Stop(ctx, inst.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	ovPath := filepath.Join(e.stateDir, "instances", inst.ID, "compose.override.yml")
+	raw, err := os.ReadFile(ovPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Add a second bind with an absolute source outside every allowed root,
+	// next to the folder bind the override already has.
+	ov := strings.Replace(string(raw), ":/moose/documents:rw", ":/moose/documents:rw\n            - /etc:/moose/etc:ro", 1)
+	if ov == string(raw) {
+		t.Fatalf("could not find the folder bind in the override:\n%s", raw)
+	}
+	if err := os.WriteFile(ovPath, []byte(ov), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e.docker.mu.Lock()
+	e.docker.calls = nil
+	e.docker.mu.Unlock()
+
+	err = e.m.Start(ctx, inst.ID)
+	var refusal *folderRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("start = %v; want a folder refusal for a bind outside the folders", err)
+	}
+	if e.docker.called("ComposeUp") {
+		t.Error("want no compose up after the refusal")
+	}
+}
+
+// TestReconcilePinRetryUpFailureBringsAppUpAgain: a pin-failure marker is
+// retried with a stop and an up. When that up fails for a reason that is not a
+// folder refusal, the containers are down, so the running path brings the app
+// up once more in the same pass instead of trusting the container list read
+// before the stop (it would otherwise leave the app stopped with its row
+// saying running).
+func TestReconcilePinRetryUpFailureBringsAppUpAgain(t *testing.T) {
+	e := newTestEnv(t)
+	inst, _ := installPinnedApp(t, e, store.ScopePersonal,
+		Owner{UserID: "u_alex", Username: "alex"},
+		FolderMount{Folder: "documents", Source: sourcePersonal, Path: "Documents/Notebooks"})
+
+	e.docker.psManaged = map[string]bool{inst.ID: true}
+	marker := filepath.Join(e.stateDir, "instances", inst.ID, protocol.FolderPinFailedFile)
+	b, err := json.Marshal(protocol.FolderPinFailure{Path: "Documents/Notebooks", Reason: "the source is not a real folder"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ups := 0
+	e.docker.composeUp = func(context.Context, string, string) (string, error) {
+		ups++
+		if ups == 1 {
+			return "boom", errors.New("compose up failed")
+		}
+		return "", nil
+	}
+
+	if err := e.m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if ups != 2 {
+		t.Errorf("compose up ran %d times, want 2 (the marker retry, then the running path)", ups)
+	}
+	if row, err := e.store.Get(inst.ID); err != nil || row.State != "running" {
+		t.Errorf("row = %q, %v; want running", row.State, err)
+	}
+}

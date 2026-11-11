@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -166,7 +167,16 @@ func (m *Manager) refreshFolderPins(ctx context.Context, id, ownerUsername strin
 	for _, src := range all {
 		shared, rel, isFolder := m.folderSource(src, home)
 		if !isFolder {
-			continue
+			if strings.HasPrefix(src, privatePrefix) {
+				continue // the app's own data bind, not a folder source
+			}
+			// The override only ever binds folder sources, under the owner's
+			// home or the shared tree, and admission refuses an absolute host
+			// path in the author's compose. Anything else here would be bound
+			// by its real path, unpinned, so refuse it instead (fail closed).
+			slog.Warn("folder pin: a bind is outside the home and the shared folders",
+				"instance_id", id, "src", src)
+			return &folderRefusal{msg: fmt.Sprintf("%s cannot start: one of its folders is outside your home and the shared folders. Choose its folders again", inst.Name)}
 		}
 		sources = append(sources, folderSource{src: src, shared: shared, rel: rel})
 	}

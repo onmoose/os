@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/onmoose/os/internal/hostagent"
@@ -310,6 +311,12 @@ func writePinFailure(dir string, failure *protocol.FolderPinFailure) {
 // mountPinAt is mountPin with an explicit pin root, so the boot restorer can
 // be pointed at a temp dir in tests.
 func mountPinAt(fd int, pin string, want syscall.Stat_t, pinRoot string) error {
+	// Two pins of the same folder (two starts, or a start and a restamp) would
+	// otherwise race: the second one's detach below can drop a pin the first
+	// one already handed to Docker, and a bind in that window gets the empty
+	// directory under /run. One lock for every pin; a mount is quick.
+	pinMu.Lock()
+	defer pinMu.Unlock()
 	// The restorer runs before host-agent, so /run/moose may not exist yet.
 	// Make its parent the mode host-agent's RuntimeDirectory uses, then the pin
 	// root itself root-only.
@@ -350,6 +357,10 @@ func mountPinAt(fd int, pin string, want syscall.Stat_t, pinRoot string) error {
 	}
 	return nil
 }
+
+// pinMu serializes mountPinAt inside one host-agent. The boot restorer is its
+// own process and runs before host-agent starts, so it needs no share of it.
+var pinMu sync.Mutex
 
 // pinRecordFile is one instance's folder-pins.json and the dir it came from,
 // so the restorer can write that instance's failure marker beside it.

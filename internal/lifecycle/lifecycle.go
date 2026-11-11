@@ -1857,8 +1857,16 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				if err != nil {
 					slog.Warn("reconcile: stop before retrying a pin failure",
 						"instance_id", inst.ID, "err", err, "output", out)
+				} else {
+					// The containers are down now. If the up below fails for
+					// another reason, the running path then sees no containers
+					// and brings the app up again (network included), instead
+					// of trusting the list read before the stop.
+					actual[inst.ID] = false
 				}
-				if out, err := m.composeUpInstance(ctx, inst.ID, nil); err != nil {
+				if out, err := m.composeUpInstance(ctx, inst.ID, nil); err == nil {
+					actual[inst.ID] = true
+				} else {
 					var refusal *folderRefusal
 					if errors.As(err, &refusal) {
 						m.reconcileFolderRefusal(ctx, inst, refusal)
