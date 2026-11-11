@@ -1034,6 +1034,11 @@ func TestParseFoldersChosenByTheUser(t *testing.T) {
 	if _, err := Parse(withPerms("  folders:\n    - { folder: notes }\n    - { folder: notes, mode: write }\n")); err == nil || !strings.Contains(err.Error(), "listed twice") {
 		t.Errorf("want a listed-twice error, got %v", err)
 	}
+	// A Door-2 grant may bind one folder at two targets.
+	door2 := Permissions{Folders: []Folder{{Folder: "documents", Target: "/a"}, {Folder: "documents", Target: "/b"}}}
+	if err := ValidatePermissions(&door2); err != nil {
+		t.Errorf("Door-2 grants of one folder at two targets: %v", err)
+	}
 }
 
 // A brain from before #655 refuses projects and a default without scope:

@@ -221,6 +221,14 @@ func classifyUpdate(inst store.Instance, oldMan, newMan *manifest.Manifest, gran
 	if newMan.ServiceUser != oldMan.ServiceUser {
 		return blocked(ErrTierChange.Error())
 	}
+	// A folder app runs as its owner, a folderless app as the brain or its
+	// service identity. On a box with no remap both are the host tier, so
+	// tierKept does not see the change; the runtime user would still change
+	// under the app's own files. Gaining or losing folders and
+	// extra_folders altogether is refused (#655).
+	if newMan.Permissions.FolderApp() != oldMan.Permissions.FolderApp() {
+		return blocked(ErrTierChange.Error())
+	}
 
 	// A new required setting with no default that the instance has no value
 	// for: moose cannot make one up.

@@ -677,7 +677,9 @@ func (m *Manager) prepareFolderSources(ctx context.Context, id string, owner Own
 		// A new top-level folder gets its row once host-agent has made it, so
 		// the user can choose it again (STORAGE.md # Folders made through
 		// moose). The row stays if the install fails later: the folder is
-		// the user's now, like any other folder in their home.
+		// the user's now, like any other folder in their home. This is the
+		// reverse of "brain commits first" on purpose: the row only means
+		// "moose made this folder", so it is written once the folder exists.
 		if mt.NewFolder {
 			top, _, _ := strings.Cut(rel, "/")
 			if err := m.store.AddMadeFolder(owner.UserID, top); err != nil {

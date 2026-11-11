@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 // madeFoldersDDL is the table of top-level folders the brain made in a user's
 // home through moose (STORAGE.md # Folders made through moose, #655). Only a
@@ -23,6 +26,31 @@ func (s *Store) AddMadeFolder(userID, name string) error {
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO made_folders (user_id, name, created_at) VALUES (?, ?, ?)`,
 		userID, name, time.Now().Unix())
 	return err
+}
+
+// madeFolder is one made_folders row, as a failed user delete keeps it to put
+// it back (DeletedUser).
+type madeFolder struct {
+	userID, name string
+	createdAt    int64
+}
+
+// listMadeFolders reads the user's rows inside tx, for DeleteUserAndAccountValues.
+func listMadeFolders(tx *sql.Tx, userID string) ([]madeFolder, error) {
+	rows, err := tx.Query(`SELECT name, created_at FROM made_folders WHERE user_id=? ORDER BY name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []madeFolder
+	for rows.Next() {
+		f := madeFolder{userID: userID}
+		if err := rows.Scan(&f.name, &f.createdAt); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }
 
 // MadeFolders returns the names of the top-level folders the brain made for

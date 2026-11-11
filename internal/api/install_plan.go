@@ -344,7 +344,7 @@ var newFolderTaken = map[string]bool{"Shared": true}
 // rule is the brain's alone: host-agent cannot see the rows.
 func checkFolderPath(source, path string, isNew bool, made map[string]bool) (newTop bool, msg string) {
 	if !manifest.ValidSubfolder(path) {
-		return false, "choose a folder by its place in your folders, such as Documents/Taxes. No part of it may be empty, start with a dot or hold a colon"
+		return false, "choose a folder such as Documents/Taxes. A folder name cannot be empty, start with a dot, or contain a colon or a dollar sign"
 	}
 	top, _, _ := strings.Cut(path, "/")
 	switch {

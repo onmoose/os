@@ -157,6 +157,26 @@ func approvalFor(t *testing.T, man *manifest.Manifest) store.UpdateApproval {
 	return store.UpdateApproval{Version: man.Version, Access: string(b), By: "u_alex"}
 }
 
+// On a box with no remap a folderless app and a folder app are both in the
+// host tier, but they run as different users. Gaining or losing folders or
+// extra_folders altogether is refused, so the user never changes under the
+// app's own files.
+func TestClassifyUpdateRefusesAFolderAppChange(t *testing.T) {
+	inst := store.Instance{ID: "i", Scope: store.ScopePersonal, UsernsTier: store.UsernsTierHost}
+	folderless := &manifest.Manifest{Version: "1.0"}
+	extra := &manifest.Manifest{Version: "2.0", Permissions: manifest.Permissions{ExtraFolders: "read"}}
+	if c := classifyUpdate(inst, folderless, extra, nil, nil, 0, nil); c.Status != store.UpdateBlocked {
+		t.Errorf("folderless to extra_folders: %+v, want blocked", c)
+	}
+	if c := classifyUpdate(inst, extra, &manifest.Manifest{Version: "3.0"}, nil, nil, 0, nil); c.Status != store.UpdateBlocked {
+		t.Errorf("extra_folders to folderless: %+v, want blocked", c)
+	}
+	folders := &manifest.Manifest{Version: "3.0", Permissions: manifest.Permissions{Folders: []manifest.Folder{{Folder: "notes", Mode: "read", Optional: true}}}}
+	if c := classifyUpdate(inst, extra, folders, nil, nil, 0, nil); c.Status == store.UpdateBlocked {
+		t.Errorf("extra_folders to folders stays a folder app: %+v", c)
+	}
+}
+
 func TestClassifyUpdateWithApproval(t *testing.T) {
 	oldMan := &manifest.Manifest{Version: "1.0"}
 	v2 := &manifest.Manifest{Version: "2.0", Permissions: manifest.Permissions{Internet: true}}

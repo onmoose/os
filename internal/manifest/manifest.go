@@ -1174,12 +1174,16 @@ func ValidatePermissions(p *Permissions) error {
 		if !folderTaxonomy[f.Folder] {
 			return fmt.Errorf("permissions.folders: unknown folder %q (allowed: photos, documents, movies, music, notes, downloads, projects)", f.Folder)
 		}
-		// The install's elections are keyed by folder, so each folder may
-		// appear once (APP_MANIFEST.md # folders).
-		if seen[f.Folder] {
-			return fmt.Errorf("permissions.folders: %q is listed twice; list each folder once", f.Folder)
+		// The install's elections are keyed by folder, so a store folder may
+		// appear once (APP_MANIFEST.md # folders). A Door-2 grant has a
+		// target and no elections, and may bind one folder at two targets,
+		// so it is not checked: a custom app stored with that must still load.
+		if f.Target == "" {
+			if seen[f.Folder] {
+				return fmt.Errorf("permissions.folders: %q is listed twice; list each folder once", f.Folder)
+			}
+			seen[f.Folder] = true
 		}
-		seen[f.Folder] = true
 		if f.Mode == "" {
 			f.Mode = "read"
 		}
@@ -1214,15 +1218,17 @@ func ValidatePermissions(p *Permissions) error {
 
 // ValidFolderLevel reports whether one level of a folder path is a plain
 // folder name: not empty, not starting with a dot (which also rules out "."
-// and ".."), and with no colon or control character. The dot rule is the
-// folder limit's (APP_ISOLATION.md # User content). A colon would break the
-// compose bind the brain writes, which is "<host path>:<container path>:<mode>".
+// and ".."), and with no colon, dollar sign or control character. The dot
+// rule is the folder limit's (APP_ISOLATION.md # User content). A colon would
+// break the compose bind the brain writes, which is "<host path>:<container
+// path>:<mode>". A dollar sign would be read by compose as a variable: an
+// unset "$X" folder turns into "" and binds the whole home.
 func ValidFolderLevel(level string) bool {
 	if level == "" || strings.HasPrefix(level, ".") || len(level) > 255 {
 		return false
 	}
 	for _, r := range level {
-		if r == ':' || r == '/' || r < 0x20 || r == 0x7f {
+		if r == ':' || r == '$' || r == '/' || r < 0x20 || r == 0x7f {
 			return false
 		}
 	}

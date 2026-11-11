@@ -128,10 +128,11 @@ func TestLiveApprovedUpdateAddsAFolder(t *testing.T) {
 	t.Log("2.0 reads the owner's own Movies folder")
 }
 
-// TestLiveApprovedUpdateWholeFolder: 1.0 binds one folder inside Documents
-// (pick-subfolder); 2.0 wants all of Documents. The update binds the whole
-// folder, from the same source.
-func TestLiveApprovedUpdateWholeFolder(t *testing.T) {
+// TestLiveUpdateKeepsTheChosenFolder: 1.0 binds one folder inside Documents
+// (pick-subfolder); 2.0 says scope: whole. Since #655 scope means nothing:
+// the update asks no question and keeps the folder the user chose, so the
+// rest of Documents stays out of the app.
+func TestLiveUpdateKeepsTheChosenFolder(t *testing.T) {
 	e := newLiveUpdateEnv(t)
 	const id = "liveapprovewhole"
 	home := filepath.Join(e.host.homeRoot, "alex")
@@ -145,16 +146,21 @@ func TestLiveApprovedUpdateWholeFolder(t *testing.T) {
 
 	whole := "  folders:\n    - folder: documents\n      mode: read\n"
 	e.publish(t, id, liveAppManifest(id, "2.0", whole), liveAppCompose(liveImage, "true", false, ""))
-	if err := approveAndUpdate(t, e, inst.ID, "2.0"); err != nil {
+	ctx := context.Background()
+	e.m.CheckUpdates(ctx)
+	if row, _ := e.st.Get(inst.ID); row.Update.Status != store.UpdateAvailable {
+		t.Fatalf("check = %+v, want an update that asks no question", row.Update)
+	}
+	if err := e.m.Update(ctx, inst.ID, func(s string) { t.Logf("step %s", s) }); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if got, err := liveExec(t, inst.ID, "cat", "/moose/documents/top.txt"); err != nil || got != "at the top" {
-		t.Fatalf("2.0 does not see the whole Documents folder: %q, %v", got, err)
+	if got, err := liveExec(t, inst.ID, "cat", "/moose/documents/nb.txt"); err != nil || got != "in the subfolder" {
+		t.Fatalf("2.0 lost the chosen folder: %q, %v", got, err)
 	}
-	if got, err := liveExec(t, inst.ID, "cat", "/moose/documents/Notebooks/nb.txt"); err != nil || got != "in the subfolder" {
-		t.Fatalf("2.0 does not see the subfolder inside it: %q, %v", got, err)
+	if got, err := liveExec(t, inst.ID, "cat", "/moose/documents/top.txt"); err == nil {
+		t.Fatalf("2.0 sees the rest of Documents: %q", got)
 	}
-	t.Log("2.0 binds all of Documents")
+	t.Log("2.0 keeps Documents/Notebooks")
 }
 
 // TestLiveApprovedUpdateTurnsInternetOn: 2.0 turns the internet on. A 2.0

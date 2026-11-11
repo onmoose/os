@@ -45,3 +45,29 @@ func TestMadeFolders_AddListIdempotentAndCascade(t *testing.T) {
 		t.Errorf("another user's rows changed: %v", got)
 	}
 }
+
+// A user delete that fails on the host puts the user back; the rows come back
+// with RestoreDeletedUser, so the user's folders can still be chosen.
+func TestMadeFolders_RestoredAfterAFailedUserDelete(t *testing.T) {
+	s := open(t)
+	u := User{ID: "u_a", Username: "alex", DisplayName: "Alex", Role: RoleMember, CreatedAt: time.Now()}
+	if err := s.CreateUser(u); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddMadeFolder("u_a", "Recipes"); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.DeleteUserAndAccountValues("u_a", func(string, string) ([]string, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.CreateUser(u); err != nil {
+		t.Fatalf("put the user back: %v", err)
+	}
+	if err := s.RestoreDeletedUser(d); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got, _ := s.MadeFolders("u_a"); !reflect.DeepEqual(got, []string{"Recipes"}) {
+		t.Errorf("rows after restore = %v, want [Recipes]", got)
+	}
+}

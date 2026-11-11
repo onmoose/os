@@ -272,6 +272,14 @@ func TestResolveElections_Rejections(t *testing.T) {
 			[]FolderElection{{Folder: "movies", Path: "Movies//Kids"}}, nil, "config.folders.movies"},
 		{"colon", jelly, store.ScopePersonal,
 			[]FolderElection{{Folder: "movies", Path: "Movies/a:b"}}, nil, "config.folders.movies"},
+		// Compose would read "$HOME_X" as a variable; unset, it is "" and the
+		// bind becomes the whole home.
+		{"dollar sign in a new folder", jelly, store.ScopePersonal,
+			[]FolderElection{{Folder: "movies", Path: "$UNSET_X", New: true}}, nil, "config.folders.movies"},
+		{"dollar sign deeper", jelly, store.ScopePersonal,
+			[]FolderElection{{Folder: "movies", Path: "Movies/${X}"}}, nil, "config.folders.movies"},
+		{"dollar sign in an extra folder", choice, store.ScopePersonal,
+			nil, []ExtraFolderElection{{Path: "Documents/$X"}}, "config.extra_folders[0]"},
 		{"hand-made top folder", jelly, store.ScopePersonal,
 			[]FolderElection{{Folder: "movies", Path: "scripts"}}, nil, "config.folders.movies"},
 		{"bin", jelly, store.ScopePersonal,
