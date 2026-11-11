@@ -21,6 +21,16 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-11 — A folder source is pinned by inode before every start (#604)
+
+**Previously:** a folder source was checked for symlinks at install and when a folder was added, by host-agent's `prepare-folder` and the brain's shared-source check. The override kept the real path, and Docker resolved it at every container start. That left a check-then-bind window: a terminal app could swap a subfolder for a symlink between two starts, and Docker would bind `~/.ssh`.
+
+**Now:** before every `compose up` and `compose create`, host-agent walks the source with `O_NOFOLLOW`, bind-mounts the walked inode at `/run/moose/folder-pins/<dev>-<ino>`, and checks the pin's device and inode. The brain writes the pin path into a generated `compose.pins.yml`, merged after the override by container target. The override keeps the real path. A swapped or missing source is refused, the row goes `failed`, and the start job says which folder is in the way. `moose-folder-pins.service` restores the pins before Docker starts after a reboot. An old host-agent falls back to the old re-check and raises `folder-pin-unsupported`.
+
+**Why:** a re-check only narrows the race. The app that can write the parent folder is the attacker, and a loop is enough to win against any check that Docker resolves again later. A bind mount pins the inode, so the later resolution has nothing to race. The alternatives were turned down: a post-start `docker inspect` reports the path as written, not the inode, and the process already ran; `create_host_path: false` stops Docker making a missing source but does not stop it following a symlink; and a re-check at every start leaves the loss window.
+
+**Affected docs:** `APP_ISOLATION.md` (# Folder source pins), `BRAIN_HOST_PROTOCOL.md` (# Folder source pins, # Boot restore), `APP_LIFECYCLE.md` (# Locked: on-disk layout, # Locked: override file contents), `HEALTH.md` (# Version), `BOOT.md` (# `moose-folder-pins.service`). Progress: `folder-source-pins.md`.
+
 ## 2026-11-10 — The user chooses where an app's folders point (#655)
 
 **Previously:** an app could use six fixed use-case folders. The manifest chose `scope: whole` or `scope: pick-subfolder`, and only the second let the user narrow a folder to a subfolder of it. Every declared folder was required. Changing a folder after install was part of the deferred per-app permissions screen (`NEXT.md` # Permission revocation after install). "User-defined folders deferred" (`APP_ISOLATION.md`).

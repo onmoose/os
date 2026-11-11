@@ -441,6 +441,12 @@ func (m *Manager) composeUpInstance(ctx context.Context, id string, waits []time
 	if err := m.ensureImages(ctx, id, waits); err != nil {
 		return "", err
 	}
+	// Pin every folder source by inode before Docker resolves a bind path
+	// (#604). A refusal here stops the up: the app must not run with a folder
+	// that has been swapped for a link.
+	if err := m.refreshFolderPins(ctx, id, ""); err != nil {
+		return "", err
+	}
 	return m.docker.ComposeUp(ctx, m.instanceDir(id), "moose-"+id)
 }
 

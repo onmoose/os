@@ -138,12 +138,15 @@ enable docker.service
 enable containerd.service
 enable moose-load-images.service
 enable host-agent.service
+enable moose-folder-pins.service
 disable NetworkManager-wait-online.service
 EOF
 # Belt-and-suspenders: drop the .wants symlink manually (can't run
 # `systemctl enable` in the chroot), same idiom as the other units above.
 ln -sf /etc/systemd/system/host-agent.service \
     /etc/systemd/system/multi-user.target.wants/host-agent.service
+ln -sf /etc/systemd/system/moose-folder-pins.service \
+    /etc/systemd/system/multi-user.target.wants/moose-folder-pins.service
 
 # Docker + first-boot control-plane image load (#163). docker-ce is baked from
 # Docker's apt repo; enable docker.service (ordered After=moose-storage-ready.

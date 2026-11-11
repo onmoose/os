@@ -34,6 +34,8 @@ The Docker HTTP API (via the socket proxy) is used directly only for things the 
 ├── manifest.yml              # author's, verbatim
 ├── compose.yml               # author's, verbatim
 ├── compose.override.yml      # moose-generated, regenerated on update
+├── compose.pins.yml          # moose-generated folder pins, merged after the override (#604)
+├── folder-pins.json          # what moose-folder-pins.service restores at boot (#604)
 ├── .env                      # moose-injected variables
 ├── manifest.yml.prev         # the previous generation an update keeps (# update + rollback):
 ├── compose.yml.prev          #   copies of the four files above as they were before the
@@ -135,6 +137,8 @@ The brain-generated `compose.override.yml` applies isolation and appliance behav
 - The `moose-app-<id>` network is created with `internal: true` if `permissions.internet: false`.
 
 The override **does not** touch images, env, command, entrypoint, healthcheck, ports, depends_on. It is purely additive-isolation, not a rewrite.
+
+**`compose.pins.yml` is the folder-source companion.** It is generated before every `compose up` and `compose create` and merged after the override, so a `volumes` entry with the same container target replaces the override's real path with a pinned path. It carries only folder-source volumes; every other key still comes from the override. The override is never rewritten for a pin, so update, rollback and source detection keep reading the real path (`APP_ISOLATION.md` # Folder source pins, #604).
 
 ## Locked: admission policy
 

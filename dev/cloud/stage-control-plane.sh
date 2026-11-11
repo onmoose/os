@@ -128,6 +128,8 @@ stage_control_plane() {
     cp "$hostagent_bin" "$WIRING/usr/lib/moose/host-agent-real"
     chmod 0755 "$WIRING/usr/lib/moose/host-agent-real"
     cp "${REPO_ROOT}/dist/systemd/host-agent.service" "$WIRING/etc/systemd/system/"
+    # Restores the folder source pins before Docker starts any container (#604).
+    cp "${REPO_ROOT}/dist/systemd/moose-folder-pins.service" "$WIRING/etc/systemd/system/"
 
     # host-agent bootstrap drop-in: point the brain bootstrap at the baked
     # dev-tagged images + tarballs + the staged control-plane dir, and order after

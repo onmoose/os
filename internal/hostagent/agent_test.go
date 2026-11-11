@@ -162,17 +162,24 @@ type stubUserMgr struct {
 	releaseCalls           []int
 	prepareCalls           []struct{ user, rel string }
 	prepareErr             error
-	prepareMadeTop         bool
-	listCalls              []struct{ user, rel string }
-	listNames              []string
-	listErr                error
-	err                    error
-	roleErr                error
-	deleteErr              error
-	resolveHomeErr         error
-	wellKnownIdentityErr   error
-	allocateErr            error
-	releaseErr             error
+	pinCalls               []struct {
+		user   string
+		shared bool
+		rel    string
+	}
+	pinResult            string
+	pinErr               error
+	err                  error
+	roleErr              error
+	deleteErr            error
+	resolveHomeErr       error
+	wellKnownIdentityErr error
+	allocateErr          error
+	releaseErr           error
+	prepareMadeTop       bool
+	listCalls            []struct{ user, rel string }
+	listNames            []string
+	listErr              error
 	// resolveHomeResult is returned on ResolveHome success; zero value = /home/<user>, 3000, 3000.
 	resolveHomeResult *struct {
 		home     string
@@ -236,6 +243,21 @@ func (s *stubUserMgr) PrepareFolder(user, rel string) (bool, error) {
 func (s *stubUserMgr) ListFolders(user, rel string) ([]string, bool, error) {
 	s.listCalls = append(s.listCalls, struct{ user, rel string }{user, rel})
 	return s.listNames, false, s.listErr
+}
+
+func (s *stubUserMgr) PinFolder(user string, shared bool, rel string) (string, error) {
+	s.pinCalls = append(s.pinCalls, struct {
+		user   string
+		shared bool
+		rel    string
+	}{user, shared, rel})
+	if s.pinErr != nil {
+		return "", s.pinErr
+	}
+	if s.pinResult != "" {
+		return s.pinResult, nil
+	}
+	return "/run/moose/folder-pins/8-1", nil
 }
 
 func (s *stubUserMgr) WellKnownIdentity() (int, int, int, error) {
@@ -595,6 +617,96 @@ func TestPrepareFolder_FakeBranch_FolderLimit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "bin")); err == nil {
 		t.Error("fake made ~/bin")
+	}
+}
+
+func TestPinFolder_DelegatesToUserMgr(t *testing.T) {
+	mgr := &stubUserMgr{pinResult: "/run/moose/folder-pins/8-99"}
+	a := New(&stubVerifier{}, NewFakePublisher(".local"))
+	a.UserMgr = mgr
+	mux := http.NewServeMux()
+	a.Mount(mux)
+
+	w := post(t, mux, protocol.FolderPinPath, protocol.PinFolderRequest{Username: "cindy", Path: "Documents/Work"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if got := decodeBody[protocol.PinFolderResponse](t, w).Path; got != "/run/moose/folder-pins/8-99" {
+		t.Errorf("pin path = %q", got)
+	}
+	if len(mgr.pinCalls) != 1 || mgr.pinCalls[0].user != "cindy" || mgr.pinCalls[0].shared || mgr.pinCalls[0].rel != "Documents/Work" {
+		t.Errorf("PinFolder calls = %+v", mgr.pinCalls)
+	}
+}
+
+func TestPinFolder_ErrorMapping(t *testing.T) {
+	for _, tc := range []struct {
+		err      error
+		status   int
+		wantCode string
+	}{
+		{ErrUnknownUser, http.StatusNotFound, "unknown-user"},
+		{fmt.Errorf("wrapped: %w", ErrNotADirectory), http.StatusConflict, "not-a-directory"},
+		{errors.New("mount failed"), http.StatusInternalServerError, "pin-folder-failed"},
+	} {
+		mgr := &stubUserMgr{pinErr: tc.err}
+		a := New(&stubVerifier{}, NewFakePublisher(".local"))
+		a.UserMgr = mgr
+		mux := http.NewServeMux()
+		a.Mount(mux)
+		w := post(t, mux, protocol.FolderPinPath, protocol.PinFolderRequest{Username: "cindy", Shared: true, Path: "Documents"})
+		if w.Code != tc.status {
+			t.Errorf("%v: status = %d, want %d", tc.err, w.Code, tc.status)
+			continue
+		}
+		if e := decodeBody[protocol.Error](t, w); e.Code != tc.wantCode {
+			t.Errorf("%v: code = %q, want %q", tc.err, e.Code, tc.wantCode)
+		}
+	}
+}
+
+func TestPinFolder_BadPathRefusedBeforeTheHost(t *testing.T) {
+	mgr := &stubUserMgr{}
+	a := New(&stubVerifier{}, NewFakePublisher(".local"))
+	a.UserMgr = mgr
+	mux := http.NewServeMux()
+	a.Mount(mux)
+	w := post(t, mux, protocol.FolderPinPath, protocol.PinFolderRequest{Username: "cindy", Path: ".ssh"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", w.Code)
+	}
+	if len(mgr.pinCalls) != 0 {
+		t.Errorf("user manager was called for a bad path: %+v", mgr.pinCalls)
+	}
+}
+
+// The fake walk refuses the exact #604 swap: a folder replaced by a symlink.
+func TestPinFolder_FakeBranch_RefusesALink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, mux := newTestAgent(&stubVerifier{})
+
+	if err := os.MkdirAll(filepath.Join(home, "Documents", "Notebooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := post(t, mux, protocol.FolderPinPath, protocol.PinFolderRequest{Username: "alice", Path: "Documents/Notebooks"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if got := decodeBody[protocol.PinFolderResponse](t, w).Path; got != filepath.Join(home, "Documents", "Notebooks") {
+		t.Errorf("fake pin path = %q", got)
+	}
+
+	dir := filepath.Join(home, "Documents", "Notebooks")
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".ssh"), dir); err != nil {
+		t.Fatal(err)
+	}
+	w = post(t, mux, protocol.FolderPinPath, protocol.PinFolderRequest{Username: "alice", Path: "Documents/Notebooks"})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409 for a link, got %d: %s", w.Code, w.Body)
 	}
 }
 

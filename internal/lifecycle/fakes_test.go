@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -12,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/onmoose/os/internal/caddy"
+	"github.com/onmoose/os/internal/hostclient"
 	"github.com/onmoose/os/internal/protocol"
 )
 
@@ -661,6 +664,19 @@ type fakeHost struct {
 	// a symlink in the way). Every call is also recorded in calls.
 	prepareErr error
 
+	// pinUnsupported makes PinFolder report an old host-agent (404), so a test
+	// can exercise the prepare-folder fallback. pinErr forces any other pin
+	// failure. The default walks the source with Lstat and returns the real
+	// path: the fake host runs unprivileged and cannot mount, and the real path
+	// is a no-op pin for the fake compose.
+	pinUnsupported bool
+	pinErr         error
+	// pinPath, when set, is what a successful PinFolder returns, so a test can
+	// assert the brain writes the pin (not the real path) into compose.pins.yml.
+	pinPath string
+	// sharedRoot is where the fake's shared tree lives; newTestEnv sets it to
+	// the Manager's sharedRoot.
+	sharedRoot string
 	// homeTops are the top-level folders already in a home, keyed
 	// "<user>/<name>" (#658). PrepareUserFolder reports a first level in it as
 	// found, not made, and adds every first level it sees.
@@ -724,6 +740,43 @@ func (h *fakeHost) PrepareUserFolder(_ context.Context, user, rel string) (bool,
 	made := !h.homeTops[user+"/"+top]
 	h.homeTops[user+"/"+top] = true
 	return made, nil
+}
+
+func (h *fakeHost) PinFolder(_ context.Context, req protocol.PinFolderRequest) (protocol.PinFolderResponse, error) {
+	h.mu.Lock()
+	h.calls = append(h.calls, call{method: "PinFolder", args: []any{req.Username, req.Shared, req.Path}})
+	h.mu.Unlock()
+	if h.pinUnsupported {
+		return protocol.PinFolderResponse{}, hostclient.ErrPinUnsupported
+	}
+	if h.pinErr != nil {
+		return protocol.PinFolderResponse{}, h.pinErr
+	}
+	root := h.sharedRoot
+	if !req.Shared {
+		root = filepath.Join(h.homeRoot, req.Username)
+	}
+	cur := root
+	for _, part := range strings.Split(req.Path, "/") {
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			// Most unit tests never make the folder source; Docker would create
+			// a missing bind source. Keep the real path as the no-op pin. A test
+			// that wants the refusal creates the source first.
+			return protocol.PinFolderResponse{Path: filepath.Join(root, filepath.FromSlash(req.Path))}, nil
+		}
+		if err != nil {
+			return protocol.PinFolderResponse{}, err
+		}
+		if !fi.IsDir() {
+			return protocol.PinFolderResponse{}, hostclient.ErrFolderSourceSwapped
+		}
+	}
+	if h.pinPath != "" {
+		return protocol.PinFolderResponse{Path: h.pinPath}, nil
+	}
+	return protocol.PinFolderResponse{Path: cur}, nil
 }
 
 func (h *fakeHost) WellKnownIdentity(_ context.Context) (protocol.WellKnownIdentityResponse, error) {

@@ -101,6 +101,7 @@ cp "${REPO_ROOT}/dist/systemd/moose-storage-ready.target"   "$SYS/"
 cp "${REPO_ROOT}/dist/systemd/moose-storage-verify.service" "$SYS/"
 cp "${REPO_ROOT}/dist/systemd/moose-recovery.target"        "$SYS/"
 cp "${REPO_ROOT}/dist/systemd/host-agent.service"           "$SYS/"
+cp "${REPO_ROOT}/dist/systemd/moose-folder-pins.service"    "$SYS/"
 
 # Drop-ins. dist/systemd/dropins/<unit>.service.d/moose.conf
 # → /etc/systemd/system/<unit>.service.d/moose.conf

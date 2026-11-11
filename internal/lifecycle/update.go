@@ -364,6 +364,10 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 		if errors.As(err, &me) {
 			msg = me.plain
 		}
+		var refusal *folderRefusal
+		if errors.As(err, &refusal) {
+			msg = refusal.msg
+		}
 		return m.rollbackUpdate(ctx, inst, oldMan, rec, store.UpdateFailedStart, msg, err)
 	}
 	step("compose_up")
@@ -785,6 +789,11 @@ func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, m
 	if err := m.writeEnv(id, inst.Slug, iso); err != nil {
 		return fmt.Errorf("env: %w", err)
 	}
+	// Pin the new generation's folder sources before its first up (#604). A
+	// refusal here rolls the update back.
+	if err := m.refreshFolderPins(ctx, id, ""); err != nil {
+		return err
+	}
 	// The per-app network exists from install. Its internal flag must follow
 	// the new version's internet permission, in both directions (#633).
 	// Docker cannot change the flag of a network, so a network with the wrong
@@ -1139,6 +1148,12 @@ func (m *Manager) undoUpdate(ctx context.Context, id string, rec updateRecord) e
 		if err := m.putPreviousBack(id); err != nil {
 			return fmt.Errorf("put the previous version back: %w", err)
 		}
+	}
+	// The old override is back, so its folder sources must be pinned again
+	// before remakeAppNetwork creates the old containers (#604). The new
+	// generation's pins file is stale now.
+	if err := m.refreshFolderPins(ctx, id, ""); err != nil {
+		return err
 	}
 	if rec.NetworkRemade {
 		// The old files are back: the network follows the old version's

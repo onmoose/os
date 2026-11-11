@@ -52,9 +52,25 @@ import (
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	restorePins := flag.Bool("restore-folder-pins", false, "restore the folder source pins and exit")
+	stateDir := flag.String("state-dir", "/var/lib/moose/state", "brain state dir (with --restore-folder-pins)")
+	pinRoot := flag.String("pin-root", "/run/moose/folder-pins", "pin mount root (with --restore-folder-pins)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version.String())
+		return
+	}
+	// moose-folder-pins.service runs this before docker.service (#604). A pin is
+	// a bind mount under /run, so a reboot clears it; Docker would then create
+	// the missing pin path as an empty root-owned directory and start the app
+	// against an empty folder. Restoring first keeps a reboot seamless and keeps
+	// one-shot jobs from running again. A failure is logged and the service
+	// exits 0: the pin is still missing, not pointing at the real folder, so
+	// this is an availability matter, not a new exposure.
+	if *restorePins {
+		if err := usermgr.RestoreFolderPins(*stateDir, *pinRoot); err != nil {
+			slog.Error("restore folder pins", "err", err)
+		}
 		return
 	}
 

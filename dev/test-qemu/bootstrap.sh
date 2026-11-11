@@ -288,6 +288,8 @@ cp "${REPO_ROOT}/dist/systemd/moose-recovery.target"        "$EXTRA/etc/systemd/
 # bundle's dev-tagged images + tarballs and orders host-agent after the first-boot
 # image load so every image is present when the bootstrap runs.
 cp "${REPO_ROOT}/dist/systemd/host-agent.service" "$EXTRA/etc/systemd/system/"
+# Restores the folder source pins before Docker starts containers (#604).
+cp "${REPO_ROOT}/dist/systemd/moose-folder-pins.service" "$EXTRA/etc/systemd/system/"
 cp "$HOSTAGENT_BIN" "$EXTRA/usr/lib/moose/host-agent-real"
 chmod 0755 "$EXTRA/usr/lib/moose/host-agent-real"
 

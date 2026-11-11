@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -199,6 +201,13 @@ type HostDriver interface {
 	// directives). rel is inside the folder limit, e.g. "Documents/Work".
 	// madeTop is true when the call made the first level of rel (#658).
 	PrepareUserFolder(ctx context.Context, user, rel string) (madeTop bool, err error)
+	// PinFolder walks a folder source without following a symlink and
+	// bind-mounts the walked inode at a root-owned pin path (#604). The brain
+	// calls it before every compose up and compose create, so a symlink
+	// swapped in between two starts cannot make Docker bind another folder.
+	// Returns hostclient.ErrPinUnsupported on an old host-agent and
+	// hostclient.ErrFolderSourceSwapped when a file or link is in the way.
+	PinFolder(ctx context.Context, req protocol.PinFolderRequest) (protocol.PinFolderResponse, error)
 	// WellKnownIdentity returns the fixed host service identities: the moose-app
 	// service UID/GID a household instance runs as, and the moose-shared GID a
 	// shared-source folder mount joins via group_add.
@@ -293,9 +302,15 @@ func composeRun(ctx context.Context, dir, project string, args ...string) (strin
 		"compose",
 		"-f", "compose.yml",
 		"-f", "compose.override.yml",
-		"--env-file", ".env",
-		"-p", project,
 	}
+	// compose.pins.yml comes last, so its volumes entries win by container
+	// target (#604). It exists for every instance the brain has prepared; a
+	// missing file means this instance predates the pins, and compose then
+	// binds the override's real path as before.
+	if _, err := os.Stat(filepath.Join(dir, "compose.pins.yml")); err == nil {
+		base = append(base, "-f", "compose.pins.yml")
+	}
+	base = append(base, "--env-file", ".env", "-p", project)
 	cmd := exec.CommandContext(ctx, "docker", append(base, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()

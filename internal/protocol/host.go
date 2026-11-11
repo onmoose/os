@@ -88,6 +88,12 @@ type SystemStatus struct {
 	DataDiskFreeBytes  int64       `json:"data_disk_free_bytes"`
 	DataDiskTotalBytes int64       `json:"data_disk_total_bytes"`
 	Disks              []DiskSpace `json:"disks"`
+	// FolderPins says this host-agent can pin a folder source by inode
+	// (POST /v1/folders/pin, #604). A host-agent older than that op omits the
+	// field, so the brain reads false and raises folder-pin-unsupported: the
+	// box still runs folder apps through the old prepare-folder re-check, but
+	// the admin is told an OS update closes the swap race.
+	FolderPins bool `json:"folder_pins"`
 }
 
 // DiskSpace is one mounted volume's fullness for the system-resources Storage
@@ -402,6 +408,68 @@ type ResolveHomeResponse struct {
 // level exists but is a file or a symlink.
 type PrepareUserFolderRequest struct {
 	Path string `json:"path"`
+}
+
+// FolderPinPath is POST /v1/folders/pin. It is the narrow host op that pins a
+// folder source by inode (#604), so a symlink swapped in between two app
+// starts cannot make Docker bind a different folder.
+const FolderPinPath = "/v1/folders/pin"
+
+// PinFolderRequest asks host-agent to walk one folder source and bind-mount the
+// walked directory at a root-owned pin path. Path is relative to the user's
+// home (Shared false) or to SharedRoot (Shared true), the same shape
+// PrepareUserFolderRequest uses, so the brain never names a root. The walk
+// starts at that root and never follows a symlink on any level. host-agent
+// returns the pin path; the brain writes it into compose.pins.yml, which
+// overrides the real path by container target before every compose up.
+//
+// The bind mount pins the inode. A swap after the walk, even one that wins a
+// loop against a re-check, changes the path, not the inode the pin holds.
+// 200 returns {"path":"/run/moose/folder-pins/<dev>-<ino>"}. 404
+// "unknown-user" for a personal source, 400 "bad-path", 409
+// "not-a-directory" when a level is a file or a symlink.
+type PinFolderRequest struct {
+	Username string `json:"username,omitempty"`
+	Shared   bool   `json:"shared,omitempty"`
+	Path     string `json:"path"`
+}
+
+// PinFolderResponse is the pin path host-agent mounted, for example
+// "/run/moose/folder-pins/8-12345". The path is on the host, where the Docker
+// daemon resolves it; the brain only writes the string into the pins file.
+type PinFolderResponse struct {
+	Path string `json:"path"`
+}
+
+// FolderPin is one folder source the brain has pinned. The brain writes a
+// FolderPinRecord beside compose.pins.yml, as folder-pins.json, so the boot
+// restorer can walk each source again and mount the pin again at the same path
+// before Docker starts (#604). Pin is the host path; Shared, Username and Path
+// are the same values the brain sent to POST /v1/folders/pin.
+type FolderPin struct {
+	Pin      string `json:"pin"`
+	Shared   bool   `json:"shared,omitempty"`
+	Username string `json:"username,omitempty"`
+	Path     string `json:"path"`
+}
+
+// FolderPinRecord is the on-disk folder-pins.json of one instance.
+type FolderPinRecord struct {
+	Pins []FolderPin `json:"pins"`
+}
+
+// FolderPinFailedFile is written into an instance dir by the boot restorer
+// when it cannot restore a pin, for example because the source was swapped for
+// a symlink while the box was off. The brain reads it at startup and refuses
+// that app, so Docker's empty pin path does not keep serving. A successful
+// restore, or a successful pin, removes it.
+const FolderPinFailedFile = "folder-pins.failed"
+
+// FolderPinFailure is the marker's content: which source failed and why. The
+// reason is for the log; the brain builds the plain start refusal from Path.
+type FolderPinFailure struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // PrepareUserFolderResponse is the 200 body of prepare-folder (#658). MadeTop

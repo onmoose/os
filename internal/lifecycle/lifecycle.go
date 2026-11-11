@@ -1065,6 +1065,11 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	if err := m.writeEnv(id, slug, iso); err != nil {
 		return rollback(fmt.Errorf("env: %w", err))
 	}
+	// Pin each folder source by inode and write compose.pins.yml, so the up
+	// below binds the pin, not the real path (#604).
+	if err := m.refreshFolderPins(ctx, id, owner.Username); err != nil {
+		return rollback(err)
+	}
 
 	// 8. Create per-app network.
 	step("creating_network")
@@ -1408,6 +1413,12 @@ func (m *Manager) startLocked(ctx context.Context, inst store.Instance, prevStat
 	out, upErr := m.composeUpInstance(upCtx, id, pullRetryDelays)
 	cancelUp()
 	if upErr != nil {
+		// A swapped folder source is the person's to fix, so show the plain
+		// reason instead of a compose prefix (#604).
+		var refusal *folderRefusal
+		if errors.As(upErr, &refusal) {
+			return m.startFailed(ctx, inst, host, man.Name, refusal)
+		}
 		return m.startFailed(ctx, inst, host, man.Name, fmt.Errorf("compose up: %w\n%s", upErr, out))
 	}
 	// This ComposeUp applied whatever the override/.env currently hold, so it
@@ -1847,6 +1858,47 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 					"instance_id", inst.ID, "err", err)
 			}
 		}
+		// A pin the boot restorer could not restore means Docker may have
+		// started the container against an empty pin path. Try the up again:
+		// it pins the source and recreates the container, so a folder that is
+		// good again comes back without the person doing anything. A source
+		// that is still bad refuses here, before the running path below leaves
+		// the app alone because its containers are up.
+		if inst.State == "running" {
+			if failure, ok := readPinFailure(m.instanceDir(inst.ID)); ok {
+				// Docker may have started the container before the pin existed,
+				// and the pins file names the same path, so compose sees no
+				// config change and would leave the empty mount in place. Stop
+				// first, so the up recreates the container on the restored
+				// mount.
+				stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), splashBudget)
+				out, err := m.docker.ComposeStop(stopCtx, m.instanceDir(inst.ID), "moose-"+inst.ID)
+				cancel()
+				if err != nil {
+					slog.Warn("reconcile: stop before retrying a pin failure",
+						"instance_id", inst.ID, "err", err, "output", out)
+				} else {
+					// The containers are down now. If the up below fails for
+					// another reason, the running path then sees no containers
+					// and brings the app up again (network included), instead
+					// of trusting the list read before the stop.
+					actual[inst.ID] = false
+				}
+				if out, err := m.composeUpInstance(ctx, inst.ID, nil); err == nil {
+					actual[inst.ID] = true
+				} else {
+					var refusal *folderRefusal
+					if errors.As(err, &refusal) {
+						m.reconcileFolderRefusal(ctx, inst, refusal)
+						inst.State = "failed"
+						splashes = append(splashes, inst)
+						continue
+					}
+					slog.Warn("reconcile: compose up after a pin failure",
+						"instance_id", inst.ID, "err", err, "output", out, "path", failure.Path)
+				}
+			}
+		}
 		switch inst.State {
 		case "running":
 			if !actual[inst.ID] {
@@ -1876,6 +1928,13 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				slog.Info("reconcile: starting drifted instance",
 					"instance_id", inst.ID, "reason", "no containers")
 				if out, err := m.composeUpInstance(ctx, inst.ID, nil); err != nil {
+					var refusal *folderRefusal
+					if errors.As(err, &refusal) {
+						m.reconcileFolderRefusal(ctx, inst, refusal)
+						inst.State = "failed"
+						splashes = append(splashes, inst)
+						continue
+					}
 					slog.Warn("reconcile: compose up",
 						"instance_id", inst.ID, "err", err, "output", out)
 					continue
@@ -1901,6 +1960,13 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 						"instance_id", inst.ID,
 						"resource_drift", changed, "pending_recreate", inst.PendingRecreate)
 					if out, err := m.composeUpInstance(ctx, inst.ID, nil); err != nil {
+						var refusal *folderRefusal
+						if errors.As(err, &refusal) {
+							m.reconcileFolderRefusal(ctx, inst, refusal)
+							inst.State = "failed"
+							splashes = append(splashes, inst)
+							continue
+						}
 						slog.Warn("reconcile: compose up",
 							"instance_id", inst.ID, "err", err, "output", out)
 						// ComposeUp failed. Rewind any resource-stanza patch so the
@@ -2184,6 +2250,31 @@ func (m *Manager) reassertRouting(ctx context.Context, inst store.Instance) bool
 // for stopped and failed apps, apart from the caller's deadline (#520). A
 // healthy Caddy answers each write in milliseconds.
 const splashBudget = 10 * time.Second
+
+// reconcileFolderRefusal turns a swapped folder source found at boot into the
+// same failed state a Start leaves: the row is failed, the splash says so, and
+// the log names the folder. The next pass leaves it alone because the row is
+// no longer running, so a bad folder is not retried every reconcile.
+func (m *Manager) reconcileFolderRefusal(ctx context.Context, inst store.Instance, refusal error) {
+	// Docker may have already started the container at boot against the empty
+	// pin path (the pin is not the real folder, so this is not an exposure, but
+	// the app must not keep running with an empty folder). Stop it before the
+	// row says failed. The stop gets its own short budget, cut loose from the
+	// pass deadline: a stop that the deadline killed would leave the container
+	// up on an empty folder with no later pass to fix it.
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), splashBudget)
+	out, err := m.docker.ComposeStop(stopCtx, m.instanceDir(inst.ID), "moose-"+inst.ID)
+	cancel()
+	if err != nil {
+		slog.Warn("reconcile: stop after a folder refusal",
+			"instance_id", inst.ID, "err", err, "output", out)
+	}
+	if err := m.store.SetState(inst.ID, "failed"); err != nil {
+		slog.Warn("reconcile: set state failed after a folder refusal",
+			"instance_id", inst.ID, "err", err)
+	}
+	slog.Warn("reconcile: folder source refused", "instance_id", inst.ID, "err", refusal)
+}
 
 // reassertSplash re-registers the splash route of a stopped or failed
 // instance, the way reassertRouting does for a running one (#520). The brain

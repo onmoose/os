@@ -1057,6 +1057,10 @@ type agentStatusReader interface {
 // (like disk-full / brain-db-corrupt — allowlisted in the spec but not yet
 // sourced), so the fan-out is a no-op until that entry lands; see the progress
 // entry for why wiring it is a separate, deferred step.
+//
+// The same read also reconciles folder-pin-unsupported (#604): a host-agent
+// with no folder pin op omits SystemStatus.FolderPins, so the brain warns that
+// the box needs an OS update even though folder apps keep running.
 func checkAgentVersion(ctx context.Context, host agentStatusReader, healthMgr *health.Manager, auditor *audit.Recorder, notifier *notify.Notifier, bus *events.Bus) {
 	c, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -1077,6 +1081,20 @@ func checkAgentVersion(ctx context.Context, host agentStatusReader, healthMgr *h
 		}
 	} else if healthMgr.Clear("version-mismatch", "") {
 		cleared = []health.IssueKey{{ID: "version-mismatch"}}
+	}
+
+	// A host-agent with no POST /v1/folders/pin cannot pin a folder source by
+	// inode (#604). Folder apps still run through the prepare-folder re-check,
+	// but a symlink swapped in between two starts can still win. The same
+	// status read is the handshake, so this is 1-shot like the version check.
+	if !status.FolderPins {
+		details := "The system agent on this box is too old to lock a folder app's folder to the folder itself. Folder apps still work, but until the box updates, another app on the box could point one at a different folder. The update runs by itself; if this stays, check the box's internet connection."
+		if healthMgr.Raise("folder-pin-unsupported", "", details) {
+			raised = append(raised, health.IssueKey{ID: "folder-pin-unsupported"})
+			slog.Warn("version check: host-agent cannot pin folder sources; folder apps keep the older re-check")
+		}
+	} else if healthMgr.Clear("folder-pin-unsupported", "") {
+		cleared = append(cleared, health.IssueKey{ID: "folder-pin-unsupported"})
 	}
 	emitHealthTransitions(ctx, auditor, bus, raised, cleared)
 	emitHealthNotifications(notifier, healthMgr, raised, cleared)

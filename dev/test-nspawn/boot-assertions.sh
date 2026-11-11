@@ -65,6 +65,7 @@ verify_out="$(systemd-analyze verify \
     /etc/systemd/system/moose-storage-verify.service \
     /etc/systemd/system/moose-recovery.target \
     /etc/systemd/system/host-agent.service \
+    /etc/systemd/system/moose-folder-pins.service \
     /etc/systemd/system/docker.service \
     /etc/systemd/system/smbd.service \
     /etc/systemd/system/avahi-daemon.service \
@@ -107,6 +108,14 @@ grep -q 'moose-recovery.target' <<<"$onfail" \
 slburst="$(systemctl show host-agent.service -p StartLimitBurst --value 2>&1)"
 [ "$slburst" = "5" ] \
     || fail "host-agent.service StartLimitBurst='$slburst' (expected 5)"
+
+# --- 5b. folder pins are restored before Docker starts any container (#604)
+pins_before="$(systemctl show moose-folder-pins.service -p Before --value 2>&1)"
+grep -q 'docker.service' <<<"$pins_before" \
+    || fail "moose-folder-pins.service Before='$pins_before' (expected docker.service)"
+pins_after="$(systemctl show moose-folder-pins.service -p After --value 2>&1)"
+grep -q 'moose-storage-ready.target' <<<"$pins_after" \
+    || fail "moose-folder-pins.service After='$pins_after' (expected moose-storage-ready.target)"
 
 # --- 6. reporter actually runs end-to-end
 # Start the verifier directly (not the target) so a transient docker.service
