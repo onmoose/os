@@ -1293,6 +1293,52 @@ access)
         return 1
     }
 
+    # folder_job METHOD PATH BODY runs a stop/start job and waits for it to end.
+    # Sets FJ_STATUS, FJ_ERROR and FJ_JOB. FJ_ERROR is the job's own error
+    # object, so a refusal test reads the reason the brain gave.
+    folder_job() {
+        local method="$1" path="$2" body="$3" resp job st jr
+        FJ_STATUS=""; FJ_ERROR=""; FJ_JOB=""
+        resp="$(full_send "$method" "$path" "$apex" "$session_cookie" "$body" 2>/dev/null)"
+        if ! grep -qE ' 20[02]' <<<"$(status_of "$resp")"; then
+            FJ_STATUS="http-error"
+            FJ_ERROR="$(tail -1 <<<"$resp" | cut -c1-800)"
+            return 0
+        fi
+        job="$(json_str_of "$resp" job_id)"
+        if [ -z "$job" ]; then
+            FJ_STATUS="no-job"
+            FJ_ERROR="$(tail -1 <<<"$resp" | cut -c1-800)"
+            return 0
+        fi
+        st=""
+        for _i in $(seq 1 240); do
+            jr="$(full_get "/api/v1/jobs/${job}" "$apex" "$session_cookie" 2>/dev/null || true)"
+            st="$(json_str_of "$jr" status)"
+            case "$st" in completed|failed|cancelled) break ;; esac
+            sleep 1
+        done
+        FJ_STATUS="$st"
+        FJ_JOB="$jr"
+        FJ_ERROR="$(grep -o '"error":{[^}]*}' <<<"$jr" | cut -c1-1000)"
+    }
+
+    # folder_state ID prints the app row's state.
+    folder_state() {
+        json_str_of "$(full_get "/api/v1/apps/${1}" "$apex" "$session_cookie" 2>/dev/null || true)" state
+    }
+
+    # folder_wait_down ID waits until the row is stopped or failed.
+    folder_wait_down() {
+        local st=""
+        for _i in $(seq 1 60); do
+            st="$(folder_state "$1")"
+            case "$st" in stopped|failed|update_failed) return 0 ;; esac
+            sleep 1
+        done
+        return 1
+    }
+
     # Household: the admin default. Runs as moose-app (2000) with the moose-shared
     # group (2001) added, and binds /srv/moose/shared/Documents, which the brain
     # creates root:moose-shared 2770 through its mount.
@@ -1337,6 +1383,131 @@ access)
     [ "$pp_file_owner" = "$pp_uid:$pp_gid" ] \
         || fail "folders: $pp_file is owned '$pp_file_owner', want the owner $pp_uid:$pp_gid"
     echo "cloud-assertions: personal folder app wrote $pp_file on the host as $pp_file_owner (Documents owned by the owner)"
+
+    # 4c-2. A FOLDER SOURCE IS PINNED BY INODE (#604). The exact issue case:
+    #       the app binds ~/Documents/Notebooks, a terminal app stops it and
+    #       swaps that folder for a symlink to ~/.ssh, then starts it again.
+    #       Before #604 Docker followed the link and the app wrote into the
+    #       owner's keys. Now host-agent pins the source's inode, the container
+    #       binds the pin, and a start with a swapped source is refused with a
+    #       reason. The same proof runs for the household shared tree.
+    filedrop_install '{"manifest_id":"filedropsub","scope":"personal"}' personal-sub
+    sub_id="$FD_ID"
+    filedrop_user "$sub_id"; sub_user="$FD_USER"
+    sub_uid="${sub_user%%:*}"; sub_gid="${sub_user##*:}"
+    sub_home="$(getent passwd "$sub_uid" | cut -d: -f6)"
+    case "$sub_home" in /home/?*) ;; *) sub_home="" ;; esac
+    [ -n "$sub_home" ] \
+        || fail "folders: personal sub app runs as '$sub_user', want the owner's own account with a home under /home; getent: $(getent passwd "$sub_uid")"
+    sub_dir="$sub_home/Documents/Notebooks"
+    wait_file "$sub_dir/filedrop.txt" \
+        || fail "folders: personal sub app wrote no file at $sub_dir/filedrop.txt: $(ls -la "$sub_home" "$sub_home/Documents" 2>&1 | tr '\n' ' ')"
+    echo "cloud-assertions: personal sub app wrote $sub_dir/filedrop.txt"
+
+    # The container's source is the pin, and the pin is the source's inode.
+    # docker inspect reports the path as written, so compare device:inode.
+    sub_c="$(docker ps --filter "label=moose.instance_id=$sub_id" --format '{{.Names}}' | head -1)"
+    [ -n "$sub_c" ] || fail "folders: no running container for personal sub app $sub_id"
+    sub_src="$(docker inspect "$sub_c" --format '{{range .Mounts}}{{if eq .Destination "/moose/documents"}}{{.Source}}{{end}}{{end}}')"
+    case "$sub_src" in /run/moose/folder-pins/*) ;; *) fail "folders: personal sub app binds '$sub_src', want a /run/moose/folder-pins/ pin" ;; esac
+    [ "$(stat -c '%d:%i' "$sub_src")" = "$(stat -c '%d:%i' "$sub_dir")" ] \
+        || fail "folders: the pin $sub_src is not the folder $sub_dir (stat $(stat -c '%d:%i' "$sub_src") vs $(stat -c '%d:%i' "$sub_dir"))"
+
+    folder_job POST "/api/v1/apps/${sub_id}/stop" '{}'
+    [ "$FJ_STATUS" = completed ] || fail "folders: stopping the personal sub app ended '$FJ_STATUS': $FJ_ERROR"
+    folder_wait_down "$sub_id" || fail "folders: personal sub app row did not go down after stop: $(folder_state "$sub_id")"
+
+    # Plant the exact swap: the folder the app chose becomes a link to the
+    # owner's own ~/.ssh. The app would run as that owner, so a followed link
+    # would let it read the keys and write filedrop.txt there.
+    mkdir -p "$sub_home/.ssh"
+    chown "$sub_uid:$sub_gid" "$sub_home/.ssh"
+    chmod 0700 "$sub_home/.ssh"
+    echo "private key placeholder" > "$sub_home/.ssh/id_ed25519"
+    chown "$sub_uid:$sub_gid" "$sub_home/.ssh/id_ed25519"
+    mv "$sub_dir" "$sub_dir.real"
+    ln -s "$sub_home/.ssh" "$sub_dir"
+
+    folder_job POST "/api/v1/apps/${sub_id}/start" '{}'
+    [ "$FJ_STATUS" = failed ] \
+        || fail "folders: starting the personal sub app with a swapped folder ended '$FJ_STATUS', want failed; error=$FJ_ERROR"
+    grep -qiE 'not a folder|link' <<<"$FJ_ERROR" \
+        || fail "folders: the refusal did not name the link: $FJ_ERROR"
+    [ "$(folder_state "$sub_id")" = failed ] \
+        || fail "folders: personal sub app row is '$(folder_state "$sub_id")' after the refusal, want failed"
+    [ ! -e "$sub_home/.ssh/filedrop.txt" ] \
+        || fail "folders: SECURITY — the app wrote filedrop.txt into $sub_home/.ssh; the symlink was followed"
+    [ -z "$(docker ps --filter "label=moose.instance_id=$sub_id" --format '{{.Names}}')" ] \
+        || fail "folders: a container for $sub_id is running after the refusal"
+    echo "cloud-assertions: the swapped personal sub folder was refused and ~/.ssh was not bound"
+
+    # Put the real folder back and start again: the pin follows the inode.
+    # Drop the file the first run wrote, so the proof below is the new start.
+    rm -f "$sub_dir.real/filedrop.txt"
+    rm -f "$sub_dir"
+    mv "$sub_dir.real" "$sub_dir"
+    folder_job POST "/api/v1/apps/${sub_id}/start" '{}'
+    [ "$FJ_STATUS" = completed ] \
+        || fail "folders: starting the personal sub app after restoring the folder ended '$FJ_STATUS': $FJ_ERROR"
+    wait_file "$sub_dir/filedrop.txt" \
+        || fail "folders: personal sub app wrote no file after the folder was restored"
+    sub_c="$(docker ps --filter "label=moose.instance_id=$sub_id" --format '{{.Names}}' | head -1)"
+    [ -n "$sub_c" ] || fail "folders: no running container for personal sub app $sub_id after the restart"
+    sub_src="$(docker inspect "$sub_c" --format '{{range .Mounts}}{{if eq .Destination "/moose/documents"}}{{.Source}}{{end}}{{end}}')"
+    echo "cloud-assertions: the personal sub folder started again after it was put back"
+
+    # The boot restorer puts a pin back before Docker starts. Prove the unit is
+    # ordered there and that one run remounts a pin that was detached.
+    systemctl is-enabled moose-folder-pins.service >/dev/null 2>&1 \
+        || fail "folders: moose-folder-pins.service is not enabled"
+    grep -q 'docker.service' <<<"$(systemctl show moose-folder-pins.service -p Before --value 2>/dev/null)" \
+        || fail "folders: moose-folder-pins.service is not ordered Before=docker.service"
+    umount -l "$sub_src" 2>/dev/null || true
+    # RemainAfterExit=yes: the unit is active from boot, so start would be a
+    # no-op. Restart forces a fresh restore run.
+    systemctl restart moose-folder-pins.service \
+        || fail "folders: moose-folder-pins.service failed: $(systemctl status --no-pager moose-folder-pins.service 2>&1 | tail -20)"
+    grep -qF " ${sub_src} " /proc/self/mountinfo \
+        || fail "folders: the boot restorer did not remount $sub_src"
+    [ "$(stat -c '%d:%i' "$sub_src")" = "$(stat -c '%d:%i' "$sub_dir")" ] \
+        || fail "folders: the restored pin $sub_src is not the folder $sub_dir"
+    echo "cloud-assertions: moose-folder-pins.service restored a detached pin on the right inode"
+
+    # The same proof on the household shared tree. The shared source is
+    # /srv/moose/shared/Documents/Notebooks; the secret the swap points at is a
+    # real shared folder the app's group can write, so a followed link would
+    # show up as a file there.
+    filedrop_install '{"manifest_id":"filedropsub","scope":"household"}' household-sub
+    sh_id="$FD_ID"
+    sh_dir=/srv/moose/shared/Documents/Notebooks
+    wait_file "$sh_dir/filedrop.txt" \
+        || fail "folders: household sub app wrote no file at $sh_dir/filedrop.txt: $(ls -la /srv/moose/shared/Documents 2>&1 | tr '\n' ' ')"
+    sh_secret=/srv/moose/shared/NotebooksSecret
+    mkdir -p "$sh_secret"
+    chown 0:2001 "$sh_secret"
+    chmod 2770 "$sh_secret"
+    echo "shared secret placeholder" > "$sh_secret/marker"
+    folder_job POST "/api/v1/apps/${sh_id}/stop" '{}'
+    [ "$FJ_STATUS" = completed ] || fail "folders: stopping the household sub app ended '$FJ_STATUS': $FJ_ERROR"
+    folder_wait_down "$sh_id" || fail "folders: household sub app row did not go down after stop: $(folder_state "$sh_id")"
+    mv "$sh_dir" "$sh_dir.real"
+    ln -s "$sh_secret" "$sh_dir"
+    folder_job POST "/api/v1/apps/${sh_id}/start" '{}'
+    [ "$FJ_STATUS" = failed ] \
+        || fail "folders: starting the household sub app with a swapped shared folder ended '$FJ_STATUS', want failed; error=$FJ_ERROR"
+    grep -qiE 'not a folder|link' <<<"$FJ_ERROR" \
+        || fail "folders: the shared refusal did not name the link: $FJ_ERROR"
+    [ ! -e "$sh_secret/filedrop.txt" ] \
+        || fail "folders: SECURITY — the app wrote filedrop.txt into $sh_secret; the shared symlink was followed"
+    rm -f "$sh_dir.real/filedrop.txt"
+    rm -f "$sh_dir"
+    mv "$sh_dir.real" "$sh_dir"
+    folder_job POST "/api/v1/apps/${sh_id}/start" '{}'
+    [ "$FJ_STATUS" = completed ] \
+        || fail "folders: starting the household sub app after restoring the shared folder ended '$FJ_STATUS': $FJ_ERROR"
+    wait_file "$sh_dir/filedrop.txt" \
+        || fail "folders: household sub app wrote no file after the shared folder was restored"
+    echo "cloud-assertions: the swapped shared sub folder was refused and started again after it was put back"
 
     # 4d. AN image_user APP RUNS AS ITS IMAGE'S OWN USER, REMAPPED (#537, #530).
     #     The image turns the userns remap on, so the brain puts this app in the

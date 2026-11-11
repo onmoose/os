@@ -283,6 +283,7 @@ stage_build_go "$MKCATALOG_BIN" "${REPO_ROOT}/dev/mkcatalog/"
     -pkg "${TEST_DIR}/catalog/whoami" \
     -pkg "${TEST_DIR}/catalog/probewho" \
     -pkg "${TEST_DIR}/catalog/filedrop" \
+    -pkg "${TEST_DIR}/catalog/filedropsub" \
     -pkg "${TEST_DIR}/catalog/imageuser" \
     -pkg "${TEST_DIR}/catalog/remapdrop" \
     -pkg "${TEST_DIR}/catalog/svcdrop" \

@@ -169,7 +169,7 @@ Still open:
    1. #657: the manifest and admission changes (`optional`, `extra_folders`, `projects`, `scope` ignored), the new folder elections on install, and the wider `prepare-folder` check.
    2. #658: the folder chooser: host-agent's folder list op, `GET /api/v1/me/folders`, the component, and the install's folder step.
    3. #659: changing folders after install: `PUT /api/v1/apps/{id}/folders` and the app page's Folders section.
-2. **Fix #604** (a folder source swapped for a symlink between two starts). It must land before item 5.
+2. **Fix #604** (a folder source swapped for a symlink between two starts). Done: folder source pins, `docs/progress/folder-source-pins.md`.
 3. **`moose-terminal` base image** in `onmoose/app-images` (onmoose/app-images#46): the two rule changes there first, then ttyd, tmux, tools, the project page, the start script, the key bar.
 4. **Locked access mode, personal-only, hosted-only** for terminal apps (#660) (manifest keys, brain refusals, the store hiding them where they cannot run, the `access` boot proving the WebSocket through forward-auth).
 5. **First apps:** Claude Code on the base image, OpenCode on its own image (`ghcr.io/anomalyco/opencode`, `opencode web`). Catalog app issues in `onmoose/store`.

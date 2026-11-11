@@ -256,6 +256,21 @@ POST /v1/users/{username}/prepare-folder
 
 **As built (#657):** the user may point a folder at any path inside the folder limit (`APP_ISOLATION.md` # User content), which includes `Projects` and folders made through moose. host-agent cannot see which folders moose made (that is a brain row), so its check is the part of the limit it can see: the path has at least one level, no level is empty or starts with a dot (so `.` and `..` are out too), and the first level is not `bin`. Any other path is `400 bad-path`. The real and the fake host-agent share this check (`hostagent.ValidUserFolderPath`), and the real walk checks the dot and `bin` rules again before it touches the home. The first-level rule (a use-case folder or a folder moose made) is the brain's, checked before it sends the request. This is also how a new folder is made: the brain sends its path and records the row once the op succeeds. host-agent resolves the home from the username, never from a path the brain sends. It creates each missing level owned by the user, sets the owner of the last level (which a Docker bind may have left `root:root` before this op existed), and leaves every other existing level alone. It never follows a symlink: each level is opened relative to the one before with `O_NOFOLLOW`, because the user owns the home and a root process that followed `~/Documents -> /etc` would hand `/etc` to them. A symlink or a file on the way is the 409. The op is idempotent. The fake host-agent creates the path under the dev operator's own home, the one its `home` route hands out, with no chown.
 
+**Folder source pins (#604).** `prepare-folder` runs once, at install or when a folder is added. The bind is resolved later, by Docker, at every container start, and Docker follows host symlinks. A check at install therefore cannot stop a terminal app from swapping the source for a symlink between two starts. The brain pins the inode before every `compose up` and `compose create`. Pattern A:
+
+```
+POST /v1/folders/pin
+  { "username": "alex", "shared": false, "path": "Documents/Notebooks" }
+→ 200 OK  { "path": "/run/moose/folder-pins/8-12345" }
+→ 400     { "code": "bad-path", ... }
+→ 404     { "code": "unknown-user", ... }
+→ 409     { "code": "not-a-directory", "message": "a file or link is in the way of the folder" }
+```
+
+`path` is relative to the user's home, or to `SharedRoot` when `shared` is true; the brain never names a root. host-agent walks it with `O_NOFOLLOW`, bind-mounts the walked directory at `/run/moose/folder-pins/<dev>-<ino>`, and checks the mount's device and inode against the walked fd. A file, a symlink or a missing level is the 409. The returned path is the pin. The brain writes it into `compose.pins.yml`, which compose merges after the override and replaces by container target. The override keeps the real path. A second pin of the same inode reuses the existing mount. The fake host-agent walks the same way with `Lstat`, refuses a link or a file, and returns the real path: it cannot mount, and the dev loop does not need it.
+
+**Boot restore.** A pin is a bind mount under `/run`, so a reboot clears it. The brain writes each instance's pins to `folder-pins.json` beside its `compose.pins.yml`. `moose-folder-pins.service` runs `host-agent-real --restore-folder-pins` with `Before=docker.service`. It reads each record, walks the source again, mounts only when the walked inode still matches the pin's name (the device can change when a data drive is remounted), and prunes pins no record references. A source swapped while the box was off is left unpinned: Docker then creates the empty pin path, and the restorer writes `folder-pins.failed` beside the record. The brain's startup pass reads that marker, stops the container Docker started, and marks the app failed with the same plain refusal a Start uses. A successful restore, or a successful pin, removes the marker. An old host-agent has no pin op (404); the brain falls back to `prepare-folder` and raises `folder-pin-unsupported` (`HEALTH.md` # Version).
+
 **Listing folders for the folder chooser (#655, planned, not built).** The dashboard's folder chooser (`DASHBOARD.md` # Folder chooser) shows one level of folders at a time. The brain cannot read `/home`, so it asks host-agent. Pattern A:
 
 ```

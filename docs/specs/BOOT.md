@@ -44,6 +44,7 @@ kernel
               │       • moose-storage-verify.service     (reporter — writes findings to /run/moose/health/)
               │
               ├─ nftables.service                        (Before=docker.service)
+              ├─ moose-folder-pins.service               (Before=docker.service; restores folder pins, #604)
               ├─ network-online.target                   (scoped to primary iface)
               │
               ├─ docker.service                          (After=moose-storage-ready.target Wants=moose-storage-ready.target)
@@ -126,6 +127,10 @@ The full recovery UI is deferred to `RECOVERY.md` (`NEXT.md`). The boot-level de
 Docker writes its own iptables/nftables rules at startup for container NAT and forwarding. moose's rules live in a dedicated `inet moose` table (separate family/table from Docker's). Running before Docker ensures our table is in place when Docker brings up container networking; the two never touch each other's rules.
 
 Cross-ref: `MOOSE_NETWORK.md` and `USERS_AND_GROUPS.md` for what those rules enforce (SSH/SMB scoping to LAN + mesh).
+
+### `moose-folder-pins.service` runs `Before=docker.service`
+
+A folder app binds a pin path under `/run/moose/folder-pins`, a bind mount of the folder source's inode (`APP_ISOLATION.md` # Folder source pins, #604). `/run` is a tmpfs, so a reboot clears the pins. Docker would then create each missing pin path as an empty root-owned directory and start the app against an empty folder, and a one-shot job would run again. The unit runs `host-agent-real --restore-folder-pins` after the storage target and before Docker, reads each instance's `folder-pins.json`, walks the source again, and mounts the pin again only when the walked inode still matches the pin's name (the device can change when a data drive is remounted). A source swapped while the box was off is left unpinned; that is not an exposure, because the pin path is not the real folder, and the brain refuses the start at its next reconcile. The unit is best-effort: a failure is logged and Docker still starts, so one bad pin does not take down every app.
 
 ### NetworkManager owns the network stack
 

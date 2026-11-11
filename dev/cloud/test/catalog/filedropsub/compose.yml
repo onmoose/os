@@ -1,0 +1,11 @@
+# Author's compose, held verbatim by moose. A test fixture, not a catalog app.
+# At start the app writes one file into the Documents folder it was granted,
+# as the identity moose runs it as, then serves that folder over HTTP so the
+# container stays up. If the write fails the container exits, and the install
+# fails with it. The cloud access boot installs it twice, once household (the
+# shared tree) and once personal (the owner's home), and checks the file on the
+# host (#519).
+services:
+  filedrop:
+    image: busybox:1.37.0
+    command: ["sh", "-c", "id > /moose/documents/filedrop.txt && exec httpd -f -p 8080 -h /moose/documents"]
