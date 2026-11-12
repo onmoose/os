@@ -1,6 +1,6 @@
 # moose terminal apps
 
-> **Draft design, partly built.** Working spec for running terminal-based apps (AI coding agents such as Claude Code, Codex CLI, Grok CLI and OpenCode) as moose apps that open in a browser tab. Captures a design discussion held on 2026-10-06, with its open questions answered on 2026-11-10 (`DECISIONS.md` 2026-11-10). Built so far: the folders the user chooses (#657, #658, #659), the folder source pins (#604) and the three manifest flags of # Security and access (#660). The base image and the apps are not built. The folder part is specced in the docs that own it (#655). Companion to `APP_MANIFEST.md` (folders, needs), `STORAGE.md` (use-case folders), `DASHBOARD.md` (install flow, Integrations), `SERVICE_PROVISIONING.md` (per-user accounts), `ENVIRONMENT.md` (hosted forward-auth, per-app access mode) and `APP_ISOLATION.md` (the sandbox these apps run in).
+> **Draft design, partly built.** Working spec for running terminal-based apps (AI coding agents such as Claude Code, Codex CLI, Grok CLI and OpenCode) as moose apps that open in a browser tab. Captures a design discussion held on 2026-10-06, with its open questions answered on 2026-11-10 (`DECISIONS.md` 2026-11-10). Built so far: the folders the user chooses (#657, #658, #659), the folder source pins (#604) and the three manifest flags of # Security and access (#660), the `moose-terminal` base image (`ghcr.io/onmoose/moose-terminal`, onmoose/app-images#47) and the Claude Code image (`ghcr.io/onmoose/claude-code`, onmoose/app-images#48). The catalog apps are not built yet. The folder part is specced in the docs that own it (#655). Companion to `APP_MANIFEST.md` (folders, needs), `STORAGE.md` (use-case folders), `DASHBOARD.md` (install flow, Integrations), `SERVICE_PROVISIONING.md` (per-user accounts), `ENVIRONMENT.md` (hosted forward-auth, per-app access mode) and `APP_ISOLATION.md` (the sandbox these apps run in).
 
 ## Goal
 
@@ -179,9 +179,9 @@ Still open:
    2. #658: the folder chooser: host-agent's folder list op, `GET /api/v1/me/folders`, the component, and the install's folder step.
    3. #659: changing folders after install: `PUT /api/v1/apps/{id}/folders` and the app page's Folders section. Done: `docs/progress/folder-change.md`.
 2. **Fix #604** (a folder source swapped for a symlink between two starts). Done: folder source pins, `docs/progress/folder-source-pins.md`.
-3. **`moose-terminal` base image** in `onmoose/app-images` (onmoose/app-images#46): the two rule changes there first, then ttyd, tmux, tools, the project page, the start script, the key bar.
+3. **`moose-terminal` base image** in `onmoose/app-images` (onmoose/app-images#46): the two rule changes there first, then ttyd, tmux, tools, the project page, the start script, the key bar. Done: onmoose/app-images#47.
 4. **Locked access mode, personal-only, hosted-only** for terminal apps (#660) (manifest keys, brain refusals, the store hiding them where they cannot run, the `access` boot proving the WebSocket through forward-auth). Done: `docs/progress/terminal-app-flags.md`.
-5. **First apps:** Claude Code on the base image, OpenCode on its own image (`ghcr.io/anomalyco/opencode`, `opencode web`). Catalog app issues in `onmoose/store`.
+5. **First apps:** Claude Code on the base image, OpenCode on its own image (`ghcr.io/anomalyco/opencode`, `opencode web`). The Claude Code image is built (onmoose/app-images#48). Catalog app issues: onmoose/store#296 (Claude Code) and onmoose/store#297 (OpenCode).
 6. **Later:** the Git integration, "Open with" in Files, dev-server previews, session sharing, a free-memory check before a new session, the appliance.
 
 ## Sources
