@@ -21,6 +21,8 @@ Follows [terminal-app-flags.md](terminal-app-flags.md) (#660). That change made 
 - **The dev boot does not test the hosted gate.** `owner_only` means nothing off hosted, so the app's route has no box login in front of it. The cloud `access` boot already proves the WebSocket through forward-auth with `termwho`.
 - **Only the placement rule moves**, and only where the switch is set. Nothing on a real box sets it.
 
+- **Greptile (P2): a refusal saved before the switch was on stays.** If plain `make dev` checked an update that adds `hosted_only` and saved it as blocked, a later `make dev-app` on the same state dir keeps that saved result until the version changes, and the nightly run skips it. A manual update checks again and works. Dismissed: `make dev-app` always sets the switch, a curation run starts from its own state dir, and a startup re-check would be code that only a mixed dev state needs.
+
 ## What's next
 
 1. In `onmoose/store`: say in the curation docs that a terminal app boots on the curation box like any other app.
