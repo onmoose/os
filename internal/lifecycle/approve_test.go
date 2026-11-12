@@ -165,14 +165,14 @@ func TestClassifyUpdateRefusesAFolderAppChange(t *testing.T) {
 	inst := store.Instance{ID: "i", Scope: store.ScopePersonal, UsernsTier: store.UsernsTierHost}
 	folderless := &manifest.Manifest{Version: "1.0"}
 	extra := &manifest.Manifest{Version: "2.0", Permissions: manifest.Permissions{ExtraFolders: "read"}}
-	if c := classifyUpdate(inst, folderless, extra, nil, nil, 0, nil); c.Status != store.UpdateBlocked {
+	if c := classifyUpdate(inst, folderless, extra, nil, nil, 0, nil, profile.Appliance); c.Status != store.UpdateBlocked {
 		t.Errorf("folderless to extra_folders: %+v, want blocked", c)
 	}
-	if c := classifyUpdate(inst, extra, &manifest.Manifest{Version: "3.0"}, nil, nil, 0, nil); c.Status != store.UpdateBlocked {
+	if c := classifyUpdate(inst, extra, &manifest.Manifest{Version: "3.0"}, nil, nil, 0, nil, profile.Appliance); c.Status != store.UpdateBlocked {
 		t.Errorf("extra_folders to folderless: %+v, want blocked", c)
 	}
 	folders := &manifest.Manifest{Version: "3.0", Permissions: manifest.Permissions{Folders: []manifest.Folder{{Folder: "notes", Mode: "read", Optional: true}}}}
-	if c := classifyUpdate(inst, extra, folders, nil, nil, 0, nil); c.Status == store.UpdateBlocked {
+	if c := classifyUpdate(inst, extra, folders, nil, nil, 0, nil, profile.Appliance); c.Status == store.UpdateBlocked {
 		t.Errorf("extra_folders to folders stays a folder app: %+v", c)
 	}
 }
@@ -182,11 +182,11 @@ func TestClassifyUpdateWithApproval(t *testing.T) {
 	v2 := &manifest.Manifest{Version: "2.0", Permissions: manifest.Permissions{Internet: true}}
 	inst := store.Instance{ID: "i", Scope: store.ScopePersonal, UsernsTier: store.UsernsTierHost}
 
-	if c := classifyUpdate(inst, oldMan, v2, nil, nil, 0, nil); c.Status != store.UpdateNeedsApproval || !strings.Contains(c.Reason, "its owner allows it") {
+	if c := classifyUpdate(inst, oldMan, v2, nil, nil, 0, nil, profile.Appliance); c.Status != store.UpdateNeedsApproval || !strings.Contains(c.Reason, "its owner allows it") {
 		t.Fatalf("no approval: %+v", c)
 	}
 	inst.UpdateApproval = approvalFor(t, v2)
-	c := classifyUpdate(inst, oldMan, v2, nil, nil, 0, nil)
+	c := classifyUpdate(inst, oldMan, v2, nil, nil, 0, nil, profile.Appliance)
 	if c.Status != store.UpdateAvailable || !slices.Equal(c.Wants, []store.AccessWant{{Kind: store.WantInternet}}) {
 		t.Fatalf("covered: %+v, want available with the list kept", c)
 	}
@@ -194,12 +194,12 @@ func TestClassifyUpdateWithApproval(t *testing.T) {
 	// v3 asks for no more than v2 did (v2 was allowed and rolled back): no
 	// second question.
 	v3 := &manifest.Manifest{Version: "3.0", Permissions: manifest.Permissions{Internet: true}}
-	if c := classifyUpdate(inst, oldMan, v3, nil, nil, 0, nil); c.Status != store.UpdateAvailable {
+	if c := classifyUpdate(inst, oldMan, v3, nil, nil, 0, nil, profile.Appliance); c.Status != store.UpdateAvailable {
 		t.Fatalf("within the approval: %+v", c)
 	}
 	// v4 asks for more than was allowed: it asks again.
 	v4 := &manifest.Manifest{Version: "4.0", Permissions: manifest.Permissions{Internet: true, LAN: true}}
-	if c := classifyUpdate(inst, oldMan, v4, nil, nil, 0, nil); c.Status != store.UpdateNeedsApproval {
+	if c := classifyUpdate(inst, oldMan, v4, nil, nil, 0, nil, profile.Appliance); c.Status != store.UpdateNeedsApproval {
 		t.Fatalf("beyond the approval: %+v", c)
 	}
 
@@ -209,18 +209,18 @@ func TestClassifyUpdateWithApproval(t *testing.T) {
 	grants := []store.ServiceGrant{{LogicalName: "database", Kind: "postgres", Version: "16"}}
 	v5 := &manifest.Manifest{Version: "5.0", Permissions: manifest.Permissions{LAN: true},
 		Services: map[string]manifest.ServiceDep{"database": {Type: "postgres", Version: "17"}}}
-	if c := classifyUpdate(inst, oldMan, v5, grants, nil, 0, nil); c.Status != store.UpdateNeedsApproval || !slices.Equal(c.Wants, []store.AccessWant{{Kind: store.WantLAN}}) {
+	if c := classifyUpdate(inst, oldMan, v5, grants, nil, 0, nil, profile.Appliance); c.Status != store.UpdateNeedsApproval || !slices.Equal(c.Wants, []store.AccessWant{{Kind: store.WantLAN}}) {
 		t.Fatalf("service major and wider: %+v", c)
 	}
 	v6 := &manifest.Manifest{Version: "6.0", Permissions: manifest.Permissions{LAN: true},
 		Services: map[string]manifest.ServiceDep{"database": {Type: "postgres", Version: "15"}}}
-	if c := classifyUpdate(inst, oldMan, v6, grants, nil, 0, nil); c.Status != store.UpdateBlocked || !slices.Equal(c.Wants, []store.AccessWant{{Kind: store.WantLAN}}) {
+	if c := classifyUpdate(inst, oldMan, v6, grants, nil, 0, nil, profile.Appliance); c.Status != store.UpdateBlocked || !slices.Equal(c.Wants, []store.AccessWant{{Kind: store.WantLAN}}) {
 		t.Fatalf("older major and wider: %+v", c)
 	}
 
 	// A household app waits for an admin.
 	hh := store.Instance{ID: "h", Scope: store.ScopeHousehold, UsernsTier: store.UsernsTierHost}
-	if c := classifyUpdate(hh, oldMan, v2, nil, nil, 0, nil); !strings.Contains(c.Reason, "an admin allows it") {
+	if c := classifyUpdate(hh, oldMan, v2, nil, nil, 0, nil, profile.Appliance); !strings.Contains(c.Reason, "an admin allows it") {
 		t.Fatalf("household reason: %q", c.Reason)
 	}
 }

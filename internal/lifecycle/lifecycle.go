@@ -452,7 +452,9 @@ func (m *Manager) buildRouteConfig(inst store.Instance, man *manifest.Manifest, 
 	// flips it to Public, or on one of its own public paths — and there the gate
 	// is not there to overwrite a forged header (#415).
 	cfg.ScrubHeaders = identityHeaders
-	if inst.Exposure == store.ExposureRestricted {
+	// An owner_only app is gated whatever the row says (#660), so a row left
+	// public by any path still never serves it to anyone.
+	if inst.Exposure == store.ExposureRestricted || m.ownerOnly(man) {
 		cfg.ForwardAuth = &caddy.ForwardAuthConfig{
 			Upstream:    m.brainUpstream,
 			VerifyPath:  profile.ForwardAuthVerifyPath,
@@ -758,6 +760,12 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 		return store.Instance{}, err
 	}
 	defer release()
+
+	// personal_only and hosted_only (placement.go): the API refuses first and
+	// the install plan says so; this is the backstop, before any state.
+	if err := placementAllowed(man, scope, m.profile); err != nil {
+		return store.Instance{}, err
+	}
 
 	// A mail-provider election is only meaningful for an app that declares
 	// mail support — the API validates this against the install plan, so this
@@ -1530,6 +1538,13 @@ func (m *Manager) SetExposure(ctx context.Context, instanceID, exposure string) 
 	if err != nil {
 		return err
 	}
+	man, err := m.loadInstanceManifest(instanceID)
+	if err != nil {
+		return err
+	}
+	if exposure == store.ExposurePublic && m.ownerOnly(man) {
+		return ErrExposureLocked
+	}
 	if err := m.store.SetInstanceExposure(instanceID, exposure); err != nil {
 		return err
 	}
@@ -1537,10 +1552,6 @@ func (m *Manager) SetExposure(ctx context.Context, instanceID, exposure string) 
 	slog.Info("app exposure set", "instance_id", instanceID, "slug", inst.Slug, "exposure", exposure)
 	if inst.State != "running" {
 		return nil
-	}
-	man, err := m.loadInstanceManifest(instanceID)
-	if err != nil {
-		return err
 	}
 	host, _ := m.publishHost(ctx, inst)
 	upstream := fmt.Sprintf("moose-%s-%s:%d", inst.ID, man.MainService, man.MainPort)

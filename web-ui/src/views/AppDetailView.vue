@@ -66,7 +66,7 @@ const { householdInstance, ownPersonalInstance, installing, canInstallHousehold 
 
 // The install plan and what Install does (useStartInstall). The plan also
 // feeds the Permissions group in the right column.
-const { planQuery, plan, unavailable, tooBig, goInstall, pending } = useStartInstall(manifestId);
+const { planQuery, plan, unavailable, tooBig, householdAllowed, goInstall, pending } = useStartInstall(manifestId);
 
 // Whether the app fits this box's memory and CPU (#599). The plan's figure
 // wins, because it is the one the Install button follows; the detail's own is
@@ -97,9 +97,10 @@ const permissionIcons: Record<PermissionLine["kind"], unknown> = {
 };
 
 // The split button's menu. Only admins outside single-user mode get the
-// household item; everyone else gets a plain Install button.
+// household item, and only for an app that can be a household copy; everyone
+// else gets a plain Install button.
 const dropdownItems = computed(() =>
-  canInstallHousehold.value ? [{ label: "Install for the whole household", action: () => goInstall(true) }] : [],
+  canInstallHousehold.value && householdAllowed.value ? [{ label: "Install for the whole household", action: () => goInstall(true) }] : [],
 );
 
 // brokenIcon falls the header icon back to the glyph if the asset fails to load;

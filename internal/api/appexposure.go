@@ -15,6 +15,7 @@ import (
 
 	"github.com/onmoose/os/internal/audit"
 	"github.com/onmoose/os/internal/catalog"
+	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/profile"
 	"github.com/onmoose/os/internal/store"
 )
@@ -53,6 +54,11 @@ func (s *Server) setAppExposure(ctx context.Context, in *struct {
 		s.auditor.Record(ctx, audit.ActionAppExposureSet, tgt, nil, false)
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, huma.Error404NotFound("no such app")
+		}
+		// access.owner_only (#660): the lock is the brain's, not only a
+		// hidden toggle.
+		if errors.Is(err, lifecycle.ErrExposureLocked) {
+			return nil, huma.Error409Conflict("This app is always private to you, so it cannot be made public.")
 		}
 		return nil, huma.Error500InternalServerError("set exposure failed", err)
 	}

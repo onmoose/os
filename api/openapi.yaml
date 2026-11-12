@@ -1635,6 +1635,7 @@ components:
           enum:
             - needs-remap
             - too-big
+            - hosted-only
           type: string
         version:
           type: string
@@ -1771,6 +1772,8 @@ components:
             - restricted
             - public
           type: string
+        exposure_locked:
+          type: boolean
         icon_glyph:
           type: string
         icon_url:

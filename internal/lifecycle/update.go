@@ -240,7 +240,7 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 	// The class is worked out again here, under the lock, with the manifest
 	// this update applies: an update that asks for more access than the
 	// owner allowed is never applied, whoever starts it (#633).
-	check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources)
+	check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.profile)
 	m.setUpdateCheck(inst, check)
 	if check.Status != store.UpdateAvailable {
 		slog.Info("update refused", "instance_id", id, "version", inst.Version, "new_version", newMan.Version, "update_class", check.Status)
@@ -334,6 +334,15 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 	step("stopping")
 	host := m.routeHost(inst)
 	if err := m.caddy.AddSplashRoute(ctx, id, host, oldMan.Name, "updating"); err != nil {
+		// A version that locks a public app to Only me must never start
+		// behind the old public route: without the splash, the new
+		// containers could answer anyone until the gated route goes in
+		// (#660). Stop here, with the old version still running.
+		if m.ownerOnly(newMan) && inst.Exposure != store.ExposureRestricted {
+			const msg = "moose could not close the app while it updates, so it did not update the app. The old version is still running"
+			m.endBeforeStop(inst, rec, store.UpdateFailedStart, msg, err)
+			return errors.New(msg)
+		}
 		slog.Warn("update: caddy splash flip failed (continuing)", "instance_id", id, "host", host, "err", err)
 	}
 	if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {
@@ -388,6 +397,17 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 
 	// 6. Healthy: the route, then the row in one write.
 	step("flipping_route")
+	// A version that locks the access mode puts a public app back to Only me
+	// (#660). The route builder gates it anyway; the row is written so the
+	// dashboard and the probe read the same mode.
+	if m.ownerOnly(newMan) && inst.Exposure != store.ExposureRestricted {
+		if err := m.store.SetInstanceExposure(id, store.ExposureRestricted); err != nil {
+			slog.Warn("update: could not set the app back to Only me (the route is gated anyway)", "instance_id", id, "err", err)
+		} else {
+			inst.Exposure = store.ExposureRestricted
+			slog.Info("app exposure set", "instance_id", id, "slug", inst.Slug, "exposure", store.ExposureRestricted)
+		}
+	}
 	upstream := fmt.Sprintf("moose-%s-%s:%d", id, newMan.MainService, newMan.MainPort)
 	if err := m.caddy.AddRoute(ctx, m.buildRouteConfig(inst, newMan, host, upstream)); err != nil {
 		slog.Warn("update: caddy upstream flip failed (continuing)", "instance_id", id, "host", host, "upstream", upstream, "err", err)

@@ -115,6 +115,8 @@ health_probe: /healthz                # optional; enables the "responding" check
 service_user: false                   # optional; default false. Dedicated non-root identity for folderless apps. See below.
 root_setup: false                     # optional; default false. The image's entrypoint needs root powers at start. Folderless only. See below.
 image_user: false                     # optional; default false. Run as the user the image already sets. Folderless only. See below.
+personal_only: false                  # optional; default false. Never a household instance. See below.
+hosted_only: false                    # optional; default false. Runs only on the hosted profile. See below.
 ```
 
 **`id` and `preferred_slugs`** must be strict kebab-case — lowercase alphanumerics joined by single internal hyphens (`home-assistant` ✓; `whoami-`, `-x`, `who--ami`, `xn--y`, `Foo` ✗). This keeps the `<slug>--<user>` personal-instance scheme parseable (`DASHBOARD.md` # instance naming): no leading/trailing hyphen and no `--` run (which would collide with the owner separator and also covers the reserved `xn--` prefix). Catalog CI and the manifest parser both reject violations.
@@ -184,6 +186,20 @@ The rules:
 **Versioning.** Like `root_setup`, an optional field with a default that keeps today's behaviour, so `manifest_version` stays `1`. A brain that does not model it ignores it and installs the app in the default tier, where it fails at start as it does today. The catalog must not offer such an app to a box that cannot run it.
 
 **Status.** Built (#537): parsed, the refusals above run at install and in `moose manifest check`, and on a remapped box the brain picks the image tier. Both images turn the remap on (#530), so a new box accepts an `image_user` app, and a box built before that refuses it.
+
+**`personal_only`** declares that the app can only be installed **just for one person**, never as a household instance (#660). A terminal app needs it (`TERMINAL_APPS.md` # Security and access): git refuses a repo whose owner is not the user running it ("dubious ownership"), and the logins the agent keeps belong to one person. The rules:
+
+- **The install plan offers "Just for me" only**, to an admin too: `scope_options` is `["personal"]` (`BRAIN_UI_PROTOCOL.md` # install-plan). An install that asks for no scope is personal, although an admin's default is household.
+- **A household install is refused** with `409`, audited, and `lifecycle.Install` refuses it again as the backstop.
+- **An update that adds it to a household instance** is `blocked` (`UPDATES.md` # 4), with a sentence that says to install the app again just for you.
+
+**`hosted_only`** declares that the app runs **only on the hosted profile** (`ENVIRONMENT.md`, #660). The appliance puts no box login in front of an app, so an app that is an open shell must not run there. The rules:
+
+- **The store hides it on the appliance** through the catalog service's environment filter: the catalog lists the app for `hosted` only (`APP_STORE.md` # Apps this box cannot run). The box reads no extra field for it.
+- **A direct link still loads**, and its install plan carries `unavailable: "hosted-only"`, so the page shows a sentence in place of Install.
+- **The install is refused** off hosted with `409`, audited, and `lifecycle.Install` refuses it again. An update that adds it on the appliance is `blocked`.
+
+Both are the snake_case boolean style of `service_user` and `root_setup`. **Door-2 synthetic manifests never set them.** **Versioning:** optional fields with a default that keeps today's behaviour, so `manifest_version` stays `1`. A brain from before #660 does not model them and ignores them, so it would install such an app as a household app, or on the appliance. The catalog holds such an app back until the boxes run a brain that reads them. A terminal app is held back anyway: it binds `projects`, which a brain from before #657 refuses. **Status:** built (#660).
 
 ### B2. Resources (recommended, never a limit)
 
@@ -488,6 +504,18 @@ access:
 - **The trust boundary is catalog review**, not this validation. These paths ship in the catalog, which moose curates; the rules above catch an author's mistake, and a manifest that wanted to be hostile already chooses the app's images. A reviewer should ask one question: is every declared path authenticated by the app itself?
 - **The dashboard says so.** An app that declares public paths shows them on its access control instead of a bare "Only you can open it" (`DASHBOARD.md` # Settings).
 
+**`owner_only` locks the access mode** (#660):
+
+```yaml
+access:
+  owner_only: true    # always "Only me" on hosted; the owner cannot make it Public
+```
+
+- **It is the brain's lock, not a hidden switch.** `PUT /api/v1/apps/{id}/exposure` with `public` answers `409`, audited. The central route builder gates the app whatever its row says, so a row left public by any path still never serves the app to anyone. An update that adds the flag sets a public app back to "Only me" when the new version starts, and stops before the old version stops if the "updating" page cannot be put up.
+- **The dashboard shows no toggle**, only the sentence that the app is always private, or, when it also declares public paths, the public-path line. The app's record carries `exposure_locked: true` (`BRAIN_UI_PROTOCOL.md`).
+- **It does not close `public_paths`.** Those are the author's own exception, reviewed in the catalog. A terminal app declares none.
+- **On the appliance it changes nothing**, like `public_paths`: there is no gate there. A terminal app also sets `hosted_only` (# B).
+
 ### F. Lifecycle hooks — deferred from MVP
 
 The `hooks:` block is **not part of v1.** Apps already run their own migrations on container start; the brain's **pre-update snapshot** (`UPDATES.md` # Pre-update snapshot) is the v1 safety net for migrations that go wrong.
@@ -511,7 +539,7 @@ The brain will run the hook image as a transient container with the app's volume
 - A **member** can only create a **personal** instance.
 - Every user sees their own personal instances plus the household instances they're permitted to open.
 
-There is deliberately **no `multi_user.mode` field** — an earlier draft had `shared | per_user`, removed because scope is a runtime election, not a static property of the app. The brain realizes a personal instance as the per-owner compose-project shape already locked in `APP_LIFECYCLE.md` # an app instance is a Docker Compose project; folder bindings resolve to the owner's `~/<Folder>/`.
+There is deliberately **no `multi_user.mode` field** — an earlier draft had `shared | per_user`, removed because scope is a runtime election, not a static property of the app. The one exception is `personal_only` (# B, #660): it takes the household choice away for an app that cannot work as one, and it never forces a household instance. The brain realizes a personal instance as the per-owner compose-project shape already locked in `APP_LIFECYCLE.md` # an app instance is a Docker Compose project; folder bindings resolve to the owner's `~/<Folder>/`.
 
 Mesh-guest sharing (`guest_shareable`) and per-app household visibility (which members may open a given household instance) are **deferred** — guest sharing rides on the mesh (deferred), and the visibility/authorization model is owned by `AUTH.md` / `DASHBOARD.md`, not the manifest. Neither is a v1 manifest field.
 
@@ -611,7 +639,7 @@ permissions:
 - **`service_user: true`** opts a *folderless* app into a dedicated, moose-allocated non-root runtime identity, stable per instance, drawn from a reserved app-service band below the 3000 user floor; the brain pins `user:` and chowns `data/` to it. The manifest declares **intent only: no numeric UID is namable** (a host-namespace UID could alias a real principal in a host-tier container or on a box without the remap); a numeric `user:`, or `service_user: true` alongside a `folders` grant, is an admission rejection. Does not cover images that hardcode a *different* non-root internal UID (those need the remap tiers and, for a root entrypoint, `root_setup`). `APP_ISOLATION.md` # Runtime identity & data ownership, `DECISIONS.md` 2026-06-10.
 - **`root_setup: true`** declares that a *folderless* app's entrypoint must do root work at start (`chown`, or switching to its own user). The brain runs it remapped with a fixed set of five capabilities (`CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`) and no `user:` pin. It is an **intent, never a capability list or a UID**. Admission refuses it with `folders`, `gpu: true`, `devices` or `service_user: true`, and the brain refuses it on a box without the remap. `APP_ISOLATION.md` # User-namespace tiers, `DECISIONS.md` 2026-09-29.
 - **`image_user: true`** declares that a *folderless* app must run as the user its image already sets. The brain runs it remapped with `cap_drop: [ALL]`, no capability back and no `user:` pin, and gives each bind dir to that user, remapped. It is an **intent, never a UID**: the brain reads the user from the image. Admission refuses it with `folders`, `gpu: true`, `devices`, `service_user: true`, `root_setup: true` or a `user:` in the compose, and the brain refuses it on a box without the remap. `APP_ISOLATION.md` # User-namespace tiers, `DECISIONS.md` 2026-09-29 (image_user).
-- **Scope (household vs. personal) is installer-elected, not a manifest field.** No `multi_user.mode`. Admins choose household or personal; members install personal only (`DASHBOARD.md`, `DECISIONS.md` 2026-05-29). Guest-sharing and household visibility are deferred and not manifest fields.
+- **Scope (household vs. personal) is installer-elected, not a manifest field.** No `multi_user.mode`. Admins choose household or personal; members install personal only (`DASHBOARD.md`, `DECISIONS.md` 2026-05-29). The one exception: `personal_only: true` removes the household choice for an app that cannot work as one (# B, `DECISIONS.md` 2026-11-12). Guest-sharing and household visibility are deferred and not manifest fields.
 - **No added Linux capabilities for store apps, except `root_setup`.** Override is `cap_drop: [ALL]`; admission rejects `cap_add` in the compose. The one exception is the brain's own fixed set for a `root_setup` app, inside a remapped namespace only. Capability / `privileged` / Docker-socket needs go through Door-2 or Tier 2. A reviewed `permissions.capabilities` escape hatch is not in the v1 store schema (open in `NEXT.md`).
 - **Bind mounts only — no Docker named volumes for app data.** All data lives under the instance's `data/` dir.
 - **Hooks deferred from MVP.** When reintroduced, they will be one-shot container images, not in-container scripts.

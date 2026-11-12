@@ -1976,7 +1976,7 @@ export interface components {
             scope_default: string;
             scope_options: string[] | null;
             /** @enum {string} */
-            unavailable?: "needs-remap" | "too-big";
+            unavailable?: "needs-remap" | "too-big" | "hosted-only";
             version: string;
         };
         InstallPlanExisting: {
@@ -2026,6 +2026,7 @@ export interface components {
             auto_update: boolean;
             /** @enum {string} */
             exposure: "restricted" | "public";
+            exposure_locked?: boolean;
             icon_glyph?: string;
             icon_url?: string;
             id: string;

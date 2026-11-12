@@ -15,6 +15,7 @@ import (
 	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/profile"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/store"
 )
@@ -55,10 +56,10 @@ type InstallPlanDTO struct {
 	// Unavailable is set when this box cannot install the app at all. It is a
 	// reason code, not copy: the UI owns the sentence, like every other
 	// wording on this plan. The detail page shows that sentence in place of a
-	// working Install button. The codes are unavailableNeedsRemap and
-	// unavailableTooBig. Advisory like the rest of the plan: POST /api/v1/apps
+	// working Install button. The codes are unavailableNeedsRemap,
+	// unavailableTooBig and unavailableHostedOnly. Advisory like the rest of the plan: POST /api/v1/apps
 	// refuses such an install on its own.
-	Unavailable string `json:"unavailable,omitempty" enum:"needs-remap,too-big"`
+	Unavailable string `json:"unavailable,omitempty" enum:"needs-remap,too-big,hosted-only"`
 	// Fit says whether the app fits this box's memory and CPU (#599), from the
 	// manifest's resources.recommended. The same figures as the app's store
 	// page. A tight app needs an explicit "Install anyway" in the dialog; a
@@ -71,6 +72,10 @@ type InstallPlanDTO struct {
 // image_user) and this box runs none (APP_STORE.md # Apps this box cannot
 // run).
 const unavailableNeedsRemap = "needs-remap"
+
+// unavailableHostedOnly: the manifest sets hosted_only and this box is not
+// hosted (#660).
+const unavailableHostedOnly = "hosted-only"
 
 // unavailableTooBig: the app recommends more memory than the box has, or more
 // CPU cores (APP_ISOLATION.md # Resource limits).
@@ -234,6 +239,11 @@ func folderSourceMenu(scope string) (options []string, def string) {
 // InstallPlanDTO. Pure function — no I/O, trivially unit-testable.
 func buildInstallPlan(man *manifest.Manifest, isAdmin bool) InstallPlanDTO {
 	opts, def := scopeMenu(isAdmin)
+	// A personal_only app offers "Just for me" alone, whoever installs it
+	// (#660). installApp refuses a household install of it.
+	if man.PersonalOnly {
+		opts, def = []string{store.ScopePersonal}, store.ScopePersonal
+	}
 
 	folders := make([]InstallPlanFolder, 0, len(man.Permissions.Folders))
 	for _, f := range man.Permissions.Folders {
@@ -559,6 +569,10 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 	// It wins over too-big: the app cannot run here at any size.
 	if (man.RootSetup || man.ImageUser) && s.life.RemapState(ctx) == lifecycle.RemapOff {
 		plan.Unavailable = unavailableNeedsRemap
+	}
+	// It wins over both: no box of this kind can run the app.
+	if man.HostedOnly && s.profile != profile.Hosted {
+		plan.Unavailable = unavailableHostedOnly
 	}
 	return &struct{ Body InstallPlanDTO }{Body: plan}, nil
 }

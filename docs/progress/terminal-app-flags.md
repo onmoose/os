@@ -1,0 +1,40 @@
+# Terminal apps: personal-only, hosted-only and a locked access mode
+
+- **Status:** done
+- **Date:** 2026-11-12
+- **Specs touched:** `docs/specs/APP_MANIFEST.md`, `docs/specs/DECISIONS.md`, `docs/specs/TERMINAL_APPS.md`, `docs/specs/ENVIRONMENT.md`, `docs/specs/APP_STORE.md`, `docs/specs/BRAIN_UI_PROTOCOL.md`, `docs/specs/DASHBOARD.md`, `docs/specs/UPDATES.md`, `docs/dev/hosted-boot-proof.md`
+
+Closes #660. Follows [folder-change.md](folder-change.md) (#659), which finished item 1 of `TERMINAL_APPS.md` # Planned work. This entry builds item 4: the three manifest flags a terminal app needs, each enforced by the brain and not only hidden in the dashboard.
+
+## What was done
+
+- **Manifest** (`internal/manifest`). Three optional booleans: `personal_only`, `hosted_only` and `access.owner_only`. Each is off unless set, so `manifest_version` stays `1`. `owner_only` sits in the `access:` block next to `public_paths`. The other two sit next to `service_user` and `root_setup`.
+- **Lifecycle** (`internal/lifecycle/placement.go`). `placementAllowed` refuses `personal_only` with a household scope (`ErrPersonalOnly`) and `hosted_only` off the hosted profile (`ErrHostedOnly`). `install` runs it before any state is written. `classifyUpdate` takes the profile and makes such an update `blocked`, with a plain sentence. `SetExposure` refuses `public` for an `owner_only` app on hosted (`ErrExposureLocked`), before it writes the row. The central route builder gates an `owner_only` app whatever its row says. An update that adds `owner_only` writes the row back to `restricted` just before the route flip.
+- **API.** `POST /api/v1/apps` answers `409`, audited, for a household install of a `personal_only` app and for a `hosted_only` app off hosted (`checkPlacement`). An install with no `scope` of a `personal_only` app is personal, although an admin's default is household. The install plan offers `scope_options: ["personal"]` for `personal_only`, and `unavailable: "hosted-only"` off hosted, which wins over the other two codes. `PUT /api/v1/apps/{id}/exposure` answers `409`, audited, for `public` on a locked app. The app record carries `exposure_locked`, and on a locked app `exposure` reads `restricted`, as the route is served.
+- **Dashboard.** The app page's Access section shows no Only me / Public toggle for a locked app, only the line "This app is always private to you". The App page and the pack page show no "Install for the whole household" item when the plan offers personal only. The `hosted-only` code has its own sentence.
+- **Cloud `access` boot.** A `termwho` fixture (`dev/cloud/test/catalog/termwho`, the whoami image with the three flags). The boot proves a WebSocket through the forward-auth gate (whoami's `/echo` answers `101` and sends the frame back for the owner; with no session the upgrade gets the `302`; an upgrade request loses only `moose_forward_auth`), then the flags: a household install is a `409`, an install with no scope comes up personal and reports `exposure_locked`, making it public is a `409`, and it still sends an anonymous request to the login.
+- **Tests.** Manifest: the three keys parse and default to false. Lifecycle: the two install refusals leave no row; all three flags on hosted install personal, gated and locked; a public row of an `owner_only` app is gated after a restart; on the appliance nothing changes; `classifyUpdate` for the four placement cases; an update that adds `owner_only` makes a public app restricted; an update that adds `personal_only` to a household app is blocked and not applied. API: the plan and the 409s with their audit records, the default scope, the exposure 409 with its audit record, and `exposure_locked`.
+
+## How it maps to the specs
+
+- `APP_MANIFEST.md` # B, # E2, # G and # Locked decisions: the three keys and their rules; `personal_only` is the one exception to "scope is not a manifest field".
+- `DECISIONS.md` 2026-11-12: the three flags.
+- `TERMINAL_APPS.md` # Security and access: the flags by name; # Planned work item 4: done. The banner now says what is built.
+- `ENVIRONMENT.md` # Per-app owner-only access, `APP_STORE.md` # Apps this box cannot run, `BRAIN_UI_PROTOCOL.md` (install plan), `DASHBOARD.md` (# Install authorization, the Access toggle), `UPDATES.md` # 4, `docs/dev/hosted-boot-proof.md` (the `access` row).
+
+## Known gaps & deviations
+
+- **The store hides a `hosted_only` app through the catalog's environment filter, not a box-side filter.** The issue says "as it does for apps that need the remap", which the box filters itself from a browse field. Whether a box is hosted is exactly its surface, which the catalog service already filters by (`?env=`), so a new wire field would repeat it. So the catalog lists such an app for `hosted` only, in its `status.yml` `environments:`. A direct link on the appliance still shows the sentence and the install is refused.
+- **A brain from before this change ignores the flags**, so it would install such an app as household, on the appliance, or public. A terminal app is held back anyway: it binds `projects`, which a brain from before #657 refuses. Written into `APP_MANIFEST.md` # B.
+- **`owner_only` does not close `public_paths`.** The author's declared paths stay open on a locked app. A terminal app declares none. Not checked by admission.
+- **Tried in a browser on `make dev`** (the appliance) with two copies of `files-demo`, one with `hosted_only` and one with `personal_only` and `owner_only`, two users so the box is not in single-user mode: the hosted-only app's page shows the sentence and no Install; the personal-only app shows a plain Install with no household item; both `409`s and both plans answered as above. The locked Access section is hosted-only, so it was not seen in a browser; the `access` boot checks the API side on a booted box. **The `access` boot passed** on this branch (run 43248772511, BIOS and UEFI, at `08fc94b`), with both new lines in its log: the WebSocket through the gate and the terminal-app flags. Later commits did not touch the boot or the code it drives, except the update path, which the `access` boot does not run.
+- **The update that adds `owner_only` keeps the row restricted after a rollback by hand** to a version without the flag. It is the stricter mode, and the owner can make it public again.
+- **Review.** The review agent (on Opus at the maintainer's request) found no Block. Its Notes: the test of an install with no scope only checked for "not 409", so it now wants `202` and checks that the job did not run as household (it fails when the default is taken out); the app record's `exposure_locked` now needs a box id too, like lifecycle's `ownerOnly`, so the two cannot disagree. Its third Note was the cloud boot, which has since passed. Its fourth asked for an `onmoose/store` issue to check that a `hosted_only` app is listed for `hosted` only. Dropped by the maintainer as small: the worst case is an appliance store page that says the app cannot be installed.
+- **Greptile** (first review, three findings). The first is fixed: when the "updating" splash cannot be written, the old public route stays, and a version that adds `owner_only` could answer anyone while it comes up. Such an update now stops before the old version stops, with a plain sentence (checked to fail without the fix). The second is fixed: a locked app that also declares public paths keeps the public-path line instead of "always private". The third was the same test as the review agent's first Note, already fixed.
+- **`make check` fails on this machine in the update tests at the snapshot step** (disk 97% full), as before. The new update tests stub the disk-space seam; CI runs the rest.
+
+## What's next
+
+1. onmoose/app-images#46 (the `moose-terminal` base image).
+2. The Claude Code and OpenCode catalog app issues in `onmoose/store`, each with `environments: [hosted]` (`TERMINAL_APPS.md` # Planned work, item 5).
+3. #667: host-agent hardening, which must keep the folder pins in the host mount namespace.

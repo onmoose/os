@@ -712,6 +712,22 @@ full_send() { # METHOD PATH HOST COOKIE JSON -> full response
     exec 3>&- 3<&-
 }
 status_of() { head -1 <<<"$1" | tr -d '\r'; }
+# A WebSocket upgrade through Caddy, then one masked text frame "mooseping"
+# (mask key 0, so the payload is plain). The answer is the response head and,
+# after a 101, the frames the app sent back (#660). HTTP/1.1, so it reads
+# until the timeout: the connection stays open after an upgrade.
+ws_send() { # PATH HOST [COOKIE] -> response (NUL bytes dropped)
+    exec 3<>/dev/tcp/127.0.0.1/80 || return 1
+    if [ -n "${3:-}" ]; then
+        printf 'GET %s HTTP/1.1\r\nHost: %s\r\nCookie: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n' "$1" "$2" "$3" >&3
+    else
+        printf 'GET %s HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n' "$1" "$2" >&3
+    fi
+    sleep 1
+    printf '\x81\x89\x00\x00\x00\x00mooseping' >&3
+    timeout 3 cat <&3 | tr -d '\0'
+    exec 3>&- 3<&-
+}
 # Extract NAME=VALUE from the first Set-Cookie carrying NAME (drops attributes).
 cookie_val() { grep -i '^Set-Cookie:' <<<"$1" | grep -oE "$2=[^;[:space:]]+" | head -1; }
 # The WHOLE raw Set-Cookie line for NAME, attributes included — cookie_val above
@@ -1113,6 +1129,61 @@ access)
         || fail "access: restricted-app 302 Location is not the box login: $(grep -i '^Location:' <<<"$n_resp" | tr -d '\r')"
     echo "cloud-assertions: restricted app gates an unauthenticated request (302 → box login)"
 
+    # 3w. WEBSOCKETS THROUGH THE GATE (#660). A terminal app's browser page
+    #     talks to ttyd over a WebSocket, so the upgrade must pass forward_auth
+    #     for the owner and be gated for anyone else. whoami's /echo is a
+    #     WebSocket echo: a 101 and the frame coming back prove the whole path.
+    ws_resp="$(ws_send /echo "$app_host" "${fa_cookie}; probe=leakcheck" 2>/dev/null || true)"
+    grep -q ' 101' <<<"$(status_of "$ws_resp")" \
+        || fail "access: WebSocket upgrade with the owner's forward-auth cookie was not switched: status='$(status_of "$ws_resp")'"
+    grep -aq 'mooseping' <<<"$ws_resp" \
+        || fail "access: WebSocket upgraded but the echo frame never came back through Caddy"
+    ws_anon="$(ws_send /echo "$app_host" 2>/dev/null || true)"
+    grep -q ' 302' <<<"$(status_of "$ws_anon")" \
+        || fail "access: WebSocket upgrade with no session was not sent to the box login: status='$(status_of "$ws_anon")'"
+    #     The strip holds on an upgrade request too. whoami's / answers an
+    #     upgrade request with its normal echo of the headers it received.
+    ws_dump="$(ws_send / "$app_host" "${fa_cookie}; probe=leakcheck" 2>/dev/null || true)"
+    grep -qi 'Hostname:' <<<"$ws_dump" || fail "access: upgrade-header probe did not reach whoami: status='$(status_of "$ws_dump")'"
+    grep -qiE '^Upgrade: *websocket' <<<"$ws_dump" \
+        || fail "access: the app upstream did not receive the Upgrade header; Caddy is not passing WebSocket upgrades through"
+    grep -qiE '^Cookie:.*moose_forward_auth=' <<<"$ws_dump" \
+        && fail "access: COOKIE LEAK (WebSocket): an upgrade request reached the app upstream with moose_forward_auth"
+    grep -qiE '^Cookie:.*probe=leakcheck' <<<"$ws_dump" \
+        || fail "access: the upgrade request lost the app's own cookie; the strip is removing more than moose_forward_auth"
+    echo "cloud-assertions: a WebSocket passes the forward-auth gate for the owner (101 + echo), is gated without a session, and only moose_forward_auth is stripped"
+
+    # 3t. A TERMINAL APP'S FLAGS (#660). termwho sets personal_only,
+    #     hosted_only and access.owner_only. A household install is refused,
+    #     an install with no scope (an admin's default is household) comes up
+    #     personal, the access mode cannot be made public, and the app says so.
+    tw_house="$(status_of "$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"termwho","scope":"household"}' 2>/dev/null)")"
+    grep -q ' 409' <<<"$tw_house" || fail "access: a household install of a personal_only app answered '$tw_house'; wanted 409"
+    tw_inst="$(status_of "$(full_send POST /api/v1/apps "$apex" "$session_cookie" '{"manifest_id":"termwho"}' 2>/dev/null)")"
+    case "$tw_inst" in
+        *" 202"*|*" 200"*) ;;
+        *) fail "access: install termwho with no scope did not start: status='$tw_inst'" ;;
+    esac
+    tw_host="termwho.${apex}"
+    tw_resp=""
+    for _i in $(seq 1 150); do
+        tw_resp="$(full_get / "$tw_host" "$fa_cookie" 2>/dev/null || true)"
+        grep -q ' 200' <<<"$(status_of "$tw_resp")" && grep -qi 'Hostname:' <<<"$tw_resp" && break
+        sleep 1
+    done
+    grep -qi 'Hostname:' <<<"$tw_resp" || fail "access: termwho never answered the owner after 150s: status='$(status_of "$tw_resp")'"
+    tw_cname="$(docker ps --format '{{.Names}}' | grep -i termwho | head -1)"
+    tw_id="$(docker inspect "$tw_cname" --format '{{ index .Config.Labels "moose.instance_id" }}' 2>/dev/null)"
+    [ -n "$tw_id" ] || fail "access: no moose.instance_id label on the termwho container '$tw_cname'"
+    tw_app="$(full_get "/api/v1/apps/${tw_id}" "$apex" "$session_cookie" 2>/dev/null || true)"
+    grep -qF '"scope":"personal"' <<<"$tw_app" || fail "access: termwho was not installed as a personal app: $(grep -oE '"scope":"[a-z]*"' <<<"$tw_app" | head -1)"
+    grep -qF '"exposure_locked":true' <<<"$tw_app" || fail "access: termwho does not report exposure_locked"
+    tw_pub="$(status_of "$(full_send PUT "/api/v1/apps/${tw_id}/exposure" "$apex" "$session_cookie" '{"exposure":"public"}' 2>/dev/null)")"
+    grep -q ' 409' <<<"$tw_pub" || fail "access: making an owner_only app public answered '$tw_pub'; wanted 409"
+    tw_anon="$(status_of "$(full_get / "$tw_host" 2>/dev/null || true)")"
+    grep -q ' 302' <<<"$tw_anon" || fail "access: termwho answered '$tw_anon' with no session after the refused toggle; wanted 302"
+    echo "cloud-assertions: a terminal app's flags hold on a booted box (household refused, personal by default, Only me locked)"
+
     # 3b. PATH-SCOPED EXPOSURE (#415). The app is still restricted, and its manifest
     #     declares access.public_paths ["/v1", "/v1/*"]. The claim: those paths
     #     answer anonymously (an external SDK can post to the API) while every other
@@ -1152,7 +1223,7 @@ access)
     grep -qiE '^Cookie:.*moose_forward_auth=' <<<"$pc_resp" \
         && fail "access: COOKIE LEAK (public path) — the app upstream received moose_forward_auth on a declared public path"
     grep -qiE '^Cookie:.*probe=leakcheck' <<<"$pc_resp" \
-        || fail "access: public path lost the app's own cookie — the strip is removing more than moose_forward_auth"
+        || fail "access: public path lost the app's own cookie; the strip is removing more than moose_forward_auth"
     echo "cloud-assertions: public paths strip only moose_forward_auth (same proxy handler as the gated branch)"
 
     # 3e. THE BYPASS TABLE — the point of running this through real Caddy. Every
@@ -2106,7 +2177,7 @@ access)
     caddy_on "$app_net" && fail "net: caddy is still attached to the removed $app_net"
     echo "cloud-assertions: uninstall removed $app_net, with caddy taken off it first"
 
-    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, public reachability, per-cookie strip in both modes), folder apps write to the host on both sources, and apps are off the control-plane network (#608)"
+    echo "cloud-assertions: hosted per-app access modes verified end-to-end (restricted gate + owner proxy-through, WebSockets through the gate, the terminal-app flags, public reachability, per-cookie strip in both modes), folder apps write to the host on both sources, and apps are off the control-plane network (#608)"
     ;;
 ssh)
     # SSH end-to-end on a booted hosted box (#467). #464 built the whole path from

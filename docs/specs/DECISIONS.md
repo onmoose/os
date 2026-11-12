@@ -21,6 +21,16 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-12 — Three manifest flags for terminal apps: `personal_only`, `hosted_only`, `access.owner_only` (#660)
+
+**Previously:** the install scope was the installer's choice and never a manifest field (2026-05-29, `APP_MANIFEST.md` # G). Every app could be made Public on hosted with the owner's toggle. No field kept an app off the appliance. `TERMINAL_APPS.md` # Security and access asked for all three for terminal apps, under working names.
+
+**Now:** three optional booleans. `personal_only: true` removes the household choice: the plan offers "Just for me" only, an install with no scope is personal, a household install is a `409`, and an update that adds it to a household app is `blocked`. `hosted_only: true` keeps the app off the appliance: the catalog lists it for `hosted` only, a direct link's plan says `unavailable: "hosted-only"`, an install off hosted is a `409`, and an update that adds it there is `blocked`. `access.owner_only: true` locks the access mode to "Only me" on hosted: `PUT /api/v1/apps/{id}/exposure` with `public` is a `409`, the route builder gates the app whatever its row says, an update that adds it sets a public app back to "Only me", and the dashboard shows no toggle. Each is checked again in `lifecycle`, not only in the API.
+
+**Why:** a terminal app is a shell with the user's API key and git login. Public, it is an open shell on the internet. On the appliance nothing stands in front of it on the LAN. As a household app, git refuses the repos ("dubious ownership") and the logins are one person's. Hiding a control is not enough, so the brain refuses. `owner_only` sits under `access:`, the block made for later access fields. The other two sit next to `service_user` and `root_setup`. Hiding `hosted_only` apps on the appliance uses the catalog's environment filter, not a new browse field like `root_setup`: the filter is per surface, and here the surface is exactly the fact, unlike the remap (`APP_STORE.md` # Apps this box cannot run).
+
+**Affected docs:** `APP_MANIFEST.md` (# B, # E2, # G, # Locked decisions), `TERMINAL_APPS.md` (# Security and access, # Planned work), `ENVIRONMENT.md` (# Per-app owner-only access), `APP_STORE.md` (# Apps this box cannot run), `BRAIN_UI_PROTOCOL.md` (install-plan, the app record, the exposure toggle), `DASHBOARD.md` (# Install authorization, the app page's Access), `UPDATES.md` (# 4). Progress: `terminal-app-flags.md`.
+
 ## 2026-11-11 — A folder source is pinned by inode before every start (#604)
 
 **Previously:** a folder source was checked for symlinks at install and when a folder was added, by host-agent's `prepare-folder` and the brain's shared-source check. The override kept the real path, and Docker resolved it at every container start. That left a check-then-bind window: a terminal app could swap a subfolder for a symlink between two starts, and Docker would bind `~/.ssh`.
