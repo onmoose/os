@@ -255,12 +255,13 @@ func TestSetFolders_FailedWriteRestores(t *testing.T) {
 	insts, _ := e.store.List()
 	id := insts[0].ID
 	dir := filepath.Join(e.stateDir, "instances", id)
-	ovBefore, _ := os.ReadFile(filepath.Join(dir, "compose.override.yml"))
-	// .env cannot be written: a folder is in its place.
-	if err := os.Remove(filepath.Join(dir, ".env")); err != nil {
-		t.Fatal(err)
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read-only file; this test needs the write of .env to fail")
 	}
-	if err := os.Mkdir(filepath.Join(dir, ".env"), 0o755); err != nil {
+	ovBefore, _ := os.ReadFile(filepath.Join(dir, "compose.override.yml"))
+	// .env can be read, so the backups succeed and the override is
+	// rewritten, but it cannot be written: the save fails half way.
+	if err := os.Chmod(filepath.Join(dir, ".env"), 0o444); err != nil {
 		t.Fatal(err)
 	}
 	ups := e.composeUps()
