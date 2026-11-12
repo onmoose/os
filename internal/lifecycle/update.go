@@ -240,7 +240,7 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 	// The class is worked out again here, under the lock, with the manifest
 	// this update applies: an update that asks for more access than the
 	// owner allowed is never applied, whoever starts it (#633).
-	check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.profile)
+	check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.placementProfile())
 	m.setUpdateCheck(inst, check)
 	if check.Status != store.UpdateAvailable {
 		slog.Info("update refused", "instance_id", id, "version", inst.Version, "new_version", newMan.Version, "update_class", check.Status)

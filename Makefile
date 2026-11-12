@@ -503,7 +503,14 @@ seed-catalog:
 # fast (same inert-URL trick as dev/test-health.sh). seed-catalog runs first and
 # aborts the whole target if no app was given, so `dev` never starts against a
 # bad seed. Accepts APP or APPS (+ optional HOMEFILE) exactly like seed-catalog.
+#
+# MOOSE_DEV_ALLOW_HOSTED_ONLY lets this appliance-profile stack install a
+# hosted_only app, so a terminal app (docs/specs/TERMINAL_APPS.md) can be
+# curated here. Without it the brain refuses the install with a 409. It skips
+# only that refusal: personal_only stays enforced, and owner_only means nothing
+# off hosted anyway.
 dev-app: export MOOSE_CATALOG_URL := http://127.0.0.1:1
+dev-app: export MOOSE_DEV_ALLOW_HOSTED_ONLY := 1
 dev-app: export MOOSE_CATALOG_FILE := $(CATALOG_SEED)
 dev-app: seed-catalog dev
 

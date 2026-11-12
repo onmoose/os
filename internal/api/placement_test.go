@@ -70,6 +70,33 @@ func TestInstall_HostedOnlyOnAppliance(t *testing.T) {
 	}
 }
 
+// make dev-app's switch (MOOSE_DEV_ALLOW_HOSTED_ONLY) on the API side: the
+// appliance plan offers the app and a personal install is accepted as a job.
+// personal_only still refuses a household install. The lifecycle backstop has
+// its own switch and its own test (lifecycle TestInstall_HostedOnlyDevSwitch).
+func TestInstall_HostedOnlyDevSwitch(t *testing.T) {
+	var srv *Server
+	h := newHarness(t, func(s *Server) { srv = s })
+	writeManifestFixture(t, h.catalogDir, "term", terminalAppYML)
+	h.setupAdmin("alice", "pass1")
+	srv.SetAllowHostedOnly(true)
+
+	plan := decodeJSON[InstallPlanDTO](t, h.getOK("/api/v1/catalog/term/install-plan"))
+	if plan.Unavailable != "" {
+		t.Errorf("plan unavailable = %q with the dev switch, want none", plan.Unavailable)
+	}
+	resp := h.do("POST", "/api/v1/apps", map[string]any{"manifest_id": "term", "scope": "household"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("household install with the dev switch: %d, want 409 (personal_only)", resp.StatusCode)
+	}
+	resp = h.do("POST", "/api/v1/apps", map[string]any{"manifest_id": "term", "scope": "personal"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("personal install with the dev switch: %d, want 202", resp.StatusCode)
+	}
+}
+
 func TestInstall_PersonalOnlyHosted(t *testing.T) {
 	// First-run setup is an appliance path, so the box turns hosted after it.
 	var srv *Server

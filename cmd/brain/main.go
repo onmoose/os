@@ -164,6 +164,13 @@ func main() {
 	dock := lifecycle.NewCLIDocker()
 	life := lifecycle.NewManager(st, cat, host, cd, dock, bus, cfg.stateDir)
 	life.SetOfflineInstall(cfg.offlineInstall)
+	// make dev-app sets MOOSE_DEV_ALLOW_HOSTED_ONLY so a curator can boot a
+	// hosted_only app (a terminal app) on the appliance profile. A real box
+	// never sets it.
+	if cfg.devAllowHostedOnly {
+		slog.Warn("dev: hosted_only apps may be installed on this box (MOOSE_DEV_ALLOW_HOSTED_ONLY)")
+	}
+	life.SetAllowHostedOnly(cfg.devAllowHostedOnly)
 	// On hosted, per-app routes and surfaced URLs use the public
 	// "<slug>.<box-id>.onmoose.io" scheme instead of "<slug>.local"
 	// (ENVIRONMENT.md # Networking & discovery), and the resolved profile also
@@ -450,6 +457,7 @@ func main() {
 	// leaves them empty and keeps its open-on-empty-box /setup.
 	srv := api.NewServer(st, cat, life, bus, authMgr, host, auditor, healthMgr, live, applogs)
 	srv.SetEnvironment(prof, boxID, assertionKey)
+	srv.SetAllowHostedOnly(cfg.devAllowHostedOnly)
 	srv.SetTrustedProxies(trustedProxies(cfg.trustedProxies))
 	// Same dir EnsureControlPlane reconciles from (above), so the UI image
 	// GET /api/v1/system/version reports is the one the box converges to.
@@ -691,6 +699,7 @@ type config struct {
 	healthPollPeriod       time.Duration
 	notifyPrunePeriod      time.Duration
 	offlineInstall         bool
+	devAllowHostedOnly     bool
 	profilePath            string
 	seedPath               string
 	acmeDNSEndpoint        string
@@ -738,6 +747,9 @@ func loadConfig() config {
 		// failure (CONTROL_PLANE.md # First-boot brain bootstrap). Off by default —
 		// a box with a registry pulls and verifies against it.
 		offlineInstall: envBool("MOOSE_OFFLINE_INSTALL", false),
+		// Only make dev-app sets this: it lets the appliance-profile dev box
+		// install a hosted_only app, so a terminal app can be curated there.
+		devAllowHostedOnly: envBool("MOOSE_DEV_ALLOW_HOSTED_ONLY", false),
 		// Environment-profile marker (ENVIRONMENT.md # How the profile is realized).
 		// The image stamps /etc/moose/profile; the path is overridable for tests and
 		// `make dev`, where no marker exists and the brain defaults to appliance.
