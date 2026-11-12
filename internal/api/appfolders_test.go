@@ -234,7 +234,8 @@ func TestAppFoldersRefusals(t *testing.T) {
 
 // A folder the app binds now may be kept even when its top folder is not one
 // the rules allow today (a hand-made folder chosen before the rule): it is
-// the user's choice already, and the PUT changes another folder.
+// the user's choice already, and the PUT changes another folder. Only that
+// exact place passes, not the rest of its top folder.
 func TestAppFoldersKeepsCurrentTop(t *testing.T) {
 	h := newHarness(t)
 	writeManifestFixture(t, h.catalogDir, "terminal", choiceManifestYML)
@@ -250,6 +251,15 @@ func TestAppFoldersKeepsCurrentTop(t *testing.T) {
 	job := decodeJSON[Job](t, resp)
 	if status, jerr := waitJob(t, h.apiSrv, job.ID); status != "completed" {
 		t.Fatalf("job = %s %+v", status, jerr)
+	}
+	// Only the exact place passes: the whole hand-made top folder does not.
+	resp = h.do("PUT", "/api/v1/apps/i_term/folders", map[string]any{"folders": []map[string]any{
+		{"folder": "projects", "path": "scripts"},
+		{"folder": "notes", "path": "Notes"},
+	}})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("widening to the hand-made top: status %d, want 422", resp.StatusCode)
 	}
 }
 

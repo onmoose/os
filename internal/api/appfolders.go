@@ -195,21 +195,18 @@ func (s *Server) updateAppFolders(ctx context.Context, in *struct {
 	}
 
 	// The same checks as install. A personal app's owner is the caller here
-	// (approverOK). The top-level folders the app binds now count as allowed,
-	// so a folder chosen under an older rule can be kept as it is.
+	// (approverOK). The places the app binds now pass as they are, so a
+	// folder chosen under an older rule can stay where it is.
+	kept := make(map[string]bool, len(current))
+	for _, mt := range current {
+		kept[mt.Source+":"+mt.Path] = true
+	}
 	var made, onDisk map[string]bool
 	if inst.Scope == store.ScopePersonal {
 		if made, err = s.madeFolderSet(inst.OwnerUserID); err != nil {
 			fail(nil)
 			slog.Error("change folders: read the folders made through moose", "instance_id", id, "user_id", inst.OwnerUserID, "err", err)
 			return nil, huma.Error500InternalServerError("could not read your folders")
-		}
-		for _, mt := range current {
-			if mt.Source != sourcePersonal {
-				continue
-			}
-			top, _, _ := strings.Cut(mt.Path, "/")
-			made[top] = true
 		}
 		if wantsNewFolder(in.Body.Folders, in.Body.ExtraFolders) {
 			res, err := s.host.ListUserFolders(ctx, actor.User.Username, "")
@@ -226,7 +223,7 @@ func (s *Server) updateAppFolders(ctx context.Context, in *struct {
 	}
 	// A 422 is a validation answer, not an attempt on the app, so it is not
 	// audited (CLAUDE.md # Go code discipline, LOGGING.md app.folders_change).
-	mounts, err := resolveElections(man, inst.Scope, in.Body.Folders, in.Body.ExtraFolders, made, onDisk)
+	mounts, err := resolveElectionsKeeping(man, inst.Scope, in.Body.Folders, in.Body.ExtraFolders, made, onDisk, kept)
 	if err != nil {
 		return nil, err
 	}

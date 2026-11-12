@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -174,5 +175,48 @@ func TestSetFolders_PinRefusal(t *testing.T) {
 	var refusal *folderRefusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("err = %v; want a folder refusal", err)
+	}
+}
+
+// A rollback by hand puts the previous generation's files back. A folder
+// change made after the update must hold in them too, or the rollback would
+// give the app back a folder the owner took away.
+func TestSetFolders_SurvivesRollback(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	// The snapshot checks the real disk; this test is not about space.
+	e.m.diskSpace = func(string) (uint64, uint64, error) { return 1 << 40, 2 << 40, nil }
+	addUser(t, e, "u_alex", "alex")
+	e.newVersionMigrates(t, true)
+	e.publish(t, "1.0", upImage1, upDigest1, choiceUpFolders)
+	inst, err := e.m.Install(ctx, mustLoadApp(t, e.m, "upapp"), Owner{UserID: "u_alex", Username: "alex"}, store.ScopePersonal,
+		[]FolderMount{
+			{Folder: "documents", Source: sourcePersonal, Path: "Documents/Taxes"},
+			{Folder: "notes", Source: sourcePersonal, Path: "Notes"},
+		}, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	e.publish(t, "2.0", upImage2, upDigest2, choiceUpFolders)
+	e.m.CheckUpdates(ctx)
+	if err := e.m.Update(ctx, inst.ID, nil); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	// After the update the owner points documents elsewhere and drops notes.
+	if _, _, err := e.m.SetFolders(ctx, inst.ID, []FolderMount{{Folder: "documents", Source: sourcePersonal, Path: "Documents/Work"}}, nil); err != nil {
+		t.Fatalf("SetFolders: %v", err)
+	}
+	if err := e.m.Rollback(ctx, inst.ID, nil); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	home := filepath.Join(e.host.homeRoot, "alex")
+	want := []string{home + "/Documents/Work:/moose/documents:ro"}
+	if got := e.overrideVolumes(t, inst.ID); !slices.Equal(got, want) {
+		t.Fatalf("after the rollback the app binds %v, want %v", got, want)
+	}
+	env, _ := os.ReadFile(filepath.Join(e.stateDir, "instances", inst.ID, ".env"))
+	if strings.Contains(string(env), "MOOSE_FOLDER_NOTES") {
+		t.Errorf("the rollback brought back the notes variable:\n%s", env)
 	}
 }

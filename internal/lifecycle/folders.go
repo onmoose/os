@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
@@ -148,7 +149,7 @@ func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMoun
 	defer m.lockInstance(id)()
 	inst, err := m.store.Get(id)
 	if err != nil {
-		return nil, false, err
+		return nil, false, errRead("read the app", id, err)
 	}
 	switch inst.State {
 	case "running", "stopped", "failed":
@@ -157,7 +158,7 @@ func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMoun
 	}
 	man, err := m.loadInstanceManifest(id)
 	if err != nil {
-		return nil, false, fmt.Errorf("load manifest: %w", err)
+		return nil, false, errRead("load manifest", id, err)
 	}
 	if !man.Permissions.FolderApp() {
 		return nil, false, errors.New("this app does not use folders, so it cannot be given one")
@@ -169,25 +170,25 @@ func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMoun
 	if inst.Scope == store.ScopePersonal {
 		u, err := m.store.GetUser(inst.OwnerUserID)
 		if err != nil {
-			return nil, false, fmt.Errorf("read the app's owner: %w", err)
+			return nil, false, errRead("read the app's owner", id, err)
 		}
 		owner = Owner{UserID: u.ID, Username: u.Username}
 		rh, err := m.host.ResolveHome(ctx, u.Username)
 		if err != nil {
-			return nil, false, fmt.Errorf("resolve the owner's home: %w", err)
+			return nil, false, errRead("resolve the owner's home", id, err)
 		}
 		iso.home = rh.HomePath
 	}
 	before, err = m.currentFolders(id, man.Permissions.Folders, iso.home)
 	if err != nil {
-		return nil, false, err
+		return nil, false, errRead("read the current folders", id, err)
 	}
 	if SameFolders(before, mounts) {
 		return before, false, nil
 	}
 	wk, err := m.host.WellKnownIdentity(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("read the shared group: %w", err)
+		return nil, false, errRead("read the shared group", id, err)
 	}
 	iso.sharedGID, iso.mounts = wk.MooseSharedGID, mounts
 
@@ -211,12 +212,20 @@ func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMoun
 	}
 
 	step("generating_override")
-	if err := m.rewriteFolderBinds(id, man.Permissions.ExtraFolders, modesByFolder(man.Permissions.Folders), iso); err != nil {
+	if err := m.rewriteFolderBinds(id, "compose.override.yml", man.Permissions.ExtraFolders, modesByFolder(man.Permissions.Folders), iso); err != nil {
 		slog.Error("change folders: rewrite the override", "instance_id", id, "err", err)
 		return before, false, errors.New("the app's settings could not be written, so nothing was changed. Try again")
 	}
 	if err := m.writeEnv(id, inst.Slug, iso); err != nil {
 		slog.Error("change folders: rewrite .env", "instance_id", id, "err", err)
+		return before, true, errors.New("the app's settings could not be written. Try again")
+	}
+	// A rollback by hand puts the previous generation's files back
+	// (putPreviousBack). They must hold this choice too, or a rollback would
+	// give the app back a folder the owner took away (UPDATES.md # The
+	// rollback by hand: a setting changed in those days must not come back).
+	if err := m.carryFoldersToPrevious(id, before, iso); err != nil {
+		slog.Error("change folders: rewrite the previous generation", "instance_id", id, "err", err)
 		return before, true, errors.New("the app's settings could not be written. Try again")
 	}
 	slog.Info("app folders changed", "instance_id", id, "name", inst.Name, "count", len(mounts))
@@ -241,6 +250,17 @@ func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMoun
 	return before, true, nil
 }
 
+// errFoldersNotRead is the job's error when SetFolders could not read what it
+// needs before it changed anything. The cause goes to the log.
+var errFoldersNotRead = errors.New("moose could not read this app's folders, so nothing was changed. Try again")
+
+// errRead logs why SetFolders could not read something and returns the plain
+// error the job shows.
+func errRead(what, id string, err error) error {
+	slog.Error("change folders: "+what, "instance_id", id, "err", err)
+	return errFoldersNotRead
+}
+
 // modesByFolder maps each declared folder to its mode, read or write.
 func modesByFolder(fs []manifest.Folder) map[string]string {
 	out := make(map[string]string, len(fs))
@@ -255,8 +275,8 @@ func modesByFolder(fs []manifest.Folder) map[string]string {
 // the shared group to match. writeOverride writes only folder binds into the
 // override's volumes, and the same list on every service, so the whole list
 // is replaced. Every other key is left as it is.
-func (m *Manager) rewriteFolderBinds(id, extraMode string, modes map[string]string, iso isolation) error {
-	path := filepath.Join(m.instanceDir(id), "compose.override.yml")
+func (m *Manager) rewriteFolderBinds(id, name, extraMode string, modes map[string]string, iso isolation) error {
+	path := filepath.Join(m.instanceDir(id), name)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read override: %w", err)
@@ -322,4 +342,88 @@ func (m *Manager) rewriteFolderBinds(id, extraMode string, modes map[string]stri
 		return err
 	}
 	return writeFileAtomic(path, out, 0o644)
+}
+
+// carryFoldersToPrevious writes a folder change into the previous
+// generation's override and .env, when an update kept one for a rollback.
+// The previous version gets the new choice for every folder its manifest
+// declares, and the extra folders when it declares extra_folders. A folder
+// the previous version needs (not optional there) but the new choice leaves
+// out keeps the bind it had, before, because the old version cannot start
+// without it.
+func (m *Manager) carryFoldersToPrevious(id string, before []FolderMount, iso isolation) error {
+	dir := m.instanceDir(id)
+	if _, err := os.Stat(filepath.Join(dir, "compose.override.yml.prev")); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	prevMan, err := m.loadManifestFile(id, "manifest.yml.prev")
+	if err != nil {
+		return fmt.Errorf("read the previous manifest: %w", err)
+	}
+	prevRaw, err := os.ReadFile(filepath.Join(dir, "compose.override.yml.prev"))
+	if err != nil {
+		return fmt.Errorf("read the previous override: %w", err)
+	}
+	prevBinds, _, err := folderBinds(prevRaw, m.sharedRoot)
+	if err != nil {
+		return err
+	}
+	byFolder := map[string]FolderMount{}
+	var extras []FolderMount
+	for _, mt := range iso.mounts {
+		if mt.Extra != "" {
+			extras = append(extras, mt)
+			continue
+		}
+		byFolder[mt.Folder] = mt
+	}
+	var mounts []FolderMount
+	for _, f := range prevMan.Permissions.Folders {
+		if mt, ok := byFolder[f.Folder]; ok {
+			mounts = append(mounts, mt)
+			continue
+		}
+		if b, ok := prevBinds[f.Folder]; ok && !f.Optional {
+			mounts = append(mounts, b)
+		}
+	}
+	if prevMan.Permissions.ExtraFolders != "" {
+		mounts = append(mounts, extras...)
+	}
+	prevIso := iso
+	prevIso.mounts = mounts
+	if err := m.rewriteFolderBinds(id, "compose.override.yml.prev", prevMan.Permissions.ExtraFolders, modesByFolder(prevMan.Permissions.Folders), prevIso); err != nil {
+		return err
+	}
+	return rewriteEnvFolders(filepath.Join(dir, ".env.prev"), mounts)
+}
+
+// rewriteEnvFolders replaces the MOOSE_FOLDER_* lines of an .env file with
+// the ones writeEnv makes for mounts, and leaves every other line as it is.
+func rewriteEnvFolders(path string, mounts []FolderMount) error {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		if !strings.HasPrefix(l, "MOOSE_FOLDER_") {
+			lines = append(lines, l)
+		}
+	}
+	extra := false
+	for _, mt := range mounts {
+		if mt.Extra != "" {
+			extra = true
+			continue
+		}
+		lines = append(lines, "MOOSE_FOLDER_"+strings.ToUpper(mt.Folder)+"="+containerDest(mt))
+	}
+	if extra {
+		lines = append(lines, "MOOSE_FOLDER_EXTRA="+extraDir)
+	}
+	return writeFileAtomic(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
