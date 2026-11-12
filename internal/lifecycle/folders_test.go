@@ -1,0 +1,178 @@
+package lifecycle
+
+// Changing an app's folders after install (#659).
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/onmoose/os/internal/store"
+
+	"gopkg.in/yaml.v3"
+)
+
+func (e *testEnv) composeUps() int {
+	n := 0
+	for _, c := range e.docker.Calls() {
+		if c.method == "ComposeUp" {
+			n++
+		}
+	}
+	return n
+}
+
+func overrideApp(t *testing.T, e *testEnv, id string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(e.stateDir, "instances", id, "compose.override.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]map[string]any `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc.Services["app"]
+}
+
+// A running app gets its new folders: the override binds them with the
+// manifest's modes, the shared group comes and goes with a shared folder,
+// .env names the folders it binds, the app is recreated, and the pins file
+// pins the new source. InstanceFolders reads the choice back.
+func TestSetFolders_RunningApp(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	addUser(t, e, "u_alex", "alex")
+	owner := Owner{UserID: "u_alex", Username: "alex"}
+	installFolders(t, e, store.ScopePersonal, owner, choiceManifest, []FolderMount{
+		{Folder: "projects", Source: sourcePersonal, Path: "Projects"},
+	})
+	insts, _ := e.store.List()
+	id := insts[0].ID
+	home := filepath.Join(e.host.homeRoot, "alex")
+
+	ups := e.composeUps()
+	next := []FolderMount{
+		{Folder: "projects", Source: sourcePersonal, Path: "Projects/site"},
+		{Folder: "notes", Source: sourceShared, Path: "Notes"},
+		{Source: sourcePersonal, Path: "Recipes", Extra: "Recipes", NewFolder: true},
+	}
+	before, changed, err := e.m.SetFolders(ctx, id, next, nil)
+	if err != nil || !changed {
+		t.Fatalf("SetFolders: changed=%v err=%v", changed, err)
+	}
+	if len(before) != 1 || before[0].Path != "Projects" {
+		t.Errorf("before = %+v", before)
+	}
+	app := overrideApp(t, e, id)
+	for _, v := range []string{
+		home + "/Projects/site:/moose/projects:rw",
+		filepath.Join(e.m.sharedRoot, "Notes") + ":/moose/notes:ro",
+		home + "/Recipes:/moose/extra/Recipes:ro",
+	} {
+		if !hasString(app["volumes"], v) {
+			t.Errorf("volumes: want %q, got %v", v, app["volumes"])
+		}
+	}
+	if !hasString(app["group_add"], "2001") {
+		t.Errorf("group_add: want the shared group 2001, got %v", app["group_add"])
+	}
+	if got := app["user"]; got != "3000:3000" {
+		t.Errorf("user changed: %v", got)
+	}
+	env, _ := os.ReadFile(filepath.Join(e.stateDir, "instances", id, ".env"))
+	for _, line := range []string{"MOOSE_FOLDER_PROJECTS=/moose/projects", "MOOSE_FOLDER_NOTES=/moose/notes", "MOOSE_FOLDER_EXTRA=/moose/extra"} {
+		if !strings.Contains(string(env), line) {
+			t.Errorf(".env has no %s:\n%s", line, env)
+		}
+	}
+	if e.composeUps() != ups+1 {
+		t.Errorf("compose up ran %d times, want once", e.composeUps()-ups)
+	}
+	pins, _ := os.ReadFile(filepath.Join(e.stateDir, "instances", id, folderPinRecord))
+	if !strings.Contains(string(pins), "Projects/site") {
+		t.Errorf("the pins record does not name the new folder:\n%s", pins)
+	}
+	got, err := e.m.InstanceFolders(ctx, id)
+	if err != nil || !SameFolders(got, next) {
+		t.Errorf("InstanceFolders = %+v, %v; want %+v", got, err, next)
+	}
+
+	// The same set again changes nothing and recreates nothing.
+	ups = e.composeUps()
+	if _, changed, err := e.m.SetFolders(ctx, id, got, nil); err != nil || changed {
+		t.Errorf("same set: changed=%v err=%v", changed, err)
+	}
+	if e.composeUps() != ups {
+		t.Error("a set with no change recreated the app")
+	}
+
+	// Dropping the shared folder drops the shared group.
+	if _, _, err := e.m.SetFolders(ctx, id, []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Projects"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	app = overrideApp(t, e, id)
+	if _, ok := app["group_add"]; ok {
+		t.Errorf("group_add kept with no shared folder: %v", app["group_add"])
+	}
+	env, _ = os.ReadFile(filepath.Join(e.stateDir, "instances", id, ".env"))
+	if strings.Contains(string(env), "MOOSE_FOLDER_NOTES") || strings.Contains(string(env), "MOOSE_FOLDER_EXTRA") {
+		t.Errorf(".env still names a folder the app lost:\n%s", env)
+	}
+}
+
+// A stopped app gets the new files and is not started.
+func TestSetFolders_StoppedAppIsNotStarted(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	addUser(t, e, "u_alex", "alex")
+	installFolders(t, e, store.ScopePersonal, Owner{UserID: "u_alex", Username: "alex"}, choiceManifest, []FolderMount{
+		{Folder: "projects", Source: sourcePersonal, Path: "Projects"},
+	})
+	insts, _ := e.store.List()
+	id := insts[0].ID
+	if err := e.m.Stop(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	ups := e.composeUps()
+	if _, changed, err := e.m.SetFolders(ctx, id, []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Documents"}}, nil); err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if e.composeUps() != ups {
+		t.Error("a stopped app was started")
+	}
+	if !hasString(overrideApp(t, e, id)["volumes"], filepath.Join(e.host.homeRoot, "alex", "Documents")+":/moose/projects:rw") {
+		t.Error("the override does not bind the new folder")
+	}
+}
+
+// A refused pin at the recreate is the job's error in its plain words.
+func TestSetFolders_PinRefusal(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	addUser(t, e, "u_alex", "alex")
+	installFolders(t, e, store.ScopePersonal, Owner{UserID: "u_alex", Username: "alex"}, choiceManifest, []FolderMount{
+		{Folder: "projects", Source: sourcePersonal, Path: "Projects"},
+	})
+	insts, _ := e.store.List()
+	id := insts[0].ID
+	home := filepath.Join(e.host.homeRoot, "alex")
+	// The new folder is a link by the time the pin walks it: prepare made
+	// it, then something swapped it.
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(home, "Documents")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := e.m.SetFolders(ctx, id, []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Documents"}}, nil)
+	var refusal *folderRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v; want a folder refusal", err)
+	}
+}

@@ -138,6 +138,11 @@ export type InstallPlanConfigField = Schemas["InstallPlanConfigField"];
 // InstallPlanExisting is a copy of the app the caller can already see: the
 // same copies that make POST /api/v1/apps answer 409 duplicate-install.
 export type InstallPlanExisting = Schemas["InstallPlanExisting"];
+// AppFolders is the app page's Folders section (GET /api/v1/apps/{id}/folders,
+// #659); AppFoldersUpdate is the full set a save sends.
+export type AppFolders = Schemas["AppFoldersDTO"];
+export type AppFolder = Schemas["AppFolderDTO"];
+export type AppFoldersUpdate = Schemas["AppFoldersUpdateBody"];
 export type AppConfig = Schemas["AppConfigDTO"];
 export type AppConfigField = Schemas["AppConfigFieldDTO"];
 export type SourceMenu = Schemas["SourceMenu"];

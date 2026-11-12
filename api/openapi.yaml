@@ -428,6 +428,20 @@ components:
             type: string
           type: object
       type: object
+    AppExtraFolderDTO:
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        source:
+          type: string
+      required:
+        - name
+        - source
+        - path
+      type: object
     AppFit:
       additionalProperties: false
       properties:
@@ -469,6 +483,94 @@ components:
         - state
         - box_memory_bytes
         - free_memory_bytes
+      type: object
+    AppFolderDTO:
+      additionalProperties: false
+      properties:
+        folder:
+          type: string
+        mode:
+          type: string
+        optional:
+          type: boolean
+        path:
+          type: string
+        scope:
+          type: string
+        skipped:
+          type: boolean
+        source:
+          type: string
+        sources:
+          $ref: "#/components/schemas/FolderSources"
+        subfolder_default:
+          type: string
+      required:
+        - folder
+        - mode
+        - scope
+        - optional
+        - sources
+        - skipped
+      type: object
+    AppFoldersDTO:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/AppFoldersDTO.json
+          format: uri
+          readOnly: true
+          type: string
+        can_change:
+          type: boolean
+        extra_folders:
+          items:
+            $ref: "#/components/schemas/AppExtraFolderDTO"
+          type:
+            - array
+            - "null"
+        extra_folders_mode:
+          type: string
+        folders:
+          items:
+            $ref: "#/components/schemas/AppFolderDTO"
+          type:
+            - array
+            - "null"
+        scope:
+          type: string
+      required:
+        - scope
+        - can_change
+        - folders
+        - extra_folders
+      type: object
+    AppFoldersUpdateBody:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/AppFoldersUpdateBody.json
+          format: uri
+          readOnly: true
+          type: string
+        extra_folders:
+          items:
+            $ref: "#/components/schemas/ExtraFolderElection"
+          type:
+            - array
+            - "null"
+        folders:
+          items:
+            $ref: "#/components/schemas/FolderElection"
+          type:
+            - array
+            - "null"
+      required:
+        - folders
       type: object
     AppSecretDTO:
       additionalProperties: false
@@ -3657,6 +3759,57 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Set an app's access mode — restricted (owner-only) or public (hosted; owner or admin)
+  /api/v1/apps/{id}/folders:
+    get:
+      operationId: get-app-folders
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppFoldersDTO"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Read the folders an app uses and where they point (owner or admin)
+    put:
+      operationId: update-app-folders
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppFoldersUpdateBody"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Change the folders an app uses (job; the owner of a personal app, an admin for a household app)
   /api/v1/apps/{id}/mail-binding:
     put:
       operationId: set-app-mail-binding

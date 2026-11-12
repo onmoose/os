@@ -72,6 +72,13 @@ const (
 	// success and failure.
 	ActionAppConfigUpdate = "app.config.update"
 
+	// Changing which folders an app uses after install (#659, DASHBOARD.md #
+	// Changing folders after install). It changes what user content the app
+	// can reach, so it is elevation-class: it audits success, every refusal
+	// (403, 409) and every failure. Metadata carries the old and new place of
+	// each folder that changed.
+	ActionAppFoldersChange = "app.folders_change"
+
 	// Per-app access-mode change (ENVIRONMENT.md #306, hosted): flipping an app
 	// between owner-only (restricted) and public alters who can reach it, so it is
 	// elevation-class and audits success and failure.

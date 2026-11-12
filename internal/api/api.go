@@ -247,6 +247,7 @@ func (s *Server) registerAll(api huma.API) {
 	s.registerFirstRun(api)
 	s.registerAppSecrets(api)
 	s.registerAppConfig(api)
+	s.registerAppFolders(api)
 	s.registerAppExposure(api)
 	s.registerAppAutoRestart(api)
 	s.registerAppUpdate(api)
