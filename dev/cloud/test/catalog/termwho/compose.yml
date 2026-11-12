@@ -1,0 +1,5 @@
+# Author's compose, held verbatim by moose. The same image as the whoami fixture.
+services:
+  termwho:
+    image: traefik/whoami:v1.10.3
+    command: ["--port=80"]

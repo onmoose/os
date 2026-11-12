@@ -1,0 +1,36 @@
+# Test-only catalog app for the hosted cloud access boot (#660). It stands in
+# for a terminal app: the same whoami image as dev/cloud/test/catalog/whoami,
+# with the three flags a terminal app sets. The boot checks that the brain
+# refuses a household install of it, installs it personal with no scope asked
+# for, refuses to make it public, and reports it as locked to Only me.
+# whoami's /echo is a WebSocket echo, so the boot also proves that a WebSocket
+# (what ttyd uses) works through the forward-auth gate.
+#
+# The service is named termwho, not whoami, so the boot's `grep whoami` on
+# container names never finds this app.
+id: termwho
+manifest_version: 1
+name: Termwho
+version: "1.10"
+description:
+  short: "Echo server with the terminal-app flags, for the access boot."
+icon_glyph: terminal
+compose_file: compose.yml
+main_service: termwho
+main_port: 80
+preferred_slugs: [termwho]
+
+permissions:
+  internet: false
+  lan: false
+
+personal_only: true
+hosted_only: true
+access:
+  owner_only: true
+
+images:
+  traefik/whoami:v1.10.3:
+    digest: sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c
+    download_bytes: 2850040
+    disk_bytes: 6581646
