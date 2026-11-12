@@ -1,6 +1,6 @@
 # moose terminal apps
 
-> **Draft design, not built.** Working spec for running terminal-based apps (AI coding agents such as Claude Code, Codex CLI, Grok CLI and OpenCode) as moose apps that open in a browser tab. Captures a design discussion held on 2026-10-06, with its open questions answered on 2026-11-10 (`DECISIONS.md` 2026-11-10). Nothing here is built yet. The folder part is specced in the docs that own it (#655). Companion to `APP_MANIFEST.md` (folders, needs), `STORAGE.md` (use-case folders), `DASHBOARD.md` (install flow, Integrations), `SERVICE_PROVISIONING.md` (per-user accounts), `ENVIRONMENT.md` (hosted forward-auth, per-app access mode) and `APP_ISOLATION.md` (the sandbox these apps run in).
+> **Draft design, partly built.** Working spec for running terminal-based apps (AI coding agents such as Claude Code, Codex CLI, Grok CLI and OpenCode) as moose apps that open in a browser tab. Captures a design discussion held on 2026-10-06, with its open questions answered on 2026-11-10 (`DECISIONS.md` 2026-11-10). Built so far: the folders the user chooses (#657, #658, #659), the folder source pins (#604) and the three manifest flags of # Security and access (#660). The base image and the apps are not built. The folder part is specced in the docs that own it (#655). Companion to `APP_MANIFEST.md` (folders, needs), `STORAGE.md` (use-case folders), `DASHBOARD.md` (install flow, Integrations), `SERVICE_PROVISIONING.md` (per-user accounts), `ENVIRONMENT.md` (hosted forward-auth, per-app access mode) and `APP_ISOLATION.md` (the sandbox these apps run in).
 
 ## Goal
 
@@ -135,11 +135,20 @@ The start script checks every path itself: it must be inside a mounted folder (`
 
 ## Security and access
 
-- **Personal-only.** Terminal apps cannot be installed as household instances: git ownership (a repo and the agent must have the same owner, or git refuses with "dubious ownership") and per-person credentials both need it. A personal instance runs as the owner's UID.
-- **Hosted only.** The brain refuses a terminal app on the appliance (# Open questions, 6).
-- **v1: access locked to "Only me".** On hosted, a public terminal app is an open shell on the internet with the user's API key and git token. The manifest needs a flag that locks the access mode, and the brain must refuse to change it (not only hide the switch).
+A terminal app's manifest sets three flags, built in #660 (`APP_MANIFEST.md` # B, # E2, `DECISIONS.md` 2026-11-12):
+
+```yaml
+personal_only: true
+hosted_only: true
+access:
+  owner_only: true
+```
+
+- **Personal-only** (`personal_only`). Terminal apps cannot be installed as household instances: git ownership (a repo and the agent must have the same owner, or git refuses with "dubious ownership") and per-person credentials both need it. A personal instance runs as the owner's UID. The install offers "Just for me" only, and the brain refuses a household install.
+- **Hosted only** (`hosted_only`). The brain refuses a terminal app on the appliance (# Open questions, 6). The catalog lists it for `hosted` only, so the appliance store does not show it.
+- **v1: access locked to "Only me"** (`access.owner_only`). On hosted, a public terminal app is an open shell on the internet with the user's API key and git token. The brain refuses to make it public, and its route is gated whatever the instance row says. The app page shows no Access toggle.
 - **v2: sharing a session.** The user wants to share a session on purpose. Planned shape: a share link with a unique, unguessable URL that does not contain the project name, scoped to one session, and revocable. Not designed yet.
-- **CI proof.** The hosted `access` boot proves ttyd's WebSocket works through forward-auth and that the forward-auth cookie is still stripped.
+- **CI proof.** The hosted `access` boot proves a WebSocket works through forward-auth (a `101` and an echo frame for the owner, the login for anyone else) and that only the forward-auth cookie is stripped from the upgrade request. It uses whoami's WebSocket echo in place of ttyd, and a `termwho` fixture with the three flags (`docs/dev/hosted-boot-proof.md`).
 
 ## Images: public or private
 
@@ -171,7 +180,7 @@ Still open:
    3. #659: changing folders after install: `PUT /api/v1/apps/{id}/folders` and the app page's Folders section. Done: `docs/progress/folder-change.md`.
 2. **Fix #604** (a folder source swapped for a symlink between two starts). Done: folder source pins, `docs/progress/folder-source-pins.md`.
 3. **`moose-terminal` base image** in `onmoose/app-images` (onmoose/app-images#46): the two rule changes there first, then ttyd, tmux, tools, the project page, the start script, the key bar.
-4. **Locked access mode, personal-only, hosted-only** for terminal apps (#660) (manifest keys, brain refusals, the store hiding them where they cannot run, the `access` boot proving the WebSocket through forward-auth).
+4. **Locked access mode, personal-only, hosted-only** for terminal apps (#660) (manifest keys, brain refusals, the store hiding them where they cannot run, the `access` boot proving the WebSocket through forward-auth). Done: `docs/progress/terminal-app-flags.md`.
 5. **First apps:** Claude Code on the base image, OpenCode on its own image (`ghcr.io/anomalyco/opencode`, `opencode web`). Catalog app issues in `onmoose/store`.
 6. **Later:** the Git integration, "Open with" in Files, dev-server previews, session sharing, a free-memory check before a new session, the appliance.
 
