@@ -482,7 +482,9 @@ func (s *Server) withPublicPaths(dto *InstanceDTO) {
 		dto.PublicPaths = man.Access.PublicPaths
 		// The route builder gates a locked app whatever the row says, so
 		// the dashboard is told the same.
-		if man.Access.OwnerOnly && s.profile == profile.Hosted {
+		// The same test as lifecycle's ownerOnly (hosted with a box id), so
+		// the record and the brain never disagree about the lock.
+		if man.Access.OwnerOnly && s.profile == profile.Hosted && s.boxID != "" {
 			dto.ExposureLocked = true
 			dto.Exposure = store.ExposureRestricted
 		}

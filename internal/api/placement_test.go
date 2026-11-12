@@ -5,11 +5,14 @@ package api
 // the app's DTO.
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/onmoose/os/internal/audit"
 	"github.com/onmoose/os/internal/profile"
@@ -95,9 +98,24 @@ func TestInstall_PersonalOnlyHosted(t *testing.T) {
 	// No scope asked for: an admin's default is household, but this app is
 	// personal, so the install is accepted as a job.
 	resp = h.do("POST", "/api/v1/apps", map[string]any{"manifest_id": "term"})
+	if resp.StatusCode != http.StatusAccepted {
+		resp.Body.Close()
+		t.Fatalf("install with no scope: %d, want 202", resp.StatusCode)
+	}
+	var job Job
+	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
-	if resp.StatusCode == http.StatusConflict {
-		t.Fatal("an install with no scope was refused; it must default to personal")
+	// This harness cannot run a whole install, so the job fails later on.
+	// What matters is that it was not refused as a household install: the
+	// scope the handler chose was personal.
+	for i := 0; i < 200 && (job.Status == "running" || job.Status == ""); i++ {
+		time.Sleep(20 * time.Millisecond)
+		job = decodeJSON[Job](t, h.getOK("/api/v1/jobs/"+job.ID))
+	}
+	if job.Error != nil && strings.Contains(job.Error.Message, "not for the whole household") {
+		t.Fatalf("the install with no scope ran as household: %s", job.Error.Message)
 	}
 }
 
