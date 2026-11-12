@@ -124,14 +124,6 @@ func (s *Server) SetControlPlaneDir(dir string) {
 	s.controlPlaneDir = dir
 }
 
-// SetEnvironment records the resolved environment profile and, on a hosted box,
-// its provisioning identity (ENVIRONMENT.md # Provisioning). cmd/brain calls it
-// once at startup after reading the profile marker and (on hosted) the seed.
-// box-id is surfaced on /me; assertionKey is the portal's Ed25519 verification
-// key the SSO handler checks ownership assertions against — nil means the hosted
-// box has no seed yet (SSO returns 503). Appliance passes an empty box-id and a
-// nil key, so every hosted seam is a no-op. Not concurrency-guarded: called
-// before the server starts serving.
 // SetAllowHostedOnly turns off the hosted_only refusal and the install
 // plan's hosted-only code on a box that is not hosted. cmd/brain wires it from
 // MOOSE_DEV_ALLOW_HOSTED_ONLY, which only make dev-app sets, so a curator can
@@ -144,6 +136,14 @@ func (s *Server) hostedOnlyRefused(man *manifest.Manifest) bool {
 	return man.HostedOnly && s.profile != profile.Hosted && !s.allowHostedOnly
 }
 
+// SetEnvironment records the resolved environment profile and, on a hosted box,
+// its provisioning identity (ENVIRONMENT.md # Provisioning). cmd/brain calls it
+// once at startup after reading the profile marker and (on hosted) the seed.
+// box-id is surfaced on /me; assertionKey is the portal's Ed25519 verification
+// key the SSO handler checks ownership assertions against — nil means the hosted
+// box has no seed yet (SSO returns 503). Appliance passes an empty box-id and a
+// nil key, so every hosted seam is a no-op. Not concurrency-guarded: called
+// before the server starts serving.
 func (s *Server) SetEnvironment(prof profile.Profile, boxID string, assertionKey ed25519.PublicKey) {
 	s.profile = prof
 	s.boxID = boxID

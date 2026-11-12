@@ -12,9 +12,11 @@ Follows [terminal-app-flags.md](terminal-app-flags.md) (#660). That change made 
 - **The API** (`Server.SetAllowHostedOnly`). With the switch, `checkPlacement` does not refuse a `hosted_only` install, and the install plan does not say `unavailable: "hosted-only"`. Both read one helper, `hostedOnlyRefused`.
 - **The lifecycle** (`Manager.SetAllowHostedOnly`). The placement check reads `placementProfile()`, which is hosted when the switch is on. That covers the install backstop and the update check. Nothing else reads it: routes, forward-auth and the `owner_only` lock still follow the real profile.
 - **`make dev-app`** exports `MOOSE_DEV_ALLOW_HOSTED_ONLY := 1`. Plain `make dev` does not.
-- **Tests.** Lifecycle: with the switch, a household install is still `ErrPersonalOnly`, a personal install works, its route has no forward-auth, and an update is not blocked. API: with the switch, the plan offers the app, a household install is still a `409`, and a personal install is a `202`.
+- **Tests.** Lifecycle: with the switch, a household install is still `ErrPersonalOnly`, a personal install works, and its route has no forward-auth. An update that adds `hosted_only` is found as available and applied, through `CheckUpdates` and `Update` (each fails without the fix). API: with the switch, the plan offers the app, a household install is still a `409`, and a personal install is a `202`.
 
 ## Known gaps & deviations
+
+- **Review.** The review agent found no Block. Its notes: the new `SetAllowHostedOnly` doc sat inside `SetEnvironment`'s comment (moved), and the first update test called `classifyUpdate` directly, so it did not guard the real update paths (now it drives `CheckUpdates` and `Update`). It also asked whether the API and the lifecycle should share one flag. Kept as two, like the profile itself, which both get from `cmd/brain`; the lifecycle refuses again if only the API is set.
 
 - **The dev boot does not test the hosted gate.** `owner_only` means nothing off hosted, so the app's route has no box login in front of it. The cloud `access` boot already proves the WebSocket through forward-auth with `termwho`.
 - **Only the placement rule moves**, and only where the switch is set. Nothing on a real box sets it.
