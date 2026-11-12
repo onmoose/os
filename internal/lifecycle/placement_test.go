@@ -34,6 +34,44 @@ func TestInstall_HostedOnlyRefusedOnAppliance(t *testing.T) {
 	}
 }
 
+// make dev-app's switch lets the appliance install a hosted_only app, and
+// changes nothing else: personal_only still refuses, the route stays plain
+// (no forward-auth off hosted), and an update is not blocked as hosted-only.
+func TestInstall_HostedOnlyDevSwitch(t *testing.T) {
+	e := newTestEnv(t)
+	e.m.SetAllowHostedOnly(true)
+	if _, err := installFlagged(t, e, terminalFlags, store.ScopeHousehold); !errors.Is(err, ErrPersonalOnly) {
+		t.Fatalf("household install with the dev switch: %v, want ErrPersonalOnly", err)
+	}
+	inst, err := installFlagged(t, e, terminalFlags, store.ScopePersonal)
+	if err != nil {
+		t.Fatalf("personal install with the dev switch: %v", err)
+	}
+	if cfg := e.caddy.config(inst.ID); cfg.ForwardAuth != nil {
+		t.Fatalf("the dev switch must not turn on the hosted gate, got %+v", cfg)
+	}
+}
+
+// With the dev switch, an update that adds hosted_only on the appliance is
+// found as available and is applied, through the real check and update paths.
+func TestUpdate_HostedOnlyDevSwitch(t *testing.T) {
+	e := newTestEnv(t)
+	e.m.diskSpace = func(string) (uint64, uint64, error) { return 1 << 40, 2 << 40, nil }
+	e.m.SetAllowHostedOnly(true)
+	inst := installUp(t, e, "")
+	e.publish(t, "2.0", upImage2, upDigest2, "hosted_only: true\n")
+	e.m.CheckUpdates(context.Background())
+	if r := e.row(t, inst.ID); r.Update.Status == store.UpdateBlocked {
+		t.Fatalf("check with the dev switch: %+v, want not blocked", r.Update)
+	}
+	if err := e.m.Update(context.Background(), inst.ID, nil); err != nil {
+		t.Fatalf("update with the dev switch: %v", err)
+	}
+	if r := e.row(t, inst.ID); r.Version != "2.0" {
+		t.Fatalf("version %q after the update, want 2.0", r.Version)
+	}
+}
+
 func TestInstall_PersonalOnlyRefusesHousehold(t *testing.T) {
 	e := newTestEnv(t)
 	e.m.SetEnvironment(profile.Hosted, "cindy-fox")

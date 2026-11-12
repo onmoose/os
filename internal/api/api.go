@@ -73,6 +73,9 @@ type Server struct {
 	profile      profile.Profile
 	boxID        string
 	assertionKey ed25519.PublicKey
+	// allowHostedOnly lets this box install a hosted_only app although it is
+	// not hosted. Only make dev-app sets it (SetAllowHostedOnly).
+	allowHostedOnly bool
 
 	// Staged control-plane compose dir (MOOSE_CONTROL_PLANE_DIR), set once at
 	// startup via SetControlPlaneDir. Read by GET /api/v1/system/version to
@@ -119,6 +122,18 @@ func NewServer(
 // serving, same as SetEnvironment.
 func (s *Server) SetControlPlaneDir(dir string) {
 	s.controlPlaneDir = dir
+}
+
+// SetAllowHostedOnly turns off the hosted_only refusal and the install
+// plan's hosted-only code on a box that is not hosted. cmd/brain wires it from
+// MOOSE_DEV_ALLOW_HOSTED_ONLY, which only make dev-app sets, so a curator can
+// boot a terminal app (TERMINAL_APPS.md) on the appliance profile. The
+// lifecycle manager has the same switch, as the backstop.
+func (s *Server) SetAllowHostedOnly(v bool) { s.allowHostedOnly = v }
+
+// hostedOnlyRefused reports whether man's hosted_only keeps it off this box.
+func (s *Server) hostedOnlyRefused(man *manifest.Manifest) bool {
+	return man.HostedOnly && s.profile != profile.Hosted && !s.allowHostedOnly
 }
 
 // SetEnvironment records the resolved environment profile and, on a hosted box,
@@ -1005,7 +1020,7 @@ func (s *Server) resolveOwnerScope(ctx context.Context, requested, action string
 func (s *Server) checkPlacement(ctx context.Context, man *manifest.Manifest, scope string, meta map[string]any) error {
 	var msg string
 	switch {
-	case man.HostedOnly && s.profile != profile.Hosted:
+	case s.hostedOnlyRefused(man):
 		msg = "This app runs only on a moose box in the cloud, so it cannot be installed on this box."
 	case man.PersonalOnly && scope == store.ScopeHousehold:
 		msg = "This app can only be installed just for you, not for the whole household."

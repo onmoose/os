@@ -151,7 +151,7 @@ func (m *Manager) checkUpdatesOnce(ctx context.Context) {
 			slog.Warn("update check: read the folder binds", "instance_id", inst.ID, "err", err)
 			continue
 		}
-		check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.profile)
+		check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.placementProfile())
 		if !m.storeCheck(inst, check) {
 			continue
 		}
@@ -545,7 +545,7 @@ func (m *Manager) ApproveUpdate(ctx context.Context, id, version, by string) ([]
 	// what the version asks for now.
 	fresh := inst
 	fresh.UpdateApproval = store.UpdateApproval{}
-	check := classifyUpdate(fresh, oldMan, newMan, grants, cfg, base, sources, m.profile)
+	check := classifyUpdate(fresh, oldMan, newMan, grants, cfg, base, sources, m.placementProfile())
 	if check.Status != store.UpdateNeedsApproval {
 		m.setUpdateCheck(inst, check)
 		if check.Reason != "" {
@@ -567,7 +567,7 @@ func (m *Manager) ApproveUpdate(ctx context.Context, id, version, by string) ([]
 		return nil, fmt.Errorf("store the approval: %w", err)
 	}
 	inst.UpdateApproval, inst.UpdateDeclined = approval, ""
-	m.setUpdateCheck(inst, classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.profile))
+	m.setUpdateCheck(inst, classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.placementProfile()))
 	m.publishUpdateChanged(id)
 	slog.Info("app update approved", "instance_id", id, "name", inst.Name, "version", inst.Version, "new_version", version, "user_id", by)
 	return check.Wants, nil

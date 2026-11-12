@@ -229,6 +229,10 @@ type Manager struct {
 	// brain bootstrap). Off by default — a box with a registry pulls and
 	// verifies against it as usual. See resolveImages.
 	offlineInstall bool
+	// allowHostedOnly lets a box that is not hosted install a hosted_only app.
+	// Only make dev-app sets it (MOOSE_DEV_ALLOW_HOSTED_ONLY), so a curator can
+	// boot a terminal app on the appliance profile. See placementProfile.
+	allowHostedOnly bool
 
 	// chown sets the host owner of a bind dir or a managed-service data path.
 	// os.Lchown in production; tests record the calls, since an unprivileged
@@ -380,6 +384,22 @@ const defaultBrainUpstream = "moose-brain:8080"
 // fails. cmd/brain wires this from MOOSE_OFFLINE_INSTALL; it is a box-level mode
 // (a baked, registry-less box), not a per-install option. See offlineInstall.
 func (m *Manager) SetOfflineInstall(v bool) { m.offlineInstall = v }
+
+// SetAllowHostedOnly turns off the hosted_only refusal on a box that is not
+// hosted. cmd/brain wires it from MOOSE_DEV_ALLOW_HOSTED_ONLY, which only
+// make dev-app sets. personal_only stays enforced.
+func (m *Manager) SetAllowHostedOnly(v bool) { m.allowHostedOnly = v }
+
+// placementProfile is the profile the placement check reads. With
+// allowHostedOnly it reads as hosted, so hosted_only passes. Nothing else
+// reads it: routes, forward-auth and the owner-only lock still follow
+// m.profile.
+func (m *Manager) placementProfile() profile.Profile {
+	if m.allowHostedOnly {
+		return profile.Hosted
+	}
+	return m.profile
+}
 
 // SetEnvironment records the environment profile and (on hosted) the box-id, so
 // per-app route hosts and surfaced URLs use the hosted "<slug>.<box-id>.onmoose.io"
@@ -763,7 +783,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 
 	// personal_only and hosted_only (placement.go): the API refuses first and
 	// the install plan says so; this is the backstop, before any state.
-	if err := placementAllowed(man, scope, m.profile); err != nil {
+	if err := placementAllowed(man, scope, m.placementProfile()); err != nil {
 		return store.Instance{}, err
 	}
 

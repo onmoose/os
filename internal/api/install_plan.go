@@ -15,7 +15,6 @@ import (
 	"github.com/onmoose/os/internal/fit"
 	"github.com/onmoose/os/internal/lifecycle"
 	"github.com/onmoose/os/internal/manifest"
-	"github.com/onmoose/os/internal/profile"
 	"github.com/onmoose/os/internal/protocol"
 	"github.com/onmoose/os/internal/store"
 )
@@ -571,7 +570,7 @@ func (s *Server) installPlan(ctx context.Context, in *struct {
 		plan.Unavailable = unavailableNeedsRemap
 	}
 	// It wins over both: no box of this kind can run the app.
-	if man.HostedOnly && s.profile != profile.Hosted {
+	if s.hostedOnlyRefused(man) {
 		plan.Unavailable = unavailableHostedOnly
 	}
 	return &struct{ Body InstallPlanDTO }{Body: plan}, nil

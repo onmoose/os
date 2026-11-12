@@ -198,6 +198,7 @@ The rules:
 - **The store hides it on the appliance** through the catalog service's environment filter: the catalog lists the app for `hosted` only (`APP_STORE.md` # Apps this box cannot run). The box reads no extra field for it.
 - **A direct link still loads**, and its install plan carries `unavailable: "hosted-only"`, so the page shows a sentence in place of Install.
 - **The install is refused** off hosted with `409`, audited, and `lifecycle.Install` refuses it again. An update that adds it on the appliance is `blocked`.
+- **One exception, for curation only.** `make dev-app` sets `MOOSE_DEV_ALLOW_HOSTED_ONLY`, so the dev stack (the appliance profile) can install the app and a curator can boot it. It turns off only this rule. `dev/running-locally.md` has the details. A real box never sets it.
 
 Both are the snake_case boolean style of `service_user` and `root_setup`. **Door-2 synthetic manifests never set them.** **Versioning:** optional fields with a default that keeps today's behaviour, so `manifest_version` stays `1`. A brain from before #660 does not model them and ignores them, so it would install such an app as a household app, or on the appliance. The catalog holds such an app back until the boxes run a brain that reads them. A terminal app is held back anyway: it binds `projects`, which a brain from before #657 refuses. **Status:** built (#660).
 
