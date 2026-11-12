@@ -57,7 +57,7 @@ The inner dev loop is all native, no VM — see [`running-locally.md`](running-l
 - **Go discipline** — CLAUDE.md # Go code discipline (consumer-side interfaces, layer boundaries, `log/slog` only, standard structured field names, typed errors only at boundaries, no premature abstraction). Match the surrounding code.
 - **Don't build host-integrated subsystems without the VM outer loop** the specs assume (CLAUDE.md # Repo state). The fake host-agent (`cmd/host-agent`) is the inner-loop stand-in.
 - **Keep specs and reality in sync** — if your implementation realizes or *diverges* from a spec, update the matching `docs/specs/` doc in the same change, and add a `DECISIONS.md` entry if a locked decision flips.
-- **Scope is exactly the issue, nothing more.** If you encounter something broken or improvable outside the issue scope: search for an existing issue (open or closed) first; if none exists, open one. Never implement it in the current PR. Maintainers decide what gets built and when — that is a product decision, not a developer one.
+- **Scope is exactly the issue, nothing more.** If you encounter something broken or improvable outside the issue scope, first apply the size test in CLAUDE.md # Working style, "Skip small issues". If it is small, drop it. If it passes, search for an existing issue (open or closed) first; if none exists, open one. Never implement it in the current PR. Maintainers decide what gets built and when: that is a product decision, not a developer one.
 - **New dependencies must be justified.** Any new `go.mod`/`go.sum` or `package.json`/`package-lock.json` entry must be called out in the PR body with the reason. When in doubt, don't add the dependency.
 - **DB schema changes are additive-only.** Never `DROP COLUMN`, `RENAME COLUMN`, or write a destructive `ALTER TABLE`. New columns on existing tables must have a `DEFAULT` or be nullable so the migration runs safely against a live database.
 - **Never swallow errors.** `_ = err` or a missing `if err != nil` is almost always wrong. Errors must be returned, logged, or explicitly handled — never silently dropped.
@@ -308,7 +308,7 @@ In step 5, resolve `VERSION` to the new `X.Y.Z`: that is now the last released v
 - [ ] Progress entry written (`docs/progress/<slug>.md`, kebab-slug, not numbered); indexes in both READMEs updated; Up-next re-ordered if needed.
 - [ ] Spec doc updated if behavior realized/diverged; `DECISIONS.md` entry if a locked decision flipped.
 - [ ] No `§`, no hard-wrapped markdown, `log/slog` only, conventions per CLAUDE.md.
-- [ ] No out-of-scope changes; any out-of-scope finding has an existing or new issue filed, not a fix in this PR.
+- [ ] No out-of-scope changes; any out-of-scope finding that passes the size test in CLAUDE.md # Skip small issues has an existing or new issue filed, not a fix in this PR. A small one is dropped.
 - [ ] No new dependencies added silently; any new `go.mod`/`package.json` entry called out in the PR body with justification.
 - [ ] Schema changes additive-only; no dropped or renamed columns.
 - [ ] No swallowed errors (`_ = err`); user-facing error messages are plain English, not raw Go error strings.

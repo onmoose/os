@@ -21,6 +21,8 @@ You review pull request #<N> in the moose repo, with no other context. Do not ed
 Report as # Output format in code-review.md says: Blocks, then Notes, then Questions, each with file:line, a concrete failure scenario and a fix, and end with the verdict line. Then what you checked and found fine. Under 900 words.
 ```
 
+**A Note is the reviewer's view, not a task.** The author fixes it, or drops it under CLAUDE.md # Working style, "Skip small issues". A Note is never by itself a reason to raise a question to the maintainer or to file an issue.
+
 **Do not use the `/code-review` skill for this.** It runs as a fork of your session, so it sees your whole conversation and runs on your session's model, whatever model you ask for. At its low effort it also skips tests, fixtures and markdown. On #643, a PR of test-lane code and docs, it reported nothing, and a Sonnet agent with this brief then found a Block.
 
 ## Before you start
