@@ -112,7 +112,7 @@ Opening the app opens **a new tab at `<slug>.<box>/`**. That page is a **simple 
 |---|---|
 | `/` | The project page. |
 | `/p/<folder>/<path>` | The terminal, in that folder, attached to that folder's tmux session. |
-| `/clone?repo=<url>&into=<folder>` | Clones inside the app with the user's own terminal login, then opens the new folder. |
+| `/clone?repo=<url>&into=<folder>` | Shows the clone page with the repo filled in. The clone runs only when the user clicks Clone (a form sent from the app's own page), so a link on another website cannot start a clone with the user's login. It clones inside the app with the user's own terminal login, then opens the new folder. |
 
 The start script checks every path itself: it must be inside a mounted folder (`/moose/projects` or `/moose/extra/<Name>`), with no `..` and no symlink that leads out. The URL is never trusted.
 
