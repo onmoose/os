@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -217,6 +219,27 @@ func newHarness(t *testing.T, opts ...func(*Server)) *harness {
 	// a test makes folders with os.MkdirAll and sees the same rules
 	// (folderlist) the fake host-agent applies.
 	homes := t.TempDir()
+	// The home, prepare-folder and the well-known ids, so a folder change
+	// (#659) can run its job to the end against homes/<user>.
+	mux.HandleFunc("GET /v1/users/{username}/home", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(protocol.ResolveHomeResponse{HomePath: filepath.Join(homes, r.PathValue("username")), UID: 1000, GID: 1000})
+	})
+	mux.HandleFunc("POST /v1/users/{username}/prepare-folder", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.PrepareUserFolderRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		home := filepath.Join(homes, r.PathValue("username"))
+		top, _, _ := strings.Cut(req.Path, "/")
+		_, statErr := os.Lstat(filepath.Join(home, top))
+		if err := os.MkdirAll(filepath.Join(home, filepath.FromSlash(req.Path)), 0o755); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "prepare-folder-failed", Message: err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(protocol.PrepareUserFolderResponse{MadeTop: errors.Is(statErr, os.ErrNotExist)})
+	})
+	mux.HandleFunc("GET /v1/identity/well-known", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(protocol.WellKnownIdentityResponse{MooseAppUID: 900, MooseAppGID: 900, MooseSharedGID: 901})
+	})
 	mux.HandleFunc("GET /v1/users/{username}/folders", func(w http.ResponseWriter, r *http.Request) {
 		rel := r.URL.Query().Get("path")
 		names, truncated, err := folderlist.List(filepath.Join(homes, r.PathValue("username")), rel)

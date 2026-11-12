@@ -383,6 +383,15 @@ func checkFolderPath(source, path string, isNew bool, made, onDisk map[string]bo
 // subfolder together, a path outside the folder limit, an extra folder for an
 // app that declares no extra_folders, and the same extra folder twice.
 func resolveElections(man *manifest.Manifest, scope string, elections []FolderElection, extras []ExtraFolderElection, made, onDisk map[string]bool) ([]lifecycle.FolderMount, error) {
+	return resolveElectionsKeeping(man, scope, elections, extras, made, onDisk, nil)
+}
+
+// resolveElectionsKeeping is resolveElections for a change after install
+// (#659). kept holds the "<source>:<path>" places the app binds now: such a
+// place passes the folder limit as it is, so a folder chosen under an older
+// rule can stay where it is. Only that exact place passes, not other folders
+// under its top folder.
+func resolveElectionsKeeping(man *manifest.Manifest, scope string, elections []FolderElection, extras []ExtraFolderElection, made, onDisk, kept map[string]bool) ([]lifecycle.FolderMount, error) {
 	declared := make(map[string]bool, len(man.Permissions.Folders))
 	for _, f := range man.Permissions.Folders {
 		declared[f.Folder] = true
@@ -435,7 +444,11 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 			}
 			path = lifecycle.FolderDir(f.Folder) + "/" + e.Subfolder
 		}
-		newTop, msg := checkFolderPath(src, path, e.New, made, onDisk)
+		var newTop bool
+		var msg string
+		if !kept[src+":"+path] {
+			newTop, msg = checkFolderPath(src, path, e.New, made, onDisk)
+		}
 		if msg != "" {
 			return nil, configError(loc, fmt.Sprintf("For the %s folder, %s.", lifecycle.FolderDir(f.Folder), msg))
 		}
@@ -456,7 +469,11 @@ func resolveElections(man *manifest.Manifest, scope string, elections []FolderEl
 		if x.Path == "" {
 			return nil, configError(loc, "Choose a folder to add")
 		}
-		newTop, msg := checkFolderPath(src, x.Path, x.New, made, onDisk)
+		var newTop bool
+		var msg string
+		if !kept[src+":"+x.Path] {
+			newTop, msg = checkFolderPath(src, x.Path, x.New, made, onDisk)
+		}
 		if msg != "" {
 			return nil, configError(loc, fmt.Sprintf("For the added folder %q, %s.", x.Path, msg))
 		}

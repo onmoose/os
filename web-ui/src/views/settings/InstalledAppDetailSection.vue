@@ -29,6 +29,7 @@ import { COMPATIBLE, aiSlots, bindingOf, choiceFromBinding, claimedEnvs, fillabl
 import AISlotPicker from "@/components/AISlotPicker.vue";
 import { useAuth, isHosted } from "@/auth";
 import MailProviderLogo from "@/components/MailProviderLogo.vue";
+import AppFolders from "@/components/AppFolders.vue";
 import AppLogs from "@/components/AppLogs.vue";
 import Button from "@/components/ui/Button.vue";
 import PermissionList from "@/components/PermissionList.vue";
@@ -1107,6 +1108,10 @@ const saveConfig = useMutation({
           Couldn't save settings: {{ (saveConfig.error.value as Error)?.message }}
         </p>
       </section>
+
+      <!-- Folders (#659): where each folder points, changed with the install's
+           own folder step. Hidden for an app that uses no folders. -->
+      <AppFolders v-if="canControl" :key="app.id" :id="app.id" :app-name="app.name" />
 
       <!-- Logs: collapsed by default; a full-width accordion row (styled like
            the Installed apps list rows) that expands the log panel on click. The

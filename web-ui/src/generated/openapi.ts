@@ -230,6 +230,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{id}/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the folders an app uses and where they point (owner or admin) */
+        get: operations["get-app-folders"];
+        /** Change the folders an app uses (job; the owner of a personal app, an admin for a household app) */
+        put: operations["update-app-folders"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/{id}/mail-binding": {
         parameters: {
             query?: never;
@@ -1427,6 +1445,11 @@ export interface components {
                 [key: string]: string;
             };
         };
+        AppExtraFolderDTO: {
+            name: string;
+            path: string;
+            source: string;
+        };
         AppFit: {
             /** Format: int64 */
             box_cores?: number;
@@ -1445,6 +1468,40 @@ export interface components {
             state: "fits" | "tight" | "too-big";
             too_big_cpu?: boolean;
             too_big_memory?: boolean;
+        };
+        AppFolderDTO: {
+            folder: string;
+            mode: string;
+            optional: boolean;
+            path?: string;
+            scope: string;
+            skipped: boolean;
+            source?: string;
+            sources: components["schemas"]["FolderSources"];
+            subfolder_default?: string;
+        };
+        AppFoldersDTO: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/AppFoldersDTO.json
+             */
+            readonly $schema?: string;
+            can_change: boolean;
+            extra_folders: components["schemas"]["AppExtraFolderDTO"][] | null;
+            extra_folders_mode?: string;
+            folders: components["schemas"]["AppFolderDTO"][] | null;
+            scope: string;
+        };
+        AppFoldersUpdateBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/AppFoldersUpdateBody.json
+             */
+            readonly $schema?: string;
+            extra_folders?: components["schemas"]["ExtraFolderElection"][] | null;
+            folders: components["schemas"]["FolderElection"][] | null;
         };
         AppSecretDTO: {
             name: string;
@@ -3305,6 +3362,79 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["InstanceDTO"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-app-folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppFoldersDTO"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "update-app-folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppFoldersUpdateBody"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Nothing changed, so no job was started */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

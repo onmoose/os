@@ -86,6 +86,7 @@ const ACTION_LABELS: Record<string, string> = {
   "app.update": "App updated",
   "app.update_approve": "App update with more access allowed",
   "app.update_rollback": "App rolled back to the earlier version",
+  "app.folders_change": "App folders changed",
   "app.custom.create": "Custom container installed",
   "user.create": "User created",
   "user.role.change": "Role changed",
