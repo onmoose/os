@@ -408,6 +408,12 @@ type InstanceDTO struct {
 	// narrower app than Caddy is actually serving. Empty ⇒ the access toggle means
 	// exactly what it says.
 	PublicPaths []string `json:"public_paths,omitempty"`
+	// ExposureLocked is true when the app's manifest locks its access mode to
+	// "Only me" (access.owner_only, #660) on hosted. The dashboard then shows
+	// no Access toggle, and PUT /api/v1/apps/{id}/exposure answers 409 to
+	// "public". Detail-page enrichment, read with PublicPaths from the
+	// instance's manifest copy.
+	ExposureLocked bool `json:"exposure_locked,omitempty"`
 	// NeedsSetup is true when a required config field has no value or a
 	// requires group is unmet (INSTALL_SETUP.md piece 4), for example after
 	// the AI account the app used was deleted. The home tile and the
@@ -474,6 +480,12 @@ func (s *Server) toDTO(ctx context.Context, i store.Instance, ownerUsername stri
 func (s *Server) withPublicPaths(dto *InstanceDTO) {
 	if man, err := s.life.InstanceManifest(dto.ID); err == nil {
 		dto.PublicPaths = man.Access.PublicPaths
+		// The route builder gates a locked app whatever the row says, so
+		// the dashboard is told the same.
+		if man.Access.OwnerOnly && s.profile == profile.Hosted {
+			dto.ExposureLocked = true
+			dto.Exposure = store.ExposureRestricted
+		}
 	}
 }
 
@@ -848,6 +860,16 @@ func (s *Server) installApp(ctx context.Context, in *struct {
 	if !man.IsListed() {
 		return nil, huma.Error404NotFound("no such catalog app")
 	}
+	// hosted_only and personal_only (#660). The install plan says so first;
+	// this is the authoritative check, and lifecycle.install the backstop.
+	// A personal_only app with no scope asked for is personal, for an admin
+	// too, whose default is household.
+	if man.PersonalOnly && in.Body.Scope == "" {
+		scope = store.ScopePersonal
+	}
+	if err := s.checkPlacement(ctx, man, scope, map[string]any{"manifest_id": manifestID, "scope": scope, "owner_user_id": owner.UserID}); err != nil {
+		return nil, err
+	}
 	// The folders made through moose for the owner: with the use-case
 	// folders, the only top-level folders a personal source may start at
 	// (APP_ISOLATION.md # User content). A household app binds only the
@@ -973,6 +995,23 @@ func (s *Server) resolveOwnerScope(ctx context.Context, requested, action string
 		return lifecycle.Owner{}, "", huma.Error422UnprocessableEntity("scope must be household or personal")
 	}
 	return owner, scope, nil
+}
+
+// checkPlacement refuses, with a 409, an install that personal_only or
+// hosted_only forbids (#660). It is a guard rejection of an elevation-class
+// mutation, so it audits the failure.
+func (s *Server) checkPlacement(ctx context.Context, man *manifest.Manifest, scope string, meta map[string]any) error {
+	var msg string
+	switch {
+	case man.HostedOnly && s.profile != profile.Hosted:
+		msg = "This app runs only on a moose box in the cloud, so it cannot be installed on this box."
+	case man.PersonalOnly && scope == store.ScopeHousehold:
+		msg = "This app can only be installed just for you, not for the whole household."
+	default:
+		return nil
+	}
+	s.auditor.Record(ctx, audit.ActionAppInstall, audit.Target{Kind: "app"}, meta, false)
+	return huma.Error409Conflict(msg)
 }
 
 // checkDuplicate implements warn-don't-block (DASHBOARD.md # warn, don't block).

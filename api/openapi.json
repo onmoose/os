@@ -2322,7 +2322,8 @@
           "unavailable": {
             "enum": [
               "needs-remap",
-              "too-big"
+              "too-big",
+              "hosted-only"
             ],
             "type": "string"
           },
@@ -2513,6 +2514,9 @@
               "public"
             ],
             "type": "string"
+          },
+          "exposure_locked": {
+            "type": "boolean"
           },
           "icon_glyph": {
             "type": "string"

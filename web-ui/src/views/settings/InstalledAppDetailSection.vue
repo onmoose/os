@@ -217,7 +217,11 @@ const setExposure = useMutation({
 // is manifest detail nobody acts on from this page, and naming it turned one
 // sentence into a wall. Empty for almost every app.
 const publicPaths = computed<string[]>(() => app.value?.public_paths ?? []);
+// The manifest locks this app to Only me (#660, access.owner_only), and the
+// brain refuses to make it public. So there is no toggle, only the sentence.
+const exposureLocked = computed(() => app.value?.exposure_locked ?? false);
 const accessSummary = computed(() => {
+  if (exposureLocked.value) return "Only you can open it. Visitors sign in to your box first. This app is always private to you.";
   if (exposure.value === "public") return "Anyone with the link can open it.";
   if (publicPaths.value.length > 0) {
     return "Only you can open the app. Visitors sign in to your box first. Some app paths are open to the public, so tools outside your box can reach them.";
@@ -682,7 +686,7 @@ const saveConfig = useMutation({
             <div class="text-sm font-medium">Who can open this app</div>
             <div class="text-xs text-muted-foreground">{{ accessSummary }}</div>
           </div>
-          <div role="group" aria-label="Access mode" class="inline-flex shrink-0 rounded-lg border border-border p-0.5 text-sm">
+          <div v-if="!exposureLocked" role="group" aria-label="Access mode" class="inline-flex shrink-0 rounded-lg border border-border p-0.5 text-sm">
             <button
               v-for="opt in exposureOptions"
               :key="opt.value"

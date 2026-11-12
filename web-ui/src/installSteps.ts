@@ -201,6 +201,8 @@ export function unavailableText(plan: InstallPlan | null): string {
       return "This app can't be installed on this box, because it needs a safety feature that only boxes set up with a newer version of moose have.";
     case "too-big":
       return plan.fit ? tooBigText(plan.fit) : TOO_BIG_TITLE;
+    case "hosted-only":
+      return "This app can't be installed on this box. It runs only on a moose box in the cloud, where you sign in before you open an app.";
     default:
       return "This app can't be installed on this box.";
   }

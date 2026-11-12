@@ -119,6 +119,25 @@ type Manifest struct {
 	// manifests never set it.
 	ImageUser bool `yaml:"image_user,omitempty"`
 
+	// PersonalOnly declares that the app can only be installed as a personal
+	// instance, never as a household one (APP_MANIFEST.md # G,
+	// TERMINAL_APPS.md # Security and access). A terminal app needs it: git
+	// refuses a repo whose owner is not the user running it, and the logins it
+	// holds belong to one person. The brain refuses a household install and an
+	// update that adds it to a household instance. Door-2 synthetic manifests
+	// never set it.
+	PersonalOnly bool `yaml:"personal_only,omitempty"`
+
+	// HostedOnly declares that the app runs only on the hosted profile
+	// (ENVIRONMENT.md). The appliance has no box login in front of its apps,
+	// so an app that is an open shell must not run there. The brain refuses
+	// the install, and an update that adds it, on any other profile. The
+	// store hides such an app on the appliance through the catalog service's
+	// environment filter, so the catalog must list it for hosted only
+	// (APP_STORE.md # Apps this box cannot run). Door-2 synthetic manifests
+	// never set it.
+	HostedOnly bool `yaml:"hosted_only,omitempty"`
+
 	// Secrets declares per-app random secrets the brain generates once at install
 	// and injects as `MOOSE_SECRET_<NAME>` env vars (APP_MANIFEST.md # secrets,
 	// SERVICE_PROVISIONING.md # Env-var injection). Each name maps in the compose
@@ -181,10 +200,20 @@ type Manifest struct {
 	Access Access `yaml:"access,omitempty"`
 }
 
-// Access is the app's declared access shape. Today it holds one field, and it is
-// a block rather than a bare list so later access-related declarations have a
-// home that does not re-open the top level.
+// Access is the app's declared access shape. It is a block rather than a bare
+// list so access-related declarations have a home that does not re-open the
+// top level.
 type Access struct {
+	// OwnerOnly locks the app's access mode to "Only me" (restricted) on
+	// hosted (APP_MANIFEST.md # E2, ENVIRONMENT.md # Per-app owner-only
+	// access). The brain refuses to make it public, puts an existing public
+	// instance back to restricted when an update adds it, and the route
+	// builder gates it whatever the instance row says. A terminal app needs
+	// it: a public one is an open shell with the user's keys. It does not
+	// close the declared public_paths: those are the author's own exception.
+	// The appliance has no gate, so the flag changes nothing there.
+	OwnerOnly bool `yaml:"owner_only,omitempty" json:"owner_only,omitempty"`
+
 	// PublicPaths lists request paths an owner-only ("restricted") app still
 	// serves to anonymous callers. It exists for the app that pairs a
 	// token-authed API with a session-authed UI: without it, letting an external

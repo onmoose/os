@@ -81,6 +81,10 @@ export function useStartInstall(manifestId: Ref<string>) {
   const plan = computed(() => planQuery.data.value ?? null);
   const unavailable = computed(() => unavailableText(plan.value));
   const tooBig = computed(() => plan.value?.unavailable === "too-big");
+  // The plan's scope menu says whether a household copy is possible at all: an
+  // app whose manifest sets personal_only offers "personal" alone, to an admin
+  // too (#660).
+  const householdAllowed = computed(() => (plan.value?.scope_options ?? []).includes("household"));
 
   const { submit, submitError, submitLocation, duplicateInfo, pending } = useInstallSubmit(manifestId);
   const directScope = ref<"personal" | "household">("personal");
@@ -129,7 +133,7 @@ export function useStartInstall(manifestId: Ref<string>) {
     });
   });
 
-  return { planQuery, plan, unavailable, tooBig, goInstall, pending };
+  return { planQuery, plan, unavailable, tooBig, householdAllowed, goInstall, pending };
 }
 
 // onStarted runs when the brain accepted the install (202), before the page

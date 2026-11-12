@@ -29,6 +29,7 @@ import (
 
 	"github.com/onmoose/os/internal/catalog"
 	"github.com/onmoose/os/internal/manifest"
+	"github.com/onmoose/os/internal/profile"
 	"github.com/onmoose/os/internal/store"
 )
 
@@ -150,7 +151,7 @@ func (m *Manager) checkUpdatesOnce(ctx context.Context) {
 			slog.Warn("update check: read the folder binds", "instance_id", inst.ID, "err", err)
 			continue
 		}
-		check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources)
+		check := classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.profile)
 		if !m.storeCheck(inst, check) {
 			continue
 		}
@@ -205,11 +206,20 @@ func needsNewerMoose(version string) store.UpdateCheck {
 // so. sources is where each folder the instance binds now comes from
 // (instanceFolderSources). An update that asks for more access is available
 // when the owner's approval on the row covers it (approvalCovers).
-func classifyUpdate(inst store.Instance, oldMan, newMan *manifest.Manifest, grants []store.ServiceGrant, cfg []store.InstanceConfig, base int, sources map[string]string) store.UpdateCheck {
+func classifyUpdate(inst store.Instance, oldMan, newMan *manifest.Manifest, grants []store.ServiceGrant, cfg []store.InstanceConfig, base int, sources map[string]string, prof profile.Profile) store.UpdateCheck {
 	c := store.UpdateCheck{Version: newMan.Version, Wants: widenedAccess(accessOf(oldMan), newMan, sources, inst.Scope)}
 	blocked := func(reason string) store.UpdateCheck {
 		c.Status, c.Reason = store.UpdateBlocked, reason
 		return c
+	}
+
+	// A version that may not run as this instance: personal_only on a
+	// household app, hosted_only on the appliance (#660).
+	switch err := placementAllowed(newMan, inst.Scope, prof); {
+	case errors.Is(err, ErrHostedOnly):
+		return blocked("This version runs only on a moose box in the cloud, so it cannot run on this box")
+	case errors.Is(err, ErrPersonalOnly):
+		return blocked("This version can only run as an app just for one person, and this copy is for the whole household. To use it, install the app again just for you")
 	}
 
 	// The tier and the runtime identity are fixed for the life of an instance
@@ -535,7 +545,7 @@ func (m *Manager) ApproveUpdate(ctx context.Context, id, version, by string) ([]
 	// what the version asks for now.
 	fresh := inst
 	fresh.UpdateApproval = store.UpdateApproval{}
-	check := classifyUpdate(fresh, oldMan, newMan, grants, cfg, base, sources)
+	check := classifyUpdate(fresh, oldMan, newMan, grants, cfg, base, sources, m.profile)
 	if check.Status != store.UpdateNeedsApproval {
 		m.setUpdateCheck(inst, check)
 		if check.Reason != "" {
@@ -557,7 +567,7 @@ func (m *Manager) ApproveUpdate(ctx context.Context, id, version, by string) ([]
 		return nil, fmt.Errorf("store the approval: %w", err)
 	}
 	inst.UpdateApproval, inst.UpdateDeclined = approval, ""
-	m.setUpdateCheck(inst, classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources))
+	m.setUpdateCheck(inst, classifyUpdate(inst, oldMan, newMan, grants, cfg, base, sources, m.profile))
 	m.publishUpdateChanged(id)
 	slog.Info("app update approved", "instance_id", id, "name", inst.Name, "version", inst.Version, "new_version", version, "user_id", by)
 	return check.Wants, nil

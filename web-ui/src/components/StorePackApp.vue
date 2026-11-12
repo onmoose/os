@@ -19,10 +19,10 @@ const manifestId = toRef(() => props.app.id);
 const { householdInstance, ownPersonalInstance, installing, canInstallHousehold } = useAppInstances(manifestId);
 // An app too big for this box keeps Install, disabled, as on the App page. Why
 // is said on the App page only, not in the store (#599).
-const { planQuery, unavailable, tooBig, goInstall, pending } = useStartInstall(manifestId);
+const { planQuery, unavailable, tooBig, householdAllowed, goInstall, pending } = useStartInstall(manifestId);
 
 const dropdownItems = computed(() =>
-  canInstallHousehold.value ? [{ label: "Install for the whole household", action: () => goInstall(true) }] : [],
+  canInstallHousehold.value && householdAllowed.value ? [{ label: "Install for the whole household", action: () => goInstall(true) }] : [],
 );
 </script>
 
