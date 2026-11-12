@@ -334,6 +334,15 @@ func (m *Manager) Update(ctx context.Context, id string, progress func(step stri
 	step("stopping")
 	host := m.routeHost(inst)
 	if err := m.caddy.AddSplashRoute(ctx, id, host, oldMan.Name, "updating"); err != nil {
+		// A version that locks a public app to Only me must never start
+		// behind the old public route: without the splash, the new
+		// containers could answer anyone until the gated route goes in
+		// (#660). Stop here, with the old version still running.
+		if m.ownerOnly(newMan) && inst.Exposure != store.ExposureRestricted {
+			const msg = "moose could not close the app while it updates, so it did not update the app. The old version is still running"
+			m.endBeforeStop(inst, rec, store.UpdateFailedStart, msg, err)
+			return errors.New(msg)
+		}
 		slog.Warn("update: caddy splash flip failed (continuing)", "instance_id", id, "host", host, "err", err)
 	}
 	if out, err := m.docker.ComposeStop(ctx, m.instanceDir(id), "moose-"+id); err != nil {

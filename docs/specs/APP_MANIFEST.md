@@ -511,8 +511,8 @@ access:
   owner_only: true    # always "Only me" on hosted; the owner cannot make it Public
 ```
 
-- **It is the brain's lock, not a hidden switch.** `PUT /api/v1/apps/{id}/exposure` with `public` answers `409`, audited. The central route builder gates the app whatever its row says, so a row left public by any path still never serves the app to anyone. An update that adds the flag sets a public app back to "Only me" when the new version starts.
-- **The dashboard shows no toggle**, only the sentence that the app is always private. The app's record carries `exposure_locked: true` (`BRAIN_UI_PROTOCOL.md`).
+- **It is the brain's lock, not a hidden switch.** `PUT /api/v1/apps/{id}/exposure` with `public` answers `409`, audited. The central route builder gates the app whatever its row says, so a row left public by any path still never serves the app to anyone. An update that adds the flag sets a public app back to "Only me" when the new version starts, and stops before the old version stops if the "updating" page cannot be put up.
+- **The dashboard shows no toggle**, only the sentence that the app is always private, or, when it also declares public paths, the public-path line. The app's record carries `exposure_locked: true` (`BRAIN_UI_PROTOCOL.md`).
 - **It does not close `public_paths`.** Those are the author's own exception, reviewed in the catalog. A terminal app declares none.
 - **On the appliance it changes nothing**, like `public_paths`: there is no gate there. A terminal app also sets `hosted_only` (# B).
 

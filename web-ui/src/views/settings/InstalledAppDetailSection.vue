@@ -221,7 +221,9 @@ const publicPaths = computed<string[]>(() => app.value?.public_paths ?? []);
 // brain refuses to make it public. So there is no toggle, only the sentence.
 const exposureLocked = computed(() => app.value?.exposure_locked ?? false);
 const accessSummary = computed(() => {
-  if (exposureLocked.value) return "Only you can open it. Visitors sign in to your box first. This app is always private to you.";
+  // A locked app's declared public paths still skip the login, so the
+  // public-path line wins over "always private".
+  if (exposureLocked.value && publicPaths.value.length === 0) return "Only you can open it. Visitors sign in to your box first. This app is always private to you.";
   if (exposure.value === "public") return "Anyone with the link can open it.";
   if (publicPaths.value.length > 0) {
     return "Only you can open the app. Visitors sign in to your box first. Some app paths are open to the public, so tools outside your box can reach them.";

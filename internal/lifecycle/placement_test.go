@@ -173,3 +173,28 @@ func TestUpdate_PersonalOnlyOnHouseholdBlocked(t *testing.T) {
 		t.Fatalf("version %q after a refused update", r.Version)
 	}
 }
+
+// Greptile on #668: with no "updating" splash, the old public route stays,
+// and a version that adds owner_only would answer anyone while it comes up.
+// Such an update stops before the old version stops.
+func TestUpdate_AddsOwnerOnlyStopsWithoutSplash(t *testing.T) {
+	e := newTestEnv(t)
+	e.m.diskSpace = func(string) (uint64, uint64, error) { return 1 << 40, 2 << 40, nil }
+	e.m.SetEnvironment(profile.Hosted, "cindy-fox")
+	inst := installUp(t, e, "")
+	if err := e.m.SetExposure(context.Background(), inst.ID, store.ExposurePublic); err != nil {
+		t.Fatalf("set public: %v", err)
+	}
+	e.publish(t, "2.0", upImage2, upDigest2, "access:\n  owner_only: true\n")
+	e.caddy.writeErr = errors.New("caddy is down")
+	e.docker.calls = nil
+	if err := e.m.Update(context.Background(), inst.ID, nil); err == nil {
+		t.Fatal("the update went on with no splash")
+	}
+	if e.docker.called("ComposeStop") || e.docker.called("ComposeUp") {
+		t.Fatal("the old version was stopped or the new one started")
+	}
+	if r := e.row(t, inst.ID); r.Version != "1.0" || r.State != "running" {
+		t.Fatalf("after the refused update: version %q state %q, want 1.0 running", r.Version, r.State)
+	}
+}
