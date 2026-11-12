@@ -63,7 +63,7 @@ func TestSetFolders_RunningApp(t *testing.T) {
 		{Folder: "notes", Source: sourceShared, Path: "Notes"},
 		{Source: sourcePersonal, Path: "Recipes", Extra: "Recipes", NewFolder: true},
 	}
-	before, changed, err := e.m.SetFolders(ctx, id, next, nil)
+	before, changed, err := e.m.SetFolders(ctx, id, "", next, nil)
 	if err != nil || !changed {
 		t.Fatalf("SetFolders: changed=%v err=%v", changed, err)
 	}
@@ -106,7 +106,7 @@ func TestSetFolders_RunningApp(t *testing.T) {
 
 	// The same set again changes nothing and recreates nothing.
 	ups = e.composeUps()
-	if _, changed, err := e.m.SetFolders(ctx, id, got, nil); err != nil || changed {
+	if _, changed, err := e.m.SetFolders(ctx, id, "", got, nil); err != nil || changed {
 		t.Errorf("same set: changed=%v err=%v", changed, err)
 	}
 	if e.composeUps() != ups {
@@ -114,7 +114,7 @@ func TestSetFolders_RunningApp(t *testing.T) {
 	}
 
 	// Dropping the shared folder drops the shared group.
-	if _, _, err := e.m.SetFolders(ctx, id, []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Projects"}}, nil); err != nil {
+	if _, _, err := e.m.SetFolders(ctx, id, "", []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Projects"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	app = overrideApp(t, e, id)
@@ -141,7 +141,7 @@ func TestSetFolders_StoppedAppIsNotStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 	ups := e.composeUps()
-	if _, changed, err := e.m.SetFolders(ctx, id, []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Documents"}}, nil); err != nil || !changed {
+	if _, changed, err := e.m.SetFolders(ctx, id, "", []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Documents"}}, nil); err != nil || !changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
 	if e.composeUps() != ups {
@@ -171,7 +171,7 @@ func TestSetFolders_PinRefusal(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), filepath.Join(home, "Documents")); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := e.m.SetFolders(ctx, id, []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Documents"}}, nil)
+	_, _, err := e.m.SetFolders(ctx, id, "", []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Documents"}}, nil)
 	var refusal *folderRefusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("err = %v; want a folder refusal", err)
@@ -204,7 +204,7 @@ func TestSetFolders_SurvivesRollback(t *testing.T) {
 	}
 
 	// After the update the owner points documents elsewhere and drops notes.
-	if _, _, err := e.m.SetFolders(ctx, inst.ID, []FolderMount{{Folder: "documents", Source: sourcePersonal, Path: "Documents/Work"}}, nil); err != nil {
+	if _, _, err := e.m.SetFolders(ctx, inst.ID, "", []FolderMount{{Folder: "documents", Source: sourcePersonal, Path: "Documents/Work"}}, nil); err != nil {
 		t.Fatalf("SetFolders: %v", err)
 	}
 	if err := e.m.Rollback(ctx, inst.ID, nil); err != nil {
@@ -219,4 +219,72 @@ func TestSetFolders_SurvivesRollback(t *testing.T) {
 	if strings.Contains(string(env), "MOOSE_FOLDER_NOTES") {
 		t.Errorf("the rollback brought back the notes variable:\n%s", env)
 	}
+}
+
+// A choice checked against one version is not applied to another: an update
+// that ran between the save and its job may need other folders.
+func TestSetFolders_VersionChanged(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	addUser(t, e, "u_alex", "alex")
+	installFolders(t, e, store.ScopePersonal, Owner{UserID: "u_alex", Username: "alex"}, choiceManifest, []FolderMount{
+		{Folder: "projects", Source: sourcePersonal, Path: "Projects"},
+	})
+	insts, _ := e.store.List()
+	id := insts[0].ID
+	before := overrideApp(t, e, id)["volumes"]
+	_, changed, err := e.m.SetFolders(ctx, id, "0.9", []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Documents"}}, nil)
+	if !errors.Is(err, ErrFoldersVersionChanged) || changed {
+		t.Fatalf("changed=%v err=%v; want ErrFoldersVersionChanged", changed, err)
+	}
+	if got := overrideApp(t, e, id)["volumes"]; !slices.Equal(toStrings(got), toStrings(before)) {
+		t.Errorf("the override changed: %v", got)
+	}
+}
+
+// A save that cannot write every file puts back the ones it wrote, so the
+// override and .env never disagree and a retry of the same choice still
+// sees a change.
+func TestSetFolders_FailedWriteRestores(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	addUser(t, e, "u_alex", "alex")
+	installFolders(t, e, store.ScopePersonal, Owner{UserID: "u_alex", Username: "alex"}, choiceManifest, []FolderMount{
+		{Folder: "projects", Source: sourcePersonal, Path: "Projects"},
+	})
+	insts, _ := e.store.List()
+	id := insts[0].ID
+	dir := filepath.Join(e.stateDir, "instances", id)
+	ovBefore, _ := os.ReadFile(filepath.Join(dir, "compose.override.yml"))
+	// .env cannot be written: a folder is in its place.
+	if err := os.Remove(filepath.Join(dir, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".env"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ups := e.composeUps()
+	next := []FolderMount{{Folder: "projects", Source: sourcePersonal, Path: "Documents"}}
+	if _, changed, err := e.m.SetFolders(ctx, id, "", next, nil); !errors.Is(err, errFoldersNotWritten) || changed {
+		t.Fatalf("changed=%v err=%v; want errFoldersNotWritten", changed, err)
+	}
+	if ovAfter, _ := os.ReadFile(filepath.Join(dir, "compose.override.yml")); string(ovAfter) != string(ovBefore) {
+		t.Errorf("the override was not put back:\n%s", ovAfter)
+	}
+	if e.composeUps() != ups {
+		t.Error("a failed save recreated the app")
+	}
+	got, err := e.m.InstanceFolders(ctx, id)
+	if err != nil || SameFolders(got, next) {
+		t.Errorf("a retry would see no change: %+v %v", got, err)
+	}
+}
+
+func toStrings(v any) []string {
+	list, _ := v.([]any)
+	out := make([]string, 0, len(list))
+	for _, x := range list {
+		out = append(out, x.(string))
+	}
+	return out
 }

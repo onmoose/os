@@ -5468,7 +5468,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -5476,7 +5476,10 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "Accepted"
+          },
+          "204": {
+            "description": "Nothing changed, so no job was started"
           },
           "default": {
             "content": {

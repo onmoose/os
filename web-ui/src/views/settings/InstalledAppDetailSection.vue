@@ -1111,7 +1111,7 @@ const saveConfig = useMutation({
 
       <!-- Folders (#659): where each folder points, changed with the install's
            own folder step. Hidden for an app that uses no folders. -->
-      <AppFolders v-if="canControl" :id="app.id" :app-name="app.name" />
+      <AppFolders v-if="canControl" :key="app.id" :id="app.id" :app-name="app.name" />
 
       <!-- Logs: collapsed by default; a full-width accordion row (styled like
            the Installed apps list rows) that expands the log panel on click. The

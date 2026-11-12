@@ -34,6 +34,18 @@ func (s *Server) registerAppFolders(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "update-app-folders", Method: "PUT", Path: "/api/v1/apps/{id}/folders",
 		Summary: "Change the folders an app uses (job; the owner of a personal app, an admin for a household app)",
+		// 202 with the job, or 204 with no body when nothing changes.
+		DefaultStatus: http.StatusAccepted,
+		Responses: map[string]*huma.Response{
+			"204": {Description: "Nothing changed, so no job was started"},
+			// Setting Responses stops huma adding its own error response.
+			"default": {
+				Description: "Error",
+				Content: map[string]*huma.MediaType{
+					"application/problem+json": {Schema: &huma.Schema{Ref: "#/components/schemas/ErrorModel"}},
+				},
+			},
+		},
 	}, s.updateAppFolders)
 }
 
@@ -237,7 +249,7 @@ func (s *Server) updateAppFolders(ctx context.Context, in *struct {
 
 	jobCtx := ctx
 	job := s.jobs.run("app-folders", func(job *Job) (map[string]any, error) {
-		before, changed, err := s.life.SetFolders(context.Background(), id, mounts, job.setStep)
+		before, changed, err := s.life.SetFolders(context.Background(), id, inst.Version, mounts, job.setStep)
 		meta := map[string]any{}
 		if before != nil {
 			meta["changes"] = folderChanges(before, mounts)

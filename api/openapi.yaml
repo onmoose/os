@@ -3797,12 +3797,14 @@ paths:
               $ref: "#/components/schemas/AppFoldersUpdateBody"
         required: true
       responses:
-        "200":
+        "202":
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Job"
-          description: OK
+          description: Accepted
+        "204":
+          description: Nothing changed, so no job was started
         default:
           content:
             application/problem+json:

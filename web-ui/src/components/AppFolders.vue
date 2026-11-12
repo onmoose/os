@@ -69,6 +69,7 @@ function reset() {
   const s = fromData(data.value);
   picks.value = s.picks;
   extras.value = s.extras;
+  seeded.value = snapshot(s.picks, s.extras);
   error.value = null;
 }
 
@@ -90,17 +91,23 @@ function body(d: AppFolders): AppFoldersUpdate {
 // error is the brain's answer: a 422 with a location shows on its row, any
 // other failure under the Save button.
 const error = ref<{ location: string; message: string } | null>(null);
+// The controls are locked while a save runs (the fieldset below), and the
+// choice that was sent is what becomes saved.
 const save = useMutation({
   mutationFn: async () => {
     error.value = null;
+    const sent = snapshot(picks.value, extras.value);
     const job = await api.put<Job | undefined>(`/apps/${props.id}/folders`, body(data.value!));
-    if (!job) return; // 204: nothing changed
-    const done = await waitForJob(job.job_id);
-    if (done.status === "failed") throw new Error(done.error?.message || "the change did not go through");
+    if (job) {
+      // 202: wait for the job. 204: nothing changed.
+      const done = await waitForJob(job.job_id);
+      if (done.status === "failed") throw new Error(done.error?.message || "the change did not go through");
+    }
+    return sent;
   },
-  onSuccess: () => {
+  onSuccess: (sent) => {
     // The saved choice is the new start, so the reload may seed again.
-    seeded.value = snapshot(picks.value, extras.value);
+    seeded.value = sent;
   },
   onError: (e) => {
     if (e instanceof ApiError && e.location) error.value = { location: e.location, message: e.message };
@@ -146,7 +153,7 @@ const whose = (src: string) => (src === "shared" ? (singleUserMode.value ? "Shar
 
     <template v-else>
       <p class="text-xs text-muted-foreground">Saving restarts {{ appName }}. Anything running in it stops.</p>
-      <div class="rounded-xl border border-border bg-card px-4 py-4">
+      <fieldset :disabled="save.isPending.value" class="rounded-xl border border-border bg-card px-4 py-4 disabled:opacity-60">
         <FolderChoices
           v-model:picks="picks"
           v-model:extras="extras"
@@ -156,7 +163,7 @@ const whose = (src: string) => (src === "shared" ? (singleUserMode.value ? "Shar
           :app-name="appName"
           :error="error?.location ? error : null"
         />
-      </div>
+      </fieldset>
       <div class="flex items-center gap-3">
         <Button type="button" size="sm" :disabled="!dirty || save.isPending.value" @click="save.mutate()">
           {{ save.isPending.value ? "Saving…" : "Save folders" }}

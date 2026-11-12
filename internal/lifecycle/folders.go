@@ -30,6 +30,10 @@ import (
 // removed, so its folders cannot change now. The words are the user's.
 var ErrFoldersBusy = errors.New("this app is busy right now. Try again when it has finished")
 
+// ErrFoldersVersionChanged is returned when the app was updated or rolled
+// back between the save and its job. The words are the user's.
+var ErrFoldersVersionChanged = errors.New("this app changed version while you were saving, so nothing was changed. Check its folders and save again")
+
 // InstanceFolders reads an installed app's current folders back from its
 // override: one FolderMount per declared folder it binds, in manifest order,
 // then the extra folders in the order the override has them. Each carries
@@ -131,7 +135,9 @@ func SameFolders(a, b []FolderMount) bool {
 }
 
 // SetFolders points an installed app's folders at mounts, the full new set
-// the API resolved and checked (#659). It returns the folders as they were
+// the API resolved and checked (#659) against the app at version. When the
+// app runs another version by the time the lock is held, nothing is changed
+// (ErrFoldersVersionChanged); an empty version skips that check. It returns the folders as they were
 // before, for the audit record, and changed false when mounts binds what the
 // app binds now (nothing is written then).
 //
@@ -142,7 +148,7 @@ func SameFolders(a, b []FolderMount) bool {
 // so a failed compose up leaves the app marked pending-recreate and the
 // reconcile pass brings it to them, as for a config edit. A stopped or failed
 // app picks them up at its next start. step reports progress.
-func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMount, step func(string)) (before []FolderMount, changed bool, err error) {
+func (m *Manager) SetFolders(ctx context.Context, id, version string, mounts []FolderMount, step func(string)) (before []FolderMount, changed bool, err error) {
 	if step == nil {
 		step = func(string) {}
 	}
@@ -155,6 +161,12 @@ func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMoun
 	case "running", "stopped", "failed":
 	default:
 		return nil, false, ErrFoldersBusy
+	}
+	// mounts were checked against the version the app ran when the save was
+	// asked for. An update that ran in between may need other folders, so
+	// the choice is not applied to it.
+	if version != "" && inst.Version != version {
+		return nil, false, ErrFoldersVersionChanged
 	}
 	man, err := m.loadInstanceManifest(id)
 	if err != nil {
@@ -212,21 +224,37 @@ func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMoun
 	}
 
 	step("generating_override")
-	if err := m.rewriteFolderBinds(id, "compose.override.yml", man.Permissions.ExtraFolders, modesByFolder(man.Permissions.Folders), iso); err != nil {
-		slog.Error("change folders: rewrite the override", "instance_id", id, "err", err)
-		return before, false, errors.New("the app's settings could not be written, so nothing was changed. Try again")
+	// The files are written together or not at all: a save that stopped
+	// half way would leave the override and .env apart, and a retry of the
+	// same choice would then see no change and never mend them.
+	restore, err := m.keepFolderFiles(id)
+	if err != nil {
+		slog.Error("change folders: keep the current files", "instance_id", id, "err", err)
+		return before, false, errFoldersNotWritten
 	}
-	if err := m.writeEnv(id, inst.Slug, iso); err != nil {
-		slog.Error("change folders: rewrite .env", "instance_id", id, "err", err)
-		return before, true, errors.New("the app's settings could not be written. Try again")
+	writeAll := func() error {
+		if err := m.rewriteFolderBinds(id, "compose.override.yml", man.Permissions.ExtraFolders, modesByFolder(man.Permissions.Folders), iso); err != nil {
+			return fmt.Errorf("rewrite the override: %w", err)
+		}
+		if err := m.writeEnv(id, inst.Slug, iso); err != nil {
+			return fmt.Errorf("rewrite .env: %w", err)
+		}
+		// A rollback by hand puts the previous generation's files back
+		// (putPreviousBack). They must hold this choice too, or a rollback
+		// would give the app back a folder the owner took away (UPDATES.md #
+		// The rollback by hand: a setting changed in those days must not
+		// come back).
+		if err := m.carryFoldersToPrevious(id, before, iso); err != nil {
+			return fmt.Errorf("rewrite the previous generation: %w", err)
+		}
+		return nil
 	}
-	// A rollback by hand puts the previous generation's files back
-	// (putPreviousBack). They must hold this choice too, or a rollback would
-	// give the app back a folder the owner took away (UPDATES.md # The
-	// rollback by hand: a setting changed in those days must not come back).
-	if err := m.carryFoldersToPrevious(id, before, iso); err != nil {
-		slog.Error("change folders: rewrite the previous generation", "instance_id", id, "err", err)
-		return before, true, errors.New("the app's settings could not be written. Try again")
+	if err := writeAll(); err != nil {
+		slog.Error("change folders: write the files", "instance_id", id, "err", err)
+		if rerr := restore(); rerr != nil {
+			slog.Error("change folders: put the old files back", "instance_id", id, "err", rerr)
+		}
+		return before, false, errFoldersNotWritten
 	}
 	slog.Info("app folders changed", "instance_id", id, "name", inst.Name, "count", len(mounts))
 	if inst.State != "running" {
@@ -253,6 +281,39 @@ func (m *Manager) SetFolders(ctx context.Context, id string, mounts []FolderMoun
 // errFoldersNotRead is the job's error when SetFolders could not read what it
 // needs before it changed anything. The cause goes to the log.
 var errFoldersNotRead = errors.New("moose could not read this app's folders, so nothing was changed. Try again")
+
+// errFoldersNotWritten is the job's error when the new folders could not be
+// written. The files the save touched are put back first.
+var errFoldersNotWritten = errors.New("the app's settings could not be written, so nothing was changed. Try again")
+
+// folderFiles are the files a folder change writes.
+var folderFiles = []string{"compose.override.yml", ".env", "compose.override.yml.prev", ".env.prev"}
+
+// keepFolderFiles reads the files a folder change writes, and returns a func
+// that writes them back as they were. A file that is not there is left out.
+func (m *Manager) keepFolderFiles(id string) (func() error, error) {
+	dir := m.instanceDir(id)
+	kept := map[string][]byte{}
+	for _, name := range folderFiles {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		kept[name] = raw
+	}
+	return func() error {
+		var errs []error
+		for name, raw := range kept {
+			if err := writeFileAtomic(filepath.Join(dir, name), raw, 0o644); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}, nil
+}
 
 // errRead logs why SetFolders could not read something and returns the plain
 // error the job shows.
