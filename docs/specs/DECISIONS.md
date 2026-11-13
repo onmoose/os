@@ -21,6 +21,16 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-13 — host-agent ships two hardening lines, and mounts in the host namespace (#667)
+
+**Previously:** `CONTROL_PLANE.md` # Locked: host-agent hardening directives locked ten systemd lines, with `ProtectSystem=strict`, `ProtectHome=true`, `ReadWritePaths=` and `PrivateTmp=` among them, and named `ProtectHome=true` as what kept `/home` access narrow. `dist/systemd/host-agent.service` had none of them, so the spec locked a thing no box did.
+
+**Now:** the unit sets `NoNewPrivileges=yes` and `LockPersonality=yes`, and nothing else from the list. The spec says host-agent must mount in the host's mount namespace, and why. The narrow `/home` rule stays, held by the protocol (named ops only), not by systemd. A unit test fails if a line that makes a mount namespace is added, and every cloud boot checks the two lines and the namespace on the running process. The `access` boot also checks that a folder pin is a mount in the host namespace and that the app reads a file the host put in the folder.
+
+**Why:** seven of the ten lines give the service its own mount namespace, and that turns off mount propagation to the host. host-agent bind-mounts every folder source pin (#604), and Docker must see the pin. In a private namespace Docker would bind an empty directory, the app would start on an empty folder with no error, and the pin's own inode check would pass, because it runs in the same namespace. The same lines would also hide `/home` and make `/etc` read-only, which `prepare-folder`, `useradd` and the time zone need. The eighth, `RestrictSUIDSGID=`, refuses the setgid bit on the shared tree (`02770`). The alternative was to keep the namespace lines and move the pin mounts into a helper outside the unit. It was turned down: host-agent is root and can start any unit through systemd, so the lines only limit how far a bug reaches, and that does not pay for splitting one root process into two.
+
+**Affected docs:** `CONTROL_PLANE.md` # Locked: host-agent hardening directives.
+
 ## 2026-11-12 — Three manifest flags for terminal apps: `personal_only`, `hosted_only`, `access.owner_only` (#660)
 
 **Previously:** the install scope was the installer's choice and never a manifest field (2026-05-29, `APP_MANIFEST.md` # G). Every app could be made Public on hosted with the owner's toggle. No field kept an app off the appliance. `TERMINAL_APPS.md` # Security and access asked for all three for terminal apps, under working names.
