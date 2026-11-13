@@ -21,7 +21,7 @@ This is **not** a host shell. `SETTINGS.md` says moose ships no web terminal, an
 | C | Use each tool's own web UI. | **Chosen where an official one exists** (OpenCode: `opencode web`). Community web UIs for Codex or Claude (codexapp, codex-pocket, CloudCLI) are not used: third-party, change often, ours to maintain. |
 | D | A web terminal in the dashboard (host shell). | Rejected for this. Root on the host, conflicts with "SSH is rescue-only", needs the unsolved root-PTY design. |
 
-**The rule:** an app with a good official web UI uses it. Every other CLI app uses the `moose-terminal` base image.
+**The UI and the image are separate rules.** The UI: an app with a good official web UI uses it. The image: a terminal app always runs on an image of ours, built on the `moose-terminal` base, even when it has its own UI. Upstream's own image for a CLI is the CLI alone, so it has no git and no language runtime. The app needs git and the project's runtimes to work, and a box gives the app nothing outside its own image.
 
 What each tool offers today (October 2026):
 
