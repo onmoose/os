@@ -181,7 +181,7 @@ Still open:
 2. **Fix #604** (a folder source swapped for a symlink between two starts). Done: folder source pins, `docs/progress/folder-source-pins.md`.
 3. **`moose-terminal` base image** in `onmoose/app-images` (onmoose/app-images#46): the two rule changes there first, then ttyd, tmux, tools, the project page, the start script, the key bar. Done: onmoose/app-images#47.
 4. **Locked access mode, personal-only, hosted-only** for terminal apps (#660) (manifest keys, brain refusals, the store hiding them where they cannot run, the `access` boot proving the WebSocket through forward-auth). Done: `docs/progress/terminal-app-flags.md`.
-5. **First apps:** Claude Code on the base image, OpenCode on its own image (`ghcr.io/anomalyco/opencode`, `opencode web`). The Claude Code image is built (onmoose/app-images#48). Catalog app issues: onmoose/store#296 (Claude Code) and onmoose/store#297 (OpenCode).
+5. **First apps:** Claude Code and OpenCode, both on the base image. OpenCode runs its own web UI (`opencode web`) on an image of ours on the base image (`ghcr.io/onmoose/opencode`). Both images are built (onmoose/app-images#48, onmoose/app-images#49). A catalog issue asks for each app.
 6. **Later:** the Git integration, "Open with" in Files, dev-server previews, session sharing, a free-memory check before a new session, the appliance.
 
 ## Sources
