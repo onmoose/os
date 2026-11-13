@@ -165,7 +165,7 @@ vet: require-gopkgs
 # PAM), so it already doesn't build on macOS/Windows/WSL2-without-headers.
 # Making it part of the default `build` would break `make build` on exactly
 # the machines the inner loop is supposed to work on with no platform-specific
-# setup (CLAUDE.md # Developing). It's still stamped — see its own target below
+# setup (AGENTS.md # Developing). It's still stamped — see its own target below
 # — for anyone building it directly or via the cloud-image / nspawn lanes.
 build: host-agent brain
 

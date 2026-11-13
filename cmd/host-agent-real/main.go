@@ -258,7 +258,7 @@ func brainLaunchConfig(sockPath string) brainlaunch.Config {
 	// leave: a first boot, or a box whose brain container was removed. Without
 	// it, that second case silently rolls an updated box back to the baked image.
 	brainImage, fromLedger := controlplane.ResolveBrainImage(controlPlaneDir, env("MOOSE_BRAIN_IMAGE", "moose-brain:latest"))
-	// from_ledger, not src: CLAUDE.md reserves src for a source filesystem path.
+	// from_ledger, not src: AGENTS.md reserves src for a source filesystem path.
 	// Logged either way so the fallback is visible rather than silent — "which
 	// brain did this box decide to run, and did an applied update decide it" is
 	// the first question a bad update raises.
@@ -364,7 +364,7 @@ func env(key, def string) string {
 // cmd/brain's envBool): every host-agent caller wants false-on-anything-odd, and
 // host-agent startup must never block or get noisy over a malformed *optional*
 // env. The two are not shared for the same reason `env` isn't — small per-binary
-// helpers, no internal package for two cmd/ consumers (CLAUDE.md # no premature
+// helpers, no internal package for two cmd/ consumers (AGENTS.md # no premature
 // abstraction).
 func envBool(key string) bool {
 	b, err := strconv.ParseBool(os.Getenv(key))

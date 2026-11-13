@@ -28,7 +28,7 @@ import (
 // surface to get wrong.
 //
 // Every write is elevation-class and audits success and failure, because turning
-// SSH on changes who can get a shell on the box (CLAUDE.md # Elevation-class
+// SSH on changes who can get a shell on the box (AGENTS.md # Elevation-class
 // mutations).
 
 // maxSSHKeysPerUser caps how many keys one account may hold. Several is normal
@@ -223,7 +223,7 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 
 	// Every new key is parsed before anything is read or written. A rejected
 	// paste is a validation 422, not an elevation-class failure, so it does not
-	// audit (CLAUDE.md: validation 422s don't audit).
+	// audit (AGENTS.md: validation 422s don't audit).
 	newKeys, err := parseNewSSHKeys(id.User.ID, in.Body.Keys)
 	if err != nil {
 		return nil, err
@@ -262,7 +262,7 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 		return nil, err
 	}
 	// Guard rejections from here on, not malformed requests, so they audit
-	// (CLAUDE.md # Elevation-class mutations).
+	// (AGENTS.md # Elevation-class mutations).
 	if planErr != nil {
 		record(false)
 		return nil, planErr
@@ -286,7 +286,7 @@ func (s *Server) setMySSH(ctx context.Context, in *struct {
 
 	// Brain commits first; the host is reconstructible. On host failure the change
 	// is undone, so the two sides cannot disagree about who has a shell
-	// (CLAUDE.md # Brain commits first).
+	// (AGENTS.md # Brain commits first).
 	if err := s.store.ApplySSHChange(id.User.ID, in.Body.Enabled, requirePassword,
 		plan.removeIDs(), plan.add); err != nil {
 		record(false)
@@ -453,7 +453,7 @@ func planSSHKeys(held []store.SSHKey, entries []SSHKeyInput, newKeys map[int]sto
 // record, so every elevation-class request leaves at least one line.
 //
 // The same records are written on failure with success false, so a refused Save
-// still shows which keys somebody tried to add or remove (CLAUDE.md #
+// still shows which keys somebody tried to add or remove (AGENTS.md #
 // Elevation-class mutations).
 func (s *Server) auditSSHChange(ctx context.Context, tgt audit.Target, meta map[string]any, accessChanged bool, plan sshPlan, success bool) {
 	if accessChanged || (len(plan.add) == 0 && len(plan.remove) == 0) {

@@ -8,7 +8,7 @@ import (
 
 // SSHAccess is one account's desired SSH state as the brain holds it. The brain
 // is the durable side of this pair and the host is reconstructible, so this is
-// what a reconcile re-applies after a host rebuild (CLAUDE.md # Brain commits
+// what a reconcile re-applies after a host rebuild (AGENTS.md # Brain commits
 // first, host is reconstructible).
 type SSHAccess struct {
 	UserID          string

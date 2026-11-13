@@ -542,7 +542,7 @@ func (s *Server) deleteMailProvider(ctx context.Context, in *struct {
 //
 // Open to any signed-in user, like create. It stores nothing and sends
 // nothing, so it does not audit: nothing is mutated and no mail leaves the
-// box, which is what separates it from the test-send next door (CLAUDE.md:
+// box, which is what separates it from the test-send next door (AGENTS.md:
 // pure reads don't audit).
 func (s *Server) verifyMailProviderConfig(ctx context.Context, in *struct {
 	Body MailProviderBody
@@ -661,7 +661,7 @@ func (s *Server) setAppMailBinding(ctx context.Context, in *struct {
 // dialError marks a failure to establish the connection at all, as opposed to
 // a failure once the server is already talking. blockedPortHint is the one
 // consumer that has to tell the two apart, which is what earns the type
-// (CLAUDE.md: typed errors at boundaries, not everywhere).
+// (AGENTS.md: typed errors at boundaries, not everywhere).
 type dialError struct{ err error }
 
 // No "connect:" prefix — the type carries that meaning now, and both callers

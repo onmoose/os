@@ -9,7 +9,7 @@ The map of all documentation. Three homes:
 - **[`dev/`](dev/)** — developer how-to. Running locally, code-level
   architecture, tooling.
 
-Every change ships with documentation (see [`../CLAUDE.md`](../CLAUDE.md) #
+Every change ships with documentation (see [`../AGENTS.md`](../AGENTS.md) #
 Documentation discipline).
 
 **New contributor?** Start with [`dev/contributing.md`](dev/contributing.md) — the
@@ -20,7 +20,7 @@ Actionable parallel work lives in [GitHub Issues](https://github.com/onmoose/os/
 ## Specs
 
 `specs/` holds the design docs. [`specs/SPEC.md`](specs/SPEC.md) is the entry
-point, and [`../CLAUDE.md`](../CLAUDE.md) holds the big decisions the specs
+point, and [`../AGENTS.md`](../AGENTS.md) holds the big decisions the specs
 build on. The list below groups every spec in `specs/`. If a doc is in that
 folder and not in this list, that is a bug: fix it in the same change. Inside
 the specs, cross-references are bare filenames, relative to `specs/`.

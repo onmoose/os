@@ -6,9 +6,9 @@
 
 ## North star for this surface
 
-**Role-scoped and calm, same posture as the home screen** (`DASHBOARD.md` # North star). A member who taps Settings sees a short personal list — their name, their password, their devices — not a wall of system panels they can't touch. An admin sees that same personal list plus the box's system tree. The non-technical owner is the long-term audience (`CLAUDE.md` # Audience); Settings must not read as a control panel to the person who only wants to change their password.
+**Role-scoped and calm, same posture as the home screen** (`DASHBOARD.md` # North star). A member who taps Settings sees a short personal list — their name, their password, their devices — not a wall of system panels they can't touch. An admin sees that same personal list plus the box's system tree. The non-technical owner is the long-term audience (`AGENTS.md` # Audience); Settings must not read as a control panel to the person who only wants to change their password.
 
-"UI is the path for every privileged operation" (`CLAUDE.md`, `DECISIONS.md` 2026-05-15) makes Settings load-bearing: every box-level knob a tinkerer could reach over SSH has a panel here, so the long-term user never opens a terminal.
+"UI is the path for every privileged operation" (`AGENTS.md`, `DECISIONS.md` 2026-05-15) makes Settings load-bearing: every box-level knob a tinkerer could reach over SSH has a panel here, so the long-term user never opens a terminal.
 
 ---
 
@@ -110,7 +110,7 @@ The genuinely-new items that no other doc owns yet. SETTINGS.md gives them a hom
 Recorded so a future PR adding any of these is a deliberate reopening, not drift:
 
 - **Wallpaper / theming.** The calm palette is fixed for v1 (`WEB_UI.md`); no personalization panel.
-- **In-settings terminal / web shell.** SSH is rescue-only (`CLAUDE.md`); moose deliberately ships no web terminal, unlike ZimaOS/CasaOS.
+- **In-settings terminal / web shell.** SSH is rescue-only (`AGENTS.md`); moose deliberately ships no web terminal, unlike ZimaOS/CasaOS.
 - **Power scheduling / UPS.** Synology-style power schedules and UPS integration are a plausible later add, deferred from v1.
 - **API tokens.** Long-lived, user-scoped, revocable tokens would live under **My account** if added; tracked in `NEXT.md` (cookie-only auth in v1).
 - **Factory-reset mechanics and backup architecture** — slots reserved above; designs deferred per `NEXT.md`.

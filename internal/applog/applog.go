@@ -26,7 +26,7 @@ import (
 
 // follower is the consumer-side slice of hostclient.Client the registry needs:
 // just the per-app log tail. *hostclient.Client satisfies it; tests pass a fake
-// (CLAUDE.md: consumer-side interfaces).
+// (AGENTS.md: consumer-side interfaces).
 type follower interface {
 	JournalFollow(ctx context.Context, container string) (<-chan protocol.JournalLine, error)
 }

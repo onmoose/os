@@ -539,7 +539,7 @@ func fatal(msg string, args ...any) {
 }
 
 // boxMetaStore is the brain's consumer-side slice of the store the hosted-seed
-// ingestion needs (CLAUDE.md: interfaces live with the consumer). *store.Store
+// ingestion needs (AGENTS.md: interfaces live with the consumer). *store.Store
 // satisfies it; tests pass a fake to drive each branch without a real database.
 type boxMetaStore interface {
 	GetBoxMeta(key string) (string, error)
@@ -1042,7 +1042,7 @@ func versionCore(v string) string {
 }
 
 // agentStatusReader is the slice of the host client the version check needs — a
-// single GET /v1/system/status read. Consumer-side interface (CLAUDE.md) so
+// single GET /v1/system/status read. Consumer-side interface (AGENTS.md) so
 // checkAgentVersion is unit-testable with a fake host-agent reporting a chosen
 // agent_version; *hostclient.Client satisfies it.
 type agentStatusReader interface {
@@ -1135,7 +1135,7 @@ func versionCheckPollLoop(ctx context.Context, host agentStatusReader, healthMgr
 const dbIntegrityCheckPeriod = 6 * time.Hour
 
 // integrityChecker is the consumer-side seam for the store's PRAGMA
-// integrity_check (CLAUDE.md: interfaces live with the consumer). *store.Store
+// integrity_check (AGENTS.md: interfaces live with the consumer). *store.Store
 // satisfies it; tests pass a fake to drive each branch without a real database.
 type integrityChecker interface {
 	IntegrityCheck() (string, error)
@@ -1199,7 +1199,7 @@ const (
 
 // restartCountReader is the brain's consumer-side slice of the Docker seam:
 // just the per-instance restart counts the loop detector needs.
-// lifecycle.DockerDriver satisfies it; tests pass a fake (CLAUDE.md:
+// lifecycle.DockerDriver satisfies it; tests pass a fake (AGENTS.md:
 // consumer-side interfaces).
 type restartCountReader interface {
 	RestartCounts(ctx context.Context) (map[string]int, error)

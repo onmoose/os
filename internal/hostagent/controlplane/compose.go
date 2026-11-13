@@ -156,7 +156,7 @@ func stripInlineComment(v string) string {
 //
 // The parse is duplicated rather than imported: internal/lifecycle is the
 // brain's transaction owner, and only cmd/brain and internal/api may import it
-// (CLAUDE.md # Layer boundaries). Ten lines of struct is the cheaper side of
+// (AGENTS.md # Layer boundaries). Ten lines of struct is the cheaper side of
 // that boundary. The two are held together by a test that parses the committed
 // dev/control-plane/compose.yml.
 func verifyUIImage(content []byte, want, path string) error {

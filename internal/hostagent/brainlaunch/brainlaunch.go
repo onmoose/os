@@ -43,7 +43,7 @@ import (
 var ErrProtocolMismatch = errors.New("brain protocol version mismatch")
 
 // Docker is the narrow slice of the `docker` CLI the brain bootstrap needs.
-// Consumer-side interface (CLAUDE.md # Go code discipline): the production impl
+// Consumer-side interface (AGENTS.md # Go code discipline): the production impl
 // shells out to docker (see CLIDocker); tests pass a recording fake. Only this
 // package consumes it, so it lives here, not in a provider package.
 type Docker interface {

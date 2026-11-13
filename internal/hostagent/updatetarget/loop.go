@@ -29,7 +29,7 @@ const PollInterval = 15 * time.Minute
 const pollJitter = 2 * time.Minute
 
 // Applier starts the control-plane update transaction. Consumer-side interface
-// (CLAUDE.md # Go code discipline); the provider is *hostagent.Agent, which
+// (AGENTS.md # Go code discipline); the provider is *hostagent.Agent, which
 // starts the same job POST /v1/jobs/system-update starts.
 //
 // **It must go through host-agent's job lock, not straight to cpupdate.** An

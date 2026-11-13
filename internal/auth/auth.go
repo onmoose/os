@@ -55,7 +55,7 @@ var ErrInvalidSession = errors.New("invalid session")
 
 // SessionStore is the persistence surface auth needs. Declared here, not in
 // internal/store, so auth doesn't depend on the store's full API
-// (consumer-side interface rule from CLAUDE.md).
+// (consumer-side interface rule from AGENTS.md).
 type SessionStore interface {
 	CreateSession(store.Session) error
 	GetSession(token string) (store.Session, error)

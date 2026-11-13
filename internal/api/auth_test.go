@@ -738,7 +738,7 @@ func TestSetupRollsBackOnSetRoleFailure(t *testing.T) {
 		t.Fatalf("rollback did not call host.DeleteUser(%q) exactly once; got %v", "andrei", got)
 	}
 
-	// Failure must be auditable per CLAUDE.md elevation-class rule.
+	// Failure must be auditable per AGENTS.md elevation-class rule.
 	events, _ := st.ListAuditEvents(store.AuditFilter{Limit: 10})
 	var found bool
 	for _, e := range events {

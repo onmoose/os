@@ -13,15 +13,15 @@ The self-review (Step 7 of [`contributing.md`](contributing.md), half 1) is done
 ```
 You review pull request #<N> in the moose repo, with no other context. Do not edit files, commit, push or post on the PR. Only report.
 1. Read docs/dev/code-review.md end to end, and follow it: what to read first, the lenses, the severity levels, the prior review comments rule.
-2. Read what it says to read before the diff: the issue the PR closes, docs/progress/<slug>.md, the spec sections that entry names, and CLAUDE.md.
+2. Read what it says to read before the diff: the issue the PR closes, docs/progress/<slug>.md, the spec sections that entry names, and AGENTS.md.
 3. Read the existing review comments (gh pr view <N> --comments, and gh api repos/onmoose/os/pulls/<N>/comments) and confirm, dismiss or extend each one. If Greptile has not posted yet, say so: the author still reads it when it lands.
 4. Read the whole diff. Take the PR's own base and head (gh pr view <N> --json baseRefName,headRefName), then git fetch origin and git diff origin/<base>...origin/<head>. Never assume the base is dev: release PRs go into main and lock bumps into hotfix branches. Review all of it: test code, fixtures, CI workflows, lane scripts and docs are part of the change, and on some PRs they are the whole change. Never skip a file because it is a test, a fixture or markdown.
 5. Check claims against the code. When the diff or the progress entry says how other code behaves (a field name, a timing, an order of steps), open that code and check it. A claim you did not check is a Question, not a finding.
-6. Check the docs rules in CLAUDE.md: plain English (B1), no em dashes in new text, no hard-wrapped markdown, the doc maps and the progress index updated.
+6. Check the docs rules in AGENTS.md: plain English (B1), no em dashes in new text, no hard-wrapped markdown, the doc maps and the progress index updated.
 Report as # Output format in code-review.md says: Blocks, then Notes, then Questions, each with file:line, a concrete failure scenario and a fix, and end with the verdict line. Then what you checked and found fine. Under 900 words.
 ```
 
-**A Note is the reviewer's view, not a task.** The author fixes it, or drops it under CLAUDE.md # Working style, "Skip small issues". A Note is never by itself a reason to raise a question to the maintainer or to file an issue.
+**A Note is the reviewer's view, not a task.** The author fixes it, or drops it under AGENTS.md # Working style, "Skip small issues". A Note is never by itself a reason to raise a question to the maintainer or to file an issue.
 
 **Do not use the `/code-review` skill for this.** It runs as a fork of your session, so it sees your whole conversation and runs on your session's model, whatever model you ask for. At its low effort it also skips tests, fixtures and markdown. On #643, a PR of test-lane code and docs, it reported nothing, and a Sonnet agent with this brief then found a Block.
 
@@ -32,7 +32,7 @@ Read these before looking at a single line of diff — familiarity with the spec
 1. **The issue being closed** — understand what was asked, not just what was built.
 2. **`docs/progress/<slug>.md`** — the contributor's account of what was done, what was skipped, and what's next.
 3. **The spec section(s) named in the progress entry** — the binding contract for the behavior. Read the full section, not just a keyword search.
-4. **`CLAUDE.md`** — the coding conventions and load-bearing decisions every PR is held to.
+4. **`AGENTS.md`** — the coding conventions and load-bearing decisions every PR is held to.
 
 When reviewing an already-open PR, also read the existing review comments first — see [Prior review comments](#prior-review-comments).
 
@@ -86,7 +86,7 @@ When in doubt, escalate to Block rather than downgrade to Note. A false Block co
 
 ### 4. Go discipline
 
-Hold every PR to `CLAUDE.md # Go code discipline`:
+Hold every PR to `AGENTS.md # Go code discipline`:
 
 - **Layer boundaries** — `internal/store` imported only from `internal/lifecycle`, `internal/api`, `cmd/brain`. `internal/lifecycle` imported only from `internal/api` and `cmd/brain`. Nothing else reaches in.
 - **Consumer-side interfaces** — interfaces declared in the package that uses them, not the one that implements them. No interface with fewer than two concrete consumers.

@@ -144,7 +144,7 @@ type Notification struct {
 
 // NotificationStore is the persistence surface notify needs. Declared here so
 // the package doesn't depend on store's full API (consumer-side interface,
-// CLAUDE.md). The store implements it; notify does not import store.
+// AGENTS.md). The store implements it; notify does not import store.
 type NotificationStore interface {
 	// RaiseNotification coalesces by dedup_key: if an active (non-dismissed)
 	// notification with the same key exists it is refreshed (ts/severity/body
@@ -159,7 +159,7 @@ type NotificationStore interface {
 // dashboard bell updates without a refresh (NOTIFICATIONS.md # Surfaces). The
 // payload is advisory — a refetch trigger, not a data channel — so the client
 // re-reads the audience-scoped list (WEB_UI.md). Consumer-side interface
-// (CLAUDE.md): events.Bus implements it. Optional — a nil Publisher disables
+// (AGENTS.md): events.Bus implements it. Optional — a nil Publisher disables
 // SSE emission (the bell is a floor, not a gate).
 type Publisher interface {
 	Publish(kind events.Kind, data map[string]any)

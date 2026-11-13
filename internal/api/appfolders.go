@@ -234,7 +234,7 @@ func (s *Server) updateAppFolders(ctx context.Context, in *struct {
 		}
 	}
 	// A 422 is a validation answer, not an attempt on the app, so it is not
-	// audited (CLAUDE.md # Go code discipline, LOGGING.md app.folders_change).
+	// audited (AGENTS.md # Go code discipline, LOGGING.md app.folders_change).
 	mounts, err := resolveElectionsKeeping(man, inst.Scope, in.Body.Folders, in.Body.ExtraFolders, made, onDisk, kept)
 	if err != nil {
 		return nil, err

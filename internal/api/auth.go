@@ -536,7 +536,7 @@ func (s *Server) login(ctx context.Context, in *struct {
 // code. It is public — the recovery code IS the credential. No session is
 // issued; the user must log in normally after recovery.
 //
-// Ordering rationale (AUTH.md # Using the recovery code, CLAUDE.md "brain
+// Ordering rationale (AUTH.md # Using the recovery code, AGENTS.md "brain
 // commits first"):
 //
 //  1. Look up the user + verify the supplied code (constant-time bcrypt even on
@@ -755,7 +755,7 @@ func (s *Server) listAudit(ctx context.Context, in *struct {
 // hosted box user created from the dashboard does have a password.
 // Body: {password}. Returns {elevated_until: <unix>} on
 // success. Audits both success and failure per the elevation-class rule
-// (CLAUDE.md # Go code discipline).
+// (AGENTS.md # Go code discipline).
 func (s *Server) elevate(ctx context.Context, in *struct {
 	Body struct {
 		Password string `json:"password"`

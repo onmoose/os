@@ -130,7 +130,7 @@ The host-integrated parts (boot ordering, LUKS/TPM, systemd, the cloud image) ar
 | [`docs/progress/`](docs/progress/) | Per-change implementation history (what's built, what's next) |
 | [`docs/dev/`](docs/dev/) | Developer how-to (running locally, code-level architecture) |
 | [`docs/dev/contributing.md`](docs/dev/contributing.md) | The contributor workflow, end to end |
-| [`CLAUDE.md`](CLAUDE.md) | Working conventions for this repo |
+| [`AGENTS.md`](AGENTS.md) | Working conventions for this repo |
 
 ## Contributing
 

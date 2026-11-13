@@ -531,7 +531,7 @@ func TestApplianceOneSaveIsOneHostCall(t *testing.T) {
 }
 
 // A host failure rolls the brain row back, so the two sides cannot disagree
-// about who has a shell (CLAUDE.md # Brain commits first).
+// about who has a shell (AGENTS.md # Brain commits first).
 func TestHostFailureRollsBackTheAccessRow(t *testing.T) {
 	h := newHarness(t)
 	if err := h.st.CreateUser(store.User{ID: "u_fail", Username: sshFailUser, DisplayName: sshFailUser, Role: store.RoleAdmin}); err != nil {

@@ -18,7 +18,7 @@ We also accept up-front that **`.local` is a desktop story.** Android browsers d
 
 - Avahi publishes service records (`_http._tcp`, `_smb._tcp`, `_device-info._tcp`) — the things Finder, Windows Explorer, and Linux file managers key off when populating "Network" or "Locations" sidebars. systemd-resolved's mDNS is hostname-only.
 - Samba (SMB shares from `STORAGE.md`) integrates with Avahi out of the box for share advertisement, including TimeMachine. Adopting a second responder for hostnames would mean two implementations multicasting on the same socket — at best wasteful, at worst they fight over claim/defend semantics.
-- It's what every neighbor in `CLAUDE.md` (Umbrel, CasaOS, Synology under the hood, TrueNAS) runs, for the same reasons. The interop surface is well-trodden.
+- It's what every neighbor in `AGENTS.md` (Umbrel, CasaOS, Synology under the hood, TrueNAS) runs, for the same reasons. The interop surface is well-trodden.
 - ~5 MB resident. Not a footprint concern.
 
 `systemd-resolved` keeps its DNS-stub role; its mDNS responder is disabled at image-build time.

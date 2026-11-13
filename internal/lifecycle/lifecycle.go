@@ -1790,7 +1790,7 @@ func (m *Manager) teardown(ctx context.Context, inst store.Instance, removeDir b
 // recreateRunning applies an env-restamping edit (config or mail) to a running
 // instance with `compose up -d` and reconciles its pending-recreate marker so a
 // failed recreate self-heals. The brain has already committed the new
-// override/.env (brain commits first; CLAUDE.md # Load-bearing decisions): on a
+// override/.env (brain commits first; AGENTS.md # Load-bearing decisions): on a
 // ComposeUp failure the instance is marked pending so the reconcile pass retries
 // the recreate against the committed state, and on success the marker is cleared.
 // This is what converges a container left on stale env by a failed edit (#268).

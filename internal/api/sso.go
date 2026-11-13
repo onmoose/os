@@ -197,7 +197,7 @@ func (s *Server) resolveSSOOwner(ctx context.Context, claims assertion.Claims) (
 // createSSOOwner provisions the founding admin from the owner assertion: a PAM
 // account whose username is derived from the owner's email and whose password is
 // random and discarded — the owner only ever authenticates via this handshake.
-// It follows the brain-commits-first ordering used by /setup (CLAUDE.md): create
+// It follows the brain-commits-first ordering used by /setup (AGENTS.md): create
 // the brain row, then the host account, rolling the brain row back if a host call
 // fails so the next assertion can retry. The owner box-meta is written last as
 // the commit marker.
