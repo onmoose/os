@@ -29,7 +29,7 @@
 
 # Bumped whenever the capabilities list changes, so a consumer can tell how current
 # the manifest it validated against was (the published catalog stamps this number).
-version: 2
+version: 3
 
 capabilities:
   - id: secret-injection
@@ -101,3 +101,14 @@ capabilities:
       apps are not covered: they stay in the host user namespace. It applies only
       to boxes built with the remap on (built after #530). An existing box never
       gets it turned on, and there the brain refuses both fields.
+
+  - id: mail-enable-enum
+    since: "0.x"
+    ref: "#302; APP_MANIFEST.md # D3; SERVICE_PROVISIONING.md # BYO outgoing mail"
+    summary: >
+      Manifest-declared mail.env value maps. An app whose mail config is a
+      boot-validated enum (twenty's EMAIL_DRIVER, vaultwarden's SMTP_SECURITY)
+      declares, per app-owned var, the token for each mail state (from: bound |
+      encryption); the brain resolves and stamps the final value under the app's
+      own name in both bound and unbound states, where compose interpolation can't
+      remap one enum's tokens onto another's.

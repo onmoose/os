@@ -21,6 +21,18 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-11-12 — A manifest may map the mail state onto an app's own enum tokens (`mail.env`, #302)
+
+**Previously:** unbound mail injected nothing (`SERVICE_PROVISIONING.md` # BYO outgoing mail, 2026-06-12). An app whose mail switch is a boot-validated enum could only be wired through a compose `:+` gate. Unbound, that gate expands to an empty string, and the app refuses to boot on `EMAIL_DRIVER=""`. A token remap such as moose's `none|starttls|tls` onto `off|starttls|force_tls` was impossible in compose at all. Twenty shipped degraded and vaultwarden left mail off.
+
+**Now:** a manifest declares `mail.env`, one entry per app-owned env var, with `from: bound|encryption` and a token `map`. The brain resolves the token in Go and stamps it into the instance's `.env` under the app's own name, in both bound and unbound states. Unbound resolves the `unbound` / `none` token, so the enum is present and valid with mail off. The provider's `MOOSE_MAIL_*` lines stay bound-only, and boolean-gated apps keep using the `:+` gate.
+
+**Why:** compose interpolation can substitute, default and test presence, but it cannot remap one token set onto another. The brain already hand-computes `MOOSE_MAIL_USE_TLS`, `MOOSE_MAIL_USE_SSL` and the DSN in Go for the same reason, so this generalizes that projection instead of adding a new layer. Emitting the declared var unbound is what removes the boot reject: an absent variable would take the app's own default, but the compose line that enables mail is always present, so unbound it wrote `""`. The overlap rule (a `mail.env` name may not also be a config `app_env`) keeps the `.env` line from being silently overridden by the compose override.
+
+**Affected docs:** `APP_MANIFEST.md` # D3, `SERVICE_PROVISIONING.md` # BYO outgoing mail, `docs/dev/catalog-import-gaps.md`, `docs/dev/capabilities.yml`, `docs/progress/mail-enum-value-maps.md`.
+
+---
+
 ## 2026-11-12 — Three manifest flags for terminal apps: `personal_only`, `hosted_only`, `access.owner_only` (#660)
 
 **Previously:** the install scope was the installer's choice and never a manifest field (2026-05-29, `APP_MANIFEST.md` # G). Every app could be made Public on hosted with the owner's toggle. No field kept an app off the appliance. `TERMINAL_APPS.md` # Security and access asked for all three for terminal apps, under working names.

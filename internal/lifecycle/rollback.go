@@ -294,7 +294,7 @@ func (m *Manager) restampFromStore(id string) error {
 	if err := m.restampConfigEnv(id, man); err != nil {
 		return fmt.Errorf("rewrite the override: %w", err)
 	}
-	if err := m.rewriteEnvMail(id); err != nil {
+	if err := m.rewriteEnvMail(id, man.Mail); err != nil {
 		return fmt.Errorf("rewrite the env: %w", err)
 	}
 	return nil
