@@ -16,10 +16,11 @@ Closes #667. Follows [folder-source-pins.md](folder-source-pins.md) (#604), whic
 - **Boot checks** (`dev/cloud/cloud-assertions.sh`):
   - Every boot, step 1a: `systemctl show` reports both lines as `yes`, the running process has `NoNewPrivs: 1`, and its mount namespace is PID 1's. So PAM verify, `useradd`, the control-plane update and the OS update through RAUC all run under the new lines in CI.
   - The `access` boot, step 4c-2: the pin is a mount in the host namespace (the script's own `/proc/self/mountinfo`), and the app reads a file the host wrote into the folder, through `docker exec`. Before, the step proved only that the app's own file landed.
+- **CI.** The full boot list passed on both firmwares (`CI / Cloud image` run 43457582560, `publish=false`). The `access` boot logged both new checks: host-agent in the host mount namespace with the two lines on, and the pin a host mount that the app reads through.
 
 ## Known gaps & deviations
 
-- **Review.** The review agent found no Block. Its one note: `moose-folder-pins.service` also makes pins (at boot, with the same binary), and nothing stopped a namespacing line there. The unit test now reads that unit too. Its other note, that the unit test sees no drop-ins, is covered by step 1a, which checks the running process.
+- **Review.** The review agent found no Block. Its one note: `moose-folder-pins.service` also makes pins (at boot, with the same binary), and nothing stopped a namespacing line there. The unit test now reads that unit too. Its other note, that the unit test sees no drop-ins, is covered by step 1a, which checks the running process. Greptile found nothing.
 - **`cryptsetup` is not checked under the new lines.** LUKS is not wired in host-agent yet. `NoNewPrivileges=` does not limit a root process's capabilities, so nothing here is expected to change, but no boot has run it.
 - **The appliance medium lane did not run.** It copies the same unit (`dev/test-qemu/bootstrap.sh`), but it stays local-only.
 - **`Type=notify` and the watchdog** are still not in the unit. They are a separate locked section and out of scope here.
