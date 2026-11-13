@@ -12,6 +12,10 @@ import (
 // medium lane (dev/test-qemu/bootstrap.sh).
 const unitPath = "../../dist/systemd/host-agent.service"
 
+// pinsUnitPath restores the folder pins at boot with this same binary
+// (--restore-folder-pins). Its mounts must reach Docker too.
+const pinsUnitPath = "../../dist/systemd/moose-folder-pins.service"
+
 // serviceKeys reads the [Service] section of a unit file as key -> values.
 func serviceKeys(t *testing.T, path string) map[string][]string {
 	t.Helper()
@@ -47,7 +51,8 @@ func serviceKeys(t *testing.T, path string) map[string][]string {
 	return keys
 }
 
-// TestUnitKeepsHostMountNamespace guards the folder pins (#604, #667).
+// TestUnitKeepsHostMountNamespace guards the folder pins (#604, #667), in
+// both units that make them.
 // host-agent bind-mounts each folder source at /run/moose/folder-pins/, and
 // Docker binds that pin into the app. Any of these settings runs the service in
 // its own mount namespace and stops its mounts reaching the host. Docker then
@@ -65,10 +70,12 @@ func TestUnitKeepsHostMountNamespace(t *testing.T) {
 		// DynamicUser= implies ProtectSystem=strict, ProtectHome= and PrivateTmp=.
 		"DynamicUser",
 	}
-	keys := serviceKeys(t, unitPath)
-	for _, k := range namespacing {
-		if v, ok := keys[k]; ok {
-			t.Errorf("%s sets %s=%s. That can run host-agent in its own mount namespace, so folder pins would not reach Docker (#667)", unitPath, k, strings.Join(v, ","))
+	for _, path := range []string{unitPath, pinsUnitPath} {
+		keys := serviceKeys(t, path)
+		for _, k := range namespacing {
+			if v, ok := keys[k]; ok {
+				t.Errorf("%s sets %s=%s. That can run host-agent in its own mount namespace, so folder pins would not reach Docker (#667)", path, k, strings.Join(v, ","))
+			}
 		}
 	}
 }
