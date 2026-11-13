@@ -18,8 +18,22 @@ Type=simple
 ExecStart=/usr/lib/moose/host-agent-real
 Restart=on-failure
 RestartSec=2s
-# Hardening (Type=notify + watchdog deferred to CONTROL_PLANE.md follow-up).
+# Type=notify + watchdog are deferred to a CONTROL_PLANE.md follow-up.
 User=root
+# Hardening (CONTROL_PLANE.md # Locked: host-agent hardening directives).
+# Only lines that leave host-agent in the host's mount namespace. Any line that
+# makes a namespace (ProtectSystem=, ProtectHome=, ReadWritePaths=,
+# PrivateTmp=, ProtectKernelTunables=, ProtectKernelModules=,
+# ProtectControlGroups=, PrivateMounts= and the like) also turns off mount
+# propagation to the host. host-agent bind-mounts each folder source pin at
+# /run/moose/folder-pins/ (#604), and Docker must see that mount. In a private
+# namespace Docker finds an empty pin path and starts the app on an empty
+# folder, with no error (#667). Do not add them here.
+# RestrictSUIDSGID= is left out too: host-agent makes the shared tree
+# /srv/moose/shared setgid (02770, brainlaunch.EnsureSharedTree).
+# cmd/host-agent-real/unit_test.go checks both rules.
+NoNewPrivileges=yes
+LockPersonality=yes
 RuntimeDirectory=moose
 RuntimeDirectoryMode=0755
 # Keep /run/moose when the unit stops, instead of letting systemd delete and

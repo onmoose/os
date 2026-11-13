@@ -141,24 +141,35 @@ The brain runs *next to* these and orchestrates them — not inside them.
 
 ### Locked: host-agent hardening directives
 
-host-agent is root, but its filesystem and kernel reach is constrained by systemd:
+host-agent is root, and its job is "do root things on the box": mount, useradd, write `/etc`, drive systemd. systemd constrains only what it can without getting in the way of that job (#667, `DECISIONS.md` 2026-11-13):
 
 ```
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/moose /etc/moose /run/moose
-PrivateTmp=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
+NoNewPrivileges=yes
+LockPersonality=yes
 ```
 
-`ProtectHome=true` is load-bearing: **host-agent has no general filesystem-read API over `/home`.** Any operation that touches a user's home directory is a narrow, named operation in `BRAIN_HOST_PROTOCOL.md`, not a generic file-read primitive. This is a deliberate constraint, not an oversight.
+These two are in `dist/systemd/host-agent.service`, and every cloud boot checks them on the running process (`dev/cloud/cloud-assertions.sh` step 1a), so PAM verify, `useradd`, the control-plane update, the OS update through RAUC and the folder pins all run under them in CI. The OS image installs no AppArmor profiles, so `NoNewPrivileges=` blocks no profile change on exec. host-agent is already root, so it gains nothing from a setuid binary in the first place.
 
-Capability dropping (`CapabilityBoundingSet=`) is **not** used — host-agent's job is "do root things on the box" (mount, cryptsetup, useradd, systemctl). The filesystem and kernel constraints above are where the meaningful blast-radius reduction happens.
+**host-agent must mount in the host's mount namespace.** It bind-mounts each folder source at `/run/moose/folder-pins/<dev>-<ino>`, and Docker binds that pin into the app (`APP_ISOLATION.md` # Folder source pins). Docker can only see a mount made in the namespace it runs in, which is the host's. Any systemd line that gives the service its own mount namespace also stops its mounts from reaching the host, and `MountFlags=shared` does not bring that back. A pin made there would leave Docker an empty directory at the pin path. The app would then start on an empty folder with no error, and host-agent's own device and inode check of the pin would pass, because it runs inside the same private namespace. So the unit sets none of these lines. `cmd/host-agent-real/unit_test.go` fails if one is added, and the cloud `access` boot fails if a pin is not a mount in the host namespace or the app cannot read a file the host put in the folder.
+
+This drops eight of the ten lines the section used to lock:
+
+| Line | Why it is not set |
+|---|---|
+| `ProtectSystem=strict` | Makes a mount namespace. It would also make `/etc` read-only, and `useradd`, `chpasswd`, the time zone and the SSH and Samba config all write there. |
+| `ProtectHome=true` | Makes a mount namespace, and hides `/home`. `prepare-folder`, the folder listing, the pins and making a user's home all need it. |
+| `ReadWritePaths=` | Makes a mount namespace. With nothing read-only it has no job. |
+| `PrivateTmp=true` | Makes a mount namespace. |
+| `ProtectKernelTunables=true` | Makes a mount namespace (a read-only `/proc/sys` and `/sys`). |
+| `ProtectKernelModules=true` | Makes a mount namespace (it hides `/usr/lib/modules`). |
+| `ProtectControlGroups=true` | Makes a mount namespace (a read-only `/sys/fs/cgroup`). |
+| `RestrictSUIDSGID=true` | No namespace, but it refuses any setgid bit, and host-agent makes the shared tree `/srv/moose/shared` setgid `02770` on every start (`brainlaunch.EnsureSharedTree`, `STORAGE.md` # Permissions). |
+
+**`/home` stays narrow by API, not by systemd.** host-agent has no general filesystem-read API over `/home`. Any operation that touches a user's home directory is a narrow, named operation in `BRAIN_HOST_PROTOCOL.md`, not a generic file-read primitive. This is a deliberate constraint, not an oversight. `ProtectHome=` used to be named as what enforced it. It never shipped, and it cannot ship next to the ops that need `/home`, so the rule is held by the protocol and by review.
+
+**What this costs.** A bug in host-agent can write anywhere a root process can. That is a limit on how far a bug reaches, not a breach control: host-agent can already start any unit through systemd, so a compromised host-agent is host compromise with or without these lines. Keeping the namespace lines by doing the pin mounts through a helper outside the unit was turned down for the same reason. It would split one root process into two, for a gain that only covers bugs.
+
+Capability dropping (`CapabilityBoundingSet=`) is **not** used, for the same reason: host-agent's job needs the full root set (mount, cryptsetup, useradd, systemctl).
 
 ### Locked: host-agent launches the brain container
 
