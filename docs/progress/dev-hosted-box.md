@@ -25,8 +25,6 @@ Booted `make dev HOSTED=1 APP=opencode` against the store's `catalog/opencode` b
 
 ## Known gaps & deviations
 
-- **Review.** The review agent found no Block. Its note that `getent` is missing on macOS, so the hosts check could never pass there, is fixed: without `getent` the check reads `/etc/hosts`. Its other notes were dropped as small: no test for `UseHTTPForDev`, and an `APP` set in the shell environment now changes plain `make dev`. Its question about the gateway routing is answered by the boot above.
-- **Greptile (P1): the confirm step could not finish.** A protected change sends the owner to the real portal, which cannot sign for a dev box. Fixed with `make dev-login CONFIRM=<address>`. The dashboard still goes to `mooseos.com` first, so the address has to be copied by hand.
 
 - **A host firewall can block it.** On a machine whose `INPUT` policy is `DROP`, Caddy cannot reach the brain or Vite and every page is a `502`. `running-locally.md` gives the `iptables` rule for the `moose-ingress` bridge. Nothing detects it.
 - **One `/etc/hosts` line per app**, and the check assumes the slug is the app id. A slug that differs (taken, or a later `preferred_slugs` entry) needs its own line.
