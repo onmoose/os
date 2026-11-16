@@ -9,7 +9,7 @@ Closes #673, after [dev-app-hosted-only.md](dev-app-hosted-only.md). That entry 
 ## What was done
 
 - **`make dev HOSTED=1`.** It uses its own state dir, `.dev/state-hosted`. On the first run it writes the `hosted` profile marker and a seed (`box_id`, `assertion_verification_key`) under `hosted/`, and checks that the dashboard name and each `APP` name resolve to this machine, printing the `/etc/hosts` line when one does not. It exports `MOOSE_PROFILE_PATH`, `MOOSE_SEED_PATH`, `MOOSE_DEV_HOME`, `MOOSE_UI_HOST` and `MOOSE_DEV_PLAIN_HTTP`. When the stack starts it sets both dashboard upstreams to this machine, so the brain installs the dashboard route and the forward-auth check reaches the brain. `BOX=` names the box (default `devbox`). A state dir made for another box is refused.
-- **`make dev-login`.** It signs a fresh one-time token with the kept key and prints the `/_moose/sso` URL. It always reads the hosted state dir.
+- **`make dev-login`.** It signs a fresh one-time token with the kept key and prints the `/_moose/sso` URL. It always reads the hosted state dir. With `CONFIRM='<portal address>'` it copies that address's `return` value onto the URL, so the hosted confirm step (#469) can finish without the portal.
 - **`mkassertion -key <file>`.** It reads the private key from the file, or makes one and writes it with mode `0600`. `-tokens 0` prints only the public key. Without `-key` the cloud lane works as before.
 - **Caddy dials the `moose-ingress` gateway on Linux**, read at start, and `host.docker.internal` on Docker Desktop. The first try used `host.docker.internal` through `host-gateway` on Linux too. That is the `docker0` address, and once Caddy has joined an app network its traffic to it leaves through that app's bridge. So a firewall rule for one bridge did not cover the app routes. Traffic to the `moose-ingress` gateway always leaves on `moose-ingress`.
 - **Vite** listens on `MOOSE_UI_HOST` when set and accepts `*.onmoose.io` host names.
@@ -26,6 +26,7 @@ Booted `make dev HOSTED=1 APP=opencode` against the store's `catalog/opencode` b
 ## Known gaps & deviations
 
 - **Review.** The review agent found no Block. Its note that `getent` is missing on macOS, so the hosts check could never pass there, is fixed: without `getent` the check reads `/etc/hosts`. Its other notes were dropped as small: no test for `UseHTTPForDev`, and an `APP` set in the shell environment now changes plain `make dev`. Its question about the gateway routing is answered by the boot above.
+- **Greptile (P1): the confirm step could not finish.** A protected change sends the owner to the real portal, which cannot sign for a dev box. Fixed with `make dev-login CONFIRM=<address>`. The dashboard still goes to `mooseos.com` first, so the address has to be copied by hand.
 
 - **A host firewall can block it.** On a machine whose `INPUT` policy is `DROP`, Caddy cannot reach the brain or Vite and every page is a `502`. `running-locally.md` gives the `iptables` rule for the `moose-ingress` bridge. Nothing detects it.
 - **One `/etc/hosts` line per app**, and the check assumes the slug is the app id. A slug that differs (taken, or a later `preferred_slugs` entry) needs its own line.

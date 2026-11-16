@@ -559,7 +559,13 @@ dev-app: seed-catalog dev
 # home, so an app that binds a personal folder never sees your real home.
 #
 # /etc/hosts has no wildcards, so each name needs its own line. The setup step
-# checks them and prints the line to add if one is missing. The brain freezes
+# checks them and prints the line to add if one is missing.
+#
+# A protected change (adding a user, SSH) asks the owner to confirm, and the
+# dashboard sends them to the real portal for it, which cannot sign for a dev
+# box. Copy the mooseos.com address it opened and run
+# `make dev-login CONFIRM='<address>'`: the URL it prints carries that
+# address's return path, with its one-time challenge, back to the box. The brain freezes
 # the box id on first boot: to use another BOX, run `make clean HOSTED=1` first.
 BOX ?= devbox
 HOSTED_DIR := $(STATE_DIR)/hosted
@@ -600,7 +606,13 @@ dev-login:
 	@[ -f $(HOSTED_DIR)/portal.key ] && [ -f $(HOSTED_DIR)/seed.json ] || { echo "error: no hosted dev box yet. Start one with: make dev HOSTED=1" >&2; exit 2; }
 	@box=$$(sed -n 's/.*"box_id":"\([^"]*\)".*/\1/p' $(HOSTED_DIR)/seed.json); \
 	  tok=$$($(GO) run ./dev/cloud/mkassertion -box "$$box" -key $(HOSTED_DIR)/portal.key -tokens 1 | sed -n 2p) || exit 1; \
-	  echo "http://$$box.onmoose.io/_moose/sso?token=$$tok"
+	  ret=""; \
+	  if [ -n '$(CONFIRM)' ]; then \
+	    ret=$$(printf '%s\n' '$(CONFIRM)' | sed -n 's/.*[?&]return=\([^&]*\).*/\1/p'); \
+	    [ -n "$$ret" ] || { echo "error: CONFIRM has no return= value. Paste the whole mooseos.com address the dashboard opened." >&2; exit 2; }; \
+	    ret="&return=$$ret"; \
+	  fi; \
+	  echo "http://$$box.onmoose.io/_moose/sso?token=$$tok$$ret"
 
 # Regenerate the committed OpenAPI spec (api/openapi.{json,yaml}) from the huma
 # handler registrations — no running brain, no port (BRAIN_UI_PROTOCOL.md
