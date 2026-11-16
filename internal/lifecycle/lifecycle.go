@@ -1188,7 +1188,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	// right host for the scheme, so only the scheme itself differs.
 	url := "http://" + host
 	if m.hosted() {
-		url = "https://" + host
+		url = profile.HostedAppURL(m.boxID, slug)
 	}
 	m.bus.Publish(events.AppInstalled, map[string]any{
 		"instance_id": id, "name": man.Name, "slug": slug, "url": url,

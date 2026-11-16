@@ -408,6 +408,14 @@ type Agent struct {
 	// range through UserMgr.RemapBase instead.
 	DevRemapBase func() (base int, ok bool, err error)
 
+	// DevHome, when set, is the home folder the fake branch hands out for
+	// every user (UserMgr nil). Empty means the operator's own $HOME, as
+	// before. cmd/host-agent sets it from MOOSE_DEV_HOME, which make dev
+	// HOSTED=1 points at a folder under the dev state dir, so an app that
+	// binds a personal folder (a terminal app's Projects) never sees the
+	// operator's real home.
+	DevHome string
+
 	// SSH, when non-nil, backs POST /v1/ssh/set-access and GET /v1/ssh/state
 	// (real sshd drop-in + systemctl). Wired by cmd/host-agent-real in both build
 	// profiles — SSH is per-account on the appliance and on hosted alike, only
@@ -1193,7 +1201,7 @@ func (a *Agent) resolveHome(w http.ResponseWriter, r *http.Request) {
 	// bind dir it creates, so the per-dir chowns are no-op successes needing no
 	// privilege (#147). The home dir is ensured to exist + operator-owned so the
 	// use-case folder bind source is writable too.
-	home, uid, gid, err := devIdentity()
+	home, uid, gid, err := a.devIdentity()
 	if err != nil {
 		slog.Error("resolve-home (fake): resolve operator identity", "err", err)
 		writeErr(w, http.StatusInternalServerError, "resolve-home-failed", "resolve-home failed")
@@ -1269,7 +1277,7 @@ func (a *Agent) prepareUserFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	home, _, _, err := devIdentity()
+	home, _, _, err := a.devIdentity()
 	if err != nil {
 		slog.Error("prepare-folder (fake): resolve operator identity", "err", err)
 		writeErr(w, http.StatusInternalServerError, "prepare-folder-failed", "prepare-folder failed")
@@ -1332,7 +1340,7 @@ func (a *Agent) listUserFolders(w http.ResponseWriter, r *http.Request) {
 		names, truncated, err = a.UserMgr.ListFolders(username, rel)
 	} else {
 		var home string
-		home, _, _, err = devIdentity()
+		home, _, _, err = a.devIdentity()
 		if err == nil {
 			names, truncated, err = folderlist.List(home, rel)
 		}
@@ -1399,7 +1407,7 @@ func (a *Agent) pinFolder(w http.ResponseWriter, r *http.Request) {
 
 	root := protocol.SharedRoot
 	if !req.Shared {
-		home, _, _, err := devIdentity()
+		home, _, _, err := a.devIdentity()
 		if err != nil {
 			slog.Error("pin-folder (fake): resolve operator identity", "err", err)
 			writeErr(w, http.StatusInternalServerError, "pin-folder-failed", "pin-folder failed")
@@ -1496,7 +1504,7 @@ func (a *Agent) wellKnownIdentity(w http.ResponseWriter, r *http.Request) {
 	// brain owns, so Part A's bind-dir chowns are no-op successes (#147). The
 	// shared GID is the operator's egid, a group the operator is actually in, so
 	// the group_add on shared-source mounts is valid in dev.
-	_, uid, gid, err := devIdentity()
+	_, uid, gid, err := a.devIdentity()
 	if err != nil {
 		slog.Error("well-known-identity (fake): resolve operator identity", "err", err)
 		writeErr(w, http.StatusInternalServerError, "well-known-identity-failed", "well-known-identity failed")
@@ -1605,10 +1613,14 @@ func (a *Agent) releaseAppService(w http.ResponseWriter, r *http.Request) {
 // chownable) and its home dir, ensured to exist so the use-case folder bind
 // source is writable (#147). os.UserHomeDir reads $HOME — set in every dev
 // shell — and the dir is the operator's, so MkdirAll is operator-owned.
-func devIdentity() (home string, uid, gid int, err error) {
-	home, err = os.UserHomeDir()
-	if err != nil {
-		return "", 0, 0, fmt.Errorf("resolve home dir: %w", err)
+// DevHome, when set, replaces $HOME.
+func (a *Agent) devIdentity() (home string, uid, gid int, err error) {
+	home = a.DevHome
+	if home == "" {
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", 0, 0, fmt.Errorf("resolve home dir: %w", err)
+		}
 	}
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return "", 0, 0, fmt.Errorf("ensure home dir %q: %w", home, err)
