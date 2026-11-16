@@ -146,6 +146,18 @@ func main() {
 	// set up the remap by hand reports it, so the dev brain can boot
 	// root_setup and image_user apps there (#548, running-locally.md).
 	a.DevRemapBase = func() (int, bool, error) { return usermgr.ReadRemapBase("", "") }
+	// make dev HOSTED=1 sets MOOSE_DEV_HOME to a folder under the dev state
+	// dir, so the owner's personal folders (and any app that binds them) live
+	// there instead of in the operator's real home.
+	if home := os.Getenv("MOOSE_DEV_HOME"); home != "" {
+		abs, err := filepath.Abs(home)
+		if err != nil {
+			slog.Error("host-agent (fake) resolve MOOSE_DEV_HOME", "src", home, "err", err)
+			os.Exit(1)
+		}
+		a.DevHome = abs
+		slog.Info("host-agent (fake) using a dev home folder", "src", abs)
+	}
 	// No real drives either, so the Storage bars report two canned volumes
 	// (System ≈18 GiB free of 64 GiB, Data ≈412 GiB free of 1 TiB) — the panel
 	// shows both bars in dev without a second physical drive. Data matches the

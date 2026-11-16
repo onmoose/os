@@ -595,6 +595,35 @@ func TestPrepareFolder_FakeBranch_CreatesUnderOperatorHome(t *testing.T) {
 	}
 }
 
+// DevHome (make dev HOSTED=1) replaces $HOME in the fake branch: resolve-home
+// reports it, and prepare-folder makes the folder there, never in $HOME.
+func TestFakeBranch_DevHomeReplacesOperatorHome(t *testing.T) {
+	realHome := t.TempDir()
+	t.Setenv("HOME", realHome)
+	devHome := filepath.Join(t.TempDir(), "home")
+	a, mux := newTestAgent(&stubVerifier{})
+	a.DevHome = devHome
+
+	w := get(t, mux, "/v1/users/alice/home")
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve-home: want 200, got %d", w.Code)
+	}
+	if got := decodeBody[protocol.ResolveHomeResponse](t, w).HomePath; got != devHome {
+		t.Errorf("home_path: want dev home %q, got %q", devHome, got)
+	}
+
+	w = post(t, mux, "/v1/users/alice/prepare-folder", protocol.PrepareUserFolderRequest{Path: "Projects"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("prepare-folder: want 200, got %d: %s", w.Code, w.Body)
+	}
+	if fi, err := os.Stat(filepath.Join(devHome, "Projects")); err != nil || !fi.IsDir() {
+		t.Errorf("Projects not made under the dev home: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(realHome, "Projects")); !os.IsNotExist(err) {
+		t.Errorf("Projects was made under the real home: %v", err)
+	}
+}
+
 // The fake takes the wider #655 check too: Projects and a folder made through
 // moose are made, and bin or a dot level is refused before anything is made.
 func TestPrepareFolder_FakeBranch_FolderLimit(t *testing.T) {

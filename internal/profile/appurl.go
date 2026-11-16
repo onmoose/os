@@ -23,8 +23,18 @@ func HostedAppHost(boxID, slug string) string {
 // HostedAppHost, since the box always holds a real Let's Encrypt wildcard cert
 // (always-on, no toggle: ENVIRONMENT.md # Networking & discovery).
 func HostedAppURL(boxID, slug string) string {
-	return "https://" + HostedAppHost(boxID, slug)
+	return hostedScheme + "://" + HostedAppHost(boxID, slug)
 }
+
+// hostedScheme is the scheme of every hosted URL the box hands out. It is
+// "https" on every real box. UseHTTPForDev changes it, for make dev HOSTED=1.
+var hostedScheme = "https"
+
+// UseHTTPForDev makes the hosted URLs plain "http". The dev stack runs the
+// hosted profile behind a dev Caddy that listens on :80 only and holds no
+// cert, so an https link there is refused. cmd/brain calls it once at startup
+// when MOOSE_DEV_PLAIN_HTTP is set; nothing on a box sets it.
+func UseHTTPForDev() { hostedScheme = "http" }
 
 // HostedDashboardHost returns the host the dashboard is served at on a hosted
 // box: "<box-id>.onmoose.io" — the apex of the box's wildcard, the bare
@@ -38,7 +48,7 @@ func HostedDashboardHost(boxID string) string {
 // route builder and the app health probe (which must tell that redirect apart
 // from the app's own answer) share this one string.
 func HostedLoginURL(boxID string) string {
-	return "https://" + HostedDashboardHost(boxID) + "/"
+	return hostedScheme + "://" + HostedDashboardHost(boxID) + "/"
 }
 
 // CertSubjects returns the names the box's Let's Encrypt certs must cover: the
