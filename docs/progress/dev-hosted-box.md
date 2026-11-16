@@ -21,9 +21,11 @@ Closes #673, after [dev-app-hosted-only.md](dev-app-hosted-only.md). That entry 
 
 ## How it was checked
 
-Booted `make dev HOSTED=1 APP=opencode` against the store's `catalog/opencode` branch (onmoose/store#309). The dashboard loaded through Caddy, `make dev-login` signed in as `owner` (both cookies set, a replayed token gets `401`), OpenCode installed with its Projects folder bound from `.dev/state-hosted/home/Projects`, and the maintainer opened the dashboard and the app in a browser.
+Booted `make dev HOSTED=1 APP=opencode` against the store's `catalog/opencode` branch (onmoose/store#309). The dashboard loaded through Caddy, `make dev-login` signed in as `owner` (both cookies set, a replayed token gets `401`), OpenCode installed with its Projects folder bound from `.dev/state-hosted/home/Projects`, and the maintainer opened the dashboard and the app in a browser. That run had this machine's firewall in place (`INPUT` policy `DROP`) with a rule for the `moose-ingress` bridge only, and Caddy had joined OpenCode's app network, so the app routes went through the gateway address as described.
 
 ## Known gaps & deviations
+
+- **Review.** The review agent found no Block. Its note that `getent` is missing on macOS, so the hosts check could never pass there, is fixed: without `getent` the check reads `/etc/hosts`. Its other notes were dropped as small: no test for `UseHTTPForDev`, and an `APP` set in the shell environment now changes plain `make dev`. Its question about the gateway routing is answered by the boot above.
 
 - **A host firewall can block it.** On a machine whose `INPUT` policy is `DROP`, Caddy cannot reach the brain or Vite and every page is a `502`. `running-locally.md` gives the `iptables` rule for the `moose-ingress` bridge. Nothing detects it.
 - **One `/etc/hosts` line per app**, and the check assumes the slug is the app id. A slug that differs (taken, or a later `preferred_slugs` entry) needs its own line.

@@ -585,7 +585,8 @@ dev-hosted-setup:
 	  [ "$$box" = "$(BOX)" ] || { echo "error: $(STATE_DIR) is box $$box, not $(BOX). Run make clean HOSTED=1 to start a new box." >&2; exit 2; }; \
 	  missing=""; \
 	  for h in $$box.onmoose.io $(foreach a,$(APP) $(APPS),$(a).$$box.onmoose.io); do \
-	    getent hosts $$h | grep -Eq '^(127\.0\.0\.1|::1)[[:space:]]' || missing="$$missing $$h"; \
+	    if command -v getent >/dev/null; then ent=$$(getent hosts $$h); else ent=$$(grep -Ew "^[^#]*[[:space:]]$$h" /etc/hosts); fi; \
+	    printf '%s\n' "$$ent" | grep -Eq '^(127\.0\.0\.1|::1)[[:space:]]' || missing="$$missing $$h"; \
 	  done; \
 	  if [ -n "$$missing" ]; then \
 	    echo "error: these names do not point at this machine:$$missing" >&2; \
