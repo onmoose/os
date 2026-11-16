@@ -179,6 +179,26 @@ first run the **Setup** page asks you to create the first admin and shows a
 recovery code once — save it. Then install **Whoami** from the catalog and
 watch it appear as `running`.
 
+### Store apps: `make dev APP=<id>`
+
+`make dev APP=<id>` (or `APPS="<id> <id>"`) boots the dev stack with those apps from a store checkout (`STORE=../store` by default) instead of the live catalog. It is the same as `make dev-app APP=<id>`, which stays for the name in older docs. Use it for an app that is not published yet, such as one in an open store PR: check out that branch in the store checkout first.
+
+### A hosted box: `make dev HOSTED=1`
+
+`make dev HOSTED=1` runs the same stack as a hosted box (`../specs/ENVIRONMENT.md`). Add `APP=<id>` to seed a store app, as above. The dashboard is at `http://devbox.onmoose.io` and each app at `http://<slug>.devbox.onmoose.io`, both served by the dev Caddy on `:80`. Use it to try what only hosted does: the portal sign-in, the forward-auth gate in front of each app, and terminal apps (`../specs/TERMINAL_APPS.md`).
+
+```bash
+make dev HOSTED=1 APP=opencode
+make dev-login        # in a second terminal: prints a one-time sign-in URL
+```
+
+- **Sign-in.** On a real box the portal signs the owner in (`GET /_moose/sso`). Here `dev/cloud/mkassertion` plays the portal. The first run makes a key pair in `.dev/state-hosted/hosted/portal.key` and writes a seed with its public key. `make dev-login` signs a fresh token each time, and each URL works once. The owner is `owner`, an admin.
+- **Names.** `/etc/hosts` has no wildcards, so the dashboard and each app need a line. The first run checks them and prints the line to add, such as `echo '127.0.0.1 devbox.onmoose.io opencode.devbox.onmoose.io' | sudo tee -a /etc/hosts`. The check uses the app id as the slug.
+- **Plain http.** A hosted box hands out `https://` links. The dev Caddy has no cert, so the stack sets `MOOSE_DEV_PLAIN_HTTP=1` and the brain hands out `http://` links instead. A real box never sets it.
+- **Caddy dials this machine.** The dashboard route and the forward-auth check go from the Caddy container to the brain (`:8080`) and Vite (`:5173`, which listens on every address in this mode). On Linux the address is the `moose-ingress` gateway; on Docker Desktop it is `host.docker.internal`. If every page is a `502` with `i/o timeout` in `docker logs moose-caddy`, a host firewall is dropping traffic from Docker. Let the `moose-ingress` bridge in: `sudo iptables -I INPUT -i br-$(docker network inspect moose-ingress -f '{{.Id}}' | cut -c1-12) -p tcp -m multiport --dports 8080,5173 -j ACCEPT`. The rule is gone after a reboot.
+- **A fake home.** The fake host-agent hands out `.dev/state-hosted/home` as every user's home (`MOOSE_DEV_HOME`), so a terminal app's Projects folder is there, never in your real home.
+- **Its own state.** The state dir is `.dev/state-hosted`, apart from the appliance one. The brain freezes the box id on first boot, so to change `BOX=` or start over, run `make clean HOSTED=1`.
+
 ## How the pieces talk
 
 ```
@@ -235,7 +255,7 @@ Two of those are about the catalog and are easy to mix up. `MOOSE_CATALOG_CACHE_
 
 ```bash
 make clean        # stop the dev Caddy, remove moose app containers + networks,
-                  # wipe .dev/state
+                  # wipe .dev/state (make clean HOSTED=1 wipes .dev/state-hosted)
 ```
 
 ## Running host-agent-real
