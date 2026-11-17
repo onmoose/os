@@ -236,7 +236,7 @@ func (m *Manager) SetFolders(ctx context.Context, id, version string, mounts []F
 		if err := m.rewriteFolderBinds(id, "compose.override.yml", man.Permissions.ExtraFolders, modesByFolder(man.Permissions.Folders), iso); err != nil {
 			return fmt.Errorf("rewrite the override: %w", err)
 		}
-		if err := m.writeEnv(id, inst.Slug, iso); err != nil {
+		if err := m.writeEnv(id, inst.Slug, iso, man.Mail); err != nil {
 			return fmt.Errorf("rewrite .env: %w", err)
 		}
 		// A rollback by hand puts the previous generation's files back

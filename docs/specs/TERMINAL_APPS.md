@@ -21,7 +21,7 @@ This is **not** a host shell. `SETTINGS.md` says moose ships no web terminal, an
 | C | Use each tool's own web UI. | **Chosen where an official one exists** (OpenCode: `opencode web`). Community web UIs for Codex or Claude (codexapp, codex-pocket, CloudCLI) are not used: third-party, change often, ours to maintain. |
 | D | A web terminal in the dashboard (host shell). | Rejected for this. Root on the host, conflicts with "SSH is rescue-only", needs the unsolved root-PTY design. |
 
-**The rule:** an app with a good official web UI uses it. Every other CLI app uses the `moose-terminal` base image.
+**The UI and the image are separate rules.** The UI: an app with a good official web UI uses it. The image: a terminal app always runs on an image of ours, built on the `moose-terminal` base, even when it has its own UI. Upstream's own image for a CLI is the CLI alone, so it has no git and no language runtime. The app needs git and the project's runtimes to work, and a box gives the app nothing outside its own image.
 
 What each tool offers today (October 2026):
 
@@ -181,7 +181,7 @@ Still open:
 2. **Fix #604** (a folder source swapped for a symlink between two starts). Done: folder source pins, `docs/progress/folder-source-pins.md`.
 3. **`moose-terminal` base image** in `onmoose/app-images` (onmoose/app-images#46): the two rule changes there first, then ttyd, tmux, tools, the project page, the start script, the key bar. Done: onmoose/app-images#47.
 4. **Locked access mode, personal-only, hosted-only** for terminal apps (#660) (manifest keys, brain refusals, the store hiding them where they cannot run, the `access` boot proving the WebSocket through forward-auth). Done: `docs/progress/terminal-app-flags.md`.
-5. **First apps:** Claude Code on the base image, OpenCode on its own image (`ghcr.io/anomalyco/opencode`, `opencode web`). The Claude Code image is built (onmoose/app-images#48). Catalog app issues: onmoose/store#296 (Claude Code) and onmoose/store#297 (OpenCode).
+5. **First apps:** Claude Code and OpenCode, both on the base image. OpenCode runs its own web UI (`opencode web`) on an image of ours on the base image (`ghcr.io/onmoose/opencode`). Both images are built (onmoose/app-images#48, onmoose/app-images#49). A catalog issue asks for each app.
 6. **Later:** the Git integration, "Open with" in Files, dev-server previews, session sharing, a free-memory check before a new session, the appliance.
 
 ## Sources

@@ -38,9 +38,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/onmoose/os/internal/assertion"
@@ -53,19 +55,20 @@ func main() {
 		sub    = flag.String("sub", "portal-owner", "owner portal account id (claims.sub)")
 		email  = flag.String("email", "owner@example.com", "owner email; the box derives the PAM username from it")
 		ttl    = flag.Duration("ttl", 2*time.Hour, "assertion lifetime; must outlast a slow air-gapped boot")
-		tokens = flag.Int("tokens", 1, "how many independent assertions to mint (each with its own jti)")
+		tokens = flag.Int("tokens", 1, "how many independent assertions to mint (each with its own jti); 0 prints only the public key")
+		keyF   = flag.String("key", "", "file holding the portal private key: read if it exists, made if not, so later runs mint tokens the same seed accepts (make dev HOSTED=1)")
 	)
 	flag.Parse()
 	if *box == "" {
 		fatal("mkassertion: -box is required")
 	}
-	if *tokens < 1 {
-		fatal("mkassertion: -tokens must be at least 1")
+	if *tokens < 0 {
+		fatal("mkassertion: -tokens must not be negative")
 	}
 
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := loadOrMakeKey(*keyF)
 	if err != nil {
-		fatal("generate key: %v", err)
+		fatal("portal key: %v", err)
 	}
 
 	// Line 1: the public key the seed carries. Standard base64 matches the lane's
@@ -96,6 +99,37 @@ func main() {
 		}
 		fmt.Println(token)
 	}
+}
+
+// loadOrMakeKey returns the portal key pair. With no path it makes a throwaway
+// pair, as the cloud lane wants. With a path it reads the private key's seed
+// (standard base64) from the file, or makes a pair and writes the seed there
+// with mode 0600 when the file does not exist yet.
+func loadOrMakeKey(path string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	if path == "" {
+		return ed25519.GenerateKey(rand.Reader)
+	}
+	b, err := os.ReadFile(path)
+	if err == nil {
+		seed, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+		if err != nil || len(seed) != ed25519.SeedSize {
+			return nil, nil, fmt.Errorf("%s does not hold a base64 ed25519 seed", path)
+		}
+		priv := ed25519.NewKeyFromSeed(seed)
+		return priv.Public().(ed25519.PublicKey), priv, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	enc := base64.StdEncoding.EncodeToString(priv.Seed()) + "\n"
+	if err := os.WriteFile(path, []byte(enc), 0o600); err != nil {
+		return nil, nil, err
+	}
+	return pub, priv, nil
 }
 
 // mint builds the box's assertion wire form: base64url(claims-json) "." base64url(sig),

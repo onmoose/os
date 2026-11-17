@@ -171,6 +171,12 @@ func main() {
 		slog.Warn("dev: hosted_only apps may be installed on this box (MOOSE_DEV_ALLOW_HOSTED_ONLY)")
 	}
 	life.SetAllowHostedOnly(cfg.devAllowHostedOnly)
+	// make dev HOSTED=1 sets MOOSE_DEV_PLAIN_HTTP: its dev Caddy serves the
+	// hosted names on :80 only, so the links the box hands out must be http.
+	if envBool("MOOSE_DEV_PLAIN_HTTP", false) {
+		slog.Warn("dev: hosted URLs use plain http (MOOSE_DEV_PLAIN_HTTP)")
+		profile.UseHTTPForDev()
+	}
 	// On hosted, per-app routes and surfaced URLs use the public
 	// "<slug>.<box-id>.onmoose.io" scheme instead of "<slug>.local"
 	// (ENVIRONMENT.md # Networking & discovery), and the resolved profile also

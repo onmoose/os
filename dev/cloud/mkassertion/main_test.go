@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"os"
 	"testing"
 	"time"
 
@@ -80,5 +81,37 @@ func TestPublicKeyEncoding(t *testing.T) {
 	}
 	if len(decoded) != ed25519.PublicKeySize {
 		t.Errorf("decoded key len = %d, want %d", len(decoded), ed25519.PublicKeySize)
+	}
+}
+
+// TestKeyFileReused is what make dev-login depends on: the first run writes the
+// key file, and a later run reads the same key back, so a token minted then is
+// accepted by the seed written on the first run.
+func TestKeyFileReused(t *testing.T) {
+	path := t.TempDir() + "/portal.key"
+	pub1, _, err := loadOrMakeKey(path)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key file not written 0600: %v %v", fi, err)
+	}
+	pub2, priv2, err := loadOrMakeKey(path)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if !pub1.Equal(pub2) {
+		t.Fatal("second run returned a different key")
+	}
+	msg := []byte("x")
+	if !ed25519.Verify(pub1, msg, ed25519.Sign(priv2, msg)) {
+		t.Fatal("reloaded private key does not match the first public key")
+	}
+
+	if err := os.WriteFile(path, []byte("not a key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadOrMakeKey(path); err == nil {
+		t.Fatal("a bad key file was accepted")
 	}
 }

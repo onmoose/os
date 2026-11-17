@@ -16,9 +16,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/onmoose/os/internal/manifest"
 	"github.com/onmoose/os/internal/store"
 )
 
@@ -40,6 +42,54 @@ func mailEnvLines(p store.MailProvider) []string {
 		"MOOSE_MAIL_USE_SSL=" + strconv.FormatBool(p.Encryption == store.MailEncryptionTLS),
 		"MOOSE_MAIL_DSN=" + mailDSN(p),
 	}
+}
+
+// mailAppEnvLines resolves each manifest-declared mail.env var to its token for
+// the box's current mail state and renders it as `APP_VAR=token` (#302). Unlike
+// the MOOSE_MAIL_* family, injected only when bound, these are emitted in both
+// states, so an app whose mail switch is a boot-validated enum is present and
+// valid even unbound (bound == nil): `encryption` reads none, `bound` reads
+// unbound. Keys are sorted so a rewrite produces a byte-stable .env.
+func mailAppEnvLines(mail *manifest.Mail, bound *store.MailProvider) []string {
+	if mail == nil || len(mail.Env) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(mail.Env))
+	for name := range mail.Env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		em := mail.Env[name]
+		var domainValue string
+		switch em.From {
+		case manifest.MailFromEncryption:
+			domainValue = store.MailEncryptionNone // unbound ⇒ no encryption
+			if bound != nil {
+				domainValue = bound.Encryption
+			}
+		case manifest.MailFromBound:
+			domainValue = manifest.MailUnbound
+			if bound != nil {
+				domainValue = manifest.MailBound
+			}
+		default:
+			// validateMail rejects an unknown from at parse, so this is only
+			// reachable for a hand-built struct. Skip it rather than stamping
+			// VAR= (the empty value this mechanism exists to prevent).
+			continue
+		}
+		token, ok := em.Map[domainValue]
+		if !ok || token == "" {
+			// Parse validated every map, so this only happens to a manifest
+			// edited on disk. Leave the name out of the fresh lines; its old
+			// line is kept by rewriteEnvMail rather than replaced with VAR=.
+			continue
+		}
+		lines = append(lines, name+"="+token)
+	}
+	return lines
 }
 
 // MailEnvChanged reports whether two versions of an account give an app
@@ -98,7 +148,7 @@ func (m *Manager) RebindMail(ctx context.Context, id, providerID string) error {
 	} else if err := m.store.SetInstanceMailBinding(id, providerID); err != nil {
 		return fmt.Errorf("bind mail provider: %w", err)
 	}
-	if err := m.rewriteEnvMail(id); err != nil {
+	if err := m.rewriteEnvMail(id, man.Mail); err != nil {
 		return fmt.Errorf("rewrite env: %w", err)
 	}
 
@@ -114,30 +164,86 @@ func (m *Manager) RebindMail(ctx context.Context, id, providerID string) error {
 	return nil
 }
 
-// rewriteEnvMail re-stamps only the MOOSE_MAIL_* lines of an instance's .env
-// from the current binding, leaving every other line byte-identical — unlike a
-// full writeEnv it needs no install-time isolation state, and a stable secret
-// can't be re-rolled by accident.
-func (m *Manager) rewriteEnvMail(id string) error {
+// instanceMail returns the mail block of the manifest the installer persisted,
+// or nil when that copy cannot be read. A nil block still lets rewriteEnvMail
+// strip the provider credentials, which an account delete must do even when the
+// manifest is gone; the app's own declared vars keep their values.
+func (m *Manager) instanceMail(id string) *manifest.Mail {
+	man, err := m.loadInstanceManifest(id)
+	if err != nil {
+		slog.Warn("mail lines rewritten without the manifest; declared mail vars keep their values",
+			"instance_id", id, "err", err)
+		return nil
+	}
+	return man.Mail
+}
+
+// rewriteEnvMail re-stamps only the mail-owned lines of an instance's .env from
+// the current binding: the MOOSE_MAIL_* family plus any manifest-declared
+// mail.env vars (#302). Every other line stays byte-identical, so unlike a full
+// writeEnv it needs no install-time isolation state and a stable secret cannot
+// be re-rolled by accident. The declared vars are stamped under the app's own
+// names, so they are stripped by name (not the MOOSE_MAIL_ prefix) and
+// re-resolved for the new state, including unbound. Unbound drops the
+// MOOSE_MAIL_* family but keeps the declared vars with their unbound tokens. A
+// declared name with no resolvable token keeps its previous line, so a manifest
+// edited on disk never leaves the app's pass-through variable empty.
+func (m *Manager) rewriteEnvMail(id string, mail *manifest.Mail) error {
 	path := filepath.Join(m.instanceDir(id), ".env")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
+	declared := map[string]bool{}
+	var declaredNames []string
+	if mail != nil {
+		for name := range mail.Env {
+			declared[name] = true
+			declaredNames = append(declaredNames, name)
+		}
+		sort.Strings(declaredNames)
+	}
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	oldDeclared := map[string]string{}
 	kept := lines[:0]
 	for _, l := range lines {
-		if !strings.HasPrefix(l, "MOOSE_MAIL_") {
-			kept = append(kept, l)
+		if strings.HasPrefix(l, "MOOSE_MAIL_") {
+			continue
 		}
+		if name, _, ok := strings.Cut(l, "="); ok && declared[name] {
+			oldDeclared[name] = l
+			continue
+		}
+		kept = append(kept, l)
 	}
 	mp, err := m.store.GetInstanceMailProvider(id)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
+	var bound *store.MailProvider
 	if err == nil {
+		bound = &mp
 		kept = append(kept, mailEnvLines(mp)...)
 	}
+	fresh := mailAppEnvLines(mail, bound)
+	resolved := make(map[string]bool, len(fresh))
+	for _, l := range fresh {
+		if name, _, ok := strings.Cut(l, "="); ok {
+			resolved[name] = true
+		}
+	}
+	// A declared name with no fresh line (a manifest edited on disk, or a
+	// future state the resolver does not know) keeps the line it already had.
+	// Dropping it would leave the app's pass-through variable empty, the boot
+	// reject this mechanism exists to prevent.
+	for _, name := range declaredNames {
+		if !resolved[name] {
+			if old, ok := oldDeclared[name]; ok {
+				kept = append(kept, old)
+			}
+		}
+	}
+	kept = append(kept, fresh...)
 	env := strings.Join(append(kept, ""), "\n")
 	return os.WriteFile(path, []byte(env), 0o644)
 }
