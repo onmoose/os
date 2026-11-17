@@ -33,7 +33,7 @@ import (
 // snapshot). It is deliberately distinct from a manifest that exists but fails to
 // parse or is missing its compose file — those are integrity errors a curated
 // catalog should never ship — so the API maps ErrNotFound to 404 and every other
-// error to 500. Follows the "typed errors at boundaries" rule (CLAUDE.md).
+// error to 500. Follows the "typed errors at boundaries" rule (AGENTS.md).
 var ErrNotFound = errors.New("catalog: manifest not found")
 
 // source is the read model behind Catalog: the six methods the brain consumes,

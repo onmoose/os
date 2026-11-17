@@ -60,7 +60,7 @@ func (s *Server) registerSystemUpdate(api huma.API) {
 // the wrong trust boundary for a button in a browser.
 //
 // Elevation-class, so it audits success and every refusal that says who tried
-// what: the 403, both 409s, and a host failure (CLAUDE.md # Go code
+// what: the 403, both 409s, and a host failure (AGENTS.md # Go code
 // discipline). success=true means the update started, as for
 // startSystemUpdate: the brain that started it is replaced by it, so the
 // outcome lives on host-agent (UpdateTargetDTO.Last).
@@ -336,11 +336,11 @@ type SystemUpdateJobDTO struct {
 	Result     *SystemUpdateResultDTO `json:"result,omitempty"`
 }
 
-// startSystemUpdate starts the update job. Elevation-class per CLAUDE.md, so it
+// startSystemUpdate starts the update job. Elevation-class per AGENTS.md, so it
 // audits the start **and** the refusals that carry information about who tried
 // what: the 403, the 409, and a host failure. A member trying to update the box
 // is exactly the kind of thing the Activity view exists to show. The two
-// validation 422s do not audit — CLAUDE.md exempts them.
+// validation 422s do not audit — AGENTS.md exempts them.
 //
 // success=true here means "the update started", not "the update worked". The
 // brain cannot audit the outcome, because the brain is what the update
@@ -358,7 +358,7 @@ func (s *Server) startSystemUpdate(ctx context.Context, in *struct {
 		fail()
 		return nil, err
 	}
-	// The two 422s below do not audit. CLAUDE.md # Go code discipline:
+	// The two 422s below do not audit. AGENTS.md # Go code discipline:
 	// "Pure reads and validation 422s don't audit." A malformed ref from an
 	// admin who is already allowed to do this is not the question the audit
 	// trail answers ("did someone unauthorized try to mutate this box").

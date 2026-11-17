@@ -186,7 +186,7 @@ func TestStartUpdate_MemberForbidden(t *testing.T) {
 }
 
 // TestStartUpdate_NoRefs_422: an update with no target is refused before it
-// reaches host-agent. It does **not** audit: CLAUDE.md exempts validation 422s,
+// reaches host-agent. It does **not** audit: AGENTS.md exempts validation 422s,
 // and an admin sending a malformed body is not the question the audit trail
 // answers.
 func TestStartUpdate_NoRefs_422(t *testing.T) {

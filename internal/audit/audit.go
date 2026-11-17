@@ -132,7 +132,7 @@ type Target struct {
 
 // EventStore is the persistence surface audit needs. Declared here so the
 // audit package doesn't depend on store's full API (consumer-side interface,
-// CLAUDE.md).
+// AGENTS.md).
 type EventStore interface {
 	InsertAuditEvent(store.AuditEvent) error
 }

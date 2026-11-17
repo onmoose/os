@@ -103,7 +103,7 @@ type IssueKey struct {
 }
 
 // HealthStore persists health issues across brain restarts. The interface is
-// consumer-side (CLAUDE.md): health does not import store.
+// consumer-side (AGENTS.md): health does not import store.
 type HealthStore interface {
 	// UpsertHealthIssue inserts or replaces one issue row (used by Raise).
 	UpsertHealthIssue(Issue) error

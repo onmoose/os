@@ -21,7 +21,7 @@ var fixturePath = filepath.Join("testdata", "snapshot.json")
 // testdata/snapshot.json is a SYNTHETIC payload: fake apps, written here, in the
 // published wire shape. It is not a copy of any catalog the service serves
 // — app manifests and compose files are authored in the store, and this repo
-// holds none of them (CLAUDE.md # Catalog apps). What the fixture pins is the
+// holds none of them (AGENTS.md # Catalog apps). What the fixture pins is the
 // SHAPE, which is all these tests need.
 func TestParseFixtureSnapshot(t *testing.T) {
 	data, err := os.ReadFile(fixturePath)

@@ -32,7 +32,7 @@ const forwardAuthVerifyPath = profile.ForwardAuthVerifyPath
 // owner's session validates — box users the owner may later create are a
 // follow-up. Hosted-only: on the appliance there is no portal, no app
 // subdomains, and no forward-auth cookie, so the route 404s exactly like
-// /_moose/sso. This is a pure session probe, so it never audits (CLAUDE.md #
+// /_moose/sso. This is a pure session probe, so it never audits (AGENTS.md #
 // Elevation-class — pure reads don't audit).
 func (s *Server) forwardAuthVerify(w http.ResponseWriter, r *http.Request) {
 	if s.profile != profile.Hosted {

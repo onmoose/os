@@ -98,7 +98,7 @@ which only the brain mounts; in dev it is TCP `:2019`.
 ## Inside the brain
 
 Packages under `internal/` and what each owns. Layer rules come from
-[`../CLAUDE.md`](../CLAUDE.md) # Go code discipline; only the directional rules
+[`../AGENTS.md`](../AGENTS.md) # Go code discipline; only the directional rules
 are stated below. The table is the whole of `internal/`'s top level; the
 host-side implementation packages under `internal/hostagent/…` are covered by
 the `host-agent-real` row in # Components and by # What is not built yet.
@@ -134,10 +134,10 @@ the `host-agent-real` row in # Components and by # What is not built yet.
 - **Brain commits first, host is reconstructible.** Mutations that span SQLite
   + host-agent commit to the brain first, then call the host. On host failure,
   the brain row is rolled back. Established by `/setup`, `createUser`,
-  `updateUserRole`, `deleteUser`. See [`../CLAUDE.md`](../CLAUDE.md).
+  `updateUserRole`, `deleteUser`. See [`../AGENTS.md`](../AGENTS.md).
 - **Single logger.** `slog.Default()` everywhere; no `*slog.Logger` threading,
   no `log` package, no `fmt.Println` for diagnostics. Standard field names are
-  listed in CLAUDE.md.
+  listed in AGENTS.md.
 - **Audit on success and failure.** Elevation-class handlers emit
   `audit.Record(..., success=false)` on every observable failure path (host
   502, store 500, conflict 409, guard rejection), mirroring `login.failure`.

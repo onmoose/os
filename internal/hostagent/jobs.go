@@ -6,7 +6,7 @@ package hostagent
 // describes a kind registry with typed attributes, resource-class queueing, a
 // cross-class dangerous lock, cancel, and an SSE log stream with replay. There
 // is exactly one job kind today (system-update), so building all of that would
-// be an abstraction with one consumer, which CLAUDE.md # Go code discipline
+// be an abstraction with one consumer, which AGENTS.md # Go code discipline
 // tells us not to do. What is here is the part one dangerous job needs:
 //
 //   - a job record a caller can poll,

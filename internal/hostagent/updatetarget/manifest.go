@@ -38,7 +38,7 @@ type ManifestSource struct {
 }
 
 // ManifestPoller is the slice of the release-manifest poller this source needs:
-// the last manifest that verified. Consumer-side (CLAUDE.md # Go code
+// the last manifest that verified. Consumer-side (AGENTS.md # Go code
 // discipline); the provider is *relmanifest.Poller.
 type ManifestPoller interface {
 	State() relmanifest.State

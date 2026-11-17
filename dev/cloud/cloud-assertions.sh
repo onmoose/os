@@ -276,6 +276,29 @@ for u in docker.service systemd-networkd.service host-agent.service moose-load-i
     grep -qx "$u" <<<"$failed" && fail "control-plane unit failed: $u (failed: $(tr '\n' ' ' <<<"$failed"))"
 done
 
+# --- 1a. host-agent's hardening, and the mount namespace it must keep (#667,
+# CONTROL_PLANE.md # Locked: host-agent hardening directives). Every boot, so
+# PAM verify, useradd, the update paths and RAUC all run under these lines.
+# host-agent has to mount in the host's namespace: a folder pin made in a
+# private one never reaches Docker, and the app starts on an empty folder.
+ha_pid=""
+for _ in $(seq 1 30); do
+    ha_pid="$(systemctl show host-agent.service -p MainPID --value 2>/dev/null)"
+    [ -n "$ha_pid" ] && [ "$ha_pid" != 0 ] && break
+    sleep 1
+done
+[ -n "$ha_pid" ] && [ "$ha_pid" != 0 ] || fail "host-agent: no main PID: $(systemctl status --no-pager host-agent.service 2>&1 | tail -10)"
+for p in NoNewPrivileges LockPersonality; do
+    [ "$(systemctl show host-agent.service -p "$p" --value 2>/dev/null)" = yes ] \
+        || fail "host-agent: $p is '$(systemctl show host-agent.service -p "$p" --value 2>/dev/null)', want yes"
+done
+grep -qE '^NoNewPrivs:[[:space:]]+1$' "/proc/$ha_pid/status" \
+    || fail "host-agent: the running process (pid $ha_pid) has no no_new_privs: $(grep NoNewPrivs "/proc/$ha_pid/status" 2>&1)"
+ha_mnt="$(readlink "/proc/$ha_pid/ns/mnt" 2>/dev/null)"
+[ -n "$ha_mnt" ] && [ "$ha_mnt" = "$(readlink /proc/1/ns/mnt)" ] \
+    || fail "host-agent: runs in mount namespace '$ha_mnt', not the host's '$(readlink /proc/1/ns/mnt)'. Its folder pins would not reach Docker"
+echo "cloud-assertions: host-agent runs with NoNewPrivileges and LockPersonality, in the host mount namespace $ha_mnt"
+
 # --- 1b. the A/B layout (#561, BUILD.md # 1b). Every boot, both firmwares.
 # The image carries 3 partitions (ESP 128 MiB, BIOS boot, slot A: a 1 GiB
 # squashfs); the initramfs (state-setup, via the
@@ -1483,6 +1506,19 @@ access)
     case "$sub_src" in /run/moose/folder-pins/*) ;; *) fail "folders: personal sub app binds '$sub_src', want a /run/moose/folder-pins/ pin" ;; esac
     [ "$(stat -c '%d:%i' "$sub_src")" = "$(stat -c '%d:%i' "$sub_dir")" ] \
         || fail "folders: the pin $sub_src is not the folder $sub_dir (stat $(stat -c '%d:%i' "$sub_src") vs $(stat -c '%d:%i' "$sub_dir"))"
+
+    # The pin is a mount in the host's namespace, not only in host-agent's
+    # (#667). This script runs in the host namespace, as Docker does. A pin
+    # made in a private namespace leaves an empty directory here, and Docker
+    # binds that. Then the app sees none of the folder's files, so check one
+    # the host wrote, read from inside the app.
+    grep -qF " ${sub_src} " /proc/self/mountinfo \
+        || fail "folders: the pin $sub_src is not a mount in the host namespace (host-agent mounts in a private one?): $(grep -F folder-pins /proc/self/mountinfo | tr '\n' ' ')"
+    echo "seen-by-the-app" > "$sub_dir/host-marker.txt"
+    [ "$(docker exec "$sub_c" cat /moose/documents/host-marker.txt 2>&1)" = seen-by-the-app ] \
+        || fail "folders: the app does not see $sub_dir/host-marker.txt through its pin: $(docker exec "$sub_c" ls -la /moose/documents 2>&1 | tr '\n' ' ')"
+    rm -f "$sub_dir/host-marker.txt"
+    echo "cloud-assertions: the pin $sub_src is a host mount, and the app reads a file the host put in $sub_dir"
 
     folder_job POST "/api/v1/apps/${sub_id}/stop" '{}'
     [ "$FJ_STATUS" = completed ] || fail "folders: stopping the personal sub app ended '$FJ_STATUS': $FJ_ERROR"

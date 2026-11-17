@@ -98,7 +98,7 @@ make dev          # the whole inner-loop stack in one terminal:
                   # Caddy (container) + fake host-agent + brain + Vite
 ```
 
-Then open <http://localhost:5173> and install **Whoami** from the catalog. (The catalog is not in this repo. The brain syncs it from the moose catalog service at run time. To work against a specific store app instead, use `make dev-app APP=<id>` with a `onmoose/store` checkout.) `make dev` also publishes each app's `<slug>.local` name over real Avahi, so installed apps are reachable by their portless `.local` URL from this box and other LAN devices (Android browsers don't resolve `.local`). Ctrl-C stops everything.
+Then open <http://localhost:5173> and install **Whoami** from the catalog. (The catalog is not in this repo. The brain syncs it from the moose catalog service at run time. To work against a specific store app instead, use `make dev APP=<id>` with a `onmoose/store` checkout. Add `HOSTED=1` to run it as a hosted box: see `docs/dev/running-locally.md` # A hosted box.) `make dev` also publishes each app's `<slug>.local` name over real Avahi, so installed apps are reachable by their portless `.local` URL from this box and other LAN devices (Android browsers don't resolve `.local`). Ctrl-C stops everything.
 
 Prefer separate terminals? Run the pieces individually:
 
@@ -130,7 +130,7 @@ The host-integrated parts (boot ordering, LUKS/TPM, systemd, the cloud image) ar
 | [`docs/progress/`](docs/progress/) | Per-change implementation history (what's built, what's next) |
 | [`docs/dev/`](docs/dev/) | Developer how-to (running locally, code-level architecture) |
 | [`docs/dev/contributing.md`](docs/dev/contributing.md) | The contributor workflow, end to end |
-| [`CLAUDE.md`](CLAUDE.md) | Working conventions for this repo |
+| [`AGENTS.md`](AGENTS.md) | Working conventions for this repo |
 
 ## Contributing
 

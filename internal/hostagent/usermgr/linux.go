@@ -45,7 +45,7 @@ type LinuxUserManager struct {
 	PrimaryGroup string
 	// AdminGroup is the Linux group that conveys sudo / shell-rescue
 	// capability. Empty → "sudo" (per USERS_AND_GROUPS.md # Roles and the
-	// CLAUDE.md "admins in `sudo`" load-bearing decision).
+	// AGENTS.md "admins in `sudo`" load-bearing decision).
 	AdminGroup string
 	// SubUIDPath and SubGIDPath are the subordinate id files RemapBase reads.
 	// Empty means /etc/subuid and /etc/subgid. Only a test sets them.

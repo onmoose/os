@@ -386,7 +386,7 @@ func (s *Server) deleteUser(ctx context.Context, in *struct {
 	// changed first. That makes every later failure path owe a compensating
 	// re-push — without one, a delete that fails after this point leaves the
 	// account enabled in the brain and revoked on the host, with nothing to
-	// notice or repair the difference (CLAUDE.md # Brain commits first).
+	// notice or repair the difference (AGENTS.md # Brain commits first).
 	restoreSSH := func() {
 		if !access.Enabled {
 			return

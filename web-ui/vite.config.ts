@@ -16,6 +16,12 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // make dev HOSTED=1 serves the dashboard through the dev Caddy at
+    // <box>.onmoose.io (ENVIRONMENT.md # Networking & discovery), so Vite has to
+    // listen where the Caddy container can reach it and accept that host name.
+    // Unset, Vite stays on localhost as before.
+    host: process.env.MOOSE_UI_HOST || undefined,
+    allowedHosts: [".onmoose.io"],
     proxy: {
       "/api": {
         target: BRAIN,

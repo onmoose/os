@@ -120,7 +120,7 @@ Folds in the former `NEXT.md` Tier-4 "data-import flows" item.
 
 ## Audit & elevation
 
-- **File operations are not written to the audit log.** The audit log records elevation-class mutations to *principals and apps* — create/delete/role-change a user, install/uninstall/permission-change an app (`CLAUDE.md` # Go code discipline, `LOGGING.md`). A user reading, uploading, or deleting their *own content* is ordinary use, the file-manager equivalent of a read; auditing it would drown the Activity view in noise and make it less useful for the question it exists to answer ("did someone unauthorized try to mutate X?"). (A future admin break-glass into another user's files *would* audit — but that's the deferred item above, not a v1 file op.)
+- **File operations are not written to the audit log.** The audit log records elevation-class mutations to *principals and apps* — create/delete/role-change a user, install/uninstall/permission-change an app (`AGENTS.md` # Go code discipline, `LOGGING.md`). A user reading, uploading, or deleting their *own content* is ordinary use, the file-manager equivalent of a read; auditing it would drown the Activity view in noise and make it less useful for the question it exists to answer ("did someone unauthorized try to mutate X?"). (A future admin break-glass into another user's files *would* audit — but that's the deferred item above, not a v1 file op.)
 - **File operations do not trigger the 5-minute elevation re-prompt.** Elevation (`USERS_AND_GROUPS.md` # Elevation in the UI) guards destructive *host/Settings* operations — users, network, storage, updates. Deleting your own file is normal use, like deleting in Finder; it is confirmed inline (a "Delete N items?" dialog) but not password-gated.
 
 ## Failure modes

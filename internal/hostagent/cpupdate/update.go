@@ -64,7 +64,7 @@ const revertBudget = 5 * time.Minute
 const defaultHealthTimeout = 60 * time.Second
 
 // Docker is the slice of the `docker` CLI this transaction needs. Consumer-side
-// (CLAUDE.md # Go code discipline): the production implementation is CLIDocker
+// (AGENTS.md # Go code discipline): the production implementation is CLIDocker
 // in cli.go, tests pass a recording fake.
 type Docker interface {
 	// Pull fetches an image ref. Production refs are digests (BUILD.md # 6), so

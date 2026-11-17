@@ -9,7 +9,7 @@ import (
 
 // Runner adapts Apply to the shape host-agent's job handler wants: two refs in,
 // one wire result out. It is the concrete provider behind hostagent's
-// SystemUpdater seam (CLAUDE.md # Go code discipline — the interface lives with
+// SystemUpdater seam (AGENTS.md # Go code discipline — the interface lives with
 // the consumer, this package exports a concrete type).
 //
 // Base carries everything about the box that does not change per update: where

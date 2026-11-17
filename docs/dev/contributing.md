@@ -6,9 +6,9 @@ This guide is written so a contributor **and their coding agent** can both follo
 
 ## Step 0 — Get oriented (~30 min)
 
-Read in this order. Don't skip [`../../CLAUDE.md`](../../CLAUDE.md) — it holds the load-bearing conventions and overrides default agent behavior.
+Read in this order. Don't skip [`../../AGENTS.md`](../../AGENTS.md) — it holds the load-bearing conventions and overrides default agent behavior.
 
-1. **[`../../CLAUDE.md`](../../CLAUDE.md)** — what moose is, the audience, the locked decisions, and the code/doc discipline you're held to. The annotated map of every spec lives in [`../README.md`](../README.md) # Specs.
+1. **[`../../AGENTS.md`](../../AGENTS.md)** — what moose is, the audience, the locked decisions, and the code/doc discipline you're held to. The annotated map of every spec lives in [`../README.md`](../README.md) # Specs.
 2. **[`../specs/SPEC.md`](../specs/SPEC.md)** and **[`../specs/CONTROL_PLANE.md`](../specs/CONTROL_PLANE.md)** — the vision and the control-plane architecture (brain + host-agent + Caddy).
 3. **[`../README.md`](../README.md)** — the doc map. You don't read every spec now; you read the one(s) your task touches, end-to-end, when you pick it up.
 4. **[`running-locally.md`](running-locally.md)** — get the stack running natively (no VM) before you write a line.
@@ -33,7 +33,7 @@ gh issue edit <N> --add-assignee @me                 # claim it — assignment, 
 - **Dependencies:** an issue labelled `blocked` has an unmet dependency named in its body (e.g. "Depends on #2"). Don't start it until that issue is closed; drop the `blocked` label when the dep lands.
 - The maintainer's critical-path queue is separate — the **Up next** list in [`../progress/README.md`](../progress/README.md). The issue board is the work carved off for parallel contribution; the two are kept from overlapping on purpose.
 
-If a task turns out to need a **design decision that isn't in a spec**, stop — that's a `NEXT.md` item, not implementation. Surface it (comment on the issue + flag the maintainer); don't invent the answer (see [`../specs/NEXT.md`](../specs/NEXT.md) and CLAUDE.md # Working style).
+If a task turns out to need a **design decision that isn't in a spec**, stop — that's a `NEXT.md` item, not implementation. Surface it (comment on the issue + flag the maintainer); don't invent the answer (see [`../specs/NEXT.md`](../specs/NEXT.md) and AGENTS.md # Working style).
 
 ## Step 2 — Branch off `dev`
 
@@ -54,10 +54,10 @@ Branch-name shape: `feat/…`, `fix/…`, `test/…`, `docs/…` + the issue num
 
 The inner dev loop is all native, no VM — see [`running-locally.md`](running-locally.md) (`make dev` runs agent + brain + UI together). Hold to the conventions already in the tree:
 
-- **Go discipline** — CLAUDE.md # Go code discipline (consumer-side interfaces, layer boundaries, `log/slog` only, standard structured field names, typed errors only at boundaries, no premature abstraction). Match the surrounding code.
-- **Don't build host-integrated subsystems without the VM outer loop** the specs assume (CLAUDE.md # Repo state). The fake host-agent (`cmd/host-agent`) is the inner-loop stand-in.
+- **Go discipline** — AGENTS.md # Go code discipline (consumer-side interfaces, layer boundaries, `log/slog` only, standard structured field names, typed errors only at boundaries, no premature abstraction). Match the surrounding code.
+- **Don't build host-integrated subsystems without the VM outer loop** the specs assume (AGENTS.md # Repo state). The fake host-agent (`cmd/host-agent`) is the inner-loop stand-in.
 - **Keep specs and reality in sync** — if your implementation realizes or *diverges* from a spec, update the matching `docs/specs/` doc in the same change, and add a `DECISIONS.md` entry if a locked decision flips.
-- **Scope is exactly the issue, nothing more.** If you encounter something broken or improvable outside the issue scope, first apply the size test in CLAUDE.md # Working style, "Skip small issues". If it is small, drop it. If it passes, search for an existing issue (open or closed) first; if none exists, open one. Never implement it in the current PR. Maintainers decide what gets built and when: that is a product decision, not a developer one.
+- **Scope is exactly the issue, nothing more.** If you encounter something broken or improvable outside the issue scope, first apply the size test in AGENTS.md # Working style, "Skip small issues". If it is small, drop it. If it passes, search for an existing issue (open or closed) first; if none exists, open one. Never implement it in the current PR. Maintainers decide what gets built and when: that is a product decision, not a developer one.
 - **New dependencies must be justified.** Any new `go.mod`/`go.sum` or `package.json`/`package-lock.json` entry must be called out in the PR body with the reason. When in doubt, don't add the dependency.
 - **DB schema changes are additive-only.** Never `DROP COLUMN`, `RENAME COLUMN`, or write a destructive `ALTER TABLE`. New columns on existing tables must have a `DEFAULT` or be nullable so the migration runs safely against a live database.
 - **Never swallow errors.** `_ = err` or a missing `if err != nil` is almost always wrong. Errors must be returned, logged, or explicitly handled — never silently dropped.
@@ -83,7 +83,7 @@ make fmt-check && make vet    # the non-test gates, no PAM headers needed
 make test-nopam               # skip the PAM-cgo target
 ```
 
-Lane-specific targets exist too (`make test-health`, `make test-caddy`, `make test-usermgr-nspawn`, `make test-boot-chain-nspawn`, `make test-medium-qemu`, …); `make help` lists them. Put unit/store/API tests **in the same package** by default (CLAUDE.md # Go code discipline).
+Lane-specific targets exist too (`make test-health`, `make test-caddy`, `make test-usermgr-nspawn`, `make test-boot-chain-nspawn`, `make test-medium-qemu`, …); `make help` lists them. Put unit/store/API tests **in the same package** by default (AGENTS.md # Go code discipline).
 
 **A green suite is not evidence that your coverage exists.** Both a deleted test and a skipped one report green, so "tests pass" cannot tell you they ran. Two things to check before you push, neither of which the suite will tell you:
 
@@ -94,7 +94,7 @@ For slices that integrate with a real external system (Docker, PAM, systemd, Cad
 
 ## Step 5 — Document it
 
-A change is not complete until its docs are in the **same change** (CLAUDE.md # Documentation discipline). Concretely:
+A change is not complete until its docs are in the **same change** (AGENTS.md # Documentation discipline). Concretely:
 
 1. **Write a progress entry.** Add `docs/progress/<slug>.md` (ADR-style, kebab-slug, not numbered) following the template in [`../progress/README.md`](../progress/README.md) # Entry template (status, date, specs touched, what was done, how it maps to specs, known gaps, what's next). Progress entries are **append-only history** — never retro-edit an earlier one; link back to it instead.
    - Be honest in "Known gaps & deviations." Every "handled" claim must be verifiable in the diff — don't assume symmetry between similar code paths.
@@ -307,8 +307,8 @@ In step 5, resolve `VERSION` to the new `X.Y.Z`: that is now the last released v
 - [ ] Tests added at the right layer; `make check` green (frontend changes: `make check-web` too).
 - [ ] Progress entry written (`docs/progress/<slug>.md`, kebab-slug, not numbered); indexes in both READMEs updated; Up-next re-ordered if needed.
 - [ ] Spec doc updated if behavior realized/diverged; `DECISIONS.md` entry if a locked decision flipped.
-- [ ] No `§`, no hard-wrapped markdown, `log/slog` only, conventions per CLAUDE.md.
-- [ ] No out-of-scope changes; any out-of-scope finding that passes the size test in CLAUDE.md # Skip small issues has an existing or new issue filed, not a fix in this PR. A small one is dropped.
+- [ ] No `§`, no hard-wrapped markdown, `log/slog` only, conventions per AGENTS.md.
+- [ ] No out-of-scope changes; any out-of-scope finding that passes the size test in AGENTS.md # Skip small issues has an existing or new issue filed, not a fix in this PR. A small one is dropped.
 - [ ] No new dependencies added silently; any new `go.mod`/`package.json` entry called out in the PR body with justification.
 - [ ] Schema changes additive-only; no dropped or renamed columns.
 - [ ] No swallowed errors (`_ = err`); user-facing error messages are plain English, not raw Go error strings.

@@ -30,7 +30,7 @@
 - [ ] Catalog change: if this touches the box's catalog wire (`internal/catalog/wire.go`) or the store views, said whether moose's other store surface needs the same change (`docs/specs/APP_STORE.md` # What the box models, and what it drops).
 - [ ] Catalog change, **new published field**: a box drops any key it does not model, top-level or per-app alike (#434 removed the index digest that used to make a per-app field reject the whole payload), so publishing ahead of the fleet is safe and the field simply does not appear until boxes model it. Bump the schema version only for a format a box could not project, and bump it *with* the data, never ahead of it.
 - [ ] Spec doc updated if behavior realized/diverged; `DECISIONS.md` entry if a locked decision flipped.
-- [ ] No section-sign symbol (write `#` instead), no hard-wrapped markdown, `log/slog` only, conventions per `CLAUDE.md`.
+- [ ] No section-sign symbol (write `#` instead), no hard-wrapped markdown, `log/slog` only, conventions per `AGENTS.md`.
 - [ ] Branch off `dev`, PR into `dev` with `Closes #<N>` (do not delete this line — GitHub will not auto-close the issue otherwise); any dependent issue un-`blocked`.
 
 <!-- ⚠️ REQUIRED: keep the Closes line below — do not delete it. Without it GitHub will NOT auto-close the issue on merge and it will remain open. Replace <N> with the issue number. -->

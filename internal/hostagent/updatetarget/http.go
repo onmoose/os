@@ -82,7 +82,7 @@ func CauseOf(err error) error {
 	return err
 }
 
-// Doer is the HTTP surface this source needs. Consumer-side (CLAUDE.md # Go code
+// Doer is the HTTP surface this source needs. Consumer-side (AGENTS.md # Go code
 // discipline), and small enough that a test drives it with httptest.
 type Doer interface {
 	Do(*http.Request) (*http.Response, error)

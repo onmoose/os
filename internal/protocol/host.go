@@ -597,7 +597,7 @@ type Error struct {
 // transaction (UPDATES.md # 3). The full Pattern B framework — a kind registry
 // with typed attributes, resource-class queueing, cancel, and the SSE log
 // stream — is not built, because it would be an abstraction with a single
-// consumer (CLAUDE.md # Go code discipline). What is built is the part
+// consumer (AGENTS.md # Go code discipline). What is built is the part
 // system-update needs: a job record, a MaxDuration bound, and one global lock.
 
 // JobKindSystemUpdate is the kind name of the control-plane update job.
@@ -763,7 +763,7 @@ type UpdateTarget struct {
 	//
 	// It is a **diagnostic**, not UI copy: it carries the underlying error text
 	// verbatim, which is what makes a broken source fixable. State is the field
-	// the dashboard writes its sentence from (CLAUDE.md — no raw Go error
+	// the dashboard writes its sentence from (AGENTS.md — no raw Go error
 	// strings as user-facing text), and this is what an admin reads underneath
 	// it.
 	Detail string `json:"detail,omitempty"`

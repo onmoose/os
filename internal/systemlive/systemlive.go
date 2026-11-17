@@ -18,7 +18,7 @@ import (
 
 // sampler is the brain's consumer-side slice of hostclient.Client: just the one
 // raw-counter read the hub needs. *hostclient.Client satisfies it; tests pass a
-// fake (CLAUDE.md: consumer-side interfaces).
+// fake (AGENTS.md: consumer-side interfaces).
 type sampler interface {
 	SystemResources(ctx context.Context) (protocol.SystemResources, error)
 }

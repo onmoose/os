@@ -34,7 +34,7 @@ const pollJitter = 5 * time.Minute
 // poller open until the next tick, or two polls would overlap.
 const fetchTimeout = 30 * time.Second
 
-// Doer is the HTTP surface the poller needs. Consumer-side by CLAUDE.md's rule,
+// Doer is the HTTP surface the poller needs. Consumer-side by AGENTS.md's rule,
 // and small enough that a test can drive it with httptest without a real
 // network.
 type Doer interface {

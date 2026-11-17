@@ -8,7 +8,17 @@ GO ?= $(shell command -v go || echo $(HOME)/.local/go/bin/go)
 # regardless of what's on PATH.
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 DEV_DIR := .dev
+# HOSTED=1 runs the dev stack as a hosted box (see `make dev` below). It gets its
+# own state dir, because the brain freezes a hosted box's id on first boot and an
+# appliance state dir has none. `make dev-login` is always about the hosted box.
+ifneq ($(filter dev-login,$(MAKECMDGOALS)),)
+HOSTED := 1
+endif
+ifeq ($(HOSTED),1)
+STATE_DIR := $(DEV_DIR)/state-hosted
+else
 STATE_DIR := $(DEV_DIR)/state
+endif
 AGENT_SOCK := $(abspath $(DEV_DIR)/agent.sock)
 
 # Build identity (BUILD.md # Versioning): two version lines, one per update
@@ -45,6 +55,7 @@ export MOOSE_STATE_DIR := $(STATE_DIR)
 # store offline. To boot against a local snapshot instead, see `make dev-app`.
 export MOOSE_CATALOG_CACHE_DIR := ./.dev/catalog-cache
 
+.PHONY: dev-hosted-setup dev-login
 .PHONY: build host-agent brain host-agent-real host-agent-real-hosted brain-image ui-image control-plane-images control-plane-released control-plane-third-party caddy-acmedns-image build-cloud-image check check-web fmt fmt-check vet test test-nopam test-caddy test-avahi test-netstate test-health test-usermgr test-usermgr-nspawn test-boot-chain-nspawn test-medium-qemu test-cloud-qemu run-agent run-brain net caddy caddy-down ui dev dev-app seed-catalog stop openapi openapi-check clean check-state-owner help
 
 # msteinert/pam v2.1.0 uses RTLD_NEXT, a GNU extension that requires
@@ -63,7 +74,9 @@ help:
 	@echo "make control-plane-released - the same bundle with the last released brain + UI, pulled from ghcr by digest"
 	@echo "make caddy-acmedns-image  - build the hosted Caddy (stock Caddy + the caddy-dns/acmedns module)"
 	@echo "make dev         - all three foreground procs in one terminal (recommended); Go edits rebuild + restart the brain"
-	@echo "make dev-app APP=<id> [STORE=../store] - boot ONE store app under curation: seed its catalog snapshot, then make dev with an inert catalog URL"
+	@echo "make dev APP=<id> [APPS=\"<id> ...\"] [STORE=../store] - make dev with the named store apps seeded from a store checkout instead of the live catalog (make dev-app is the same)"
+	@echo "make dev HOSTED=1 [APP=<id>] [BOX=devbox] - make dev as a hosted box at http://<box>.onmoose.io (needs /etc/hosts lines; it prints them)"
+	@echo "make dev-login   - print a fresh one-time sign-in URL for the hosted dev box"
 	@echo "make seed-catalog APPS=\"<id> <id> ...\" [HOMEFILE=<path/to/home.yml>] - seed several store apps (+ optionally the curated landing) into a local snapshot file, without starting dev"
 	@echo "make fmt         - rewrite Go sources into gofmt-canonical form (autofix)"
 	@echo "make host-agent-real-hosted - build the slim hosted-cloud host-agent (-tags hosted; #204/C1c)"
@@ -165,7 +178,7 @@ vet: require-gopkgs
 # PAM), so it already doesn't build on macOS/Windows/WSL2-without-headers.
 # Making it part of the default `build` would break `make build` on exactly
 # the machines the inner loop is supposed to work on with no platform-specific
-# setup (CLAUDE.md # Developing). It's still stamped — see its own target below
+# setup (AGENTS.md # Developing). It's still stamped — see its own target below
 # — for anyone building it directly or via the cloud-image / nspawn lanes.
 build: host-agent brain
 
@@ -431,6 +444,11 @@ dev: check-state-owner build caddy
 	@mkdir -p $(STATE_DIR)
 	@cd web-ui && [ -d node_modules ] || npm install
 	@trap 'kill 0' INT TERM EXIT; \
+	  if [ "$(HOSTED)" = 1 ]; then \
+	    gw=host.docker.internal; \
+	    [ "$$(uname)" != Linux ] || gw=$$(docker network inspect moose-ingress -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}'); \
+	    export MOOSE_DASHBOARD_BRAIN_UPSTREAM=$$gw:8080 MOOSE_DASHBOARD_UI_UPSTREAM=$$gw:5173; \
+	  fi; \
 	  (GO="$(GO)" DEV_DIR="$(DEV_DIR)" LDFLAGS="$(LDFLAGS)" BRAIN_LDFLAGS="$(BRAIN_LDFLAGS)" ./dev/dev-go.sh) & \
 	  (cd web-ui && npm run dev 2>&1 | sed -u 's/^/[ui]    /') & \
 	  wait
@@ -509,10 +527,92 @@ seed-catalog:
 # curated here. Without it the brain refuses the install with a 409. It skips
 # only that refusal: personal_only stays enforced, and owner_only means nothing
 # off hosted anyway.
-dev-app: export MOOSE_CATALOG_URL := http://127.0.0.1:1
-dev-app: export MOOSE_DEV_ALLOW_HOSTED_ONLY := 1
-dev-app: export MOOSE_CATALOG_FILE := $(CATALOG_SEED)
+#
+# `make dev APP=<id>` does the same as `make dev-app APP=<id>`: dev-app is kept
+# so the name in older docs and habits still works, and it is the one that
+# insists on an app.
+ifneq ($(APP)$(APPS),)
+dev: export MOOSE_CATALOG_URL := http://127.0.0.1:1
+dev: export MOOSE_CATALOG_FILE := $(CATALOG_SEED)
+ifneq ($(HOSTED),1)
+dev: export MOOSE_DEV_ALLOW_HOSTED_ONLY := 1
+endif
+dev: seed-catalog
+endif
 dev-app: seed-catalog dev
+
+# ---- A hosted box in the inner loop (make dev HOSTED=1) ------------------
+# The stack runs with the hosted profile and a seed, the way a cloud box boots
+# (ENVIRONMENT.md # Provisioning & first-boot). The dashboard is at
+# http://<box>.onmoose.io and each app at http://<slug>.<box>.onmoose.io, served
+# by the dev Caddy on :80. Sign-in is the portal SSO: dev/cloud/mkassertion
+# plays the portal with a key pair kept in $(HOSTED_DIR)/portal.key, the seed
+# carries its public key, and `make dev-login` signs a fresh one-time token.
+#
+# The dev Caddy is a container and the brain and Vite run on this machine, so
+# the dashboard route and the per-app forward-auth check dial this machine. On
+# Linux that is the moose-ingress gateway address, read when the stack starts:
+# traffic to it always leaves Caddy on that network, so one firewall rule on its
+# bridge covers it, even after Caddy has joined app networks. Docker Desktop has
+# host.docker.internal for this instead. Vite listens on every address so the
+# container can reach it. The fake host-agent hands out $(STATE_DIR)/home as every user's
+# home, so an app that binds a personal folder never sees your real home.
+#
+# /etc/hosts has no wildcards, so each name needs its own line. The setup step
+# checks them and prints the line to add if one is missing.
+#
+# A protected change (adding a user, SSH) asks the owner to confirm, and the
+# dashboard sends them to the real portal for it, which cannot sign for a dev
+# box. Copy the mooseos.com address it opened and run
+# `make dev-login CONFIRM='<address>'`: the URL it prints carries that
+# address's return path, with its one-time challenge, back to the box. The brain freezes
+# the box id on first boot: to use another BOX, run `make clean HOSTED=1` first.
+BOX ?= devbox
+HOSTED_DIR := $(STATE_DIR)/hosted
+
+ifeq ($(HOSTED),1)
+export MOOSE_PROFILE_PATH := $(abspath $(HOSTED_DIR))/profile
+export MOOSE_SEED_PATH := $(abspath $(HOSTED_DIR))/seed.json
+export MOOSE_DEV_HOME := $(abspath $(STATE_DIR))/home
+export MOOSE_UI_HOST := 0.0.0.0
+export MOOSE_DEV_PLAIN_HTTP := 1
+dev: dev-hosted-setup
+endif
+
+dev-hosted-setup:
+	@mkdir -p $(HOSTED_DIR) $(STATE_DIR)/home
+	@[ -f $(HOSTED_DIR)/profile ] || printf 'hosted\n' > $(HOSTED_DIR)/profile
+	@if [ ! -f $(HOSTED_DIR)/seed.json ]; then \
+	  key=$$($(GO) run ./dev/cloud/mkassertion -box $(BOX) -key $(HOSTED_DIR)/portal.key -tokens 0) || exit 1; \
+	  printf '{"box_id":"%s","assertion_verification_key":"%s"}\n' "$(BOX)" "$$key" > $(HOSTED_DIR)/seed.json; \
+	  echo "hosted dev box $(BOX): seed written to $(HOSTED_DIR)/seed.json"; \
+	fi
+	@box=$$(sed -n 's/.*"box_id":"\([^"]*\)".*/\1/p' $(HOSTED_DIR)/seed.json); \
+	  [ "$$box" = "$(BOX)" ] || { echo "error: $(STATE_DIR) is box $$box, not $(BOX). Run make clean HOSTED=1 to start a new box." >&2; exit 2; }; \
+	  missing=""; \
+	  for h in $$box.onmoose.io $(foreach a,$(APP) $(APPS),$(a).$$box.onmoose.io); do \
+	    if command -v getent >/dev/null; then ent=$$(getent hosts $$h); else ent=$$(grep -Ew "^[^#]*[[:space:]]$$h" /etc/hosts); fi; \
+	    printf '%s\n' "$$ent" | grep -Eq '^(127\.0\.0\.1|::1)[[:space:]]' || missing="$$missing $$h"; \
+	  done; \
+	  if [ -n "$$missing" ]; then \
+	    echo "error: these names do not point at this machine:$$missing" >&2; \
+	    echo "       Add them once with:" >&2; \
+	    echo "       echo '127.0.0.1$$missing' | sudo tee -a /etc/hosts" >&2; \
+	    exit 2; \
+	  fi; \
+	  echo "hosted dev box: dashboard at http://$$box.onmoose.io. Sign in with: make dev-login"
+
+dev-login:
+	@[ -f $(HOSTED_DIR)/portal.key ] && [ -f $(HOSTED_DIR)/seed.json ] || { echo "error: no hosted dev box yet. Start one with: make dev HOSTED=1" >&2; exit 2; }
+	@box=$$(sed -n 's/.*"box_id":"\([^"]*\)".*/\1/p' $(HOSTED_DIR)/seed.json); \
+	  tok=$$($(GO) run ./dev/cloud/mkassertion -box "$$box" -key $(HOSTED_DIR)/portal.key -tokens 1 | sed -n 2p) || exit 1; \
+	  ret=""; \
+	  if [ -n '$(CONFIRM)' ]; then \
+	    ret=$$(printf '%s\n' '$(CONFIRM)' | sed -n 's/.*[?&]return=\([^&]*\).*/\1/p'); \
+	    [ -n "$$ret" ] || { echo "error: CONFIRM has no return= value. Paste the whole mooseos.com address the dashboard opened." >&2; exit 2; }; \
+	    ret="&return=$$ret"; \
+	  fi; \
+	  echo "http://$$box.onmoose.io/_moose/sso?token=$$tok$$ret"
 
 # Regenerate the committed OpenAPI spec (api/openapi.{json,yaml}) from the huma
 # handler registrations — no running brain, no port (BRAIN_UI_PROTOCOL.md
@@ -560,5 +660,5 @@ clean: stop caddy-down
 	@# mounts, so instances/<id>/data is root-owned on the host — same as prod,
 	@# where the privileged uninstall path removes it. A plain `rm` as the dev
 	@# user can't, so reclaim it via a throwaway root container first. No sudo.
-	-@docker run --rm -v $(abspath $(DEV_DIR)/state):/state alpine:3 rm -rf /state 2>/dev/null || true
-	rm -rf $(DEV_DIR)/state $(DEV_DIR)/next
+	-@docker run --rm -v $(abspath $(STATE_DIR)):/state alpine:3 rm -rf /state 2>/dev/null || true
+	rm -rf $(STATE_DIR) $(DEV_DIR)/next
