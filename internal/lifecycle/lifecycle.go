@@ -1090,7 +1090,7 @@ func (m *Manager) install(ctx context.Context, man *manifest.Manifest, composeBy
 	if err := m.writeOverride(id, man, composeBytes, pins, iso, lim); err != nil {
 		return rollback(fmt.Errorf("override: %w", err))
 	}
-	if err := m.writeEnv(id, slug, iso); err != nil {
+	if err := m.writeEnv(id, slug, iso, man.Mail); err != nil {
 		return rollback(fmt.Errorf("env: %w", err))
 	}
 	// Pin each folder source by inode and write compose.pins.yml, so the up
@@ -2670,7 +2670,7 @@ func (m *Manager) writeOverride(id string, man *manifest.Manifest, composeBytes 
 	return os.WriteFile(filepath.Join(m.instanceDir(id), "compose.override.yml"), out, 0o644)
 }
 
-func (m *Manager) writeEnv(id, slug string, iso isolation) error {
+func (m *Manager) writeEnv(id, slug string, iso isolation, mail *manifest.Mail) error {
 	dataDir, _ := filepath.Abs(filepath.Join(m.instanceDir(id), "data"))
 	// MOOSE_APP_URL is the app's own public URL (apps that build absolute links
 	// read it). Hosted is HTTPS at "<slug>.<box-id>.onmoose.io"; appliance is
@@ -2748,9 +2748,15 @@ func (m *Manager) writeEnv(id, slug string, iso isolation) error {
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("load mail binding: %w", err)
 	}
+	var bound *store.MailProvider
 	if err == nil {
+		bound = &mp
 		lines = append(lines, mailEnvLines(mp)...)
 	}
+	// Manifest-declared mail.env vars (#302) are emitted in both states. Unbound
+	// resolves the none/unbound tokens, so an enum-driver app boots valid without
+	// a provider bound, where the MOOSE_MAIL_* family injects nothing.
+	lines = append(lines, mailAppEnvLines(mail, bound)...)
 	env := strings.Join(append(lines, ""), "\n")
 	return os.WriteFile(filepath.Join(m.instanceDir(id), ".env"), []byte(env), 0o644)
 }

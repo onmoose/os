@@ -806,7 +806,7 @@ func (m *Manager) writeNewGeneration(ctx context.Context, inst store.Instance, m
 	if err := m.writeOverride(id, man, composeBytes, pins, iso, lim); err != nil {
 		return fmt.Errorf("override: %w", err)
 	}
-	if err := m.writeEnv(id, inst.Slug, iso); err != nil {
+	if err := m.writeEnv(id, inst.Slug, iso, man.Mail); err != nil {
 		return fmt.Errorf("env: %w", err)
 	}
 	// Pin the new generation's folder sources before its first up (#604). A

@@ -322,7 +322,7 @@ mail:
   optional: true       # the app must run fine unbound (email features off)
 ```
 
-When the instance is bound to a provider, the brain injects `MOOSE_MAIL_HOST/_PORT/_USER/_PASSWORD/_FROM/_ENCRYPTION` plus a Symfony-style `MOOSE_MAIL_DSN`; unbound, **nothing is injected**. The compose maps the vars app-defined as usual, with a default for the unbound case so absence degrades to the app's own "email off" mode:
+When the instance is bound to a provider, the brain injects `MOOSE_MAIL_HOST/_PORT/_USER/_PASSWORD/_FROM/_ENCRYPTION` plus a Symfony-style `MOOSE_MAIL_DSN`; unbound, the provider lines are not injected (an app that declares `mail.env` still gets its own vars, see below). The compose maps the vars app-defined as usual, with a default for the unbound case so absence degrades to the app's own "email off" mode:
 
 ```yaml
 # inside the app's docker-compose.yml (Kimai)
@@ -330,6 +330,22 @@ environment:
   MAILER_URL: "${MOOSE_MAIL_DSN:-null://null}"
   MAILER_FROM: "${MOOSE_MAIL_FROM:-kimai@example.com}"
 ```
+
+**Enum-style config a compose gate can't reach (`mail.env`).** Some apps take a mail setting as a *boot-validated enum*, not a boolean or free string. Twenty's `EMAIL_DRIVER` is `logger` | `smtp` and rejects empty; vaultwarden's `SMTP_SECURITY` is `off` | `starttls` | `force_tls`, whose tokens differ from moose's `none`/`starttls`/`tls`. Compose `environment:` interpolation can substitute, default (`:-`), or test presence (`:+`), but it cannot *remap* one enum's tokens onto another's. The established `${MOOSE_MAIL_HOST:+…}` gate expands to the empty string on an unbound box, which boot-rejects the enum. So the manifest declares the mapping and the brain resolves the final token in Go. It stamps the token into the `.env` under the app's own name, with no `MOOSE_` indirection, the same direct-stamp convention `config:` uses (# D4, `DECISIONS.md` 2026-11-12):
+
+```yaml
+mail:
+  optional: true
+  env:
+    EMAIL_DRIVER:                                    # twenty: is a provider bound?
+      from: bound                                    # domain: bound | unbound
+      map: { bound: smtp, unbound: logger }
+    SMTP_SECURITY:                                   # vaultwarden: the provider's mode
+      from: encryption                               # domain: none | starttls | tls (unbound ⇒ none)
+      map: { none: "off", starttls: starttls, tls: force_tls }
+```
+
+Each entry's `from` names a mail-state domain: `bound` (whether any provider is bound) or `encryption` (the bound provider's mode, treated as `none` when unbound). `map` must cover that domain exactly: every value, none extra, so resolution never hits an undeclared token. The var name is validated like a config `app_env` (uppercase identifier, never the `MOOSE_` prefix or a loader/runtime var). It may not also be a config `app_env`, because the config value would win over the `.env` line. A token must be a single word of letters, digits, or `_ . : + -`, so the `.env` line and compose substitution pass it through unchanged. **Unlike the rest of `MOOSE_MAIL_*`, these vars are stamped in *both* states:** unbound resolves the `unbound`/`none` tokens, so the enum is always present and valid and the app never boot-rejects on an empty value. The app's compose passes the resolved value straight through (`EMAIL_DRIVER: ${EMAIL_DRIVER}`), with no remap, because the brain already did it.
 
 v1 admits only `optional: true` — an app that *can't* run unbound (`optional: false` or a bare `mail: {}`) is rejected at parse, because a box with no registered providers couldn't install it. Required-mail semantics (blocking install until a provider is picked) is a possible later loosening; declare-and-degrade is the v1 contract.
 
@@ -650,7 +666,7 @@ permissions:
 - **Env-var injection: app-defined naming.** App's compose maps moose's stable `MOOSE_SERVICE_*` variables to whatever names the app expects. No auto-rewrite. Authors adapt; we document.
 - **Generated secrets are declared, brain-generated, and stable.** A manifest declares `secrets: [{name, bytes?, show?}]`; the brain draws each from a CSPRNG once at install, persists it, and injects it as `MOOSE_SECRET_<NAME>` — re-emitted verbatim on every restart so token-signing secrets don't rotate underneath live sessions. Same app-defined wiring as `MOOSE_SERVICE_*` (# D2). `show: true` makes one owner-visible on the app detail page (so a self-auth app's bootstrap token can be per-instance random, not a published constant — #152); omitted keeps it internal. Security hardening (delivery surface, at-rest, rotation) is tracked open in `NEXT.md` # App-secret injection hardening.
 - **User-supplied config is declared, form-collected, and injected under the app's own var name — no `MOOSE_*` indirection.** A manifest declares `config: [{app_env, title, description, secret?, required?, type?, options?, default?, service?}]` (# D4); the brain renders a form, collects answers at install (required ones gate the install button) and on the app detail page after, and stamps each value into the target service's `environment:` override under `app_env` verbatim. Unlike `MOOSE_SERVICE_*`/`MOOSE_SECRET_*`/`MOOSE_FOLDER_*`/`MOOSE_MAIL_*`, the value is the app's own native variable the user would set by hand, not a moose-owned value the app must adapt to — so there is no indirection and no compose mapping line. Because the override wins over the base compose, `app_env` is reserved-name checked at parse: never the `MOOSE_` prefix and never a loader/runtime-critical var (`PATH`, `LD_PRELOAD`, …), so user input can't clobber brain-owned or process-critical environment (# D4 # Reserved names). `secret: true` masks + protects the value like a generated secret (folds into `NEXT.md` # App-secret injection hardening). Closes the `operator-env-config` catalog gap. Door-2 paste has no `config:` (the admin edits env in the YAML escape hatch). See `DECISIONS.md` 2026-06-26 (#264). A field may carry a `role` and the manifest a `requires` list, read leniently by the box and strictly by the lint (# D4 # Roles and requires, `INSTALL_SETUP.md`).
-- **Outgoing mail is declared optional-only (`mail: {optional: true}`).** The declaration unlocks the install-time provider picker and per-instance `MOOSE_MAIL_*` injection (# D3, `SERVICE_PROVISIONING.md` # BYO outgoing mail); unbound apps get nothing injected and must run with email off. `optional: false` (and a bare `mail: {}`) is rejected at parse in v1.
+- **Outgoing mail is declared optional-only (`mail: {optional: true}`).** The declaration unlocks the install-time provider picker and per-instance `MOOSE_MAIL_*` injection (# D3, `SERVICE_PROVISIONING.md` # BYO outgoing mail); unbound apps get no provider lines (`mail.env` vars are still stamped with their unbound tokens) and must run with email off. `optional: false` (and a bare `mail: {}`) is rejected at parse in v1.
 - **Permissions granularity: medium for v1.** Internet, LAN, shared storage, devices, privileged, network isolation. Not coarse-only, not fine-grained Kubernetes-style.
 - **Custom apps can request managed services.** Allowed, not encouraged.
 - **No inter-app dependencies in v1.** Apps are self-contained. If they need multiple services, they go in the same compose. Cross-app sharing only via shared use-case folders (two of the same user's apps both binding the same `folders` entry; the installer points each at the same personal or shared source).
